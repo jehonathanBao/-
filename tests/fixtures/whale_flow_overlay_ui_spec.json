@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "indexHtmlTokens": [
+    "Replay Drilldown / Overlay",
+    "Replay Markout Heatmap",
+    "whale flow overlay"
+  ],
+  "scriptTokens": [
+    "buildWhaleReplayOverlay",
+    "buildWhaleReplayOverlayMarkdown",
+    "Refresh Whale Overlay",
+    "Load Whale Overlay by Symbol",
+    "Load Whale Overlay by Signal ID",
+    "Copy Whale Overlay JSON",
+    "Copy Whale Overlay Markdown",
+    "Whale Flow Overlay",
+    "No whale flow candidate for selected signal.",
+    "Whale flow data unavailable",
+    "Whale flow overlay partial: venue/depth/baseline inputs are missing.",
+    "whaleClassification",
+    "baselineSource",
+    "dataQuality",
+    "signal-only, no execution",
+    "not_enough_data"
+  ],
+  "styleTokens": [
+    "replay-panel",
+    "replay-overlay",
+    "heatmap-group",
+    "heatmap-window-grid",
+    "signal-chip-row"
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "indexHtmlTokens": [
+    "Replay Markout Heatmap",
+    "replayHeatmapCard",
+    "Read-only operator heatmap for multi-signal replay comparison, JSON summary, and Markdown summary. No live trading."
+  ],
+  "scriptTokens": [
+    "renderReplayHeatmap",
+    "buildReplayHeatmapPayload",
+    "buildReplayHeatmapMarkdown",
+    "refreshReplayHeatmap",
+    "Build Heatmap",
+    "Refresh Heatmap",
+    "Clear Heatmap Filter",
+    "Copy Heatmap JSON",
+    "Copy Heatmap Markdown",
+    "Symbol filter",
+    "SignalKind filter",
+    "Direction filter",
+    "+1m",
+    "+5m",
+    "+15m",
+    "+1h",
+    "aligned",
+    "adverse",
+    "neutral",
+    "not_enough_data",
+    "No history available",
+    "No signals matched filter",
+    "Insufficient samples for heatmap",
+    "Direction bias is a signal attribute, not an order instruction.",
+    "This heatmap is for review only."
+  ],
+  "styleTokens": [
+    "heatmap-controls",
+    "heatmap-group-list",
+    "heatmap-group",
+    "heatmap-window-grid",
+    "heatmap-window",
+    "heatmap-empty"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "indexHtmlTokens": [
+    "Toxic Signal History",
+    "Read-only Analysis only bounded in-memory signal history query",
+    "Sort, copy, and export only",
+    "Toxic Signal Rolling Digest",
+    "Signal Alert Rules / Notification Preview"
+  ],
+  "scriptTokens": [
+    "toxicSignalHistorySortSelect",
+    "Signal History Sort",
+    "Sort by Severity",
+    "Sort by Newest",
+    "Sort by Symbol",
+    "Sort by Group Count",
+    "Export Signal History JSON",
+    "signal-card-grid",
+    "signal-details",
+    "signal-chip-row",
+    "representativeSignalId",
+    "avgConfidence",
+    "originalSignalsPreserved",
+    "alert_explanation_found=",
+    "alert_explanation_found=false",
+    "mixed markout",
+    "Load Alert Explanation",
+    "Copy Alert Explanation JSON",
+    "Copy Signal History JSON"
+  ],
+  "styleTokens": [
+    "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))",
+    "signal-history-toolbar",
+    "signal-toolbar-label",
+    "overflow-wrap: anywhere",
+    "white-space: normal"
+  ],
+  "s13RegressionTokens": [
+    "high_severity_notify_candidate",
+    "review_candidate",
+    "suppressed_no_trade_only",
+    "not_enough_data",
+    "empty_history"
+  ]
+}

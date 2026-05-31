@@ -1,0 +1,159 @@
+{
+  "good_payload": {
+    "records": [
+      {
+        "signalId": "signal_001",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "direction": "short",
+        "confidence": 0.82,
+        "evidenceRefs": ["signal:signal_001", "report:daily:BTCUSDT"]
+      }
+    ]
+  },
+  "missing_required_fields": {
+    "records": [
+      {
+        "symbol": "BTCUSDT",
+        "evidenceRefs": ["signal:missing"]
+      }
+    ]
+  },
+  "forbidden_fields": {
+    "records": [
+      {
+        "signalId": "signal_forbidden",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_forbidden"],
+        "privateKey": "never-archive",
+        "telegramBotToken": "never-archive"
+      }
+    ]
+  },
+  "execution_like_fields": {
+    "records": [
+      {
+        "signalId": "signal_execute",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_execute"],
+        "placeOrder": true,
+        "sendWebhook": true
+      }
+    ]
+  },
+  "duplicate_signal_id": {
+    "records": [
+      {
+        "signalId": "signal_001",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_001"]
+      },
+      {
+        "signalId": "signal_001",
+        "symbol": "BTCUSDT",
+        "signalKind": "long_bias_toxic_flow",
+        "createdAtMs": 1001,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_001:dup"]
+      }
+    ]
+  },
+  "invalid_schema_version": {
+    "records": [
+      {
+        "signalId": "signal_bad_schema",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": "archive.v999",
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_bad_schema"]
+      }
+    ]
+  },
+  "invalid_evidence_refs": {
+    "records": [
+      {
+        "signalId": "signal_bad_evidence",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["wallet/signing/private-key-path"]
+      }
+    ]
+  },
+  "oversized_payload": {
+    "records": [
+      {
+        "signalId": "signal_large",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": [
+          "signal:signal_large:0",
+          "signal:signal_large:1",
+          "signal:signal_large:2",
+          "signal:signal_large:3",
+          "signal:signal_large:4",
+          "signal:signal_large:5",
+          "signal:signal_large:6",
+          "signal:signal_large:7",
+          "signal:signal_large:8",
+          "signal:signal_large:9",
+          "signal:signal_large:10",
+          "signal:signal_large:11",
+          "signal:signal_large:12",
+          "signal:signal_large:13",
+          "signal:signal_large:14",
+          "signal:signal_large:15",
+          "signal:signal_large:16",
+          "signal:signal_large:17",
+          "signal:signal_large:18",
+          "signal:signal_large:19",
+          "signal:signal_large:20"
+        ],
+        "note": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "empty_records": {
+    "records": []
+  },
+  "unsafe_notification_fields": {
+    "records": [
+      {
+        "signalId": "signal_notify",
+        "symbol": "BTCUSDT",
+        "signalKind": "short_bias_toxic_flow",
+        "createdAtMs": 1000,
+        "schemaVersion": 1,
+        "sourceModule": "signal_inbox",
+        "evidenceRefs": ["signal:signal_notify"],
+        "notificationSent": true,
+        "executionTriggered": true,
+        "webhookSent": true,
+        "telegramSent": true
+      }
+    ]
+  }
+}

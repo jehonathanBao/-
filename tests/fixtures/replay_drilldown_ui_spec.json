@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "indexHtmlTokens": [
+    "Replay Drilldown / Overlay",
+    "suspiciousReplayDrilldownCard",
+    "Read-only drilldown for whale flow overlay, markout, quality, recommendation, governance evidence, and alert explainability. No live trading."
+  ],
+  "scriptTokens": [
+    "renderSuspiciousReplayDrilldown",
+    "renderReplayOverlayMetricRows",
+    "renderSuspiciousReplayOverlaySummary",
+    "suspiciousReplayDrilldownBadge",
+    "suspiciousReplayDrilldownContent",
+    "Whale Flow / Markout / Quality / Recommendation Overlay",
+    "Whale Flow Overlay",
+    "Refresh Whale Overlay",
+    "Load Whale Overlay by Symbol",
+    "Load Whale Overlay by Signal ID",
+    "Copy Whale Overlay JSON",
+    "Copy Whale Overlay Markdown",
+    "No whale flow candidate for selected signal.",
+    "Whale flow overlay partial: venue/depth/baseline inputs are missing.",
+    "Load Replay by Symbol",
+    "Load Replay by Signal ID",
+    "Copy Replay JSON",
+    "Signal not found",
+    "Detail unavailable",
+    "Alert explanation unavailable",
+    "Governance ledger unavailable",
+    "Markout not_enough_data",
+    "quality bucket",
+    "recommendation action"
+  ],
+  "styleTokens": [
+    "replay-panel",
+    "replay-overlay",
+    "replay-history-list",
+    "signal-details-grid",
+    "signal-chip-row"
+  ]
+}

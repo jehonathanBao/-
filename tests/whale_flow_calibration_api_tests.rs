@@ -1,0 +1,345 @@
+mod support;
+
+use std::collections::BTreeMap;
+
+use support::test_http_get;
+
+use btc_toxic_flow_monitor_rs::{
+    api::server::router,
+    app::AppState,
+    config::{
+        venues::{VenueConfig, VenueConfigs},
+        AppConfig,
+    },
+    types::{
+        flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
+        market::{Venue, VenueConnectionStatus, VenueHealth},
+        status::VenueHealthMap,
+        toxic::ToxicSeverity,
+    },
+};
+
+#[tokio::test]
+async fn whale_flow_calibration_api_exposes_read_only_report_routes() {
+    let state = AppState::new(test_config());
+    *state.shared_flow_for_tests().write() = sample_flow_state();
+    for health in sample_venue_health().into_values() {
+        state.set_health_for_tests(health);
+    }
+    let observed_state = state.clone();
+    let before_history = observed_state.signal_history_service().status();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let status = test_http_get(format!(
+        "http://{addr}/api/toxicity/whale-flow/calibration/status"
+    ))
+    .await
+    .expect("status response");
+    assert_eq!(status.status(), reqwest::StatusCode::OK);
+    let status_payload: serde_json::Value = status.json().await.expect("status json");
+    assert_eq!(status_payload["readOnly"], true);
+    assert_eq!(status_payload["analysisOnly"], true);
+    assert_eq!(status_payload["executionEnabled"], false);
+    assert_eq!(status_payload["thresholdModified"], false);
+    assert_eq!(status_payload["configModified"], false);
+    assert_eq!(status_payload["autoApplyEnabled"], false);
+    assert_eq!(status_payload["selectedSymbol"], "BTC-PERP");
+    assert_eq!(status_payload["currentThresholds"]["fiveSecondBtc"], 300.0);
+    assert_eq!(status_payload["resolvedMarkoutEvidenceCount"], 0);
+    assert_eq!(status_payload["minResolvedEvidenceRequired"], 10);
+
+    let report = test_http_get(format!(
+        "http://{addr}/api/toxicity/whale-flow/calibration/report"
+    ))
+    .await
+    .expect("report response");
+    assert_eq!(report.status(), reqwest::StatusCode::OK);
+    let report_payload: serde_json::Value = report.json().await.expect("report json");
+    assert_eq!(report_payload["readOnly"], true);
+    assert_eq!(report_payload["manualReviewRequired"], true);
+    assert_eq!(report_payload["sampleStatus"]["enoughData"], false);
+    assert_eq!(report_payload["status"], "insufficient_history");
+    assert_eq!(
+        report_payload["sampleStatus"]["blockedReason"],
+        "current_snapshot_only"
+    );
+    assert_eq!(
+        report_payload["evidenceSource"]["usesCurrentSnapshotOnly"],
+        true
+    );
+    assert_eq!(
+        report_payload["evidenceSource"]["currentSnapshotFallbackUsed"],
+        true
+    );
+    assert_eq!(
+        report_payload["manualTuningNotes"][0]["suggestedAction"],
+        "needs_more_data"
+    );
+    assert!(report_payload["markdown"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("No live trading"));
+
+    let by_symbol = test_http_get(format!(
+        "http://{addr}/api/toxicity/whale-flow/calibration/BTC-PERP"
+    ))
+    .await
+    .expect("symbol response");
+    assert_eq!(by_symbol.status(), reqwest::StatusCode::OK);
+    let by_symbol_payload: serde_json::Value = by_symbol.json().await.expect("symbol json");
+    assert_eq!(by_symbol_payload["selectedSymbol"], "BTC-PERP");
+
+    let after_history = observed_state.signal_history_service().status();
+    assert_eq!(
+        after_history.current_signals,
+        before_history.current_signals
+    );
+    assert_eq!(after_history.current_groups, before_history.current_groups);
+    assert_eq!(after_history.current_alerts, before_history.current_alerts);
+    assert_eq!(
+        after_history.current_reports,
+        before_history.current_reports
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn whale_flow_calibration_reads_bounded_candidate_history_without_s7_mutation() {
+    let state = AppState::new(test_config());
+    *state.shared_flow_for_tests().write() = sample_flow_state();
+    for health in sample_venue_health().into_values() {
+        state.set_health_for_tests(health);
+    }
+    let observed_state = state.clone();
+    let before_signal_history = observed_state.signal_history_service().status();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let whale_flow = test_http_get(format!("http://{addr}/api/toxicity/whale-flow/recent"))
+        .await
+        .expect("whale flow response");
+    assert_eq!(whale_flow.status(), reqwest::StatusCode::OK);
+    assert!(!observed_state
+        .whale_flow_candidate_history_service_for_tests()
+        .is_empty());
+
+    let report = test_http_get(format!(
+        "http://{addr}/api/toxicity/whale-flow/calibration/report"
+    ))
+    .await
+    .expect("report response");
+    assert_eq!(report.status(), reqwest::StatusCode::OK);
+    let report_payload: serde_json::Value = report.json().await.expect("report json");
+    assert_eq!(
+        report_payload["evidenceSource"]["mode"],
+        "in_memory_whale_candidate_history"
+    );
+    assert_eq!(
+        report_payload["evidenceSource"]["usesCurrentSnapshotOnly"],
+        false
+    );
+    assert_eq!(
+        report_payload["evidenceSource"]["currentSnapshotFallbackUsed"],
+        false
+    );
+    assert_eq!(report_payload["sampleStatus"]["enoughData"], false);
+
+    let after_signal_history = observed_state.signal_history_service().status();
+    assert_eq!(
+        after_signal_history.current_signals,
+        before_signal_history.current_signals
+    );
+    assert_eq!(
+        after_signal_history.current_groups,
+        before_signal_history.current_groups
+    );
+    assert_eq!(
+        after_signal_history.current_alerts,
+        before_signal_history.current_alerts
+    );
+    assert_eq!(
+        after_signal_history.current_reports,
+        before_signal_history.current_reports
+    );
+
+    server.abort();
+}
+
+fn sample_flow_state() -> FlowState {
+    let mut windows = BTreeMap::new();
+    windows.insert("1000".to_string(), flow_window(1_000, 20.0, 10.0));
+    windows.insert("5000".to_string(), flow_window(5_000, 420.0, 60.0));
+    windows.insert("15000".to_string(), flow_window(15_000, 540.0, 220.0));
+    windows.insert("60000".to_string(), flow_window(60_000, 700.0, 200.0));
+    FlowState {
+        symbol: "BTC-PERP".to_string(),
+        updated_at: 5_000,
+        windows,
+    }
+}
+
+fn flow_window(window_ms: u64, aggressive_buy_btc: f64, aggressive_sell_btc: f64) -> FlowWindow {
+    let mut venue_breakdown = BTreeMap::new();
+    venue_breakdown.insert(
+        "binance".to_string(),
+        VenueFlowBreakdown {
+            aggressive_buy_btc: aggressive_buy_btc * 0.60,
+            aggressive_sell_btc: aggressive_sell_btc * 0.25,
+            aggressive_buy_usd: 0.0,
+            aggressive_sell_usd: 0.0,
+            net_aggressive_btc: aggressive_buy_btc * 0.60 - aggressive_sell_btc * 0.25,
+            abs_aggressive_btc: aggressive_buy_btc * 0.60 + aggressive_sell_btc * 0.25,
+            trade_count: 8,
+            buy_trade_count: 5,
+            sell_trade_count: 3,
+            last_trade_ts: Some(5_000),
+        },
+    );
+    venue_breakdown.insert(
+        "bybit".to_string(),
+        VenueFlowBreakdown {
+            aggressive_buy_btc: aggressive_buy_btc * 0.30,
+            aggressive_sell_btc: aggressive_sell_btc * 0.20,
+            aggressive_buy_usd: 0.0,
+            aggressive_sell_usd: 0.0,
+            net_aggressive_btc: aggressive_buy_btc * 0.30 - aggressive_sell_btc * 0.20,
+            abs_aggressive_btc: aggressive_buy_btc * 0.30 + aggressive_sell_btc * 0.20,
+            trade_count: 6,
+            buy_trade_count: 4,
+            sell_trade_count: 2,
+            last_trade_ts: Some(5_000),
+        },
+    );
+
+    FlowWindow {
+        symbol: "BTC-PERP".to_string(),
+        window_ms,
+        now_ts: 5_000,
+        aggressive_buy_btc,
+        aggressive_sell_btc,
+        aggressive_buy_usd: 0.0,
+        aggressive_sell_usd: 0.0,
+        net_aggressive_btc: aggressive_buy_btc - aggressive_sell_btc,
+        abs_aggressive_btc: aggressive_buy_btc + aggressive_sell_btc,
+        trade_count: 12,
+        buy_trade_count: 8,
+        sell_trade_count: 4,
+        avg_trade_size_btc: 12.0,
+        max_trade_size_btc: aggressive_buy_btc.max(aggressive_sell_btc) / 2.0,
+        venue_breakdown,
+        mid_start: Some(100_000.0),
+        mid_end: Some(100_150.0),
+        price_move_bps: Some(if window_ms == 5_000 { 2.4 } else { 0.8 }),
+        spread_bps_median: Some(0.8),
+        imbalance_10bps_median: Some(0.22),
+        data_quality: DataQuality {
+            has_trades: true,
+            has_books: true,
+            active_venues: vec!["binance".to_string(), "bybit".to_string()],
+            stale_venues: Vec::new(),
+        },
+    }
+}
+
+fn test_config() -> AppConfig {
+    AppConfig {
+        app_env: "test".to_string(),
+        read_only: true,
+        api_host: "127.0.0.1".parse().expect("valid ip"),
+        api_port: 0,
+        symbol: "BTC-PERP".to_string(),
+        toxic_volume_alert_btc: 1000.0,
+        windows_ms: vec![1000, 5000, 15000, 60000],
+        markout_horizons_ms: vec![1000, 5000, 15000],
+        sweep_windows_ms: vec![1000, 5000, 15000],
+        venues: VenueConfigs {
+            binance: VenueConfig {
+                venue: Venue::Binance,
+                enabled: true,
+            },
+            bybit: VenueConfig {
+                venue: Venue::Bybit,
+                enabled: true,
+            },
+            okx: VenueConfig {
+                venue: Venue::Okx,
+                enabled: false,
+            },
+        },
+        flow_compute_interval_ms: 50,
+        markout_resolve_interval_ms: 50,
+        sweep_compute_interval_ms: 50,
+        toxic_compute_interval_ms: 50,
+        telegram_enabled: false,
+        telegram_bot_token: String::new(),
+        telegram_chat_id: String::new(),
+        alert_dedup_window_ms: 30_000,
+        alert_min_severity: ToxicSeverity::Alert,
+        alert_require_cross_venue: true,
+        alert_require_markout: true,
+        alert_require_liquidity_drain: false,
+        sqlite_enabled: false,
+        sqlite_path: ".runtime/test.sqlite".to_string(),
+        snapshot_persist_interval_ms: 1000,
+        raw_snapshot_enabled: false,
+        raw_snapshot_sample_rate_ms: 1000,
+        replay_enabled: false,
+        replay_report_dir: ".runtime/reports".to_string(),
+        vpin_enabled: true,
+        vpin_bucket_size_btc: 100.0,
+        vpin_lookback_buckets: 50,
+        vpin_min_buckets: 10,
+        vpin_spike_zscore: 2.5,
+        vpin_high_threshold: 0.70,
+        vpin_extreme_threshold: 0.85,
+        vpin_persist_buckets: true,
+        liquidation_enabled: true,
+        liquidation_lookback_ms: 120_000,
+        liquidation_cluster_band_bps: 6.0,
+        liquidation_min_cluster_distance_bps: 5.0,
+        liquidation_max_cluster_distance_bps: 150.0,
+        liquidation_proximity_threshold_bps: 25.0,
+        liquidation_min_cluster_touches: 3,
+        liquidation_pressure_threshold: 0.65,
+        liq_hunt_cluster_large_notional_usd: 50_000_000.0,
+        liq_hunt_near_distance_bps: 25.0,
+        liq_hunt_active_score: 75.0,
+        liq_hunt_likely_score: 50.0,
+        liq_hunt_watch_score: 30.0,
+        book_stale_ms: 5000,
+        max_buffer_age_ms: 120000,
+    }
+}
+
+fn sample_venue_health() -> VenueHealthMap {
+    let mut venues = VenueHealthMap::new();
+    venues.insert("binance".to_string(), connected_venue(Venue::Binance));
+    venues.insert("bybit".to_string(), connected_venue(Venue::Bybit));
+    venues
+}
+
+fn connected_venue(venue: Venue) -> VenueHealth {
+    let mut health = VenueHealth::from_config(venue, true);
+    health.status = VenueConnectionStatus::Connected;
+    health.last_trade_ts = Some(5_000);
+    health.last_book_ts = Some(5_000);
+    health.start_attempted = true;
+    health.connector_constructed = true;
+    health
+}

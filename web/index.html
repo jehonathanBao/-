@@ -1,0 +1,543 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTC Toxic Flow Monitor</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+  </head>
+  <body class="monitor-focus">
+    <header class="page-header">
+      <div>
+        <h1>有毒订单流监控</h1>
+        <p class="subtitle">点击开始后监听交易所公开订单流，只展示系统判定可疑的有毒信号。</p>
+      </div>
+      <div class="header-actions">
+        <button id="oneClickStartButton" type="button">开始监控订单流</button>
+        <div class="header-status">
+          <div id="monitoringStartedStatus" class="status-code">monitoringStarted=--</div>
+          <div id="runtimeActionStatus" class="status-code">runtimeState=--</div>
+          <div id="lastUpdated" class="muted header-meta">Last updated: --</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-grid">
+      <section class="operator-home">
+        <div class="operator-console-header">
+          <div>
+            <h2>Operator Home Summary</h2>
+            <p class="subtitle">Runtime, toxic signal, governance, and safety posture at a glance.</p>
+          </div>
+          <span id="operatorHomeBadge" class="badge badge-gray">Loading</span>
+        </div>
+        <div id="operatorHomeContent" class="card-content">
+          <div class="muted">Read-only. Analysis only. Monitoring only. Manual review required. Recommendation only. No order placement. No wallet/signing. No live trading.</div>
+        </div>
+      </section>
+
+      <section class="operator-console">
+        <div class="operator-console-header">
+          <div>
+            <h2>Operator Control</h2>
+            <p class="subtitle">默认只读，未启动时只展示历史/缓存的可疑信号。</p>
+          </div>
+          <span id="operatorRuntimeBadge" class="badge badge-gray">Idle</span>
+        </div>
+        <div id="operatorConsoleContent" class="card-content">
+          <div class="status-code">monitoringStarted=--</div>
+          <div class="muted">只读分析，仅监控，需要人工复核，仅供建议。不下单、不撤单、不签名、不触发实盘交易、不构造交易、不修改运行时配置。</div>
+        </div>
+      </section>
+
+      <section class="card-grid card-grid-primary">
+        <article class="card" id="suspiciousToxicOrdersCard">
+          <div class="card-header">
+            <h2>可疑有毒订单</h2>
+            <span id="suspiciousToxicOrdersBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="suspiciousToxicOrdersContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="monitorFlowCard">
+          <div class="card-header">
+            <h2>实时监控流</h2>
+            <span id="monitorFlowBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="monitorFlowContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="venueStreamDiagnosticsCard">
+          <div class="card-header">
+            <h2>Venue Stream Diagnostics</h2>
+            <span id="venueStreamDiagnosticsBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only public market data startup diagnostics. Refresh / Copy JSON only. No reconnect, no runtime mutation, no trading.</div>
+          <div id="venueStreamDiagnosticsContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="whaleFlowMonitorCard">
+          <div class="card-header">
+            <h2>BTC Whale / Large Flow Monitor</h2>
+            <span id="whaleFlowMonitorBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only whale-flow candidates from public trades, multi-venue confirmation, fusion evidence, and depth/impact checks. Refresh / Copy JSON only.</div>
+          <div id="whaleFlowMonitorContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="whaleFlowCompactModeCard">
+          <div class="card-header">
+            <h2>Whale Flow Operator Presets</h2>
+            <span id="whaleFlowCompactModeBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Whale Flow Compact View. view-only. Persistent preset disabled. Runtime modified: false. No threshold modified. No config write. No apply/reload.</div>
+          <div id="whaleFlowCompactModeContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="whaleFlowCalibrationCard">
+          <div class="card-header">
+            <h2>Whale Flow Threshold Calibration</h2>
+            <span id="whaleFlowCalibrationBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only threshold calibration report and manual tuning notes for whale flow. Refresh / Load / Copy only. No apply, no config write, no live trading.</div>
+          <div id="whaleFlowCalibrationContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="whaleFlowCandidateHistoryCard">
+          <div class="card-header">
+            <h2>Whale Candidate History</h2>
+            <span id="whaleFlowCandidateHistoryBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Bounded in-memory only. Not durable storage. No DB write. No file write. Calibration readiness requires resolved markout evidence.</div>
+          <div id="whaleFlowCandidateHistoryContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="suspiciousReplayCard">
+          <div class="card-header">
+            <h2>Suspicious Toxic Order Replay</h2>
+            <span id="suspiciousReplayBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="suspiciousReplayContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="suspiciousReplayDrilldownCard">
+          <div class="card-header">
+            <h2>Replay Drilldown / Overlay</h2>
+            <span id="suspiciousReplayDrilldownBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only drilldown for whale flow overlay, markout, quality, recommendation, governance evidence, and alert explainability. No live trading.</div>
+          <div id="suspiciousReplayDrilldownContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="replayHeatmapCard">
+          <div class="card-header">
+            <h2>Replay Markout Heatmap</h2>
+            <span id="replayHeatmapBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only operator heatmap for multi-signal replay comparison, whale flow overlay dimensions, JSON summary, and Markdown summary. No live trading.</div>
+          <div id="replayHeatmapContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="systemHealthCard">
+          <div class="card-header">
+            <h2>Runtime Status</h2>
+            <span id="systemHealthBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="systemHealthContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="signalSymbolFilterCard">
+          <div class="card-header">
+            <h2>Signal Symbol Filter</h2>
+            <span id="signalSymbolFilterBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only symbol filter for signal views. view-only. Persistent watchlist disabled. No live trading.</div>
+          <div id="signalSymbolFilterContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalHealthCard">
+          <div class="card-header">
+            <h2>Signal Health / Completeness</h2>
+            <span id="toxicSignalHealthBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only signal completeness diagnostics. repairEnabled=false. backfillEnabled=false. runtimeMutationEnabled=false. No order placement. No live trading.</div>
+          <div id="toxicSignalHealthContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalInboxCard">
+          <div class="card-header">
+            <h2>Toxic Signal Inbox</h2>
+            <span id="toxicSignalInboxBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only operator inbox for fused toxicity, replay, markout, quality, recommendation, and governance evidence. No live trading.</div>
+          <div id="toxicSignalInboxContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalGroupsCard">
+          <div class="card-header">
+            <h2>Toxic Signal Groups</h2>
+            <span id="toxicSignalGroupsBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only burst grouping for operator signal review. Original signals are preserved. No live trading.</div>
+          <div id="toxicSignalGroupsContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalDetailCard">
+          <div class="card-header">
+            <h2>Signal Detail / Evidence Timeline</h2>
+            <span id="toxicSignalDetailBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only signal drilldown for evidence, markout, quality, recommendation, and governance context. No order placement. No live trading.</div>
+          <div id="toxicSignalDetailContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalHistoryCard">
+          <div class="card-header">
+            <h2>Toxic Signal History</h2>
+            <span id="toxicSignalHistoryBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only bounded in-memory signal history query. retentionMode=in_memory_bounded. durableStorageEnabled=false. databaseWriteEnabled=false. Sort, copy, and export only. No order placement. No live trading.</div>
+          <div id="toxicSignalHistoryContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalReportCard">
+          <div class="card-header">
+            <h2>Toxic Signal Daily Report</h2>
+            <span id="toxicSignalReportBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only daily digest for signal counts, grouped bursts, markout outcomes, and manual review notes. No order placement. No live trading.</div>
+          <div id="toxicSignalReportContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalRollingCard">
+          <div class="card-header">
+            <h2>Toxic Signal Rolling Digest</h2>
+            <span id="toxicSignalRollingBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only rolling digest using bounded in-memory history. retentionMode=in_memory_bounded. durableStorageEnabled=false. databaseWriteEnabled=false. No order placement. No live trading.</div>
+          <div id="toxicSignalRollingContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalAlertPreviewCard">
+          <div class="card-header">
+            <h2>Signal Alert Rules / Notification Preview</h2>
+            <span id="toxicSignalAlertPreviewBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only notification preview for operator signal reminders. notificationSent=false. executionTriggered=false. No webhook. No live trading.</div>
+          <div id="toxicSignalAlertPreviewContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="durableArchiveDryRunCard">
+          <div class="card-header">
+            <h2>Durable Archive Dry-run</h2>
+            <span id="durableArchiveDryRunBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only archive contract preview. archiveWriteEnabled=false. durableStorageEnabled=false. databaseWriteEnabled=false. jsonlWriteEnabled=false. sqliteWriteEnabled=false. No order placement. No wallet/signing. No live trading.</div>
+          <div id="durableArchiveDryRunContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="durableArchiveDryRunReviewPackCard">
+          <div class="card-header">
+            <h2>Durable Archive Dry-run Review Pack</h2>
+            <span id="durableArchiveDryRunReviewPackBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only Analysis only operator review pack. archiveWriteEnabled=false. executionEnabled=false. notificationSent=false. executionTriggered=false. No order placement. No wallet/signing. No live trading.</div>
+          <div id="durableArchiveDryRunReviewPackContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="durableArchiveWriteGateCard">
+          <div class="card-header">
+            <h2>Durable Archive Write Gate</h2>
+            <span id="durableArchiveWriteGateBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Disabled-by-default archive write gate. archiveWriteEnabled=false. databaseWriteEnabled=false. jsonlWriteEnabled=false. sqliteWriteEnabled=false. fileArchiveWriteEnabled=false. recordsWritten=0. bytesWritten=0. No order placement. No wallet/signing. No live trading.</div>
+          <div id="durableArchiveWriteGateContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="durableArchiveWriteAuditCard">
+          <div class="card-header">
+            <h2>Durable Archive Write Gate Audit</h2>
+            <span id="durableArchiveWriteAuditBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Preview-only audit surface. auditMode=preview_only. attemptLogPersistenceEnabled=false. attemptLogFileWriteEnabled=false. archiveWriteEnabled=false. databaseWriteEnabled=false. jsonlWriteEnabled=false. sqliteWriteEnabled=false. fileArchiveWriteEnabled=false. No order placement. No wallet/signing. No live trading.</div>
+          <div id="durableArchiveWriteAuditContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicSignalFusionCard">
+          <div class="card-header">
+            <h2>Toxic Signal Fusion</h2>
+            <span id="toxicSignalFusionBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only fusion of active trade, liquidation, wall, and structural toxicity evidence.</div>
+          <div id="toxicSignalFusionContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicReplayCard">
+          <div class="card-header">
+            <h2>Toxic Replay / Evidence</h2>
+            <span id="toxicReplayBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only operator replay for fused toxicity evidence and narrative context.</div>
+          <div id="toxicReplayContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicMarkoutCard">
+          <div class="card-header">
+            <h2>Toxic Markout Evaluation</h2>
+            <span id="toxicMarkoutBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only post-signal markout evaluation for fused toxicity signals.</div>
+          <div id="toxicMarkoutContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicQualityScorecardCard">
+          <div class="card-header">
+            <h2>Toxic Quality Scorecard</h2>
+            <span id="toxicQualityScorecardBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only quality scorecard for toxic signal markout performance.</div>
+          <div id="toxicQualityScorecardContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicWeightRecommendationCard">
+          <div class="card-header">
+            <h2>Toxic Weight Recommendations</h2>
+            <span id="toxicWeightRecommendationBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only manual weight recommendations derived from toxic signal quality scorecards.</div>
+          <div id="toxicWeightRecommendationContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicWeightReviewCard">
+          <div class="card-header">
+            <h2>Toxic Weight Review Export</h2>
+            <span id="toxicWeightReviewBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only manual review and export surface for toxic weight governance notes.</div>
+          <div id="toxicWeightReviewContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicGovernanceLedgerCard">
+          <div class="card-header">
+            <h2>Toxic Governance Ledger</h2>
+            <span id="toxicGovernanceLedgerBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only governance decision ledger for manual review outcomes. No automatic weight update. No runtime config mutation.</div>
+          <div id="toxicGovernanceLedgerContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="activeTradeToxicityCard">
+          <div class="card-header">
+            <h2>Active Trade Toxicity</h2>
+            <span id="activeTradeToxicityBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">1H Delta Toxicity is reported as a read-only watch candidate.</div>
+          <div id="activeTradeToxicityContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="liquidationToxicityCard">
+          <div class="card-header">
+            <h2>Liquidation Toxicity</h2>
+            <span id="liquidationToxicityBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only liquidation magnet, squeeze, and cascade watch candidates.</div>
+          <div id="liquidationToxicityContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="orderbookWallLifecycleCard">
+          <div class="card-header">
+            <h2>Orderbook Wall Lifecycle</h2>
+            <span id="orderbookWallLifecycleBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only wall lifecycle, absorption, and liquidity inducement watch candidates.</div>
+          <div id="orderbookWallLifecycleContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="orderbookWallInterpretationCard">
+          <div class="card-header">
+            <h2>Orderbook Wall Interpretation</h2>
+            <span id="orderbookWallInterpretationBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only spoof, persistence, absorption, and liquidity pull interpretation.</div>
+          <div id="orderbookWallInterpretationContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="structuralToxicityCard">
+          <div class="card-header">
+            <h2>Structural Toxicity</h2>
+            <span id="structuralToxicityBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div class="muted">Read-only key-level sweeps, failed breaks, trap, and confluence interpretation.</div>
+          <div id="structuralToxicityContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="toxicFlowCard">
+          <div class="card-header">
+            <h2>Toxic Flow</h2>
+            <span id="toxicFlowBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="toxicFlowContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="liqHuntCard">
+          <div class="card-header">
+            <h2>Liq Hunt Signal</h2>
+            <span id="liqHuntBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="liqHuntContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="vpinCard">
+          <div class="card-header">
+            <h2>VPIN / TOF</h2>
+            <span id="vpinBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="vpinContent" class="card-content"></div>
+        </article>
+
+        <article class="card" id="liquidationCard">
+          <div class="card-header">
+            <h2>Liquidation Cluster</h2>
+            <span id="liquidationBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="liquidationContent" class="card-content"></div>
+        </article>
+
+          <article class="card" id="toxicGovernanceProposalCard">
+            <div class="card-header">
+              <h2>Toxic Governance Proposals</h2>
+              <span id="toxicGovernanceProposalBadge" class="badge badge-gray">Loading</span>
+            </div>
+            <div class="muted">Read-only proposal draft layer for toxic signal governance. No automatic weight update. No runtime config mutation.</div>
+            <div id="toxicGovernanceProposalContent" class="card-content"></div>
+          </article>
+
+          <article class="card" id="toxicGovernanceReviewPackCard">
+            <div class="card-header">
+              <h2>Toxic Governance Review Pack</h2>
+              <span id="toxicGovernanceReviewPackBadge" class="badge badge-gray">Loading</span>
+            </div>
+            <div class="muted">Read-only manual review pack for governance proposal audit. No automatic weight update. No runtime config mutation.</div>
+            <div id="toxicGovernanceReviewPackContent" class="card-content"></div>
+          </article>
+
+          <article class="card" id="toxicGovernanceSignoffPackCard">
+            <div class="card-header">
+              <h2>Toxic Governance Signoff Pack</h2>
+              <span id="toxicGovernanceSignoffPackBadge" class="badge badge-gray">Loading</span>
+            </div>
+            <div class="muted">Read-only governance signoff pack for operator approval readiness. No automatic weight update. No runtime config mutation.</div>
+            <div id="toxicGovernanceSignoffPackContent" class="card-content"></div>
+          </article>
+
+        <article class="card" id="venueHealthCard">
+          <div class="card-header">
+            <h2>Venue Health</h2>
+            <span id="venueHealthBadge" class="badge badge-gray">Loading</span>
+          </div>
+          <div id="venueHealthContent" class="card-content"></div>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Windows</h2>
+        </div>
+        <div class="stack">
+          <div>
+            <h3>Flow Windows</h3>
+            <div id="flowWindowsTable"></div>
+          </div>
+          <div>
+            <h3>Toxic Windows</h3>
+            <div id="toxicWindowsTable"></div>
+          </div>
+          <div>
+            <h3>Sweep Windows</h3>
+            <div id="sweepWindowsTable"></div>
+          </div>
+          <div>
+            <h3>Markout</h3>
+            <div id="markoutTable"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Recent Toxic Events</h2>
+        </div>
+        <div id="recentEventsContent"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Replay Reports</h2>
+        </div>
+        <div class="reports-layout">
+          <div id="replayReportsList" class="reports-list"></div>
+          <div id="replayReportViewer" class="report-viewer muted">Select a report to view its markdown.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Calibration Reports</h2>
+        </div>
+        <div class="stack">
+          <div id="calibrationSummaryContent"></div>
+          <div class="section-label">Manual Apply Governance Index</div>
+          <div class="muted">Read-only control center for manual apply governance state.</div>
+          <div id="manualGovernanceIndexContent"></div>
+          <div class="section-label">Manual Apply Gate</div>
+          <div id="manualApplyGateContent"></div>
+          <div class="section-label">Remediation Checklist</div>
+          <div id="manualApplyGateRemediationContent"></div>
+          <div class="section-label">Operator Handoff Note</div>
+          <div id="manualApplyGateHandoffContent"></div>
+          <div class="section-label">Manual Audit Story</div>
+          <div class="muted">
+            Handoff Artifact: Markdown is suitable for issue / ops log handoff.
+          </div>
+          <div id="manualAuditStoryContent"></div>
+          <div class="section-label">Manual Apply Session Timeline</div>
+          <div class="section-label">Manual Startup Check</div>
+          <div id="manualStartupCheckContent">
+            <div class="action-row">
+              <button type="button" class="small-button" id="manualStartupCheckButton">Manual Startup Check</button>
+            </div>
+          </div>
+          <div class="reports-layout">
+            <div id="calibrationReportsList" class="reports-list"></div>
+            <div class="stack">
+              <div id="calibrationComparisonsContent"></div>
+              <div id="calibrationReasonStatsContent"></div>
+              <div id="calibrationOutcomesContent"></div>
+              <div id="calibrationRecommendationsContent"></div>
+              <div class="section-label">Parameter Review</div>
+              <div id="parameterReviewContent"></div>
+              <div class="section-label">Manual Export</div>
+              <div id="manualExportContent"></div>
+              <div class="section-label">Patch Diff / Audit Viewer</div>
+              <div id="parameterPatchDiffContent"></div>
+              <div class="section-label">Manual Apply Runbook</div>
+              <div id="manualApplyRunbookContent"></div>
+              <div class="section-label">Manual Apply Dry-run Validation</div>
+              <div id="manualApplyDryRunContent"></div>
+              <div class="section-label">Evidence Pack / Operator Sign-off</div>
+              <div id="manualApplyEvidencePackContent"></div>
+              <div class="section-label">Operator Sign-off Gate</div>
+              <div id="manualSignoffContent"></div>
+              <div class="section-label">Evidence Freshness</div>
+              <div id="manualEvidenceFreshnessContent"></div>
+              <div id="calibrationReportViewer" class="report-viewer muted">Select a calibration report to view its markdown.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/web/app.js"></script>
+  </body>
+</html>
+

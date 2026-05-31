@@ -1,0 +1,13 @@
+{"type":"book","venue":"binance","ts":1000,"bestBid":99990,"bestAsk":100010,"bids":[[99990,25],[99980,25]],"asks":[[100010,25],[100020,25]]}
+{"type":"book","venue":"bybit","ts":1000,"bestBid":99988,"bestAsk":100012,"bids":[[99988,25],[99978,25]],"asks":[[100012,25],[100022,25]]}
+{"type":"book","venue":"okx","ts":1000,"bestBid":99989,"bestAsk":100011,"bids":[[99989,25],[99979,25]],"asks":[[100011,25],[100021,25]]}
+{"type":"trade","venue":"binance","ts":1100,"price":100000,"sizeBtc":1000,"aggressorSide":"buy","tradeId":"b1"}
+{"type":"trade","venue":"bybit","ts":1200,"price":100020,"sizeBtc":1000,"aggressorSide":"buy","tradeId":"b2"}
+{"type":"trade","venue":"okx","ts":1300,"price":100040,"sizeBtc":1000,"aggressorSide":"buy","tradeId":"b3"}
+{"type":"book","venue":"binance","ts":2000,"bestBid":100040,"bestAsk":100070,"bids":[[100040,8],[100030,8]],"asks":[[100070,5],[100080,5]]}
+{"type":"book","venue":"bybit","ts":2000,"bestBid":100038,"bestAsk":100072,"bids":[[100038,8],[100028,8]],"asks":[[100072,5],[100082,5]]}
+{"type":"book","venue":"okx","ts":2000,"bestBid":100039,"bestAsk":100071,"bids":[[100039,8],[100029,8]],"asks":[[100071,5],[100081,5]]}
+{"type":"book","venue":"binance","ts":6000,"bestBid":100480,"bestAsk":100540,"bids":[[100480,3],[100470,3]],"asks":[[100540,2],[100550,2]]}
+{"type":"book","venue":"bybit","ts":6000,"bestBid":100478,"bestAsk":100542,"bids":[[100478,3],[100468,3]],"asks":[[100542,2],[100552,2]]}
+{"type":"book","venue":"okx","ts":6000,"bestBid":100479,"bestAsk":100541,"bids":[[100479,3],[100469,3]],"asks":[[100541,2],[100551,2]]}
+{"type":"expect_toxic","ts":6000,"direction":"buy","minToxicVolumeBtc":1000,"windowMs":5000}
