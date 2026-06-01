@@ -9,7 +9,7 @@ use btc_toxic_flow_monitor_rs::{
         AppConfig,
     },
     types::{
-        market::{Venue, VenueConnectionStatus},
+        market::{Venue, VenueConnectionStatus, VenueHealth},
         toxic::ToxicSeverity,
     },
 };
@@ -47,6 +47,10 @@ async fn venues_diagnostics_explains_disabled_venues() {
     assert_eq!(payload["summary"]["wsConnectedVenues"], 0);
     assert_eq!(payload["summary"]["symbolMappedVenues"], 3);
     assert_eq!(payload["summary"]["venuesWithNetworkErrors"], 0);
+    assert_eq!(payload["summary"]["disabledByEnvVenues"], 3);
+    assert_eq!(payload["summary"]["symbolMappingFailedVenues"], 0);
+    assert_eq!(payload["summary"]["streamSubscribeFailedVenues"], 0);
+    assert_eq!(payload["summary"]["connectedButNoEventsVenues"], 0);
     assert_eq!(payload["summary"]["activeTradeVenues"], 0);
     assert_eq!(payload["summary"]["activeBookVenues"], 0);
     assert_eq!(payload["summary"]["tradeActiveVenues"], 0);
@@ -96,6 +100,10 @@ async fn venues_diagnostics_explains_disabled_venues() {
             && venue["networkProbeEnabled"] == false
             && venue["status"] == "disabled"
     }));
+    assert_eq!(
+        payload["venueDiagnosticStatuses"]["binance"],
+        "disabled_by_env"
+    );
 
     server.abort();
 }
@@ -116,6 +124,14 @@ fn venue_diagnostics_reports_symbol_mapping_configuration_error() {
     assert_eq!(diagnostics.summary.enabled_venues, 1);
     assert_eq!(diagnostics.summary.connector_constructed_venues, 0);
     assert_eq!(diagnostics.summary.start_attempted_venues, 0);
+    assert_eq!(diagnostics.summary.symbol_mapping_failed_venues, 1);
+    assert_eq!(
+        diagnostics
+            .venue_diagnostic_statuses
+            .get("binance")
+            .copied(),
+        Some("symbol_mapping_failed")
+    );
     assert_eq!(binance.requested_symbol, "ETH-PERP");
     assert_eq!(binance.venue_symbol, None);
     assert_eq!(binance.symbol_mapping_status, "missing");
@@ -183,6 +199,75 @@ async fn venues_diagnostics_distinguishes_enabled_from_connected() {
 
     state.stop().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn venues_diagnostics_reports_connected_but_no_events_explicitly() {
+    let state = AppState::new(test_config(false, false, false));
+    state.start().await;
+
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut health = VenueHealth::start_attempted_with_symbol(Venue::Binance, "BTC-PERP");
+    health.enabled = true;
+    health.enable_flag_value = true;
+    health.disabled_reason = None;
+    health.status = VenueConnectionStatus::Connected;
+    health.ws_connected = true;
+    health.ws_last_connect_at_ms = Some(now);
+    health.last_message_ts = Some(now);
+    state.set_health_for_tests(health);
+
+    let diagnostics = build_venue_diagnostics_response(&state);
+
+    assert_eq!(diagnostics.diagnostic_status, "connected_but_no_events");
+    assert_eq!(diagnostics.summary.connected_but_no_events_venues, 1);
+    assert_eq!(
+        diagnostics
+            .venue_diagnostic_statuses
+            .get("binance")
+            .copied(),
+        Some("connected_but_no_events")
+    );
+    assert_eq!(diagnostics.summary.connected_venues, 1);
+    assert_eq!(diagnostics.summary.ws_connected_venues, 1);
+    assert!(!diagnostics.summary.latest_venue_trade_available);
+    assert!(!diagnostics.summary.flow_windows_populated);
+
+    state.stop().await;
+}
+
+#[test]
+fn venues_diagnostics_reports_stream_subscribe_failed_explicitly() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let state = AppState::new(test_config(false, false, false));
+    rt.block_on(state.start());
+
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut health = VenueHealth::start_attempted_with_symbol(Venue::Bybit, "BTC-PERP");
+    health.enabled = true;
+    health.enable_flag_value = true;
+    health.disabled_reason = None;
+    health.status = VenueConnectionStatus::Connected;
+    health.ws_connected = true;
+    health.ws_last_connect_at_ms = Some(now);
+    health.last_message_ts = Some(now);
+    health.ack_mode = "exchange_ack".to_string();
+    health.trade_subscribe_attempted = true;
+    health.book_subscribe_attempted = true;
+    health.trade_subscribe_acked = false;
+    health.book_subscribe_acked = false;
+    state.set_health_for_tests(health);
+
+    let diagnostics = build_venue_diagnostics_response(&state);
+
+    assert_eq!(diagnostics.diagnostic_status, "stream_subscribe_failed");
+    assert_eq!(
+        diagnostics.venue_diagnostic_statuses.get("bybit").copied(),
+        Some("stream_subscribe_failed")
+    );
+    assert_eq!(diagnostics.summary.stream_subscribe_failed_venues, 1);
+
+    rt.block_on(state.stop());
 }
 
 fn test_config(binance: bool, bybit: bool, okx: bool) -> AppConfig {

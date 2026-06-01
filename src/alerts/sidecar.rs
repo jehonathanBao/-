@@ -92,6 +92,60 @@ impl ToxicFlowSidecarWriter {
             .with_context(|| format!("failed to append sidecar event to {}", path.display()))?;
         Ok(())
     }
+
+    pub fn write_runtime_acceptance_test(
+        &self,
+        ts_ms: i64,
+        severity: ToxicSeverity,
+        venue: Venue,
+        symbol: &str,
+        dedupe_key: &str,
+    ) -> anyhow::Result<()> {
+        if !self.enabled() {
+            return Ok(());
+        }
+        let path = self.events_path.as_ref().expect("events path checked");
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create sidecar event directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let sidecar_event = ToxicFlowSidecarEvent {
+            schema_version: SIDECAR_SCHEMA_VERSION,
+            event_id: format!("runtime-acceptance-test-{ts_ms}"),
+            source: "toxic-flow-rs",
+            ts: iso_ts(ts_ms),
+            kind: "runtime_acceptance_test",
+            severity: sidecar_severity(severity),
+            symbol: symbol.to_string(),
+            venue: Some(venue_key(venue)),
+            dedupe_key: dedupe_key.to_string(),
+            title: "Runtime acceptance test alert".to_string(),
+            summary: "This is a monitor-generated sidecar test alert.".to_string(),
+            payload: json!({
+                "readOnly": true,
+                "test": true,
+                "generatedBy": "monitor_dev_test_alert_endpoint",
+                "requestedSeverity": severity.label(),
+                "venue": venue.as_key(),
+                "symbol": symbol,
+            }),
+        };
+        let line = serde_json::to_string(&sidecar_event)
+            .context("failed to serialize runtime acceptance sidecar event")?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open sidecar events file {}", path.display()))?;
+        writeln!(file, "{line}")
+            .with_context(|| format!("failed to append sidecar event to {}", path.display()))?;
+        Ok(())
+    }
 }
 
 fn build_sidecar_event(

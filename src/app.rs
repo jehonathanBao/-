@@ -6,7 +6,10 @@ use std::sync::{
 use parking_lot::RwLock;
 
 use crate::{
-    alerts::{alert_service::AlertService, alert_types::AlertState},
+    alerts::{
+        alert_service::{AlertService, DevTestSidecarAlertInput, DevTestSidecarAlertResult},
+        alert_types::AlertState,
+    },
     config::AppConfig,
     connectors::manager::ConnectorManager,
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
@@ -23,7 +26,7 @@ use crate::{
         flow::FlowState,
         liq_hunt::LiqHuntState,
         liquidation::LiquidationState,
-        market::VenueHealth,
+        market::{NormalizedTrade, Venue, VenueHealth},
         markout::MarkoutState,
         orderbook_wall::OrderbookWallLifecycleState,
         status::{
@@ -31,7 +34,7 @@ use crate::{
             RuntimeStopState, VenueHealthMap,
         },
         sweep::SweepState,
-        toxic::ToxicState,
+        toxic::{ToxicSeverity, ToxicState},
         vpin::VpinState,
     },
 };
@@ -393,6 +396,24 @@ impl AppState {
         self.inner.alert_service.get_state()
     }
 
+    pub fn emit_runtime_acceptance_test_sidecar_alert(
+        &self,
+        severity: ToxicSeverity,
+        venue: Venue,
+        symbol: String,
+        dedupe_suffix: String,
+    ) -> anyhow::Result<DevTestSidecarAlertResult> {
+        self.inner.alert_service.emit_runtime_acceptance_test_alert(
+            crate::normalizers::trade::now_ms(),
+            &DevTestSidecarAlertInput {
+                severity,
+                venue,
+                symbol,
+                dedupe_suffix,
+            },
+        )
+    }
+
     pub fn storage_state(&self) -> StorageState {
         self.inner.snapshot_service.get_state()
     }
@@ -425,6 +446,12 @@ impl AppState {
 
     pub fn set_health_for_tests(&self, health: VenueHealth) {
         self.inner.connector_manager.set_health_for_tests(health);
+    }
+
+    pub fn ingest_trade_event_for_tests(&self, trade: NormalizedTrade) {
+        self.inner
+            .connector_manager
+            .ingest_trade_event_for_tests(trade);
     }
 
     pub fn shared_flow_for_tests(&self) -> Arc<RwLock<FlowState>> {

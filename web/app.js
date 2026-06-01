@@ -179,6 +179,7 @@ const state = {
   suspiciousOrdersFilterAlertDecision: "",
   suspiciousOrdersHideNotEnoughData: false,
   suspiciousOrdersHighSeverityOnly: false,
+  suspiciousOrdersLastSeen: {},
   latestSuspiciousOrdersAction: null,
   replayHeatmapSymbolFilter: "",
   replayHeatmapSignalKindFilter: "",
@@ -191,6 +192,8 @@ const state = {
   replayHeatmapError: null,
   latestReplayHeatmapAction: null,
 };
+
+const SUSPICIOUS_ORDERS_LAST_SEEN_WINDOW_MS = 5 * 60 * 1000;
 
 function $(id) {
   return document.getElementById(id);
@@ -488,13 +491,32 @@ async function postJson(url, body = null) {
   return response.json();
 }
 
+function rememberFetchSuccess(url, data) {
+  state.data[url] = { ok: true, data };
+}
+
+function rememberFetchFailure(url, error) {
+  state.data[url] = {
+    ok: false,
+    error: error.message,
+    data: state.data[url]?.data,
+  };
+}
+
 async function refreshGroup(urls) {
   const entries = await Promise.all(
     urls.map(async (url) => {
       try {
         return [url, { ok: true, data: await fetchJson(url) }];
       } catch (error) {
-        return [url, { ok: false, error: error.message }];
+        return [
+          url,
+          {
+            ok: false,
+            error: error.message,
+            data: state.data[url]?.data,
+          },
+        ];
       }
     })
   );
@@ -624,11 +646,11 @@ async function refreshToxicSignalFusion() {
   const url = toxicSignalFusionRecentUrl();
   const statusUrl = toxicSignalFusionStatusUrl();
   try {
-    state.data[statusUrl] = { ok: true, data: await fetchJson(statusUrl) };
-    state.data[url] = { ok: true, data: await fetchJson(url) };
+    rememberFetchSuccess(statusUrl, await fetchJson(statusUrl));
+    rememberFetchSuccess(url, await fetchJson(url));
   } catch (error) {
-    state.data[statusUrl] = { ok: false, error: error.message };
-    state.data[url] = { ok: false, error: error.message };
+    rememberFetchFailure(statusUrl, error);
+    rememberFetchFailure(url, error);
   }
   renderToxicSignalFusion();
 }
@@ -637,11 +659,11 @@ async function refreshToxicSignalInbox() {
   const url = toxicSignalInboxRecentUrl();
   const statusUrl = toxicSignalInboxStatusUrl();
   try {
-    state.data[statusUrl] = { ok: true, data: await fetchJson(statusUrl) };
-    state.data[url] = { ok: true, data: await fetchJson(url) };
+    rememberFetchSuccess(statusUrl, await fetchJson(statusUrl));
+    rememberFetchSuccess(url, await fetchJson(url));
   } catch (error) {
-    state.data[statusUrl] = { ok: false, error: error.message };
-    state.data[url] = { ok: false, error: error.message };
+    rememberFetchFailure(statusUrl, error);
+    rememberFetchFailure(url, error);
   }
   renderToxicSignalInbox();
 }
@@ -1167,19 +1189,33 @@ function renderSuspiciousToxicOrders() {
   }
 
   const status = getData("/api/status");
+  const inboxPayload = getToxicSignalInboxPayload();
+  const fusionPayload = getToxicSignalFusionPayload();
   const inboxError = getError(toxicSignalInboxRecentUrl()) || getError("/api/toxicity/signal-inbox/recent");
   const fusionError = getError(toxicSignalFusionRecentUrl()) || getError("/api/toxicity/fusion/recent");
   const statusError = getError("/api/status");
   const error = statusError || inboxError || fusionError;
-  if (error) {
+  const hasUsableSnapshot = Boolean(status) && Boolean(inboxPayload || fusionPayload);
+  if (error && !hasUsableSnapshot) {
     setBadge("suspiciousToxicOrdersBadge", "API Error", "error");
     content.innerHTML = `<div class="error">${error}</div>`;
     return;
   }
 
   const started = Boolean(status?.runtimeControl?.monitoringStarted);
+  const liveItems = currentSuspiciousToxicOrderItems();
+  const canRefreshSnapshot = !inboxError && !fusionError;
+  if (canRefreshSnapshot) {
+    syncSuspiciousOrdersLastSeen(liveItems);
+  } else {
+    pruneSuspiciousOrdersLastSeen();
+  }
   const allItems = getSuspiciousToxicOrderItems();
-  const items = suspiciousOrdersVisibleItems();
+  const items = suspiciousOrdersVisibleItems(allItems);
+  const liveVisibleItems = suspiciousOrdersVisibleItems(
+    allItems.filter((item) => item.snapshotState !== "stale")
+  );
+  const staleVisibleItems = items.filter((item) => item.snapshotState === "stale");
   const maxVisibleSeverityRank = items.reduce(
     (max, item) => Math.max(max, suspiciousSeverityRank(item.severity)),
     0
@@ -1194,8 +1230,12 @@ function renderSuspiciousToxicOrders() {
   setBadge(
     "suspiciousToxicOrdersBadge",
     allItems.length
-      ? items.length
-        ? `${items.length}/${allItems.length} MATCHES`
+      ? liveVisibleItems.length
+        ? `${liveVisibleItems.length}/${allItems.length} MATCHES`
+        : staleVisibleItems.length
+          ? `${staleVisibleItems.length} RECENT`
+          : items.length
+            ? `${items.length}/${allItems.length} MATCHES`
         : hasFilters
           ? "FILTERED"
           : started
@@ -1223,6 +1263,13 @@ function renderSuspiciousToxicOrders() {
               <div class="muted">系统正在监听公开成交与盘口流；出现可疑有毒订单流信号后会显示在这里。</div>
             </div>
           </div>`
+        : started && !liveVisibleItems.length && staleVisibleItems.length
+          ? `<div class="suspicious-empty">
+              <div>
+                <div class="metric-value">暂无当前 live 信号</div>
+                <div class="muted">下面显示最近 5 分钟内观察到的历史候选，已标记为 stale / last seen。</div>
+              </div>
+            </div>`
         : !items.length
           ? `<div class="suspicious-empty">
               <div>
@@ -1272,6 +1319,9 @@ function renderSuspiciousToxicOrders() {
           ${!started ? `<div class="muted">监控未启动，以下为历史/缓存中的可疑有毒订单，仅供只读审阅。</div>` : ""}
           ${items.map((item) => renderSuspiciousToxicOrderItem(item)).join("")}
         </div>`}
+      ${error && hasUsableSnapshot
+        ? `<div class="muted">Latest refresh failed: ${escapeHtml(error)}. Showing the last successful suspicious-order snapshot.</div>`
+        : ""}
       ${state.latestSuspiciousOrdersAction
         ? `<div class="muted">${escapeHtml(state.latestSuspiciousOrdersAction)}</div>`
         : ""}
@@ -1360,7 +1410,8 @@ function renderMonitorFlow() {
   const flow = getData("/api/flow-state");
   const status = getData("/api/status");
   const error = getError("/api/flow-state") || getError("/api/status");
-  if (error) {
+  const hasUsableSnapshot = Boolean(flow) && Boolean(status);
+  if (error && !hasUsableSnapshot) {
     setBadge("monitorFlowBadge", "API Error", "error");
     content.innerHTML = `<div class="error">${error}</div>`;
     return;
@@ -1374,17 +1425,18 @@ function renderMonitorFlow() {
   const connectedVenues = venues.filter(([, venue]) => venue.status === "connected");
   const marketDataQuality = status?.marketDataQuality || {};
   const qualityStatus = (marketDataQuality.status || "no_data").toString();
-  const laggedEvents =
-    Number(marketDataQuality.flowWindowLaggedEvents || 0) +
-    Number(marketDataQuality.markoutLaggedEvents || 0) +
-    Number(marketDataQuality.vpinLaggedEvents || 0);
+  const laggedEvents = Number(marketDataQuality.recentLaggedEvents || 0);
+  const historicalLaggedEvents = Number(marketDataQuality.historicalLaggedEvents || 0);
   const droppedEvents = Number(marketDataQuality.eventBusDroppedEvents || 0);
   const lastTradeTs = venues.reduce(
     (max, [, venue]) => Math.max(max, Number(venue?.lastTradeTs || 0)),
     0
   );
   const lastMessageTs = Number(marketDataQuality.lastMessageTs || 0);
-  const updatedAt = Number(flow?.updatedAt || 0);
+  const updatedAt = Number(marketDataQuality.flowUpdatedAt || flow?.updatedAt || 0);
+  const latestBookForQuality = Number(marketDataQuality.latestBookTs || 0);
+  const lagSources = Array.isArray(marketDataQuality.lagSources) ? marketDataQuality.lagSources : [];
+  const degradedReason = marketDataQuality.degradedReason || "none";
   const recentWindow = windows[0] || null;
   const anyTrades = windows.some((window) => Number(window.tradeCount || 0) > 0);
   const activeVenueNames = [...new Set(
@@ -1455,6 +1507,7 @@ function renderMonitorFlow() {
       </div>
       <div class="monitor-quality-facts">
         <span>lag ${formatInteger(laggedEvents)}</span>
+        <span>hist ${formatInteger(historicalLaggedEvents)}</span>
         <span>drop ${formatInteger(droppedEvents)}</span>
         <span>last ${escapeHtml(formatAgeFromNow(lastMessageTs))}</span>
       </div>
@@ -1483,6 +1536,12 @@ function renderMonitorFlow() {
           label: "Latest Venue Trade",
           value: `${escapeHtml(formatDateTime(latestTradeForQuality))}<br/><span class="muted">${escapeHtml(formatAgeFromNow(latestTradeForQuality))}</span>`,
         },
+        {
+          label: "Latest Venue Book",
+          value: `${escapeHtml(formatDateTime(latestBookForQuality))}<br/><span class="muted">${escapeHtml(formatAgeFromNow(latestBookForQuality))}</span>`,
+        },
+        { label: "Lag Sources", value: escapeHtml(lagSources.join(", ") || "none") },
+        { label: "Lag Reason", value: escapeHtml(degradedReason) },
         { label: "Flow Windows Populated", value: formatBool(Boolean(marketDataQuality.flowWindowsPopulated)) },
         { label: "Connected Venues", value: formatInteger(connectedVenues.length) },
         { label: "Active Venues", value: formatInteger(activeVenueNames.length) },
@@ -1491,6 +1550,9 @@ function renderMonitorFlow() {
       ])}
       <div class="monitor-flow-venues">${venueChips}</div>
       <div class="monitor-flow-table">${tableHtml}</div>
+      ${error && hasUsableSnapshot
+        ? `<div class="muted">Latest refresh failed: ${escapeHtml(error)}. Showing the last successful monitor-flow snapshot.</div>`
+        : ""}
     </div>`;
 }
 
@@ -1503,6 +1565,8 @@ function venueDiagnosticsTone(summary) {
     "enabled_but_not_connected",
     "connected_but_no_events",
     "events_seen_but_flow_empty",
+    "stream_subscribe_failed",
+    "symbol_mapping_failed",
     "network_error",
     "ws_not_attempted",
   ].includes(status)) {
@@ -3488,7 +3552,7 @@ function isSuspiciousInboxItem(item) {
   );
 }
 
-function getSuspiciousToxicOrderItems() {
+function currentSuspiciousToxicOrderItems() {
   const alertPreviewMap = new Map(
     getToxicSignalAlertPreviewItems().map((item) => [item.signalId, item])
   );
@@ -3552,6 +3616,64 @@ function getSuspiciousToxicOrderItems() {
     .sort((left, right) => (right.createdAtMs || 0) - (left.createdAtMs || 0));
 }
 
+function suspiciousOrderKey(item) {
+  return String(
+    item?.signalId ||
+      item?.id ||
+      `${item?.symbol || "UNKNOWN"}:${item?.kind || "toxic_signal"}:${item?.createdAtMs || 0}`
+  );
+}
+
+function pruneSuspiciousOrdersLastSeen(nowMs = Date.now()) {
+  const next = {};
+  Object.entries(state.suspiciousOrdersLastSeen || {}).forEach(([key, entry]) => {
+    if (nowMs - Number(entry.lastSeenAtMs || 0) <= SUSPICIOUS_ORDERS_LAST_SEEN_WINDOW_MS) {
+      next[key] = entry;
+    }
+  });
+  state.suspiciousOrdersLastSeen = next;
+}
+
+function syncSuspiciousOrdersLastSeen(liveItems, nowMs = Date.now()) {
+  pruneSuspiciousOrdersLastSeen(nowMs);
+  const existing = state.suspiciousOrdersLastSeen || {};
+  const next = { ...existing };
+  const liveKeys = new Set(liveItems.map((item) => suspiciousOrderKey(item)));
+
+  Object.entries(next).forEach(([key, entry]) => {
+    if (!liveKeys.has(key)) {
+      next[key] = { ...entry, snapshotState: "stale" };
+    }
+  });
+
+  liveItems.forEach((item) => {
+    const key = suspiciousOrderKey(item);
+    const previous = next[key];
+    next[key] = {
+      ...item,
+      firstSeenAtMs: previous?.firstSeenAtMs || nowMs,
+      lastSeenAtMs: nowMs,
+      snapshotState: "live",
+    };
+  });
+
+  state.suspiciousOrdersLastSeen = next;
+}
+
+function getSuspiciousToxicOrderItems() {
+  pruneSuspiciousOrdersLastSeen();
+  return Object.values(state.suspiciousOrdersLastSeen || {}).sort((left, right) => {
+    const liveRank =
+      (right.snapshotState === "live" ? 1 : 0) - (left.snapshotState === "live" ? 1 : 0);
+    return (
+      liveRank ||
+      suspiciousSeverityRank(right.severity) - suspiciousSeverityRank(left.severity) ||
+      Number(right.lastSeenAtMs || right.createdAtMs || 0) -
+        Number(left.lastSeenAtMs || left.createdAtMs || 0)
+    );
+  });
+}
+
 function suspiciousOrdersSortMode() {
   return state.suspiciousOrdersSortMode || "severity";
 }
@@ -3564,12 +3686,12 @@ function suspiciousOrdersFilterAlertDecision() {
   return (state.suspiciousOrdersFilterAlertDecision || "").trim().toLowerCase();
 }
 
-function suspiciousOrdersVisibleItems() {
+function suspiciousOrdersVisibleItems(items = getSuspiciousToxicOrderItems()) {
   const symbolFilter = suspiciousOrdersFilterSymbol();
   const alertDecisionFilter = suspiciousOrdersFilterAlertDecision();
   const hideNotEnoughData = Boolean(state.suspiciousOrdersHideNotEnoughData);
   const highSeverityOnly = Boolean(state.suspiciousOrdersHighSeverityOnly);
-  const items = getSuspiciousToxicOrderItems()
+  const filteredItems = items
     .filter((item) => {
       const symbol = String(item.symbol || "").toUpperCase();
       const alertDecision = String(item.alertDecision || "").toLowerCase();
@@ -3611,7 +3733,7 @@ function suspiciousOrdersVisibleItems() {
           );
       }
     });
-  return items;
+  return filteredItems;
 }
 
 function suspiciousOrdersSummaryText() {
@@ -3692,6 +3814,8 @@ function renderSuspiciousToxicOrderItem(item) {
       : escapeHtml(item.confidence || "Unavailable");
   const status = normalizeSuspiciousStatus(item.status);
   const alertDecision = item.alertDecision || "unknown";
+  const snapshotState = item.snapshotState === "stale" ? "STALE" : "LIVE";
+  const lastSeenAtMs = Number(item.lastSeenAtMs || item.createdAtMs || 0);
   return `
     <div class="suspicious-order">
       <div class="suspicious-order-header">
@@ -3705,10 +3829,12 @@ function renderSuspiciousToxicOrderItem(item) {
       </div>
       <div class="suspicious-order-summary">${escapeHtml(item.summary || "Suspicious toxic order-flow signal.")}</div>
       <div class="signal-chip-row">
+        <span class="signal-chip signal-chip-${item.snapshotState === "stale" ? "warning" : "success"}">snapshot ${snapshotState}</span>
         <span class="signal-chip signal-chip-warning">confidence ${confidence}</span>
         <span class="signal-chip signal-chip-muted">alertDecision ${escapeHtml(alertDecision)}</span>
         <span class="signal-chip signal-chip-${suspiciousOrderStatusTone(status)}">status ${escapeHtml(status)}</span>
         <span class="signal-chip signal-chip-muted">createdAt ${formatDateTime(item.createdAtMs)}</span>
+        <span class="signal-chip signal-chip-muted">last seen ${escapeHtml(formatAgeFromNow(lastSeenAtMs))}</span>
       </div>
       <div class="signal-chip-row">
         <span class="signal-chip signal-chip-muted">action ${escapeHtml(item.action || "watch_signal_only")}</span>
@@ -11106,9 +11232,22 @@ function renderAll() {
   }
 }
 
+let refreshFastInFlight = null;
+let refreshSlowInFlight = null;
+
 async function refreshFast() {
-  await refreshGroup(fastEndpoints);
-  renderAll();
+  if (refreshFastInFlight) {
+    return refreshFastInFlight;
+  }
+  refreshFastInFlight = (async () => {
+    try {
+      await refreshGroup(fastEndpoints);
+      renderAll();
+    } finally {
+      refreshFastInFlight = null;
+    }
+  })();
+  return refreshFastInFlight;
 }
 
 async function refreshOperatorHome() {
@@ -11128,8 +11267,18 @@ async function refreshOperatorHome() {
 }
 
 async function refreshSlow() {
-  await refreshGroup(slowEndpoints);
-  renderAll();
+  if (refreshSlowInFlight) {
+    return refreshSlowInFlight;
+  }
+  refreshSlowInFlight = (async () => {
+    try {
+      await refreshGroup(slowEndpoints);
+      renderAll();
+    } finally {
+      refreshSlowInFlight = null;
+    }
+  })();
+  return refreshSlowInFlight;
 }
 
 async function refreshReplayReports() {

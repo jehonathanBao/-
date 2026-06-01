@@ -5,10 +5,11 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use crate::{
     app::AppState,
+    normalizers::trade::now_ms,
     toxicity::{sweep_service::last_sweep_summary, toxic_service::latest_toxic_summary},
     types::{
         market::{VenueConnectionStatus, VenueHealth},
@@ -20,6 +21,8 @@ use crate::{
         },
     },
 };
+
+const MARKET_DATA_LAG_DEGRADED_WINDOW_MS: i64 = 15_000;
 
 pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     Json(build_status_response(&state))
@@ -249,11 +252,35 @@ fn build_market_data_quality_summary(
         .windows
         .values()
         .any(|window| !window.data_quality.stale_venues.is_empty());
+    let recent_lagged = snapshot.last_lagged_at_ms.is_some_and(|last_lagged_at_ms| {
+        now_ms() - last_lagged_at_ms <= MARKET_DATA_LAG_DEGRADED_WINDOW_MS
+    });
+    let lag_sources = [
+        (
+            snapshot.event_bus_dropped_events > 0 || snapshot.event_bus_send_errors > 0,
+            "event_bus",
+        ),
+        (snapshot.flow_window_lagged_events > 0, "flow_window"),
+        (snapshot.markout_lagged_events > 0, "markout"),
+        (snapshot.vpin_lagged_events > 0, "vpin"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, source)| enabled.then_some(source))
+    .collect::<Vec<_>>();
+    let historical_lagged_events = snapshot.flow_window_lagged_events
+        + snapshot.markout_lagged_events
+        + snapshot.vpin_lagged_events;
+    let recent_lagged_events = if recent_lagged {
+        historical_lagged_events
+    } else {
+        0
+    };
     let lagged_or_dropped = snapshot.event_bus_dropped_events > 0
         || snapshot.event_bus_send_errors > 0
-        || snapshot.flow_window_lagged_events > 0
-        || snapshot.markout_lagged_events > 0
-        || snapshot.vpin_lagged_events > 0;
+        || (recent_lagged
+            && (snapshot.flow_window_lagged_events > 0
+                || snapshot.markout_lagged_events > 0
+                || snapshot.vpin_lagged_events > 0));
     let status = if lagged_or_dropped {
         MarketDataQualityStatus::Degraded
     } else if !flow_windows_populated {
@@ -275,6 +302,15 @@ fn build_market_data_quality_summary(
         }
         MarketDataQualityStatus::Healthy => None,
     };
+    let degraded_reason = match status {
+        MarketDataQualityStatus::Degraded
+            if snapshot.event_bus_dropped_events > 0 || snapshot.event_bus_send_errors > 0 =>
+        {
+            Some("event_bus_drop_detected")
+        }
+        MarketDataQualityStatus::Degraded if recent_lagged => Some("consumer_lag_recent"),
+        _ => None,
+    };
 
     MarketDataQualitySummary {
         status,
@@ -283,6 +319,10 @@ fn build_market_data_quality_summary(
         flow_window_lagged_events: snapshot.flow_window_lagged_events,
         markout_lagged_events: snapshot.markout_lagged_events,
         vpin_lagged_events: snapshot.vpin_lagged_events,
+        recent_lagged_events,
+        historical_lagged_events,
+        lag_sources,
+        degraded_reason,
         last_lagged_at_ms: snapshot.last_lagged_at_ms,
         last_message_ts: venues
             .values()
@@ -292,6 +332,8 @@ fn build_market_data_quality_summary(
             .values()
             .filter_map(|venue| venue.last_trade_ts)
             .max(),
+        latest_book_ts: venues.values().filter_map(|venue| venue.last_book_ts).max(),
+        flow_updated_at: (flow_state.updated_at > 0).then_some(flow_state.updated_at),
         flow_windows_populated,
         operator_warning,
     }
@@ -304,6 +346,15 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
         .into_values()
         .collect::<Vec<_>>();
     refresh_venue_activity(&mut venues);
+    let venue_diagnostic_statuses = venues
+        .iter()
+        .map(|venue| {
+            (
+                venue.venue.as_key().to_string(),
+                venue_stream_diagnostic_status(venue),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let enabled_venues = venues.iter().filter(|venue| venue.enabled).count();
     let connector_constructed_venues = venues
         .iter()
@@ -322,6 +373,22 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
     let symbol_mapped_venues = venues
         .iter()
         .filter(|venue| venue.symbol_mapping_status == "ok")
+        .count();
+    let disabled_by_env_venues = venue_diagnostic_statuses
+        .values()
+        .filter(|status| **status == "disabled_by_env")
+        .count();
+    let symbol_mapping_failed_venues = venue_diagnostic_statuses
+        .values()
+        .filter(|status| **status == "symbol_mapping_failed")
+        .count();
+    let stream_subscribe_failed_venues = venue_diagnostic_statuses
+        .values()
+        .filter(|status| **status == "stream_subscribe_failed")
+        .count();
+    let connected_but_no_events_venues = venue_diagnostic_statuses
+        .values()
+        .filter(|status| **status == "connected_but_no_events")
         .count();
     let venues_with_network_errors = venues
         .iter()
@@ -360,6 +427,8 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
         connected_venues,
         ws_connect_attempted_venues,
         ws_connected_venues,
+        symbol_mapping_failed_venues,
+        stream_subscribe_failed_venues,
         venues_with_network_errors,
         trade_active_venues,
         book_active_venues,
@@ -375,6 +444,16 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
     if enabled_venues == 0 {
         operator_notes.push(
             "No public stream active: all venue enable flags are false or missing.".to_string(),
+        );
+    } else if symbol_mapping_failed_venues > 0 {
+        operator_notes.push(
+            "At least one enabled venue failed symbol mapping before any public stream could start."
+                .to_string(),
+        );
+    } else if stream_subscribe_failed_venues > 0 {
+        operator_notes.push(
+            "At least one connected venue attempted exchange-level subscription but never acknowledged it."
+                .to_string(),
         );
     } else if runtime_control.monitoring_started && active_trade_venues == 0 {
         operator_notes
@@ -398,6 +477,10 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
             ws_connected_venues,
             symbol_mapped_venues,
             venues_with_network_errors,
+            disabled_by_env_venues,
+            symbol_mapping_failed_venues,
+            stream_subscribe_failed_venues,
+            connected_but_no_events_venues,
             active_trade_venues,
             active_book_venues,
             trade_active_venues,
@@ -408,6 +491,7 @@ pub fn build_venue_diagnostics_response(state: &AppState) -> VenueDiagnosticsRes
             latest_venue_book_available,
             flow_windows_populated,
         },
+        venue_diagnostic_statuses,
         venues,
         operator_notes,
     }
@@ -448,6 +532,8 @@ struct VenueDiagnosticStatusInput {
     connected_venues: usize,
     ws_connect_attempted_venues: usize,
     ws_connected_venues: usize,
+    symbol_mapping_failed_venues: usize,
+    stream_subscribe_failed_venues: usize,
     venues_with_network_errors: usize,
     trade_active_venues: usize,
     book_active_venues: usize,
@@ -461,8 +547,20 @@ fn venue_diagnostic_status(input: VenueDiagnosticStatusInput) -> &'static str {
     if !input.monitoring_started {
         return "monitoring_not_started";
     }
+    if input.symbol_mapping_failed_venues > 0
+        && input.connected_venues == 0
+        && input.ws_connected_venues == 0
+    {
+        return "symbol_mapping_failed";
+    }
     if input.ws_connect_attempted_venues == 0 {
         return "ws_not_attempted";
+    }
+    if input.stream_subscribe_failed_venues > 0
+        && input.trade_active_venues == 0
+        && input.book_active_venues == 0
+    {
+        return "stream_subscribe_failed";
     }
     if input.venues_with_network_errors > 0 && input.ws_connected_venues == 0 {
         return "network_error";
@@ -475,6 +573,51 @@ fn venue_diagnostic_status(input: VenueDiagnosticStatusInput) -> &'static str {
     }
     if !input.flow_windows_populated {
         return "events_seen_but_flow_empty";
+    }
+    "public_stream_active"
+}
+
+fn venue_stream_diagnostic_status(venue: &VenueHealth) -> &'static str {
+    if !venue.enabled || venue.disabled_reason.as_deref() == Some("env_or_config_flag_false") {
+        return "disabled_by_env";
+    }
+    if matches!(venue.status, VenueConnectionStatus::ConfigurationError)
+        || venue.symbol_mapping_status != "ok"
+        || venue.disabled_reason.as_deref() == Some("symbol_mapping_missing")
+    {
+        return "symbol_mapping_failed";
+    }
+    if !venue.start_attempted {
+        return "monitoring_not_started";
+    }
+    if !venue.ws_connect_attempted {
+        return "ws_not_attempted";
+    }
+    if venue.ws_error_class == "subscription_rejected" {
+        return "stream_subscribe_failed";
+    }
+    if venue.ack_mode == "exchange_ack"
+        && venue.ws_connected
+        && venue.last_message_ts.is_some()
+        && ((venue.trade_subscribe_attempted && !venue.trade_subscribe_acked)
+            || (venue.book_subscribe_attempted && !venue.book_subscribe_acked))
+        && venue.trade_message_count == 0
+        && venue.book_message_count == 0
+    {
+        return "stream_subscribe_failed";
+    }
+    if !venue.ws_connected || !matches!(venue.status, VenueConnectionStatus::Connected) {
+        return "enabled_but_not_connected";
+    }
+    if !venue.trade_active
+        && !venue.book_active
+        && venue.last_parsed_trade_at_ms.is_none()
+        && venue.last_parsed_book_at_ms.is_none()
+    {
+        return "connected_but_no_events";
+    }
+    if !venue.trade_active && !venue.book_active {
+        return "stale_stream";
     }
     "public_stream_active"
 }

@@ -141,6 +141,8 @@ async fn dashboard_static_routes_return_sorted_filtered_suspicious_order_ui() {
     assert!(script_text.contains("monitorQualityTone"));
     assert!(script_text.contains("monitor-quality-strip"));
     assert!(script_text.contains("Lagged Events"));
+    assert!(script_text.contains("Lag Sources"));
+    assert!(script_text.contains("Lag Reason"));
     assert!(script_text.contains("Dropped Events"));
     assert!(script_text.contains("Flow Windows Populated"));
     assert!(script_text.contains("数据质量降级，当前空列表不能直接理解为无有毒订单。"));
@@ -191,6 +193,17 @@ async fn dashboard_static_routes_return_sorted_filtered_suspicious_order_ui() {
     assert!(script_text.contains("renderReplayHeatmap"));
     assert!(script_text.contains("buildReplayHeatmapPayload"));
     assert!(script_text.contains("suspiciousOrdersVisibleItems"));
+    assert!(script_text.contains("suspiciousOrdersLastSeen"));
+    assert!(script_text.contains("SUSPICIOUS_ORDERS_LAST_SEEN_WINDOW_MS"));
+    assert!(script_text.contains("const SUSPICIOUS_ORDERS_LAST_SEEN_WINDOW_MS = 5 * 60 * 1000"));
+    assert!(script_text.contains("pruneSuspiciousOrdersLastSeen(nowMs)"));
+    assert!(script_text.contains("if (!liveKeys.has(key))"));
+    assert!(script_text.contains("snapshotState: \"stale\""));
+    assert!(script_text.contains("allItems.filter((item) => item.snapshotState !== \"stale\")"));
+    assert!(script_text
+        .contains("snapshotState = item.snapshotState === \"stale\" ? \"STALE\" : \"LIVE\""));
+    assert!(script_text.contains("last seen ${escapeHtml(formatAgeFromNow(lastSeenAtMs))}"));
+    assert!(script_text.contains("暂无当前 live 信号"));
     assert!(script_text.contains("normalizeSuspiciousStatus"));
     assert!(script_text.contains("suspiciousOrdersSortSelect"));
     assert!(script_text.contains("suspiciousOrdersFilterSymbolInput"));

@@ -29,6 +29,7 @@ fn trade_normalizers_map_aggressor_side_and_size_usd() {
     let binance_sell = normalize_binance_agg_trade(BinanceAggTrade {
         s: "BTCUSDT".to_string(),
         a: Some(serde_json::json!(1)),
+        t: None,
         p: "100000".to_string(),
         q: "0.5".to_string(),
         trade_time: Some(1),

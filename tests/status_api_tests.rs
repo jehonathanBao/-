@@ -1,5 +1,5 @@
 use btc_toxic_flow_monitor_rs::{
-    api::routes::build_status_response,
+    api::routes::{build_status_response, build_venue_diagnostics_response},
     app::AppState,
     config::{
         venues::{VenueConfig, VenueConfigs},
@@ -7,11 +7,12 @@ use btc_toxic_flow_monitor_rs::{
     },
     market_data::event_bus::{MarketDataBus, MarketDataEvent},
     types::{
-        market::{Venue, VenueHealth},
+        market::{AggressorSide, NormalizedTrade, Venue, VenueHealth},
         status::MarketDataQualityStatus,
         toxic::ToxicSeverity,
     },
 };
+use tokio::time::{sleep, timeout, Duration};
 
 #[test]
 fn status_response_matches_r0_contract() {
@@ -83,6 +84,12 @@ fn status_response_matches_r0_contract() {
     assert_eq!(status.market_data_quality.flow_window_lagged_events, 0);
     assert_eq!(status.market_data_quality.markout_lagged_events, 0);
     assert_eq!(status.market_data_quality.vpin_lagged_events, 0);
+    assert_eq!(status.market_data_quality.recent_lagged_events, 0);
+    assert_eq!(status.market_data_quality.historical_lagged_events, 0);
+    assert!(status.market_data_quality.lag_sources.is_empty());
+    assert_eq!(status.market_data_quality.degraded_reason, None);
+    assert_eq!(status.market_data_quality.latest_book_ts, None);
+    assert!(status.market_data_quality.flow_updated_at.is_some());
     assert!(!status.market_data_quality.flow_windows_populated);
     assert!(status
         .market_data_quality
@@ -120,6 +127,16 @@ fn market_data_quality_degrades_when_consumers_lag() {
     );
     assert_eq!(status.market_data_quality.flow_window_lagged_events, 3);
     assert_eq!(status.market_data_quality.markout_lagged_events, 1);
+    assert_eq!(status.market_data_quality.recent_lagged_events, 4);
+    assert_eq!(status.market_data_quality.historical_lagged_events, 4);
+    assert_eq!(
+        status.market_data_quality.lag_sources,
+        vec!["flow_window", "markout"]
+    );
+    assert_eq!(
+        status.market_data_quality.degraded_reason,
+        Some("consumer_lag_recent")
+    );
     assert!(status.market_data_quality.last_lagged_at_ms.is_some());
     assert!(status
         .market_data_quality
@@ -138,6 +155,65 @@ fn market_data_bus_send_error_increments_drop_counters() {
     let snapshot = bus.quality_tracker().snapshot();
     assert_eq!(snapshot.event_bus_send_errors, 1);
     assert_eq!(snapshot.event_bus_dropped_events, 1);
+}
+
+#[tokio::test]
+async fn normal_trade_flow_populates_flow_windows_and_clears_no_data() {
+    let state = AppState::new(test_config());
+    state.start().await;
+
+    let flow_service = state.flow_service_for_tests();
+    state.ingest_trade_event_for_tests(NormalizedTrade {
+        venue: Venue::Binance,
+        symbol: "BTC-PERP".to_string(),
+        ts: btc_toxic_flow_monitor_rs::normalizers::trade::now_ms(),
+        price: 73_628.0,
+        size_btc: 0.034,
+        size_usd: 73_628.0 * 0.034,
+        aggressor_side: AggressorSide::Buy,
+        trade_id: Some("7705835712".to_string()),
+    });
+    let flow_state = timeout(Duration::from_secs(1), async {
+        loop {
+            let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+            let flow_state = flow_service.recompute_for_tests(now);
+            if flow_state
+                .windows
+                .values()
+                .any(|window| window.trade_count > 0 || window.data_quality.has_trades)
+            {
+                break flow_state;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("flow window populated after published trade");
+
+    assert!(flow_state
+        .windows
+        .values()
+        .any(|window| { window.trade_count > 0 || window.data_quality.has_trades }));
+
+    let status = build_status_response(&state);
+    assert!(status.market_data_quality.flow_windows_populated);
+    assert_ne!(
+        status.market_data_quality.status,
+        MarketDataQualityStatus::NoData
+    );
+
+    let diagnostics = build_venue_diagnostics_response(&state);
+    assert_ne!(diagnostics.diagnostic_status, "connected_but_no_events");
+    assert_eq!(diagnostics.diagnostic_status, "public_stream_active");
+    assert_eq!(
+        diagnostics
+            .venue_diagnostic_statuses
+            .get("binance")
+            .copied(),
+        Some("public_stream_active")
+    );
+
+    state.stop().await;
 }
 
 fn test_config() -> AppConfig {

@@ -16,7 +16,7 @@ use crate::{
 
 use super::manager::{mark_book, mark_message, mark_parse_error, mark_trade, set_status};
 
-const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@depth20@100ms";
+const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth20@100ms";
 const REST_AGG_TRADES_URL: &str =
     "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&limit=100";
 const REST_DEPTH_URL: &str = "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=20";
@@ -33,7 +33,9 @@ struct Depth {
     #[serde(rename = "E")]
     event_time: Option<i64>,
     s: Option<String>,
+    #[serde(alias = "b")]
     bids: Option<Vec<[String; 2]>>,
+    #[serde(alias = "a")]
     asks: Option<Vec<[String; 2]>>,
 }
 
@@ -180,6 +182,7 @@ async fn fetch_rest_trades(
         let raw = BinanceAggTrade {
             s: "BTCUSDT".to_string(),
             a: Some(raw.a),
+            t: None,
             p: raw.p,
             q: raw.q,
             trade_time: raw.trade_time,
@@ -225,7 +228,10 @@ fn handle_message(
         );
         return;
     };
-    if combined.data.get("e").and_then(|v| v.as_str()) == Some("aggTrade") {
+    if matches!(
+        combined.data.get("e").and_then(|v| v.as_str()),
+        Some("aggTrade" | "trade")
+    ) {
         if let Ok(raw) = serde_json::from_value::<BinanceAggTrade>(combined.data) {
             if let Some(trade) = normalize_binance_agg_trade(raw) {
                 mark_trade(bus, health, Venue::Binance, trade.ts);
@@ -276,4 +282,87 @@ fn parse_levels(levels: Vec<[String; 2]>) -> Vec<(f64, f64)> {
         .into_iter()
         .filter_map(|[price, size]| Some((price.parse().ok()?, size.parse().ok()?)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_health() -> Arc<RwLock<BTreeMap<String, VenueHealth>>> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            Venue::Binance.as_key().to_string(),
+            VenueHealth::start_attempted_with_symbol(Venue::Binance, "BTC-PERP"),
+        );
+        Arc::new(RwLock::new(map))
+    }
+
+    #[test]
+    fn combined_trade_message_marks_trade_activity() {
+        let bus = MarketDataBus::new(8);
+        let health = test_health();
+        let mut rx = bus.subscribe();
+
+        handle_message(
+            r#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1780252674690,"T":1780252674690,"s":"BTCUSDT","t":7705835712,"p":"73628.00","q":"0.034","X":"MARKET","m":false}}"#,
+            &bus,
+            &health,
+        );
+
+        let trade = loop {
+            match rx.try_recv() {
+                Ok(MarketDataEvent::Trade(trade)) => break trade,
+                Ok(_) => continue,
+                Err(error) => panic!("expected trade event, got {error}"),
+            }
+        };
+
+        assert_eq!(trade.venue, Venue::Binance);
+        assert_eq!(trade.symbol, "BTC-PERP");
+        assert_eq!(trade.trade_id.as_deref(), Some("7705835712"));
+
+        let snapshot = health.read();
+        let binance = snapshot
+            .get(Venue::Binance.as_key())
+            .expect("binance health");
+        assert_eq!(binance.trade_message_count, 1);
+        assert!(binance.last_trade_ts.is_some());
+        assert!(binance.trade_active);
+        assert!(binance.last_parse_error.is_none());
+    }
+
+    #[test]
+    fn combined_depth_message_marks_book_activity() {
+        let bus = MarketDataBus::new(8);
+        let health = test_health();
+        let mut rx = bus.subscribe();
+
+        handle_message(
+            r#"{"stream":"btcusdt@depth20@100ms","data":{"e":"depthUpdate","E":1780252543679,"T":1780252543678,"s":"BTCUSDT","U":10673052221739,"u":10673052230343,"pu":10673052221569,"b":[["73635.80","22.287"],["73635.70","0.010"]],"a":[["73635.90","6.199"],["73636.00","0.003"]]}}"#,
+            &bus,
+            &health,
+        );
+
+        let book = loop {
+            match rx.try_recv() {
+                Ok(MarketDataEvent::Book(book)) => break book,
+                Ok(_) => continue,
+                Err(error) => panic!("expected book event, got {error}"),
+            }
+        };
+
+        assert_eq!(book.venue, Venue::Binance);
+        assert_eq!(book.symbol, "BTC-PERP");
+        assert_eq!(book.best_bid, 73635.80);
+        assert_eq!(book.best_ask, 73635.90);
+
+        let snapshot = health.read();
+        let binance = snapshot
+            .get(Venue::Binance.as_key())
+            .expect("binance health");
+        assert_eq!(binance.book_message_count, 1);
+        assert!(binance.last_book_ts.is_some());
+        assert!(binance.book_active);
+        assert!(binance.last_parse_error.is_none());
+    }
 }

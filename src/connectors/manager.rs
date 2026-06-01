@@ -99,6 +99,25 @@ impl ConnectorManager {
         self.update_health(health);
     }
 
+    pub fn ingest_trade_event_for_tests(&self, trade: crate::types::market::NormalizedTrade) {
+        set_status(
+            &self.bus,
+            &self.health,
+            trade.venue,
+            VenueConnectionStatus::Connecting,
+            None,
+        );
+        set_status(
+            &self.bus,
+            &self.health,
+            trade.venue,
+            VenueConnectionStatus::Connected,
+            None,
+        );
+        mark_trade(&self.bus, &self.health, trade.venue, trade.ts);
+        self.bus.publish(MarketDataEvent::Trade(trade));
+    }
+
     fn update_health(&self, health: VenueHealth) {
         self.health
             .write()
@@ -159,6 +178,8 @@ pub(crate) fn mark_trade(
         health.last_parsed_trade_at_ms = Some(now);
         health.trade_message_count += 1;
         health.trade_active = true;
+        health.last_parse_error = None;
+        health.ws_error_class = "none".to_string();
     });
 }
 
@@ -176,6 +197,8 @@ pub(crate) fn mark_book(
         health.last_parsed_book_at_ms = Some(now);
         health.book_message_count += 1;
         health.book_active = true;
+        health.last_parse_error = None;
+        health.ws_error_class = "none".to_string();
     });
 }
 

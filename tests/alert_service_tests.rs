@@ -193,6 +193,96 @@ async fn telegram_failure_is_recorded_without_panicking() {
     assert!(state.last_error.is_some());
 }
 
+#[tokio::test]
+async fn runtime_acceptance_test_alert_writes_sidecar_event_via_alert_service() {
+    let source = mock_source(build_state(build_event(
+        ToxicDirection::Buy,
+        ToxicSeverity::Alert,
+        true,
+        true,
+        true,
+    )));
+    let client = TelegramClient::mock_success(false);
+    let events_path = temp_events_path("toxic-flow-runtime-acceptance");
+    let sidecar_writer =
+        ToxicFlowSidecarWriter::new(true, Some(events_path.to_string_lossy().to_string()));
+    let service = AlertService::with_client_and_sidecar(
+        source,
+        client,
+        sidecar_writer,
+        AlertGateConfig::default(),
+        250,
+    );
+
+    let first = service
+        .emit_runtime_acceptance_test_alert(
+            1_760_000_000_111,
+            &btc_toxic_flow_monitor_rs::alerts::alert_service::DevTestSidecarAlertInput {
+                severity: ToxicSeverity::Warning,
+                venue: Venue::Binance,
+                symbol: "BTCUSDT".to_string(),
+                dedupe_suffix: "manual-001".to_string(),
+            },
+        )
+        .expect("first test alert");
+    let second = service
+        .emit_runtime_acceptance_test_alert(
+            1_760_000_000_222,
+            &btc_toxic_flow_monitor_rs::alerts::alert_service::DevTestSidecarAlertInput {
+                severity: ToxicSeverity::Warning,
+                venue: Venue::Binance,
+                symbol: "BTCUSDT".to_string(),
+                dedupe_suffix: "manual-001".to_string(),
+            },
+        )
+        .expect("duplicate test alert");
+    let third = service
+        .emit_runtime_acceptance_test_alert(
+            1_760_000_000_333,
+            &btc_toxic_flow_monitor_rs::alerts::alert_service::DevTestSidecarAlertInput {
+                severity: ToxicSeverity::Warning,
+                venue: Venue::Binance,
+                symbol: "BTCUSDT".to_string(),
+                dedupe_suffix: "manual-002".to_string(),
+            },
+        )
+        .expect("new key test alert");
+
+    assert!(first.sidecar_written);
+    assert!(!first.deduped);
+    assert!(!second.sidecar_written);
+    assert!(second.deduped);
+    assert!(third.sidecar_written);
+    assert!(!third.deduped);
+    assert_ne!(first.dedupe_key, third.dedupe_key);
+    assert!(first.dedupe_key.ends_with("manual-001"));
+    assert!(third.dedupe_key.ends_with("manual-002"));
+
+    let content = fs::read_to_string(events_path).expect("sidecar events jsonl");
+    let lines = content.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    let event: serde_json::Value = serde_json::from_str(lines[0]).expect("sidecar json");
+    assert_eq!(event["schemaVersion"], "toxic-flow-rs.sidecar.v1");
+    assert_eq!(event["source"], "toxic-flow-rs");
+    assert_eq!(event["kind"], "runtime_acceptance_test");
+    assert_eq!(event["severity"], "warning");
+    assert_eq!(event["title"], "Runtime acceptance test alert");
+    assert_eq!(
+        event["summary"],
+        "This is a monitor-generated sidecar test alert."
+    );
+    assert_eq!(event["venue"], "binance");
+    assert_eq!(event["symbol"], "BTCUSDT");
+    assert_eq!(event["payload"]["readOnly"], true);
+    assert_eq!(event["payload"]["test"], true);
+    assert_eq!(
+        event["payload"]["generatedBy"],
+        "monitor_dev_test_alert_endpoint"
+    );
+    assert!(!event.as_object().unwrap().contains_key("webhook"));
+    assert!(!event.as_object().unwrap().contains_key("discord"));
+}
+
 fn temp_events_path(name: &str) -> std::path::PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

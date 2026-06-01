@@ -6,7 +6,10 @@ use crate::{
     config::{thresholds::AlertGateConfig, AppConfig},
     normalizers::trade::now_ms,
     toxicity::toxic_service::ToxicService,
-    types::toxic::{ToxicDirection, ToxicEvent, ToxicSeverity, ToxicState},
+    types::{
+        market::Venue,
+        toxic::{ToxicDirection, ToxicEvent, ToxicSeverity, ToxicState},
+    },
 };
 
 use super::{
@@ -34,6 +37,21 @@ pub struct AlertService {
     state: Arc<RwLock<AlertState>>,
     compute_interval_ms: u64,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DevTestSidecarAlertInput {
+    pub severity: ToxicSeverity,
+    pub venue: Venue,
+    pub symbol: String,
+    pub dedupe_suffix: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DevTestSidecarAlertResult {
+    pub dedupe_key: String,
+    pub deduped: bool,
+    pub sidecar_written: bool,
 }
 
 impl AlertService {
@@ -127,6 +145,64 @@ impl AlertService {
 
     pub fn get_state(&self) -> AlertState {
         self.state.read().clone()
+    }
+
+    pub fn emit_runtime_acceptance_test_alert(
+        &self,
+        now_ts: i64,
+        input: &DevTestSidecarAlertInput,
+    ) -> anyhow::Result<DevTestSidecarAlertResult> {
+        let mut state = self.state.read().clone();
+        state.last_checked_ts = Some(now_ts);
+
+        let dedupe_key = format!(
+            "runtime_acceptance_test:{}:{}:{}:{}",
+            input.venue.as_key(),
+            input.symbol.trim(),
+            input.severity.label().to_lowercase(),
+            input.dedupe_suffix.trim()
+        );
+        let can_send = {
+            let mut deduper = self.deduper.write();
+            deduper.should_send(&dedupe_key, now_ts)
+        };
+
+        if !can_send {
+            state.suppressed_count = state.suppressed_count.saturating_add(1);
+            state.last_suppressed_ts = Some(now_ts);
+            *self.state.write() = state;
+            return Ok(DevTestSidecarAlertResult {
+                dedupe_key,
+                deduped: true,
+                sidecar_written: false,
+            });
+        }
+
+        if !self.sidecar_writer.enabled() {
+            state.last_error = Some("sidecar_disabled_or_path_missing".to_string());
+            *self.state.write() = state;
+            anyhow::bail!("sidecar_disabled_or_path_missing");
+        }
+
+        self.sidecar_writer.write_runtime_acceptance_test(
+            now_ts,
+            input.severity,
+            input.venue,
+            &input.symbol,
+            &dedupe_key,
+        )?;
+        self.deduper.write().mark_sent(&dedupe_key, now_ts);
+
+        state.sent_count = state.sent_count.saturating_add(1);
+        state.last_sent_ts = Some(now_ts);
+        state.last_error = None;
+        *self.state.write() = state;
+
+        Ok(DevTestSidecarAlertResult {
+            dedupe_key,
+            deduped: false,
+            sidecar_written: true,
+        })
     }
 
     pub async fn process_once_for_tests(&self, now_ts: i64) -> AlertState {

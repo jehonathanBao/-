@@ -1,5 +1,6 @@
 pub mod active_trade_toxicity_routes;
 pub mod calibration_routes;
+pub mod dev_alert_routes;
 pub mod durable_archive_dryrun_routes;
 pub mod durable_archive_write_audit_routes;
 pub mod durable_archive_write_routes;

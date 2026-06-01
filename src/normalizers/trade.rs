@@ -8,7 +8,10 @@ use crate::{
 #[derive(Debug, Deserialize)]
 pub struct BinanceAggTrade {
     pub s: String,
+    #[serde(default)]
     pub a: Option<serde_json::Value>,
+    #[serde(default)]
+    pub t: Option<serde_json::Value>,
     pub p: String,
     pub q: String,
     #[serde(rename = "T")]
@@ -54,7 +57,9 @@ pub fn normalize_binance_agg_trade(raw: BinanceAggTrade) -> Option<NormalizedTra
         } else {
             AggressorSide::Buy
         },
-        raw.a.map(|v| v.to_string().trim_matches('"').to_string()),
+        raw.a
+            .or(raw.t)
+            .map(|v| v.to_string().trim_matches('"').to_string()),
     )
 }
 

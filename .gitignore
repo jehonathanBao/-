@@ -2,8 +2,12 @@ target/
 target-*/
 .runtime/
 .workflow/
+data/runtime-acceptance*/
+data/archive/
+data/bad/
 .env
 .env.*
+!.env.example
 *.log
 *.key
 *.pem

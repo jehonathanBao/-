@@ -5,22 +5,23 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, calibration_routes, durable_archive_dryrun_routes,
-        durable_archive_write_audit_routes, durable_archive_write_routes,
-        liquidation_toxicity_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
-        manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
-        manual_evidence_freshness_routes, manual_governance_index_routes,
-        manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
-        orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
-        parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
-        security, static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
-        toxic_governance_proposal_routes, toxic_governance_review_pack_routes,
-        toxic_governance_signoff_pack_routes, toxic_markout_routes, toxic_quality_scorecard_routes,
-        toxic_replay_routes, toxic_signal_alert_preview_routes, toxic_signal_detail_routes,
-        toxic_signal_group_routes, toxic_signal_health_routes, toxic_signal_history_routes,
-        toxic_signal_inbox_routes, toxic_signal_report_routes, toxic_signal_routes,
-        toxic_weight_recommendation_routes, toxic_weight_review_routes,
-        whale_flow_calibration_routes, whale_flow_candidate_history_routes, whale_flow_routes,
+        active_trade_toxicity_routes, calibration_routes, dev_alert_routes,
+        durable_archive_dryrun_routes, durable_archive_write_audit_routes,
+        durable_archive_write_routes, liquidation_toxicity_routes, manual_apply_dryrun_routes,
+        manual_apply_evidence_pack_routes, manual_apply_governance_routes,
+        manual_apply_runbook_routes, manual_audit_story_routes, manual_evidence_freshness_routes,
+        manual_governance_index_routes, manual_parameter_export_routes, manual_signoff_routes,
+        manual_startup_routes, orderbook_wall_interpretation_routes,
+        orderbook_wall_lifecycle_routes, parameter_patch_diff_routes, parameter_review_routes,
+        routes, runtime_control_routes, security, static_files, structural_toxicity_routes,
+        toxic_governance_ledger_routes, toxic_governance_proposal_routes,
+        toxic_governance_review_pack_routes, toxic_governance_signoff_pack_routes,
+        toxic_markout_routes, toxic_quality_scorecard_routes, toxic_replay_routes,
+        toxic_signal_alert_preview_routes, toxic_signal_detail_routes, toxic_signal_group_routes,
+        toxic_signal_health_routes, toxic_signal_history_routes, toxic_signal_inbox_routes,
+        toxic_signal_report_routes, toxic_signal_routes, toxic_weight_recommendation_routes,
+        toxic_weight_review_routes, whale_flow_calibration_routes,
+        whale_flow_candidate_history_routes, whale_flow_routes,
     },
     app::AppState,
     config::AppConfig,
@@ -42,6 +43,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/runtime/stop",
             axum::routing::post(runtime_control_routes::ensure_monitoring_stopped),
+        )
+        .route(
+            "/api/dev/alerts/test-sidecar",
+            axum::routing::post(dev_alert_routes::test_sidecar_alert),
         )
         .route(
             "/api/archive/dry-run/write",

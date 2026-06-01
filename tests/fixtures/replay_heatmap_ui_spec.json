@@ -3,7 +3,7 @@
   "indexHtmlTokens": [
     "Replay Markout Heatmap",
     "replayHeatmapCard",
-    "Read-only operator heatmap for multi-signal replay comparison, JSON summary, and Markdown summary. No live trading."
+    "Read-only operator heatmap for multi-signal replay comparison, whale flow overlay dimensions, JSON summary, and Markdown summary. No live trading."
   ],
   "scriptTokens": [
     "renderReplayHeatmap",
