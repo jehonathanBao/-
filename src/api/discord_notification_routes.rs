@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::alerts::discord_message_builder::{
-    embed_color, DiscordEmbed, DiscordEmbedField, DiscordEmbedFooter, DiscordWebhookPayload,
+    DiscordEmbed, DiscordEmbedField, DiscordEmbedFooter, DiscordWebhookPayload,
 };
 use crate::app::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
@@ -418,6 +418,8 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
         .unwrap_or_else(|| "Unknown".to_string());
     let side = signal.side.as_deref().unwrap_or("N/A");
     let exchange = signal.exchange.as_deref().unwrap_or("N/A");
+    let direction = normalize_signal_direction(signal.side.as_deref());
+    let direction_label = discord_direction_label(direction);
     let final_result = signal
         .reason
         .as_deref()
@@ -427,10 +429,18 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
     DiscordWebhookPayload {
         content: None,
         embeds: vec![DiscordEmbed {
-            title: format!("🚨 疑似有毒订单候选信号：{symbol}"),
+            title: format!(
+                "{} 疑似有毒订单候选信号：{symbol}",
+                discord_direction_emoji(direction)
+            ),
             description: format!("{exchange} / {symbol} · {event_type} · {side}"),
-            color: embed_color(signal.score.map(|value| value as f64)),
+            color: discord_embed_color_from_direction(direction),
             fields: vec![
+                DiscordEmbedField {
+                    name: "方向".to_string(),
+                    value: direction_label.to_string(),
+                    inline: true,
+                },
                 DiscordEmbedField {
                     name: "最终结果".to_string(),
                     value: final_result.to_string(),
@@ -468,6 +478,60 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
             timestamp: signal.time.clone(),
         }],
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizedDiscordDirection {
+    Bullish,
+    Bearish,
+    Neutral,
+}
+
+pub fn normalize_signal_direction(raw: Option<&str>) -> NormalizedDiscordDirection {
+    let value = raw.unwrap_or("").to_ascii_lowercase();
+    if value.contains("bid")
+        || value.contains("buy")
+        || value.contains("long")
+        || value.contains("bull")
+    {
+        NormalizedDiscordDirection::Bullish
+    } else if value.contains("ask")
+        || value.contains("sell")
+        || value.contains("short")
+        || value.contains("bear")
+    {
+        NormalizedDiscordDirection::Bearish
+    } else {
+        NormalizedDiscordDirection::Neutral
+    }
+}
+
+pub fn discord_embed_color_from_direction(direction: NormalizedDiscordDirection) -> u32 {
+    match direction {
+        NormalizedDiscordDirection::Bullish => 5_763_719,
+        NormalizedDiscordDirection::Bearish => 15_548_997,
+        NormalizedDiscordDirection::Neutral => 9_807_270,
+    }
+}
+
+fn discord_direction_label(direction: NormalizedDiscordDirection) -> &'static str {
+    match direction {
+        NormalizedDiscordDirection::Bullish => "🟢 看涨 / Bid-Buy",
+        NormalizedDiscordDirection::Bearish => "🔴 看跌 / Ask-Sell",
+        NormalizedDiscordDirection::Neutral => "🟡 中性 / 未知",
+    }
+}
+
+fn discord_direction_emoji(direction: NormalizedDiscordDirection) -> &'static str {
+    match direction {
+        NormalizedDiscordDirection::Bullish => "🟢",
+        NormalizedDiscordDirection::Bearish => "🔴",
+        NormalizedDiscordDirection::Neutral => "🟡",
+    }
+}
+
+pub fn discord_payload_for_tests(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload {
+    discord_payload(signal)
 }
 
 #[derive(Debug)]
