@@ -8,7 +8,7 @@ export DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 export TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 
-docker compose config
+docker compose config --quiet 2>/dev/null || docker compose config >/dev/null
 docker compose up -d --build
 
 wait_for_http() {

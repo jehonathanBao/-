@@ -13,7 +13,7 @@ $env:DISCORD_WEBHOOK_URL = ""
 $env:TELEGRAM_BOT_TOKEN = ""
 $env:TELEGRAM_CHAT_ID = ""
 
-docker compose config
+docker compose config | Out-Null
 docker compose up -d --build
 
 function Wait-Http {

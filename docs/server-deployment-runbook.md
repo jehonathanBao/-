@@ -87,6 +87,8 @@ docker compose logs -f frontend
 
 Keep Discord and Telegram webhook URLs out of logs.
 
+For live notification deployment, see `docs/live-data-deployment-checklist.md`.
+
 ## Persistent Data
 
 The Compose file mounts:
