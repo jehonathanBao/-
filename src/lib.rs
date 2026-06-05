@@ -7,6 +7,7 @@ pub mod connectors;
 pub mod market_data;
 pub mod normalizers;
 pub mod replay;
+pub mod runtime;
 pub mod safety;
 pub mod storage;
 pub mod toxicity;

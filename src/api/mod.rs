@@ -22,6 +22,7 @@ pub mod parameter_patch_diff_routes;
 pub mod parameter_review_routes;
 pub mod routes;
 pub mod runtime_control_routes;
+pub mod scan_log_routes;
 pub mod security;
 pub mod server;
 pub mod static_files;

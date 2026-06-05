@@ -7,7 +7,8 @@ use std::{
 use crate::alerts::discord_message_builder::{
     embed_color, DiscordEmbed, DiscordEmbedField, DiscordEmbedFooter, DiscordWebhookPayload,
 };
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use crate::app::AppState;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
@@ -56,11 +57,19 @@ pub struct DiscordNotificationResponse {
 }
 
 pub async fn discord_notification_proxy(
+    State(state): State<AppState>,
     Json(body): Json<DiscordNotificationRequest>,
 ) -> impl IntoResponse {
     let gate = AlertGate::from_env();
     let is_test = body.test.unwrap_or(false);
     if !is_test && !gate.allows(&body) {
+        record_discord_log(
+            &state,
+            "warn",
+            "discord_push_skipped",
+            "Discord push skipped: alert gate rejected",
+            &body,
+        );
         return (
             StatusCode::OK,
             Json(DiscordNotificationResponse {
@@ -78,6 +87,13 @@ pub async fn discord_notification_proxy(
     }
 
     let Some(webhook_url) = discord_webhook_url() else {
+        record_discord_log(
+            &state,
+            "warn",
+            "discord_config_missing",
+            "Discord push skipped: Discord is not configured",
+            &body,
+        );
         return (
             StatusCode::OK,
             Json(DiscordNotificationResponse {
@@ -95,6 +111,13 @@ pub async fn discord_notification_proxy(
     };
 
     if validate_discord_webhook_url(&webhook_url).is_err() {
+        record_discord_log(
+            &state,
+            "error",
+            "discord_push_failed",
+            "Discord push failed: configuration is invalid",
+            &body,
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(DiscordNotificationResponse {
@@ -116,12 +139,24 @@ pub async fn discord_notification_proxy(
     } else {
         push_dedupe_key(&body)
     };
+    let cooldown_key = if is_test {
+        None
+    } else {
+        push_cooldown_key(&body)
+    };
     if let Some(key) = push_key.as_deref() {
         if let Some(reason) = discord_push_limiter()
             .lock()
             .expect("discord limiter")
-            .reserve(key)
+            .reserve(key, cooldown_key.as_deref())
         {
+            record_discord_log(
+                &state,
+                "warn",
+                "discord_push_skipped",
+                format!("Discord push skipped: {reason}"),
+                &body,
+            );
             return (
                 StatusCode::OK,
                 Json(DiscordNotificationResponse {
@@ -149,8 +184,15 @@ pub async fn discord_notification_proxy(
                 discord_push_limiter()
                     .lock()
                     .expect("discord limiter")
-                    .release(key);
+                    .release(key, cooldown_key.as_deref());
             }
+            record_discord_log(
+                &state,
+                "error",
+                "discord_push_failed",
+                "Discord push failed: HTTP client unavailable",
+                &body,
+            );
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(DiscordNotificationResponse {
@@ -168,6 +210,13 @@ pub async fn discord_notification_proxy(
         }
     };
     let payload = discord_payload(&body);
+    record_discord_log(
+        &state,
+        "info",
+        "discord_push_queued",
+        "Discord push queued for alert-only delivery",
+        &body,
+    );
     let result = client
         .post(webhook_url)
         .json(&payload)
@@ -176,37 +225,54 @@ pub async fn discord_notification_proxy(
         .and_then(|response| response.error_for_status());
 
     match result {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(DiscordNotificationResponse {
-                ok: true,
-                configured: true,
-                reason: "DISCORD_WEBHOOK_SENT",
-                min_score: gate.min_score,
-                min_data_quality: gate.min_data_quality,
-                sent: true,
-                read_only: true,
-                execution_enabled: false,
-            }),
-        )
-            .into_response(),
+        Ok(_) => {
+            record_discord_log(
+                &state,
+                "info",
+                "discord_push_sent",
+                "Discord push sent successfully",
+                &body,
+            );
+            (
+                StatusCode::OK,
+                Json(DiscordNotificationResponse {
+                    ok: true,
+                    configured: true,
+                    reason: "DISCORD_WEBHOOK_SENT",
+                    min_score: gate.min_score,
+                    min_data_quality: gate.min_data_quality,
+                    sent: true,
+                    read_only: true,
+                    execution_enabled: false,
+                }),
+            )
+                .into_response()
+        }
         Err(err) => {
             if let Some(key) = push_key.as_deref() {
                 discord_push_limiter()
                     .lock()
                     .expect("discord limiter")
-                    .release(key);
+                    .release(key, cooldown_key.as_deref());
             }
+            let reason = if err.is_timeout() {
+                "DISCORD_WEBHOOK_TIMEOUT"
+            } else {
+                "DISCORD_WEBHOOK_SEND_FAILED"
+            };
+            record_discord_log(
+                &state,
+                "error",
+                "discord_push_failed",
+                format!("Discord push failed: {reason}"),
+                &body,
+            );
             (
                 StatusCode::BAD_GATEWAY,
                 Json(DiscordNotificationResponse {
                     ok: false,
                     configured: true,
-                    reason: if err.is_timeout() {
-                        "DISCORD_WEBHOOK_TIMEOUT"
-                    } else {
-                        "DISCORD_WEBHOOK_SEND_FAILED"
-                    },
+                    reason,
                     min_score: gate.min_score,
                     min_data_quality: gate.min_data_quality,
                     sent: false,
@@ -240,9 +306,17 @@ impl AlertGate {
     }
 
     fn allows(self, signal: &DiscordNotificationRequest) -> bool {
-        signal.score.unwrap_or(0) >= self.min_score
+        severity_allows(signal.level.as_deref())
+            && signal.score.unwrap_or(0) >= self.min_score
             && signal.data_quality.unwrap_or(0.0) >= self.min_data_quality
     }
+}
+
+fn severity_allows(level: Option<&str>) -> bool {
+    matches!(
+        level.unwrap_or("").trim().to_ascii_lowercase().as_str(),
+        "high" | "critical" | "a" | "s"
+    )
 }
 
 fn discord_webhook_url() -> Option<String> {
@@ -268,6 +342,45 @@ fn push_dedupe_key(signal: &DiscordNotificationRequest) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn push_cooldown_key(signal: &DiscordNotificationRequest) -> Option<String> {
+    let symbol = signal.symbol.as_deref()?.trim();
+    if symbol.is_empty() {
+        return None;
+    }
+    let side = signal.side.as_deref().unwrap_or("unknown").trim();
+    let signal_type = signal.signal_type.as_deref().unwrap_or("unknown").trim();
+    Some(format!(
+        "{}:{}:{}",
+        symbol.to_ascii_uppercase(),
+        signal_type.to_ascii_lowercase(),
+        side.to_ascii_lowercase()
+    ))
+}
+
+fn discord_push_cooldown_secs() -> u64 {
+    std::env::var("DISCORD_PUSH_COOLDOWN_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(60)
+}
+
+fn record_discord_log(
+    state: &AppState,
+    level: &'static str,
+    kind: &'static str,
+    message: impl AsRef<str>,
+    body: &DiscordNotificationRequest,
+) {
+    state.record_scan_log(
+        level,
+        kind,
+        message,
+        body.symbol.clone(),
+        push_dedupe_key(body).or(body.id.clone()),
+    );
 }
 
 fn validate_discord_webhook_url(raw: &str) -> anyhow::Result<()> {
@@ -360,6 +473,7 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
 #[derive(Debug)]
 struct DiscordPushLimiter {
     by_key: HashMap<String, Instant>,
+    cooldown_by_key: HashMap<String, Instant>,
     burst: VecDeque<Instant>,
 }
 
@@ -367,31 +481,46 @@ impl DiscordPushLimiter {
     fn new() -> Self {
         Self {
             by_key: HashMap::new(),
+            cooldown_by_key: HashMap::new(),
             burst: VecDeque::new(),
         }
     }
 
-    fn reserve(&mut self, key: &str) -> Option<&'static str> {
+    fn reserve(&mut self, key: &str, cooldown_key: Option<&str>) -> Option<&'static str> {
         let now = Instant::now();
         self.prune(now);
         if self.by_key.contains_key(key) {
             return Some("DUPLICATE_PUSH_SUPPRESSED");
         }
+        if let Some(cooldown_key) = cooldown_key {
+            if self.cooldown_by_key.contains_key(cooldown_key) {
+                return Some("COOLDOWN_SUPPRESSED");
+            }
+        }
         if self.burst.len() >= 5 {
             return Some("RATE_LIMITED");
         }
         self.by_key.insert(key.to_string(), now);
+        if let Some(cooldown_key) = cooldown_key {
+            self.cooldown_by_key.insert(cooldown_key.to_string(), now);
+        }
         self.burst.push_back(now);
         None
     }
 
-    fn release(&mut self, key: &str) {
+    fn release(&mut self, key: &str, cooldown_key: Option<&str>) {
         self.by_key.remove(key);
+        if let Some(cooldown_key) = cooldown_key {
+            self.cooldown_by_key.remove(cooldown_key);
+        }
     }
 
     fn prune(&mut self, now: Instant) {
         self.by_key
             .retain(|_, at| now.duration_since(*at) < Duration::from_secs(60));
+        let cooldown = Duration::from_secs(discord_push_cooldown_secs());
+        self.cooldown_by_key
+            .retain(|_, at| now.duration_since(*at) < cooldown);
         while self
             .burst
             .front()
@@ -415,7 +544,7 @@ pub fn reserve_discord_push_for_tests(key: &str) -> Option<&'static str> {
     discord_push_limiter()
         .lock()
         .expect("discord limiter")
-        .reserve(key)
+        .reserve(key, None)
 }
 
 #[cfg(test)]
@@ -424,6 +553,7 @@ mod tests {
 
     use super::{
         discord_payload, validate_discord_webhook_url, AlertGate, DiscordNotificationRequest,
+        DiscordPushLimiter,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -468,6 +598,10 @@ mod tests {
         assert!(!gate.allows(&request(Some(79), Some(90.0))));
         assert!(!gate.allows(&request(Some(90), Some(69.0))));
         assert!(!gate.allows(&request(None, Some(90.0))));
+
+        let mut medium = request(Some(90), Some(90.0));
+        medium.level = Some("medium".to_string());
+        assert!(!gate.allows(&medium));
 
         std::env::remove_var("ALERT_MIN_SCORE");
         std::env::remove_var("ALERT_MIN_DATA_QUALITY");
@@ -522,6 +656,20 @@ mod tests {
         std::env::remove_var("ALERT_HTTP_TIMEOUT_SECS");
     }
 
+    #[test]
+    fn discord_limiter_suppresses_same_symbol_direction_cooldown() {
+        let mut limiter = DiscordPushLimiter::new();
+
+        assert_eq!(
+            limiter.reserve("sig_001", Some("BTC-PERP:spoofing:short")),
+            None
+        );
+        assert_eq!(
+            limiter.reserve("sig_002", Some("BTC-PERP:spoofing:short")),
+            Some("COOLDOWN_SUPPRESSED")
+        );
+    }
+
     fn request(score: Option<u8>, data_quality: Option<f64>) -> DiscordNotificationRequest {
         DiscordNotificationRequest {
             signal_id: Some("sig_001".to_string()),
@@ -530,7 +678,7 @@ mod tests {
             exchange: None,
             symbol: None,
             signal_type: None,
-            level: None,
+            level: Some("high".to_string()),
             side: None,
             score,
             data_quality,

@@ -13,6 +13,7 @@ use crate::{
     config::AppConfig,
     connectors::manager::ConnectorManager,
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
+    runtime::scan_log::{ScanLogItem, ScanLogStore},
     storage::{snapshot_service::StorageState, SnapshotService, SqliteStore},
     toxicity::{
         liq_hunt_service::LiqHuntService, liquidation_service::LiquidationService,
@@ -48,6 +49,7 @@ struct AppStateInner {
     config: AppConfig,
     runtime_started: AtomicBool,
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
+    scan_log: ScanLogStore,
     market_data_bus: MarketDataBus,
     connector_manager: ConnectorManager,
     flow_service: FlowWindowService,
@@ -167,12 +169,21 @@ impl AppState {
         );
         let signal_history_service = ToxicSignalHistoryService::default();
         let whale_flow_candidate_history_service = WhaleFlowCandidateHistoryService::default();
+        let scan_log = ScanLogStore::new_from_env();
+        scan_log.push(
+            "info",
+            "server_boot",
+            "Runtime initialized in monitoring-only real-data capable mode",
+            Some(config.symbol.clone()),
+            None,
+        );
 
         Self {
             inner: Arc::new(AppStateInner {
                 config,
                 runtime_started: AtomicBool::new(false),
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
+                scan_log,
                 market_data_bus: bus,
                 connector_manager,
                 flow_service,
@@ -213,6 +224,13 @@ impl AppState {
             runtime_control.start_state = RuntimeStartState::Starting;
             runtime_control.last_start_error = None;
         }
+        self.record_scan_log(
+            "info",
+            "scanner_starting",
+            "Market-data scanner starting; alert-only mode remains enforced",
+            Some(self.config().symbol.clone()),
+            None,
+        );
 
         let forced_start_failure = {
             self.inner
@@ -226,7 +244,15 @@ impl AppState {
             self.inner.runtime_started.store(false, Ordering::SeqCst);
             runtime_control.start_state = RuntimeStartState::Failed;
             runtime_control.last_start_result = RuntimeStartResult::Failed;
-            runtime_control.last_start_error = Some(error);
+            runtime_control.last_start_error = Some(error.clone());
+            drop(runtime_control);
+            self.record_scan_log(
+                "error",
+                "scanner_start_failed",
+                format!("Market-data scanner start failed: {error}"),
+                Some(self.config().symbol.clone()),
+                None,
+            );
             return StartMonitoringOutcome {
                 runtime_modified: false,
                 start_state: RuntimeStartState::Failed,
@@ -244,7 +270,21 @@ impl AppState {
         self.inner.orderbook_wall_lifecycle_service.start();
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
+        self.record_scan_log(
+            "info",
+            "data_source_connecting",
+            "Connecting configured market-data venues",
+            Some(self.config().symbol.clone()),
+            None,
+        );
         self.inner.connector_manager.start_all().await;
+        self.record_scan_log(
+            "info",
+            "scanner_started",
+            "Market-data scanner started; Dashboard and Discord gates are alert-only",
+            Some(self.config().symbol.clone()),
+            None,
+        );
         let mut runtime_control = self.inner.runtime_control.write();
         runtime_control.start_state = RuntimeStartState::Started;
         runtime_control.last_start_at_ms = Some(crate::normalizers::trade::now_ms());
@@ -311,6 +351,13 @@ impl AppState {
         self.inner.sweep_service.stop();
         self.inner.markout_service.stop();
         self.inner.flow_service.stop();
+        self.record_scan_log(
+            "info",
+            "scanner_stopped",
+            "Market-data scanner stopped",
+            Some(self.config().symbol.clone()),
+            None,
+        );
         let mut runtime_control = self.inner.runtime_control.write();
         runtime_control.start_state = RuntimeStartState::Stopped;
         runtime_control.stop_state = RuntimeStopState::Stopped;
@@ -350,6 +397,27 @@ impl AppState {
             stop_attempt_count: runtime_control.stop_attempt_count,
             last_stop_result: runtime_control.last_stop_result,
         }
+    }
+
+    pub fn record_scan_log(
+        &self,
+        level: impl AsRef<str>,
+        kind: impl AsRef<str>,
+        message: impl AsRef<str>,
+        symbol: Option<String>,
+        candidate_id: Option<String>,
+    ) -> ScanLogItem {
+        self.inner
+            .scan_log
+            .push(level, kind, message, symbol, candidate_id)
+    }
+
+    pub fn recent_scan_logs(&self, limit: usize) -> Vec<ScanLogItem> {
+        self.inner.scan_log.recent(limit)
+    }
+
+    pub fn subscribe_scan_logs(&self) -> tokio::sync::broadcast::Receiver<ScanLogItem> {
+        self.inner.scan_log.subscribe()
     }
 
     pub fn venue_health(&self) -> VenueHealthMap {

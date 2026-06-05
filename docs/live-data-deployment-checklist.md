@@ -10,8 +10,10 @@ Create or update server-local `.env`. Do not commit it.
 DRY_RUN=false
 OPERATOR_TOKEN=replace-with-long-random-server-token
 WS_SIGNAL_INTERVAL_MS=1000
+SCAN_LOG_BUFFER_SIZE=200
 
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE/REPLACE
+DISCORD_PUSH_COOLDOWN_SECONDS=60
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=replace-with-server-local-token
 TELEGRAM_CHAT_ID=replace-with-chat-id
@@ -55,6 +57,7 @@ http://127.0.0.1:55173/signals
 Expected:
 
 - `Live: connected`
+- `扫描日志: connected`
 - High / critical candidates appear in the primary list.
 - Medium candidates remain folded by default.
 - Low candidates do not appear in the primary list.
@@ -72,6 +75,11 @@ Check logs:
 ```bash
 docker compose logs -f backend
 ```
+
+Check the Dashboard scan log panel. Expected events include startup, data-source
+connection, candidate snapshot count, and Discord push queued / sent / skipped /
+failed summaries. The panel must not display raw payloads, evidence, markout,
+authorization headers, tokens, webhook URLs, or Telegram secrets.
 
 Do not paste logs containing real tokens into tickets or chat.
 

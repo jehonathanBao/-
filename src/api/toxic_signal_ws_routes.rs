@@ -68,6 +68,13 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
     let (mut sender, mut receiver) = socket.split();
     let mut interval = tokio::time::interval(ws_signal_interval());
     tracing::info!(target: "toxic_signal_ws", symbol = %selected_symbol, "ws client connected");
+    state.record_scan_log(
+        "info",
+        "signal_ws_connected",
+        "Dashboard signal stream connected",
+        Some(selected_symbol.clone()),
+        None,
+    );
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -79,6 +86,15 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
                 };
                 if sender.send(Message::Text(payload)).await.is_err() {
                     break;
+                }
+                if !snapshot.signals.is_empty() {
+                    state.record_scan_log(
+                        "info",
+                        "scan_candidates_detected",
+                        format!("Signal scan snapshot contains {} candidate(s)", snapshot.signals.len()),
+                        Some(selected_symbol.clone()),
+                        None,
+                    );
                 }
                 tracing::debug!(target: "toxic_signal_ws", signal_count = snapshot.signals.len(), "ws snapshot sent");
             }

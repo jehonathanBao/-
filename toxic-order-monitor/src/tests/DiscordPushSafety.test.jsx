@@ -16,6 +16,14 @@ vi.mock("../api/signals.js", async () => {
   };
 });
 
+vi.mock("../api/scanLogs.js", async () => {
+  const actual = await vi.importActual("../api/scanLogs.js");
+  return {
+    ...actual,
+    fetchScanLogs: vi.fn(() => Promise.resolve([])),
+  };
+});
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),
 }));

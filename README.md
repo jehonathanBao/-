@@ -156,6 +156,9 @@ not restart the monitor process. The Compose setup keeps `OPERATOR_TOKEN`
 server-side in the Vite proxy instead of exposing it as a `VITE_*` browser env.
 The optional `/ws/signals` stream sends redacted signal summaries only and is
 covered by the same non-loopback token boundary as `/api`.
+The Dashboard also uses `/api/runtime/scan-log/recent` and `/ws/scan-logs` for
+the left-side scan log panel. Those endpoints are read-only, share the same
+operator-token boundary, and emit sanitized runtime summaries only.
 
 ### WebSocket Authentication Model
 
@@ -164,13 +167,15 @@ The browser must not receive `OPERATOR_TOKEN`.
 Development / current Compose mode:
 
 - Browser connects to the frontend origin: `/ws/signals`.
-- Vite proxy forwards `/ws/signals` to the backend.
+- Browser connects to the frontend origin: `/ws/signals` and `/ws/scan-logs`.
+- Vite proxy forwards `/ws/*` to the backend.
 - Vite proxy injects `x-operator-api-token` server-side.
 - Backend validates the token for non-loopback WS requests.
 
 Production static frontend mode:
 
-- Do not connect the browser directly to backend `/ws/signals` with
+- Do not connect the browser directly to backend `/ws/signals` or
+  `/ws/scan-logs` with
   `OPERATOR_TOKEN`.
 - Use a reverse proxy such as Nginx, Caddy, or Traefik to inject
   `x-operator-api-token` server-side.
@@ -178,3 +183,19 @@ Production static frontend mode:
 
 See `docs/reverse-proxy-production-example.md` for a placeholder-only Nginx
 example. Do not commit real tokens.
+
+### Runtime Scan Log
+
+The scan log panel is an operator-facing, read-only status feed for startup,
+market-data scanning, signal snapshots, and Discord push decisions. Configure
+the in-memory ring buffer with:
+
+```env
+SCAN_LOG_BUFFER_SIZE=200
+DISCORD_PUSH_COOLDOWN_SECONDS=60
+```
+
+Scan log payloads must not contain operator tokens, Discord / Telegram secrets,
+authorization headers, raw payloads, evidence, markout, or webhook URLs. The
+local "清空显示" button only clears the browser panel; it does not clear the
+backend buffer.

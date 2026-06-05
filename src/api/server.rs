@@ -14,13 +14,14 @@ use crate::{
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
         orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
         parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
-        security, static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
-        toxic_governance_proposal_routes, toxic_governance_review_pack_routes,
-        toxic_governance_signoff_pack_routes, toxic_markout_routes, toxic_quality_scorecard_routes,
-        toxic_replay_routes, toxic_signal_alert_preview_routes, toxic_signal_detail_routes,
-        toxic_signal_group_routes, toxic_signal_health_routes, toxic_signal_history_routes,
-        toxic_signal_inbox_routes, toxic_signal_report_routes, toxic_signal_routes,
-        toxic_signal_ws_routes, toxic_weight_recommendation_routes, toxic_weight_review_routes,
+        scan_log_routes, security, static_files, structural_toxicity_routes,
+        toxic_governance_ledger_routes, toxic_governance_proposal_routes,
+        toxic_governance_review_pack_routes, toxic_governance_signoff_pack_routes,
+        toxic_markout_routes, toxic_quality_scorecard_routes, toxic_replay_routes,
+        toxic_signal_alert_preview_routes, toxic_signal_detail_routes, toxic_signal_group_routes,
+        toxic_signal_health_routes, toxic_signal_history_routes, toxic_signal_inbox_routes,
+        toxic_signal_report_routes, toxic_signal_routes, toxic_signal_ws_routes,
+        toxic_weight_recommendation_routes, toxic_weight_review_routes,
         whale_flow_calibration_routes, whale_flow_candidate_history_routes, whale_flow_routes,
     },
     app::AppState,
@@ -37,6 +38,10 @@ pub fn router(state: AppState) -> Router {
         .route("/web/app.js", get(static_files::app_js))
         .route("/web/styles.css", get(static_files::styles_css))
         .route("/api/status", get(routes::status))
+        .route(
+            "/api/runtime/scan-log/recent",
+            get(scan_log_routes::scan_log_recent_route),
+        )
         .route("/api/venues/diagnostics", get(routes::venues_diagnostics))
         .route(
             "/api/runtime/start",
@@ -202,6 +207,7 @@ pub fn router(state: AppState) -> Router {
             "/ws/signals",
             get(toxic_signal_ws_routes::toxic_signal_ws_route),
         )
+        .route("/ws/scan-logs", get(scan_log_routes::scan_log_ws_route))
         .route(
             "/api/toxicity/signal-groups/status",
             get(toxic_signal_group_routes::toxic_signal_group_status_route),

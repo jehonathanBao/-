@@ -7,6 +7,7 @@ import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
 import RiskCharts from "../components/RiskCharts.jsx";
 import RuleStatus from "../components/RuleStatus.jsx";
+import ScanLogPanel from "../components/ScanLogPanel.jsx";
 import Sidebar from "../components/Sidebar.jsx";
 import SignalDetail from "../components/SignalDetail.jsx";
 import SignalTable from "../components/SignalTable.jsx";
@@ -291,6 +292,7 @@ export default function Dashboard() {
               signals={mediumRiskSignals}
             />
             <SignalDetail signal={selectedSignal} />
+            <ScanLogPanel />
           </div>
           <div className="space-y-5">
             <RiskCharts signals={rawInboxSignals} />

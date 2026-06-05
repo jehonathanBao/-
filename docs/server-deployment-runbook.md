@@ -38,6 +38,7 @@ http://localhost:5173
 ```
 
 The frontend calls `/api/...` with relative URLs. Vite proxies API calls to `http://backend:3000`.
+It also proxies `/ws/signals` and `/ws/scan-logs` to the backend so browser refreshes reconnect without restarting `toxic-bot`.
 
 ## Required Token
 
@@ -86,6 +87,7 @@ docker compose logs -f frontend
 ```
 
 Keep Discord and Telegram webhook URLs out of logs.
+The Dashboard scan log panel displays sanitized startup, scan, candidate, and Discord push status only.
 
 For live notification deployment, see `docs/live-data-deployment-checklist.md`.
 
@@ -119,7 +121,7 @@ Refreshing the browser or triggering Vite HMR affects only the frontend session.
 
 ## WebSocket Boundary
 
-`/ws/signals` streams redacted toxic signal snapshots to the Dashboard. It uses the same non-loopback token boundary as `/api` and should normally be reached through the Vite `/ws` proxy.
+`/ws/signals` streams redacted toxic signal snapshots to the Dashboard. `/ws/scan-logs` streams sanitized runtime scan logs. Both use the same non-loopback token boundary as `/api` and should normally be reached through the Vite `/ws` proxy.
 
 `toxic-order-monitor/src/hooks/useReconnectingWebSocket.js` reconnects automatically with exponential backoff. The Dashboard merges incoming snapshots into the same persistent inbox used by HTTP polling.
 
@@ -130,6 +132,8 @@ Keep the stream read-only:
 - send redacted signal summaries only
 - do not send markout fields, raw evidence, stale flags, tokens, webhook URLs, or private payloads
 - tune `WS_SIGNAL_INTERVAL_MS` for snapshot frequency
+- tune `SCAN_LOG_BUFFER_SIZE` for the in-memory scan log ring buffer
+- keep `DISCORD_PUSH_COOLDOWN_SECONDS=60` or higher for real notification channels
 
 ## Remote Access
 
@@ -167,8 +171,10 @@ Then verify:
 http://localhost:5173
 http://localhost:8000/api/status
 ws://localhost:5173/ws/signals
+ws://localhost:5173/ws/scan-logs
 ```
 
-Direct `http://localhost:8000/api/status` and `ws://localhost:8000/ws/signals`
-may require an operator token when the backend is bound to `0.0.0.0`. The
-frontend proxy path should inject it automatically.
+Direct `http://localhost:8000/api/status`, `ws://localhost:8000/ws/signals`,
+and `ws://localhost:8000/ws/scan-logs` may require an operator token when the
+backend is bound to `0.0.0.0`. The frontend proxy path should inject it
+automatically.

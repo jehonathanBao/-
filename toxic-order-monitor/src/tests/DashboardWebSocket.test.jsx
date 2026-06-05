@@ -7,7 +7,7 @@ import Dashboard from "../pages/Dashboard.jsx";
 import { useSignalsStore } from "../store/signalsStore.js";
 
 const wsMock = vi.hoisted(() => ({
-  options: null,
+  optionsByPath: new Map(),
   status: "open",
 }));
 
@@ -19,9 +19,17 @@ vi.mock("../api/signals.js", async () => {
   };
 });
 
+vi.mock("../api/scanLogs.js", async () => {
+  const actual = await vi.importActual("../api/scanLogs.js");
+  return {
+    ...actual,
+    fetchScanLogs: vi.fn(() => Promise.resolve([])),
+  };
+});
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
-  useReconnectingWebSocket: vi.fn((_path, options) => {
-    wsMock.options = options;
+  useReconnectingWebSocket: vi.fn((path, options) => {
+    wsMock.optionsByPath.set(path, options);
     return { status: wsMock.status, socket: null };
   }),
 }));
@@ -53,7 +61,7 @@ vi.mock("echarts/renderers", () => ({
 describe("Dashboard websocket signal stream", () => {
   beforeEach(() => {
     resetSignalsStore();
-    wsMock.options = null;
+    wsMock.optionsByPath.clear();
     wsMock.status = "open";
   });
 
@@ -69,8 +77,8 @@ describe("Dashboard websocket signal stream", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(wsMock.options?.onMessage).toBeTypeOf("function"));
-    wsMock.options.onMessage({
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    wsMock.optionsByPath.get("/ws/signals").onMessage({
       data: JSON.stringify({
         type: "signal_snapshot",
         signals: [
@@ -95,8 +103,8 @@ describe("Dashboard websocket signal stream", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(wsMock.options?.onMessage).toBeTypeOf("function"));
-    wsMock.options.onMessage({
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    wsMock.optionsByPath.get("/ws/signals").onMessage({
       data: JSON.stringify({
         type: "signal_snapshot",
         signals: [
@@ -124,8 +132,8 @@ describe("Dashboard websocket signal stream", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(wsMock.options?.onMessage).toBeTypeOf("function"));
-    wsMock.options.onMessage({
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    wsMock.optionsByPath.get("/ws/signals").onMessage({
       data: JSON.stringify({
         type: "signal_snapshot",
         signals: [
@@ -187,7 +195,7 @@ describe("Dashboard websocket signal stream", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("reconnecting")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("reconnecting").length).toBeGreaterThanOrEqual(1));
     expect(screen.getByTestId("signal-card-ws-existing")).toBeInTheDocument();
   });
 });

@@ -147,6 +147,26 @@ async fn lan_bound_sensitive_get_without_token_is_rejected() {
 }
 
 #[tokio::test]
+async fn lan_bound_scan_log_get_without_token_is_rejected() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/api/runtime/scan-log/recent"))
+        .send()
+        .await
+        .expect("scan log guard response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(payload["reason"], "operator_token_required");
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
 async fn lan_bound_sensitive_get_accepts_operator_token_header() {
     let _guard = ENV_LOCK.lock().await;
     clear_operator_env();
@@ -166,6 +186,39 @@ async fn lan_bound_sensitive_get_accepts_operator_token_header() {
 }
 
 #[tokio::test]
+async fn loopback_scan_log_recent_is_read_only_and_redacted() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "secret-test-token");
+    std::env::set_var(
+        "DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/123/secret",
+    );
+    let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
+
+    let response = test_http_client()
+        .get(format!("http://{addr}/api/runtime/scan-log/recent"))
+        .send()
+        .await
+        .expect("scan log response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("scan log json");
+    assert_eq!(payload["readOnly"], true);
+    assert_eq!(payload["runtimeModified"], false);
+    let text = payload.to_string();
+    assert!(!text.contains("secret-test-token"));
+    assert!(!text.contains("discord.com/api/webhooks"));
+    assert!(!text.contains("authorization"));
+    assert!(!text.contains("rawPayload"));
+    assert!(!text.contains("markout"));
+    assert!(!text.contains("evidence"));
+
+    server.abort();
+    clear_operator_env();
+    std::env::remove_var("DISCORD_WEBHOOK_URL");
+}
+
+#[tokio::test]
 async fn lan_bound_websocket_get_without_token_is_rejected() {
     let _guard = ENV_LOCK.lock().await;
     clear_operator_env();
@@ -177,6 +230,26 @@ async fn lan_bound_websocket_get_without_token_is_rejected() {
         .send()
         .await
         .expect("ws guard response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(payload["reason"], "operator_token_required");
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_scan_log_websocket_get_without_token_is_rejected() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/ws/scan-logs"))
+        .send()
+        .await
+        .expect("scan log ws guard response");
     assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
     let payload: serde_json::Value = rejected.json().await.expect("guard json");
     assert_eq!(payload["reason"], "operator_token_required");
