@@ -175,7 +175,7 @@ impl ToxicService {
         let recent_events = self.recent_events.read().clone();
         let latest_event = recent_events.last().cloned();
         let state = ToxicState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: flow_state.symbol.clone(),
             updated_at: now_ts,
             threshold_btc: self.engine.params().threshold_btc,
             windows_ms: self.windows_ms.clone(),
@@ -204,10 +204,11 @@ impl ToxicService {
     }
 
     fn push_event(&self, event: ToxicEvent) {
-        if self.seen_event_ids.read().contains(&event.id) {
+        let semantic_key = toxic_event_semantic_key(&event);
+        if self.seen_event_ids.read().contains(&semantic_key) {
             return;
         }
-        self.seen_event_ids.write().insert(event.id.clone());
+        self.seen_event_ids.write().insert(semantic_key);
         let mut events = self.recent_events.write();
         if let Some(store) = &self.store {
             if let Err(err) = store.insert_event(&event) {
@@ -220,6 +221,32 @@ impl ToxicService {
             events.drain(0..overflow);
         }
     }
+}
+
+pub fn toxic_event_semantic_key(event: &ToxicEvent) -> String {
+    let direction = match event.direction {
+        ToxicDirection::Buy => "buy",
+        ToxicDirection::Sell => "sell",
+        ToxicDirection::Neutral => "neutral",
+    };
+    let venue = event
+        .leader_venue
+        .map(|venue| venue.as_key())
+        .unwrap_or("unknown");
+    let bucket = if event.window_ms == 0 {
+        event.ts
+    } else {
+        event.ts - event.ts.rem_euclid(event.window_ms as i64)
+    };
+    format!(
+        "{}:{}:{}:{}:{}:{}",
+        event.symbol,
+        direction,
+        event.window_ms,
+        venue,
+        event.severity.label(),
+        bucket
+    )
 }
 
 pub fn latest_toxic_summary(state: &ToxicState) -> (ToxicDirection, f64, bool) {

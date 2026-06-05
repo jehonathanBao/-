@@ -204,6 +204,12 @@ fn signal(
         linked_wall_interpretation_signal_ids: Vec::new(),
         linked_structural_signal_ids: Vec::new(),
         read_only: true,
+        detector_version: None,
+        score_breakdown: None,
+        evidence: None,
+        data_quality: None,
+        dedupe_key: None,
+        resolution_status: None,
     }
 }
 

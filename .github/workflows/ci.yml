@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  rust-and-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check dashboard JavaScript syntax
+        run: node --check web/app.js
+      - name: Install React frontend dependencies
+        working-directory: toxic-order-monitor
+        run: npm ci
+      - name: React frontend build
+        working-directory: toxic-order-monitor
+        run: npm run build
+      - name: React frontend tests
+        working-directory: toxic-order-monitor
+        run: npm test
+      - name: React frontend dependency audit
+        working-directory: toxic-order-monitor
+        run: npm audit --audit-level=high
+      - name: Rust format
+        run: cargo fmt --check
+      - name: Rust check
+        run: cargo check --all-targets
+      - name: Rust clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Candidate replay and calibration tests
+        run: cargo test --test candidate_replay_runner_tests --test candidate_markout_evaluator_tests --test candidate_calibration_report_tests
+      - name: Production replay config tests
+        run: cargo test --test production_replay_config_tests
+      - name: Production replay smoke tests
+        run: cargo test --test production_replay_report_tests --test production_report_csv_tests
+      - name: Docker Compose config
+        env:
+          OPERATOR_TOKEN: ci-dummy-operator-token
+        run: docker compose config
+      - name: Rust tests
+        run: cargo test --all-targets --all-features --no-fail-fast -j 1

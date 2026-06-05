@@ -12,6 +12,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::config::AppConfig;
 
 const OPERATOR_TOKEN_HEADER: &str = "x-operator-api-token";
+const OPERATOR_TOKEN_HEADER_ALIAS: &str = "x-operator-token";
 
 #[derive(Debug, Clone)]
 pub struct ApiSecurityConfig {
@@ -25,7 +26,8 @@ pub struct ApiSecurityConfig {
 impl ApiSecurityConfig {
     pub fn from_app_config(config: &AppConfig) -> Self {
         let allow_lan_dashboard = env_bool("ALLOW_LAN_DASHBOARD", false);
-        let operator_api_token = std::env::var("OPERATOR_API_TOKEN")
+        let operator_api_token = std::env::var("OPERATOR_TOKEN")
+            .or_else(|_| std::env::var("OPERATOR_API_TOKEN"))
             .ok()
             .filter(|value| !value.trim().is_empty());
         let allowed_origin = std::env::var("ALLOWED_DASHBOARD_ORIGIN")
@@ -57,6 +59,7 @@ impl ApiSecurityConfig {
                 header::CONTENT_TYPE,
                 header::AUTHORIZATION,
                 axum::http::HeaderName::from_static(OPERATOR_TOKEN_HEADER),
+                axum::http::HeaderName::from_static(OPERATOR_TOKEN_HEADER_ALIAS),
             ])
             .allow_origin(AllowOrigin::predicate(move |origin, _request_head| {
                 allowed_origins.iter().any(|allowed| {
@@ -74,6 +77,28 @@ pub async fn guard_operator_post_requests(
     next: Next,
 ) -> Response {
     if request.method() != Method::POST {
+        if sensitive_get_requires_token(&security, &request) {
+            let status = if security.operator_api_token.is_some() {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            return (
+                status,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "readOnly": true,
+                    "runtimeModified": false,
+                    "reason": if security.operator_api_token.is_some() {
+                        "operator_token_required"
+                    } else {
+                        "operator_token_missing_for_non_loopback_api"
+                    },
+                    "message": "Non-loopback API access requires X-Operator-Token or Authorization: Bearer token."
+                })),
+            )
+                .into_response();
+        }
         return next.run(request).await;
     }
 
@@ -94,6 +119,20 @@ pub async fn guard_operator_post_requests(
         .into_response()
 }
 
+fn sensitive_get_requires_token(security: &ApiSecurityConfig, request: &Request) -> bool {
+    if request.method() != Method::GET || security.api_host.is_loopback() {
+        return false;
+    }
+    let path = request.uri().path();
+    if !(path.starts_with("/api/") || path.starts_with("/ws/")) {
+        return false;
+    }
+    if token_matches(security, request.headers()) {
+        return false;
+    }
+    true
+}
+
 fn post_allowed(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool {
     let origin_allowed = origin_is_allowed(security, headers);
     if !origin_allowed {
@@ -104,9 +143,8 @@ fn post_allowed(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool {
         return true;
     }
 
-    security.allow_lan_dashboard
+    (security.allow_lan_dashboard || security.operator_api_token.is_some())
         && token_matches(security, headers)
-        && (origin_present(headers) || !host_is_loopback(headers, security.api_port))
 }
 
 fn origin_is_allowed(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool {
@@ -119,16 +157,13 @@ fn origin_is_allowed(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool 
         .any(|allowed| origin.as_bytes() == allowed.as_bytes())
 }
 
-fn origin_present(headers: &HeaderMap) -> bool {
-    headers.get(header::ORIGIN).is_some()
-}
-
 fn token_matches(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool {
     let Some(expected) = security.operator_api_token.as_deref() else {
         return false;
     };
     let header_token = headers
         .get(OPERATOR_TOKEN_HEADER)
+        .or_else(|| headers.get(OPERATOR_TOKEN_HEADER_ALIAS))
         .and_then(|value| value.to_str().ok());
     if header_token == Some(expected) {
         return true;

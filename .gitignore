@@ -5,6 +5,15 @@ target-*/
 data/runtime-acceptance*/
 data/archive/
 data/bad/
+data/production_replay/*.jsonl
+data/production_replay/*.csv
+data/production_replay/*.json
+data/production_replay/*.parquet
+data/production_replay/reports/
+data/production_replay/labels/
+!data/production_replay/README.md
+!data/production_replay/.gitkeep
+config/replay.production.local.toml
 .env
 .env.*
 !.env.example

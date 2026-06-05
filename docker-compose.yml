@@ -1,0 +1,62 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: toxic-bot
+    restart: unless-stopped
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      READ_ONLY: "true"
+      DRY_RUN: ${DRY_RUN:-true}
+      API_HOST: 0.0.0.0
+      API_PORT: 3000
+      WS_SIGNAL_INTERVAL_MS: ${WS_SIGNAL_INTERVAL_MS:-1000}
+      ALLOW_LAN_DASHBOARD: "true"
+      ALLOWED_DASHBOARD_ORIGIN: ${ALLOWED_DASHBOARD_ORIGIN:-http://localhost:5173}
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in your shell or .env before starting compose}
+      SQLITE_ENABLED: "true"
+      SQLITE_PATH: /app/data/btc-toxic-flow.sqlite
+      REPLAY_REPORT_DIR: /app/data/reports
+      ENABLE_BINANCE: ${ENABLE_BINANCE:-false}
+      ENABLE_BYBIT: ${ENABLE_BYBIT:-false}
+      ENABLE_OKX: ${ENABLE_OKX:-false}
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      ALERT_MIN_SCORE: ${ALERT_MIN_SCORE:-80}
+      ALERT_MIN_DATA_QUALITY: ${ALERT_MIN_DATA_QUALITY:-70}
+    ports:
+      - "127.0.0.1:8000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -x /app/btc-toxic-flow-monitor-rs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./toxic-order-monitor
+      dockerfile: Dockerfile.frontend
+    container_name: toxic-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_PROXY_API_TARGET: http://backend:3000
+      VITE_PROXY_WS_TARGET: ws://backend:3000
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in your shell or .env before starting compose}
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./toxic-order-monitor/src:/app/src
+      - ./toxic-order-monitor/index.html:/app/index.html
+      - ./toxic-order-monitor/vite.config.js:/app/vite.config.js
+      - ./toxic-order-monitor/tailwind.config.js:/app/tailwind.config.js
+      - ./toxic-order-monitor/postcss.config.js:/app/postcss.config.js
+      - /app/node_modules

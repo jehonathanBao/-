@@ -1,0 +1,4 @@
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":0,"price":100000.0}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":1000,"side":"ASK","price":100100.0,"qtyBefore":0.0,"qtyAfter":1.0,"sequence":1}
+{"type":"trade","venue":"binance","symbol":"BTC-PERP","tsMs":1500,"price":100050.0,"qty":0.05,"aggressorSide":"buy","tradeId":"n-b-1"}
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":6000,"price":100002.0}

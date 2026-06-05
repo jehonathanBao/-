@@ -1,0 +1,9 @@
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":0,"price":100000.0}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":1000,"side":"ASK","price":100100.0,"qtyBefore":0.0,"qtyAfter":3.0,"sequence":1}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":1100,"side":"ASK","price":100200.0,"qtyBefore":0.0,"qtyAfter":3.0,"sequence":2}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":1200,"side":"ASK","price":100300.0,"qtyBefore":0.0,"qtyAfter":3.0,"sequence":3}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":2000,"side":"ASK","price":100100.0,"qtyBefore":3.0,"qtyAfter":0.0,"sequence":4}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":2100,"side":"ASK","price":100200.0,"qtyBefore":3.0,"qtyAfter":0.0,"sequence":5}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":2200,"side":"ASK","price":100300.0,"qtyBefore":3.0,"qtyAfter":0.0,"sequence":6}
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":2200,"price":100000.0}
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":7200,"price":100150.0}

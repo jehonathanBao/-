@@ -1,0 +1,62 @@
+{
+  "name": "order-risk-advisory-flow",
+  "description": "Advisory Langflow flow: redacted order JSON -> rules + LLM -> risk_score/risk_level/reason/suggested_action.",
+  "input_schema": {
+    "order_id": "string",
+    "tenant_id": "string",
+    "shop_id": "string",
+    "features": {
+      "amount_cents": "number",
+      "buyer_age_days": "number",
+      "phone_hash_present": "boolean",
+      "address_hash_present": "boolean",
+      "rule_hits": "string[]"
+    }
+  },
+  "policy": [
+    "Advisory only",
+    "No refund/intercept/ban without manual review",
+    "Low risk cannot blacklist",
+    "Manual release cannot be auto-blocked",
+    "Do not emit PII"
+  ],
+  "output_schema": {
+    "risk_score": "number",
+    "risk_level": "low|medium|high|critical|data_insufficient",
+    "reason": "string",
+    "suggested_action": "allow|review|hold|block",
+    "policy_flags": "string[]",
+    "requires_manual_review": "boolean"
+  },
+  "nodes": [
+    {
+      "id": "webhook-input",
+      "type": "WebhookInput",
+      "config": {
+        "expects_redacted_payload": true
+      }
+    },
+    {
+      "id": "policy-rules",
+      "type": "PythonComponent",
+      "config": {
+        "component": "OrderRiskPolicyContext",
+        "returns": "rule_hits, blacklist_summary, whitelist_summary, manual_release_state"
+      }
+    },
+    {
+      "id": "risk-agent",
+      "type": "Agent",
+      "config": {
+        "instruction": "Score redacted order risk. Return only JSON matching the output schema. Never suggest irreversible action without manual review."
+      }
+    },
+    {
+      "id": "schema-guard",
+      "type": "JsonSchemaValidator",
+      "config": {
+        "fail_closed_as": "data_insufficient"
+      }
+    }
+  ]
+}

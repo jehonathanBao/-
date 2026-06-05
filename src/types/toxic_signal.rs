@@ -15,6 +15,9 @@ pub enum ToxicSignalType {
     AbsorptionReversalCandidate,
     LiquiditySweepReversalCandidate,
     NoTradeChopRisk,
+    SpoofingCandidate,
+    LayeringCandidate,
+    IcebergCandidate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +47,38 @@ pub struct ToxicSupportingEvidence {
     pub summary: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoreBreakdown {
+    pub toxicity_score: f64,
+    pub confidence: f64,
+    pub data_quality: f64,
+    pub markout_evidence: f64,
+    pub liquidity_impact: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalEvidence {
+    pub venue: String,
+    pub symbol: String,
+    pub window_ms: i64,
+    pub observed_start_ms: i64,
+    pub observed_end_ms: i64,
+    pub add_qty: f64,
+    pub cancel_qty: f64,
+    pub fill_qty: f64,
+    pub cancel_to_trade_ratio: Option<f64>,
+    pub depth_before: Option<f64>,
+    pub depth_after: Option<f64>,
+    pub depth_impact: Option<f64>,
+    pub price_impact_bps: Option<f64>,
+    pub markout_1s_bps: Option<f64>,
+    pub markout_5s_bps: Option<f64>,
+    pub markout_30s_bps: Option<f64>,
+    pub raw_evidence_links: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToxicSignal {
@@ -67,6 +102,18 @@ pub struct ToxicSignal {
     pub linked_wall_interpretation_signal_ids: Vec<String>,
     pub linked_structural_signal_ids: Vec<String>,
     pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detector_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_breakdown: Option<ScoreBreakdown>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<SignalEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_quality: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

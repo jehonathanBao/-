@@ -1,0 +1,39 @@
+ARG RUST_IMAGE=rust:1-bookworm
+FROM ${RUST_IMAGE} AS builder
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY config ./config
+COPY web ./web
+
+RUN cargo build --release --bin btc-toxic-flow-monitor-rs
+
+FROM debian:bookworm-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --create-home --home-dir /home/toxic toxic
+
+COPY --from=builder /app/target/release/btc-toxic-flow-monitor-rs ./btc-toxic-flow-monitor-rs
+COPY config ./config
+
+RUN mkdir -p /app/data /app/.runtime \
+    && chown -R toxic:toxic /app /home/toxic
+
+USER toxic
+
+EXPOSE 3000
+
+ENV RUST_LOG=info
+ENV READ_ONLY=true
+ENV API_HOST=0.0.0.0
+ENV API_PORT=3000
+ENV SQLITE_PATH=/app/data/btc-toxic-flow.sqlite
+ENV REPLAY_REPORT_DIR=/app/data/reports
+
+CMD ["./btc-toxic-flow-monitor-rs", "serve"]

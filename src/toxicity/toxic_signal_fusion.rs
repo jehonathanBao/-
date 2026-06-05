@@ -978,6 +978,12 @@ fn build_signal(
         linked_wall_interpretation_signal_ids,
         linked_structural_signal_ids,
         read_only: true,
+        detector_version: Some("toxic-signal-fusion-v1".to_string()),
+        score_breakdown: None,
+        evidence: None,
+        data_quality: None,
+        dedupe_key: None,
+        resolution_status: Some("candidate".to_string()),
     }
 }
 
@@ -1174,6 +1180,9 @@ fn signal_type_key(signal_type: ToxicSignalType) -> &'static str {
         ToxicSignalType::AbsorptionReversalCandidate => "absorption_reversal_candidate",
         ToxicSignalType::LiquiditySweepReversalCandidate => "liquidity_sweep_reversal_candidate",
         ToxicSignalType::NoTradeChopRisk => "no_trade_chop_risk",
+        ToxicSignalType::SpoofingCandidate => "spoofing_candidate",
+        ToxicSignalType::LayeringCandidate => "layering_candidate",
+        ToxicSignalType::IcebergCandidate => "iceberg_candidate",
     }
 }
 

@@ -1,0 +1,9 @@
+type,venue,symbol,tsMs,side,price,qty,qtyBefore,qtyAfter,sequence,tradeId,orderId,aggressorSide
+snapshot,binance,BTC-PERP,0,,100000,,,,1,,,
+book_delta,binance,BTC-PERP,1000,ask,100100,,0,3,2,,,
+book_delta,binance,BTC-PERP,3000,ask,100100,,3,0,3,,,
+trade,binance,BTC-PERP,3050,,100150,1.2,,,4,t1,,buy
+snapshot,binance,BTC-PERP,3000,,100000,,,,5,,,
+snapshot,binance,BTC-PERP,4000,,100120,,,,6,,,
+snapshot,binance,BTC-PERP,8000,,100180,,,,7,,,
+snapshot,binance,BTC-PERP,33000,,100260,,,,8,,,

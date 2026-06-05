@@ -189,6 +189,12 @@ fn detail_fixture(with_governance: bool) -> DetailFixture {
         linked_wall_interpretation_signal_ids: Vec::new(),
         linked_structural_signal_ids: Vec::new(),
         read_only: true,
+        detector_version: None,
+        score_breakdown: None,
+        evidence: None,
+        data_quality: None,
+        dedupe_key: None,
+        resolution_status: None,
     };
     let second_signal = ToxicSignal {
         signal_id: "signal-2".to_string(),
@@ -211,6 +217,12 @@ fn detail_fixture(with_governance: bool) -> DetailFixture {
         linked_wall_interpretation_signal_ids: Vec::new(),
         linked_structural_signal_ids: Vec::new(),
         read_only: true,
+        detector_version: None,
+        score_breakdown: None,
+        evidence: None,
+        data_quality: None,
+        dedupe_key: None,
+        resolution_status: None,
     };
 
     let inbox_recent = ToxicSignalInboxRecentResponse {

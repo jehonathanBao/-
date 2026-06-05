@@ -103,6 +103,176 @@ async fn lan_bound_post_requires_configured_operator_token() {
 }
 
 #[tokio::test]
+async fn lan_bound_post_accepts_operator_token_without_lan_dashboard_flag() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let allowed = test_http_client()
+        .post(format!("http://{addr}/api/runtime/start"))
+        .header("x-operator-token", "test-token")
+        .send()
+        .await
+        .expect("token response");
+    assert_eq!(allowed.status(), reqwest::StatusCode::OK);
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_sensitive_get_without_token_is_rejected() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let dashboard = test_http_get(format!("http://{addr}/dashboard"))
+        .await
+        .expect("dashboard response");
+    assert_eq!(dashboard.status(), reqwest::StatusCode::OK);
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/api/status"))
+        .send()
+        .await
+        .expect("status response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(payload["reason"], "operator_token_required");
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_sensitive_get_accepts_operator_token_header() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let allowed = test_http_client()
+        .get(format!("http://{addr}/api/status"))
+        .header("x-operator-token", "test-token")
+        .send()
+        .await
+        .expect("status response");
+    assert_eq!(allowed.status(), reqwest::StatusCode::OK);
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_websocket_get_without_token_is_rejected() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/ws/signals"))
+        .send()
+        .await
+        .expect("ws guard response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(payload["reason"], "operator_token_required");
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_websocket_rejects_invalid_operator_token() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/ws/signals"))
+        .header("x-operator-token", "wrong-token")
+        .send()
+        .await
+        .expect("ws guard response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_websocket_accepts_valid_operator_token_before_upgrade() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let response = test_http_client()
+        .get(format!("http://{addr}/ws/signals"))
+        .header("x-operator-token", "test-token")
+        .send()
+        .await
+        .expect("ws response");
+    assert_ne!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn healthz_and_readyz_return_operator_safe_status() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
+
+    let health = test_http_get(format!("http://{addr}/healthz"))
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), reqwest::StatusCode::OK);
+    let health_payload: serde_json::Value = health.json().await.expect("health json");
+    assert_eq!(health_payload["ok"], true);
+    assert_eq!(health_payload["runtimeModified"], false);
+
+    let ready = test_http_get(format!("http://{addr}/readyz"))
+        .await
+        .expect("ready response");
+    assert_eq!(ready.status(), reqwest::StatusCode::OK);
+    let ready_payload: serde_json::Value = ready.json().await.expect("ready json");
+    assert_eq!(ready_payload["ok"], true);
+    assert_eq!(ready_payload["runtimeModified"], false);
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_sensitive_get_without_configured_token_is_rejected() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!("http://{addr}/api/status"))
+        .send()
+        .await
+        .expect("status response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::FORBIDDEN);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(
+        payload["reason"],
+        "operator_token_missing_for_non_loopback_api"
+    );
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
 async fn cors_does_not_allow_every_origin() {
     let _guard = ENV_LOCK.lock().await;
     clear_operator_env();
@@ -142,6 +312,7 @@ async fn spawn_app(config: AppConfig) -> (std::net::SocketAddr, tokio::task::Joi
 fn clear_operator_env() {
     for key in [
         "ALLOW_LAN_DASHBOARD",
+        "OPERATOR_TOKEN",
         "OPERATOR_API_TOKEN",
         "ALLOWED_DASHBOARD_ORIGIN",
     ] {

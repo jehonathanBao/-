@@ -44,7 +44,7 @@ impl<'a> RollingWindows<'a> {
             })
             .collect::<BTreeMap<_, _>>();
         FlowState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: self.infer_symbol(now_ts),
             updated_at: now_ts,
             windows,
         }
@@ -107,7 +107,10 @@ impl<'a> RollingWindows<'a> {
         let trade_count = trades.len() as u64;
 
         FlowWindow {
-            symbol: "BTC-PERP".to_string(),
+            symbol: trades
+                .last()
+                .map(|trade| trade.symbol.clone())
+                .unwrap_or_else(|| self.infer_symbol(now_ts)),
             window_ms,
             now_ts,
             aggressive_buy_btc,
@@ -142,6 +145,21 @@ impl<'a> RollingWindows<'a> {
                 stale_venues,
             },
         }
+    }
+
+    fn infer_symbol(&self, now_ts: i64) -> String {
+        self.trade_buffer
+            .get_trades_since(now_ts - self.stale_ms)
+            .last()
+            .map(|trade| trade.symbol.clone())
+            .or_else(|| {
+                self.book_state
+                    .latest_books()
+                    .values()
+                    .find(|book| now_ts - book.ts <= self.stale_ms)
+                    .map(|book| book.symbol.clone())
+            })
+            .unwrap_or_else(|| "BTC-PERP".to_string())
     }
 }
 

@@ -1,0 +1,9 @@
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":0,"price":100000.0}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":1000,"side":"BID","price":100000.0,"qtyBefore":1.0,"qtyAfter":2.0,"sequence":1}
+{"type":"trade","venue":"binance","symbol":"BTC-PERP","tsMs":1100,"price":100000.0,"qty":2.5,"aggressorSide":"sell","tradeId":"ic-s-1"}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":2000,"side":"BID","price":100000.0,"qtyBefore":1.0,"qtyAfter":2.0,"sequence":2}
+{"type":"trade","venue":"binance","symbol":"BTC-PERP","tsMs":2100,"price":100000.0,"qty":2.5,"aggressorSide":"sell","tradeId":"ic-s-2"}
+{"type":"book_delta","venue":"binance","symbol":"BTC-PERP","tsMs":3000,"side":"BID","price":100000.0,"qtyBefore":1.0,"qtyAfter":2.0,"sequence":3}
+{"type":"trade","venue":"binance","symbol":"BTC-PERP","tsMs":3100,"price":100000.0,"qty":2.5,"aggressorSide":"sell","tradeId":"ic-s-3"}
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":3000,"price":100000.0}
+{"type":"snapshot","venue":"binance","symbol":"BTC-PERP","tsMs":8000,"price":99940.0}

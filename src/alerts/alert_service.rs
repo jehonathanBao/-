@@ -321,7 +321,8 @@ pub fn alert_key(event: &ToxicEvent) -> String {
         ToxicDirection::Neutral => "neutral",
     };
     format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
+        event.symbol,
         direction,
         event.window_ms,
         event

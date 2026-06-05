@@ -1,6 +1,7 @@
 pub mod active_trade_toxicity_routes;
 pub mod calibration_routes;
 pub mod dev_alert_routes;
+pub mod discord_notification_routes;
 pub mod durable_archive_dryrun_routes;
 pub mod durable_archive_write_audit_routes;
 pub mod durable_archive_write_routes;
@@ -40,6 +41,7 @@ pub mod toxic_signal_history_routes;
 pub mod toxic_signal_inbox_routes;
 pub mod toxic_signal_report_routes;
 pub mod toxic_signal_routes;
+pub mod toxic_signal_ws_routes;
 pub mod toxic_weight_recommendation_routes;
 pub mod toxic_weight_review_routes;
 pub mod whale_flow_calibration_routes;

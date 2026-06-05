@@ -84,7 +84,7 @@ impl AppConfig {
             return Err(anyhow!("READ_ONLY must be true"));
         }
 
-        Ok(Self {
+        let config = Self {
             app_env: string_setting(&settings, "APP_ENV", "app_env", "development"),
             read_only,
             api_host: string_setting(&settings, "API_HOST", "api_host", "127.0.0.1")
@@ -171,7 +171,21 @@ impl AppConfig {
             liq_hunt_watch_score: parse_f64("LIQ_HUNT_WATCH_SCORE", 30.0)?,
             book_stale_ms: parse_i64("BOOK_STALE_MS", 5000)?,
             max_buffer_age_ms: parse_i64("MAX_BUFFER_AGE_MS", 120000)?,
-        })
+        };
+
+        if !config.api_host.is_loopback()
+            && env::var("OPERATOR_TOKEN")
+                .or_else(|_| env::var("OPERATOR_API_TOKEN"))
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .is_none()
+        {
+            tracing::warn!(
+                "API_HOST is non-loopback; /api routes will reject requests without OPERATOR_TOKEN"
+            );
+        }
+
+        Ok(config)
     }
 }
 

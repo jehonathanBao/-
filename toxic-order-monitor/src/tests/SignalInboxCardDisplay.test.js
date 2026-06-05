@@ -1,0 +1,182 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import React from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import SignalTable from "../components/SignalTable.jsx";
+import { mockSignals } from "../data/mockSignals.js";
+import { useSignalsStore } from "../store/signalsStore.js";
+
+describe("Signal inbox card display", () => {
+  beforeEach(() => {
+    resetStore();
+  });
+
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+  });
+
+  it("keeps old signals in raw inbox when new signals arrive", () => {
+    useSignalsStore.getState().setSignals([
+      {
+        ...mockSignals[0],
+        id: "sig_new",
+        dedupeKey: "binance:BTCUSDT:new-flow",
+      },
+    ]);
+
+    const ids = useSignalsStore.getState().rawInboxSignals.map((signal) => signal.id);
+    expect(ids).toContain("sig_001");
+    expect(ids).toContain("sig_new");
+  });
+
+  it("merges live snapshots into the persistent inbox instead of replacing it", () => {
+    resetStore([]);
+    const firstSnapshot = [mockSignals[0], mockSignals[1]];
+    const nextSnapshot = [
+      {
+        ...mockSignals[2],
+        id: "sig_live_snapshot_new",
+        dedupeKey: "binance:XRPUSDT:layering:new-live-snapshot",
+      },
+    ];
+
+    useSignalsStore.getState().setSignals(firstSnapshot);
+    useSignalsStore.getState().setSignals(nextSnapshot);
+
+    const state = useSignalsStore.getState();
+    const ids = state.rawInboxSignals.map((signal) => signal.id);
+    expect(ids).toContain("sig_001");
+    expect(ids).toContain("sig_002");
+    expect(ids).toContain("sig_live_snapshot_new");
+    expect(state.rawInboxSignals.find((signal) => signal.id === "sig_001").isLive).toBe(false);
+    expect(state.rawInboxSignals.find((signal) => signal.id === "sig_live_snapshot_new").isLive).toBe(true);
+  });
+
+  it("keeps cached signals when the latest backend snapshot is empty", () => {
+    resetStore([]);
+    useSignalsStore.getState().setSignals([mockSignals[0]]);
+
+    useSignalsStore.getState().setSignals([]);
+
+    const state = useSignalsStore.getState();
+    expect(state.rawInboxSignals).toHaveLength(1);
+    expect(state.rawInboxSignals[0].id).toBe("sig_001");
+    expect(state.rawInboxSignals[0].isLive).toBe(false);
+  });
+
+  it("does not render duplicate dedupeKey values twice", () => {
+    useSignalsStore.getState().setSignals([
+      {
+        ...mockSignals[0],
+        id: "sig_duplicate",
+        dedupeKey: mockSignals[0].dedupeKey,
+      },
+    ]);
+
+    expect(useSignalsStore.getState().rawInboxSignals).toHaveLength(mockSignals.length);
+  });
+
+  it("lets filtering affect visible signals without deleting raw inbox", () => {
+    useSignalsStore.getState().setRiskFilter("high");
+    const rawBefore = useSignalsStore.getState().rawInboxSignals.length;
+    const visibleSignals = useSignalsStore
+      .getState()
+      .rawInboxSignals.filter((signal) => signal.risk === useSignalsStore.getState().activeRiskFilter);
+
+    expect(visibleSignals.length).toBeLessThan(rawBefore);
+    expect(useSignalsStore.getState().rawInboxSignals).toHaveLength(rawBefore);
+  });
+
+  it("hides technical tags and internal fields from the card", () => {
+    renderInbox([mockSignals[0]]);
+
+    expect(screen.queryByText("inferred_from_l2_delta")).not.toBeInTheDocument();
+    expect(screen.queryByText("信心 / 风险评分")).not.toBeInTheDocument();
+    expect(screen.queryByText("dataQuality")).not.toBeInTheDocument();
+    expect(screen.queryByText("dedupeKey")).not.toBeInTheDocument();
+    expect(screen.queryByText("未处理")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /更多信息/ })).not.toBeInTheDocument();
+  });
+
+  it("shows only the final result description when evidence is missing", () => {
+    renderInbox([mockSignals[4]]);
+
+    expect(screen.getByText("无法判断方向")).toBeInTheDocument();
+    expect(screen.queryByText("insufficient_trade_confirmation")).not.toBeInTheDocument();
+  });
+
+  it("shows stale candidates instead of deleting them from the card list", () => {
+    const staleSignal = {
+      ...mockSignals[0],
+      isLive: false,
+      lastSeenAt: Date.now() - 120_000,
+    };
+
+    renderInbox([staleSignal]);
+
+    expect(screen.getByTestId("signal-card-sig_001")).toBeInTheDocument();
+    expect(screen.queryByText(/stale · last seen/)).not.toBeInTheDocument();
+  });
+
+  it("keeps low-score candidates visible even when Discord push is gated", () => {
+    const gatedSignal = {
+      ...mockSignals[7],
+      score: 20,
+      dataQuality: 30,
+    };
+
+    renderInbox([gatedSignal]);
+
+    expect(screen.getByTestId("signal-card-sig_008")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /推送 sig_008 到 Discord/ })).toHaveTextContent("仅页面展示");
+  });
+
+  it("shows a manual Discord push action for high-risk candidates", () => {
+    renderInbox([mockSignals[0]]);
+
+    expect(screen.getByRole("button", { name: /推送 sig_001 到 Discord/ })).toHaveTextContent("手动推送");
+    expect(screen.getByText("卖方挂单诱导，潜在下行压力")).toBeInTheDocument();
+  });
+
+  it("shows medium-risk candidates as display-only for Discord", () => {
+    const mediumSignal = {
+      ...mockSignals[2],
+      score: 95,
+      dataQuality: 95,
+    };
+
+    renderInbox([mediumSignal]);
+
+    expect(screen.getByTestId("signal-card-sig_003")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /推送 sig_003 到 Discord/ })).toHaveTextContent("仅页面展示");
+  });
+});
+
+function renderInbox(signals) {
+  return render(
+    React.createElement(SignalTable, {
+      inboxStats: { total: signals.length, high: 0, medium: signals.length, low: 0 },
+      onPush: vi.fn(),
+      onSelect: vi.fn(),
+      selectedSignal: signals[0],
+      signals,
+    }),
+  );
+}
+
+function resetStore(initialSignals = mockSignals) {
+  useSignalsStore.setState({
+    rawInboxSignals: initialSignals,
+    signals: initialSignals,
+    selectedSignal: initialSignals[0] ?? null,
+    activeRiskFilter: "all",
+    pushStatus: {},
+    storageWarning: null,
+    pushLogs: [],
+    discordConnected: false,
+    lastPushedAt: null,
+    clearedAtMs: 0,
+    clearedSignalKeys: [],
+  });
+}

@@ -134,6 +134,12 @@ fn source_signal() -> ToxicSignal {
         linked_wall_interpretation_signal_ids: vec!["wall-int-1".to_string()],
         linked_structural_signal_ids: vec!["struct-1".to_string()],
         read_only: true,
+        detector_version: None,
+        score_breakdown: None,
+        evidence: None,
+        data_quality: None,
+        dedupe_key: None,
+        resolution_status: None,
     }
 }
 

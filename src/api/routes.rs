@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::Path as FsPath, path::PathBuf};
 
 use crate::{
     app::AppState,
@@ -23,6 +23,52 @@ use crate::{
 };
 
 const MARKET_DATA_LAG_DEGRADED_WINDOW_MS: i64 = 15_000;
+
+pub async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": true,
+        "readOnly": true,
+        "runtimeModified": false,
+        "status": "healthy"
+    }))
+}
+
+pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    let config = state.config();
+    let mut errors = Vec::new();
+    if let Err(err) = ensure_dir_writable(FsPath::new(&config.replay_report_dir)) {
+        errors.push(format!("replay_report_dir: {err}"));
+    }
+    if config.sqlite_enabled {
+        if let Err(err) = ensure_dir_writable(sqlite_parent_dir(&config.sqlite_path)) {
+            errors.push(format!("sqlite_dir: {err}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Json(serde_json::json!({
+            "ok": true,
+            "readOnly": true,
+            "runtimeModified": false,
+            "status": "ready",
+            "dataWritable": true
+        }))
+        .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ok": false,
+                "readOnly": true,
+                "runtimeModified": false,
+                "status": "not_ready",
+                "dataWritable": false,
+                "reasons": errors
+            })),
+        )
+            .into_response()
+    }
+}
 
 pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     Json(build_status_response(&state))
@@ -670,4 +716,19 @@ fn valid_report_name(file_name: &str) -> bool {
         && !file_name.contains("..")
         && !file_name.contains('\\')
         && !file_name.contains('/')
+}
+
+fn sqlite_parent_dir(sqlite_path: &str) -> &FsPath {
+    FsPath::new(sqlite_path)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| FsPath::new("."))
+}
+
+fn ensure_dir_writable(path: &FsPath) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    let probe = path.join(format!(".readyz-{}.tmp", now_ms()));
+    fs::write(&probe, b"ready")?;
+    fs::remove_file(probe)?;
+    Ok(())
 }
