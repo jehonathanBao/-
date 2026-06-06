@@ -1,4 +1,6 @@
 import { finalResultDescription } from "../utils/signalResult.js";
+import CandidateExplanation from "./CandidateExplanation.jsx";
+import TofMetricsPanel from "./TofMetricsPanel.jsx";
 
 export default function SignalDetail({ signal }) {
   if (!signal) {
@@ -37,6 +39,11 @@ export default function SignalDetail({ signal }) {
       <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-4">
         <h4 className="mb-2 font-semibold text-white">最终结果描述</h4>
         <p className="text-base font-semibold leading-7 text-slate-100">{finalResult}</p>
+      </div>
+
+      <div className="mt-5 space-y-4">
+        <CandidateExplanation signal={signal} />
+        <TofMetricsPanel metrics={signal.tofMetrics} />
       </div>
 
       <div className="mt-5 rounded-xl border border-slate-700/60 bg-slate-950/40 p-4">

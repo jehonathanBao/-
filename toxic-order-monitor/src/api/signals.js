@@ -17,7 +17,11 @@ export function mapInboxItemToSignal(item) {
   const signalKind = item.signalKind ?? item.detector;
   const directionBias = item.directionBias ?? item.direction;
   const createdAtMs = item.createdAtMs ?? Date.parse(item.createdAt || "");
-  const score = Number.isFinite(Number(item.riskScore)) ? Number(item.riskScore) : scoreFromSeverity(item.severity);
+  const score = Number.isFinite(Number(item.finalRiskScore))
+    ? Number(item.finalRiskScore)
+    : Number.isFinite(Number(item.riskScore))
+      ? Number(item.riskScore)
+      : scoreFromSeverity(item.severity);
   const dataQuality = Number.isFinite(Number(item.dataQuality))
     ? Number(item.dataQuality)
     : dataQualityFromBucket(item.quality?.qualityBucket ?? item.qualityBucket);
@@ -36,6 +40,14 @@ export function mapInboxItemToSignal(item) {
     score,
     confidence: Math.round(Number(item.confidence || 0) * 100),
     dataQuality,
+    tofMetrics: normalizeTofMetrics(item.tofMetrics),
+    tofScore: numberOrNull(item.tofScore),
+    finalRiskScore: numberOrNull(item.finalRiskScore),
+    candidateType: item.candidateType || item.signalKind || item.detector || "toxic_flow_candidate",
+    explainTags: Array.isArray(item.explainTags) ? item.explainTags.filter((tag) => typeof tag === "string") : [],
+    directionLabel: item.directionLabel || directionLabel(directionBias),
+    directionConfidence: numberOrNull(item.directionConfidence),
+    directionSource: item.directionSource || "detector",
     status: "unhandled",
     pushedAt: null,
     isLive: true,
@@ -86,10 +98,44 @@ function dataQualityFromBucket(bucket) {
 
 function directionLabel(directionBias) {
   const value = String(directionBias || "").toLowerCase();
+  if (value.includes("bearish")) return "Ask/Sell";
+  if (value.includes("bullish")) return "Bid/Buy";
+  if (value.includes("mixed")) return "Mixed";
   if (value.includes("short")) return "Ask/Sell";
   if (value.includes("long")) return "Bid/Buy";
   if (value.includes("trap")) return "Trap Risk";
   return "Neutral";
+}
+
+function normalizeTofMetrics(metrics) {
+  if (!metrics || typeof metrics !== "object") {
+    return null;
+  }
+  return {
+    tradeImbalance: numberOrNull(metrics.tradeImbalance),
+    tradeImbalanceScore: numberOrNull(metrics.tradeImbalanceScore),
+    vpinProxy: numberOrNull(metrics.vpinProxy),
+    vpinBucketCount: numberOrNull(metrics.vpinBucketCount),
+    vpinWindowVolume: numberOrNull(metrics.vpinWindowVolume),
+    bidDepthWithdrawal: numberOrNull(metrics.bidDepthWithdrawal),
+    askDepthWithdrawal: numberOrNull(metrics.askDepthWithdrawal),
+    depthWithdrawalScore: numberOrNull(metrics.depthWithdrawalScore),
+    spreadBps: numberOrNull(metrics.spreadBps),
+    spreadWideningScore: numberOrNull(metrics.spreadWideningScore),
+    orderChurnScore: numberOrNull(metrics.orderChurnScore),
+    liquidityVacuumScore: numberOrNull(metrics.liquidityVacuumScore),
+    thinSide: typeof metrics.thinSide === "string" ? metrics.thinSide : "none",
+    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : "neutral",
+    metricsConfidence: numberOrNull(metrics.metricsConfidence),
+    tofScore: numberOrNull(metrics.tofScore),
+    finalRiskScore: numberOrNull(metrics.finalRiskScore),
+    metricsCompleteness: numberOrNull(metrics.metricsCompleteness),
+  };
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function formatTime(ms) {

@@ -8,6 +8,7 @@ use crate::alerts::discord_message_builder::{
     DiscordEmbed, DiscordEmbedField, DiscordEmbedFooter, DiscordWebhookPayload,
 };
 use crate::app::AppState;
+use crate::runtime::tof_metrics::TofMetrics;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,11 @@ pub struct DiscordNotificationRequest {
     pub markout_1s_bps: Option<f64>,
     pub markout_5s_bps: Option<f64>,
     pub markout_30s_bps: Option<f64>,
+    pub tof_metrics: Option<TofMetrics>,
+    pub tof_score: Option<f64>,
+    pub candidate_type: Option<String>,
+    pub explain_tags: Option<Vec<String>>,
+    pub direction_confidence: Option<f64>,
     pub test: Option<bool>,
 }
 
@@ -426,6 +432,77 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("无法判断方向");
 
+    let mut fields = vec![
+        DiscordEmbedField {
+            name: "方向".to_string(),
+            value: direction_field_value(direction_label, signal.direction_confidence).to_string(),
+            inline: true,
+        },
+        DiscordEmbedField {
+            name: "最终结果".to_string(),
+            value: final_result.to_string(),
+            inline: false,
+        },
+        DiscordEmbedField {
+            name: "风险评分".to_string(),
+            value: signal
+                .score
+                .map(|value| format!("{value}/100"))
+                .unwrap_or_else(|| "N/A".to_string()),
+            inline: true,
+        },
+        DiscordEmbedField {
+            name: "数据质量".to_string(),
+            value: signal
+                .data_quality
+                .map(|value| format!("{value:.0}/100"))
+                .unwrap_or_else(|| "N/A".to_string()),
+            inline: true,
+        },
+    ];
+    if let Some(candidate_type) = signal
+        .candidate_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        fields.push(DiscordEmbedField {
+            name: "候选类型".to_string(),
+            value: candidate_type.to_string(),
+            inline: true,
+        });
+    }
+    if let Some(tof_metrics) = signal.tof_metrics.as_ref() {
+        fields.push(DiscordEmbedField {
+            name: "TOF 指标".to_string(),
+            value: format!(
+                "TOF {:.0} / VPIN {:.0} / Imbalance {:.2} / Spread {:.1}bps / Depth {:.0}",
+                signal.tof_score.unwrap_or(tof_metrics.tof_score),
+                tof_metrics.vpin_proxy,
+                tof_metrics.trade_imbalance,
+                tof_metrics.spread_bps,
+                tof_metrics.depth_withdrawal_score
+            ),
+            inline: false,
+        });
+    }
+    if let Some(tags) = signal.explain_tags.as_ref().filter(|tags| !tags.is_empty()) {
+        fields.push(DiscordEmbedField {
+            name: "核心解释标签".to_string(),
+            value: tags
+                .iter()
+                .take(6)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" + "),
+            inline: false,
+        });
+    }
+    fields.push(DiscordEmbedField {
+        name: "说明".to_string(),
+        value: "该信号基于公开盘口 / L2 数据推断，为 Candidate，不是执法或定性结论。".to_string(),
+        inline: false,
+    });
+
     DiscordWebhookPayload {
         content: None,
         embeds: vec![DiscordEmbed {
@@ -435,40 +512,7 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
             ),
             description: format!("{exchange} / {symbol} · {event_type} · {side}"),
             color: discord_embed_color_from_direction(direction),
-            fields: vec![
-                DiscordEmbedField {
-                    name: "方向".to_string(),
-                    value: direction_label.to_string(),
-                    inline: true,
-                },
-                DiscordEmbedField {
-                    name: "最终结果".to_string(),
-                    value: final_result.to_string(),
-                    inline: false,
-                },
-                DiscordEmbedField {
-                    name: "风险评分".to_string(),
-                    value: signal
-                        .score
-                        .map(|value| format!("{value}/100"))
-                        .unwrap_or_else(|| "N/A".to_string()),
-                    inline: true,
-                },
-                DiscordEmbedField {
-                    name: "数据质量".to_string(),
-                    value: signal
-                        .data_quality
-                        .map(|value| format!("{value:.0}/100"))
-                        .unwrap_or_else(|| "N/A".to_string()),
-                    inline: true,
-                },
-                DiscordEmbedField {
-                    name: "说明".to_string(),
-                    value: "该信号基于公开盘口 / L2 数据推断，为 Candidate，不是执法或定性结论。"
-                        .to_string(),
-                    inline: false,
-                },
-            ],
+            fields,
             footer: Some(DiscordEmbedFooter {
                 text: format!(
                     "Candidate only. Signal: {}",
@@ -478,6 +522,13 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
             timestamp: signal.time.clone(),
         }],
     }
+}
+
+fn direction_field_value(direction_label: &str, confidence: Option<f64>) -> String {
+    confidence.map_or_else(
+        || direction_label.to_string(),
+        |confidence| format!("{direction_label}，置信度 {:.0}", confidence),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -761,6 +812,11 @@ mod tests {
             markout_1s_bps: None,
             markout_5s_bps: None,
             markout_30s_bps: None,
+            tof_metrics: None,
+            tof_score: None,
+            candidate_type: None,
+            explain_tags: None,
+            direction_confidence: None,
             test: None,
         }
     }

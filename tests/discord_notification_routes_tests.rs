@@ -158,6 +158,11 @@ fn high_request() -> DiscordNotificationRequest {
         markout_1s_bps: None,
         markout_5s_bps: None,
         markout_30s_bps: None,
+        tof_metrics: None,
+        tof_score: None,
+        candidate_type: None,
+        explain_tags: None,
+        direction_confidence: None,
         test: None,
     }
 }

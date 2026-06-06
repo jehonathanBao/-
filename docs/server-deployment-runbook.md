@@ -133,7 +133,22 @@ Keep the stream read-only:
 - do not send markout fields, raw evidence, stale flags, tokens, webhook URLs, or private payloads
 - tune `WS_SIGNAL_INTERVAL_MS` for snapshot frequency
 - tune `SCAN_LOG_BUFFER_SIZE` for the in-memory scan log ring buffer
+- tune `TOF_SCAN_LOG_INTERVAL_SECONDS` to avoid metrics summary spam
 - keep `DISCORD_PUSH_COOLDOWN_SECONDS=60` or higher for real notification channels
+
+## TOF-Lite Metrics
+
+The backend augments signal inbox and WebSocket snapshots with TOF-lite aggregate
+metrics:
+
+```text
+tofMetrics, tofScore, finalRiskScore, candidateType, explainTags, directionConfidence
+```
+
+These fields are read-only operator summaries. They must not include raw order
+books, raw trades, evidence, markout, tokens, or webhook values. If real L2 /
+trade data is incomplete, TOF-lite falls back to the existing risk score and
+lower metrics completeness.
 
 ## Remote Access
 

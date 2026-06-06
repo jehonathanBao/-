@@ -64,6 +64,48 @@ describe("pushDiscordAlert", () => {
     });
   });
 
+  it("passes TOF-lite summary fields without raw evidence", async () => {
+    axios.post.mockResolvedValueOnce({
+      data: { ok: true, reason: "DISCORD_WEBHOOK_SENT" },
+    });
+
+    await pushDiscordAlert({
+      id: "sig_tof",
+      symbol: "BTC-PERP",
+      type: "spoofing_candidate",
+      level: "S",
+      side: "Ask/Sell",
+      score: 94,
+      dataQuality: 90,
+      reason: "core reason",
+      tofScore: 88.4,
+      candidateType: "spoofing_candidate",
+      explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
+      directionConfidence: 84.1,
+      tofMetrics: {
+        tradeImbalance: -0.43,
+        vpinProxy: 89,
+        bidDepthWithdrawal: 58,
+      },
+      evidence: { raw: "must not be sent" },
+      markout: { p50: -12 },
+    });
+
+    expect(axios.post).toHaveBeenCalledWith(
+      "/api/discord/push",
+      expect.objectContaining({
+        signalId: "sig_tof",
+        tofScore: 88.4,
+        candidateType: "spoofing_candidate",
+        explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
+        directionConfidence: 84.1,
+        tofMetrics: expect.objectContaining({ vpinProxy: 89 }),
+      }),
+    );
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("evidence");
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("markout");
+  });
+
   it("sends isolated test messages without signal fields", async () => {
     axios.post.mockResolvedValueOnce({
       data: { ok: true, reason: "DISCORD_WEBHOOK_SENT" },

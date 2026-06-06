@@ -7,12 +7,13 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
     api::toxic_signal_inbox_routes::{build_recent, normalize_symbol_query},
     app::AppState,
     normalizers::trade::now_ms,
+    runtime::tof_metrics::{enhance_signal_summary, TofMetrics, TofSummaryInput},
     types::toxic_signal_inbox::{ToxicSignalInboxItem, ToxicSignalInboxRecentResponse},
 };
 
@@ -49,6 +50,14 @@ pub struct ToxicSignalWsItem {
     pub core_reason: String,
     pub risk_score: u8,
     pub data_quality: f64,
+    pub tof_metrics: TofMetrics,
+    pub tof_score: f64,
+    pub final_risk_score: u8,
+    pub candidate_type: String,
+    pub explain_tags: Vec<String>,
+    pub direction_label: String,
+    pub direction_confidence: f64,
+    pub direction_source: String,
     pub read_only: bool,
     pub runtime_modified: bool,
     pub analysis_only: bool,
@@ -67,6 +76,9 @@ pub async fn toxic_signal_ws_route(
 async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_symbol: String) {
     let (mut sender, mut receiver) = socket.split();
     let mut interval = tokio::time::interval(ws_signal_interval());
+    let tof_log_interval = tof_scan_log_interval();
+    let mut last_tof_log = Instant::now();
+    let mut tof_log_ready = true;
     tracing::info!(target: "toxic_signal_ws", symbol = %selected_symbol, "ws client connected");
     state.record_scan_log(
         "info",
@@ -95,6 +107,35 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
                         Some(selected_symbol.clone()),
                         None,
                     );
+                    if tof_log_ready || last_tof_log.elapsed() >= tof_log_interval {
+                        if let Some(signal) = snapshot.signals.first() {
+                            state.record_scan_log(
+                                "info",
+                                "metrics_computed",
+                                format!(
+                                    "{} metrics computed: vpin={:.0} imbalance={:.2} spread={:.1}bps",
+                                    signal.symbol,
+                                    signal.tof_metrics.vpin_proxy,
+                                    signal.tof_metrics.trade_imbalance,
+                                    signal.tof_metrics.spread_bps
+                                ),
+                                Some(signal.symbol.clone()),
+                                Some(signal.id.clone()),
+                            );
+                            state.record_scan_log(
+                                "info",
+                                "direction_resolved",
+                                format!(
+                                    "{} direction resolved: {} confidence={:.0}",
+                                    signal.symbol, signal.direction_label, signal.direction_confidence
+                                ),
+                                Some(signal.symbol.clone()),
+                                Some(signal.id.clone()),
+                            );
+                            last_tof_log = Instant::now();
+                            tof_log_ready = false;
+                        }
+                    }
                 }
                 tracing::debug!(target: "toxic_signal_ws", signal_count = snapshot.signals.len(), "ws snapshot sent");
             }
@@ -127,11 +168,15 @@ pub fn build_ws_snapshot(recent: &ToxicSignalInboxRecentResponse) -> ToxicSignal
 }
 
 fn redact_signal_item(item: &ToxicSignalInboxItem) -> ToxicSignalWsItem {
+    let enhancement = enhancement_for_item(item);
     ToxicSignalWsItem {
         id: item.signal_id.clone(),
         symbol: item.symbol.clone(),
         detector: item.signal_kind.clone(),
-        direction: direction_value(&item.direction_bias).to_string(),
+        direction: serde_json::to_value(enhancement.direction)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| direction_value(&item.direction_bias).to_string()),
         severity: item.severity.clone(),
         confidence: item.confidence,
         created_at: rfc3339_from_ms(item.created_at_ms as i64),
@@ -141,13 +186,36 @@ fn redact_signal_item(item: &ToxicSignalInboxItem) -> ToxicSignalWsItem {
             item.fusion.summary
         ),
         core_reason: item.fusion.summary.clone(),
-        risk_score: risk_score_for(&item.severity),
+        risk_score: enhancement.final_risk_score,
         data_quality: data_quality_for(&item.quality.quality_bucket),
+        tof_metrics: enhancement.tof_metrics,
+        tof_score: enhancement.tof_score,
+        final_risk_score: enhancement.final_risk_score,
+        candidate_type: enhancement.candidate_type,
+        explain_tags: enhancement.explain_tags,
+        direction_label: enhancement.direction_label,
+        direction_confidence: enhancement.direction_confidence,
+        direction_source: enhancement.direction_source,
         read_only: true,
         runtime_modified: false,
         analysis_only: true,
         execution_enabled: false,
     }
+}
+
+fn enhancement_for_item(
+    item: &ToxicSignalInboxItem,
+) -> crate::runtime::tof_metrics::TofSignalEnhancement {
+    enhance_signal_summary(&TofSummaryInput {
+        signal_kind: &item.signal_kind,
+        direction_bias: &item.direction_bias,
+        severity: &item.severity,
+        confidence: item.confidence,
+        quality_bucket: &item.quality.quality_bucket,
+        summary: &item.fusion.summary,
+        existing_risk_score: risk_score_for(&item.severity),
+        existing_data_quality: data_quality_for(&item.quality.quality_bucket),
+    })
 }
 
 fn ws_signal_interval() -> Duration {
@@ -158,6 +226,15 @@ fn ws_signal_interval() -> Duration {
         .unwrap_or(1000);
     tracing::debug!(target: "toxic_signal_ws", interval_ms = ms, "ws interval configured");
     Duration::from_millis(ms)
+}
+
+fn tof_scan_log_interval() -> Duration {
+    let seconds = std::env::var("TOF_SCAN_LOG_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1..=300).contains(value))
+        .unwrap_or(5);
+    Duration::from_secs(seconds)
 }
 
 fn direction_value(direction_bias: &str) -> &'static str {
@@ -229,6 +306,9 @@ mod tests {
         assert!(json.contains("finalResult"));
         assert!(json.contains("riskScore"));
         assert!(json.contains("dataQuality"));
+        assert!(json.contains("tofMetrics"));
+        assert!(json.contains("candidateType"));
+        assert!(json.contains("explainTags"));
         for forbidden in [
             "markout",
             "evidence",

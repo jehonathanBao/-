@@ -1,4 +1,6 @@
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
+import CandidateExplanation from "./CandidateExplanation.jsx";
+import TofMetricsPanel from "./TofMetricsPanel.jsx";
 import { finalResultDescription } from "../utils/signalResult.js";
 
 const levelColors = {
@@ -100,6 +102,8 @@ function SignalCard({ signal, selected, onSelect, onPush, pushStatus }) {
             </span>
           </div>
           <p className="mt-3 line-clamp-2 text-sm font-semibold leading-6 text-slate-100">{finalResult}</p>
+          <CandidateExplanation compact signal={signal} />
+          <TofMetricsPanel compact metrics={signal.tofMetrics} />
         </button>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2 xl:justify-end">

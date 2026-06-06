@@ -18,10 +18,13 @@ export async function pushDiscordAlert(signal) {
           dataQuality: signal.dataQuality ?? 100,
           reason: finalResultDescription(signal),
           time: signal.time,
+          tofMetrics: signal.tofMetrics,
+          tofScore: signal.tofScore,
+          candidateType: signal.candidateType,
+          explainTags: signal.explainTags,
+          directionConfidence: signal.directionConfidence,
         };
-  const response = await axios.post(`${baseURL}/api/discord/push`, {
-    ...body,
-  });
+  const response = await axios.post(`${baseURL}/api/discord/push`, compactPayload(body));
   return response.data;
 }
 
@@ -31,4 +34,10 @@ export async function sendDiscordTestMessage() {
     test: true,
   });
   return response.data;
+}
+
+function compactPayload(payload) {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== undefined),
+  );
 }

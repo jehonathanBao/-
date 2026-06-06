@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::{
     api::toxic_quality_scorecard_routes::build_fusion_recent,
     app::AppState,
+    runtime::tof_metrics::{enhance_signal_summary, TofSummaryInput},
     toxicity::{
         toxic_governance_ledger_service::toxic_governance_ledger_summary,
         toxic_markout_service::toxic_markout_recent,
@@ -43,7 +44,7 @@ pub async fn toxic_signal_inbox_recent_route(
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_query(query.symbol, &state.config().symbol);
     Json(with_filter_contract(
-        serde_json::json!(build_recent(&state, &requested_symbol)),
+        with_tof_metrics_contract(serde_json::json!(build_recent(&state, &requested_symbol))),
         &requested_symbol,
     ))
 }
@@ -54,7 +55,7 @@ pub async fn toxic_signal_inbox_for_symbol(
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_text(&symbol, &state.config().symbol);
     Json(with_filter_contract(
-        serde_json::json!(build_recent(&state, &requested_symbol)),
+        with_tof_metrics_contract(serde_json::json!(build_recent(&state, &requested_symbol))),
         &requested_symbol,
     ))
 }
@@ -66,10 +67,8 @@ pub async fn toxic_signal_inbox_for_signal(
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_query(query.symbol, &state.config().symbol);
     let recent = build_recent(&state, &requested_symbol);
-    Json(serde_json::json!(toxic_signal_inbox_by_signal_id(
-        &requested_symbol,
-        &signal_id,
-        &recent,
+    Json(with_tof_metrics_contract(serde_json::json!(
+        toxic_signal_inbox_by_signal_id(&requested_symbol, &signal_id, &recent,)
     )))
 }
 
@@ -142,4 +141,127 @@ pub(crate) fn with_filter_contract(
         );
     }
     payload
+}
+
+pub(crate) fn with_tof_metrics_contract(mut payload: serde_json::Value) -> serde_json::Value {
+    if let Some(items) = payload
+        .get_mut("items")
+        .and_then(|value| value.as_array_mut())
+    {
+        for item in items {
+            decorate_item_with_tof(item);
+        }
+    }
+    if let Some(item) = payload.get_mut("item") {
+        decorate_item_with_tof(item);
+    }
+    payload
+}
+
+fn decorate_item_with_tof(item: &mut serde_json::Value) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    let signal_kind = object
+        .get("signalKind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let direction_bias = object
+        .get("directionBias")
+        .and_then(|value| value.as_str())
+        .unwrap_or("neutral");
+    let severity = object
+        .get("severity")
+        .and_then(|value| value.as_str())
+        .unwrap_or("low");
+    let confidence = object
+        .get("confidence")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.35);
+    let quality_bucket = object
+        .get("quality")
+        .and_then(|value| value.get("qualityBucket"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("not_enough_data");
+    let summary = object
+        .get("fusion")
+        .and_then(|value| value.get("summary"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("candidate signal");
+    let existing_risk_score = risk_score_for_severity(severity);
+    let existing_data_quality = data_quality_for_bucket(quality_bucket);
+    let enhancement = enhance_signal_summary(&TofSummaryInput {
+        signal_kind,
+        direction_bias,
+        severity,
+        confidence,
+        quality_bucket,
+        summary,
+        existing_risk_score,
+        existing_data_quality,
+    });
+    object.insert(
+        "tofMetrics".to_string(),
+        serde_json::to_value(&enhancement.tof_metrics).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "candidateType".to_string(),
+        serde_json::json!(enhancement.candidate_type),
+    );
+    object.insert(
+        "explainTags".to_string(),
+        serde_json::json!(enhancement.explain_tags),
+    );
+    object.insert(
+        "direction".to_string(),
+        serde_json::json!(enhancement.direction),
+    );
+    object.insert(
+        "directionLabel".to_string(),
+        serde_json::json!(enhancement.direction_label),
+    );
+    object.insert(
+        "directionConfidence".to_string(),
+        serde_json::json!(enhancement.direction_confidence),
+    );
+    object.insert(
+        "directionSource".to_string(),
+        serde_json::json!(enhancement.direction_source),
+    );
+    object.insert(
+        "tofScore".to_string(),
+        serde_json::json!(enhancement.tof_score),
+    );
+    object.insert(
+        "finalRiskScore".to_string(),
+        serde_json::json!(enhancement.final_risk_score),
+    );
+    object.insert(
+        "riskScore".to_string(),
+        serde_json::json!(enhancement.final_risk_score),
+    );
+    object.insert(
+        "dataQuality".to_string(),
+        serde_json::json!(existing_data_quality),
+    );
+}
+
+fn risk_score_for_severity(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" => 92,
+        "high" => 85,
+        "medium" => 72,
+        _ => 45,
+    }
+}
+
+fn data_quality_for_bucket(bucket: &str) -> f64 {
+    match bucket.to_ascii_lowercase().as_str() {
+        "excellent" => 92.0,
+        "good" => 82.0,
+        "mixed" => 74.0,
+        "weak" => 62.0,
+        "bad" => 45.0,
+        _ => 70.0,
+    }
 }

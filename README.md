@@ -199,3 +199,29 @@ Scan log payloads must not contain operator tokens, Discord / Telegram secrets,
 authorization headers, raw payloads, evidence, markout, or webhook URLs. The
 local "清空显示" button only clears the browser panel; it does not clear the
 backend buffer.
+
+## TOF-Lite Signal Quality
+
+v0.4 adds a read-only TOF-lite quality layer to candidates. It augments inbox,
+WebSocket, Dashboard, scan logs, and Discord summaries with safe aggregate
+fields only: trade imbalance, VPIN-like proxy, bid / ask depth withdrawal,
+spread widening, order churn, liquidity vacuum, final direction, candidate type,
+and explain tags.
+
+The layer does not send raw order books, raw trades, evidence, markout, tokens,
+or webhook values to the browser or Discord. If data is incomplete, it falls
+back to the existing risk score instead of panicking.
+
+```env
+TOF_ENABLED=true
+TOF_VPIN_BUCKET_VOLUME=100000
+TOF_VPIN_BUCKET_COUNT=20
+TOF_VPIN_HIGH_THRESHOLD=70
+TOF_DEPTH_LEVELS=10
+TOF_DEPTH_WITHDRAWAL_THRESHOLD=35
+TOF_SPREAD_WIDENING_BPS=8
+TOF_ORDER_CHURN_THRESHOLD=70
+TOF_SCORE_WEIGHT_EXISTING=0.60
+TOF_SCORE_WEIGHT_METRICS=0.40
+TOF_SCAN_LOG_INTERVAL_SECONDS=5
+```

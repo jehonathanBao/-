@@ -11,6 +11,8 @@ DRY_RUN=false
 OPERATOR_TOKEN=replace-with-long-random-server-token
 WS_SIGNAL_INTERVAL_MS=1000
 SCAN_LOG_BUFFER_SIZE=200
+TOF_ENABLED=true
+TOF_SCAN_LOG_INTERVAL_SECONDS=5
 
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE/REPLACE
 DISCORD_PUSH_COOLDOWN_SECONDS=60
@@ -59,6 +61,7 @@ Expected:
 - `Live: connected`
 - `扫描日志: connected`
 - High / critical candidates appear in the primary list.
+- TOF-lite summary appears on candidate cards and detail panels.
 - Medium candidates remain folded by default.
 - Low candidates do not appear in the primary list.
 - Refreshing the page does not restart `toxic-bot`.
@@ -80,6 +83,9 @@ Check the Dashboard scan log panel. Expected events include startup, data-source
 connection, candidate snapshot count, and Discord push queued / sent / skipped /
 failed summaries. The panel must not display raw payloads, evidence, markout,
 authorization headers, tokens, webhook URLs, or Telegram secrets.
+With TOF-lite enabled, expected safe summaries also include `metrics_computed`
+and `direction_resolved`; these must contain only aggregate scores such as VPIN,
+imbalance, spread bps, direction, and confidence.
 
 Do not paste logs containing real tokens into tickets or chat.
 

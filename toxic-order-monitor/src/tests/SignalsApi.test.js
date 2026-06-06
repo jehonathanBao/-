@@ -91,6 +91,52 @@ describe("signals api mapping", () => {
     expect(signal.evidence).toBeUndefined();
   });
 
+  it("maps TOF-lite fields from backend inbox items", () => {
+    const signal = mapInboxItemToSignal({
+      signalId: "tof-high",
+      symbol: "BTC-PERP",
+      signalKind: "spoofing_candidate",
+      directionBias: "bearish",
+      severity: "high",
+      confidence: 0.91,
+      createdAtMs: 1_700_000_000_000,
+      finalResult: "Ask/Sell · large ask wall removed",
+      finalRiskScore: 91,
+      riskScore: 84,
+      dataQuality: 86,
+      tofScore: 88.4,
+      candidateType: "spoofing_candidate",
+      explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
+      directionLabel: "看跌 / Ask-Sell",
+      directionConfidence: 82.5,
+      directionSource: "detector+tof_metrics",
+      tofMetrics: {
+        tradeImbalance: -0.43,
+        vpinProxy: 89.0,
+        bidDepthWithdrawal: 58.0,
+        spreadBps: 8.4,
+      },
+    });
+
+    expect(signal).toMatchObject({
+      id: "tof-high",
+      score: 91,
+      finalRiskScore: 91,
+      tofScore: 88.4,
+      candidateType: "spoofing_candidate",
+      explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
+      directionLabel: "看跌 / Ask-Sell",
+      directionConfidence: 82.5,
+      directionSource: "detector+tof_metrics",
+      tofMetrics: {
+        tradeImbalance: -0.43,
+        vpinProxy: 89.0,
+        bidDepthWithdrawal: 58.0,
+        spreadBps: 8.4,
+      },
+    });
+  });
+
   it("does not inject mock data when backend inbox is reachable but empty", async () => {
     axios.get.mockResolvedValueOnce({ data: { items: [] } });
 
