@@ -6,10 +6,20 @@ export async function fetchSignals() {
   try {
     const response = await axios.get(`${baseURL}/api/toxicity/signal-inbox/recent`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    if (items.length === 0) {
+      return demoSignalsForEmptyInbox();
+    }
     return items.map(mapInboxItemToSignal);
   } catch {
-    return mockSignals;
+    return demoSignalsForEmptyInbox();
   }
+}
+
+function demoSignalsForEmptyInbox() {
+  return mockSignals.map((signal) => ({
+    ...signal,
+    isLive: false,
+  }));
 }
 
 export function mapInboxItemToSignal(item) {

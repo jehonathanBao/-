@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
 import { pushDiscordAlert, sendDiscordTestMessage } from "../api/discord.js";
 import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
@@ -20,6 +21,8 @@ const DISCORD_PUSH_CONFIRM =
   "确认推送该高风险候选信号到 Discord？\n该操作会真实发送到告警频道。";
 
 export default function Dashboard() {
+  const location = useLocation();
+  const viewMode = viewModeFromPath(location.pathname);
   const {
     rawInboxSignals,
     selectedSignal,
@@ -95,17 +98,53 @@ export default function Dashboard() {
     [rawInboxSignals],
   );
 
+  const sLevelSignals = useMemo(
+    () => rawInboxSignals.filter(isSLevelSignal).sort(byRiskThenTimeDesc),
+    [rawInboxSignals],
+  );
+
   const mediumRiskSignals = useMemo(
     () => rawInboxSignals.filter(isMediumRiskSignal).sort(byRiskThenTimeDesc),
     [rawInboxSignals],
   );
 
-  const primarySignals = useMemo(() => {
-    if (activeRiskFilter === "low") {
-      return rawInboxSignals.filter((signal) => signal.risk === "low").sort(byRiskThenTimeDesc);
+  const primarySignalView = useMemo(() => {
+    if (viewMode === "signals") {
+      return {
+        description: "左侧“异常信号”只显示 S/Critical 候选，优先处理最严重的盘口异常。",
+        emptyHint: "新的 S/Critical 候选出现后会自动追加到这里。",
+        emptyMessage: "暂无 S 级异常信号",
+        signals: sLevelSignals,
+        title: "S 级异常信号",
+      };
     }
-    return highRiskSignals;
-  }, [activeRiskFilter, highRiskSignals, rawInboxSignals]);
+    if (viewMode === "history") {
+      return {
+        description: "中风险异常归档在信号历史；只用于观察和复盘，不触发 Discord 自动推送。",
+        emptyHint: "新的中风险候选出现后会保留在信号历史。",
+        emptyMessage: "暂无中风险历史信号",
+        signals: mediumRiskSignals,
+        title: "信号历史 · 中风险异常",
+      };
+    }
+    if (activeRiskFilter === "low") {
+      return {
+        description: "低风险候选只在用户主动筛选时展示，仍保留在持久 Inbox。",
+        emptyHint: "新的低风险候选出现后会继续追加。",
+        emptyMessage: "暂无低风险候选信号",
+        signals: rawInboxSignals.filter((signal) => signal.risk === "low").sort(byRiskThenTimeDesc),
+        title: "Low Risk Candidates",
+      };
+    }
+    return {
+      description: "默认展示高风险候选信号；刷新页面只重新订阅数据，不会清空历史卡片。",
+      emptyHint: "新的候选信号出现后会继续追加",
+      emptyMessage: "暂无缓存的有毒订单候选信号",
+      signals: highRiskSignals,
+      title: "High / Critical Risk Candidates",
+    };
+  }, [activeRiskFilter, highRiskSignals, mediumRiskSignals, rawInboxSignals, sLevelSignals, viewMode]);
+  const showMediumFoldout = viewMode !== "signals" && viewMode !== "history";
 
   const highUnhandledCount = rawInboxSignals.filter(
     (signal) => signal.risk === "high" && signal.status === "unhandled",
@@ -255,7 +294,7 @@ export default function Dashboard() {
             <button className="rounded-lg border border-slate-700/60 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200" onClick={() => setRiskFilter("all")} type="button">
               全部
             </button>
-            <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter)}</span>
+            <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter, viewMode)}</span>
           </div>
           <button
             className="rounded-lg border border-red-400/50 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
@@ -270,30 +309,30 @@ export default function Dashboard() {
           <div className="space-y-5">
             <SignalTable
               inboxStats={stats}
-              title={activeRiskFilter === "low" ? "Low Risk Candidates" : "High / Critical Risk Candidates"}
-              description={
-                activeRiskFilter === "low"
-                  ? "低风险候选只在用户主动筛选时展示，仍保留在持久 Inbox。"
-                  : "默认展示高风险候选信号；刷新页面只重新订阅数据，不会清空历史卡片。"
-              }
+              title={primarySignalView.title}
+              description={primarySignalView.description}
+              emptyHint={primarySignalView.emptyHint}
+              emptyMessage={primarySignalView.emptyMessage}
               onPush={handlePush}
               onMarkStatus={setSignalReviewStatus}
               onSelect={setSelectedSignal}
               pushStatus={effectivePushStatus}
               selectedSignal={selectedSignal}
-              signals={primarySignals}
+              signals={primarySignalView.signals}
             />
-            <MediumRiskSection
-              expanded={mediumExpanded}
-              inboxStats={stats}
-              onPush={handlePush}
-              onMarkStatus={setSignalReviewStatus}
-              onSelect={setSelectedSignal}
-              pushStatus={effectivePushStatus}
-              onToggle={() => setMediumExpanded((value) => !value)}
-              selectedSignal={selectedSignal}
-              signals={mediumRiskSignals}
-            />
+            {showMediumFoldout ? (
+              <MediumRiskSection
+                expanded={mediumExpanded}
+                inboxStats={stats}
+                onPush={handlePush}
+                onMarkStatus={setSignalReviewStatus}
+                onSelect={setSelectedSignal}
+                pushStatus={effectivePushStatus}
+                onToggle={() => setMediumExpanded((value) => !value)}
+                selectedSignal={selectedSignal}
+                signals={mediumRiskSignals}
+              />
+            ) : null}
             <SignalDetail signal={selectedSignal} />
             <ScanLogPanel />
           </div>
@@ -322,6 +361,11 @@ function ratio(value, total) {
 
 function isHighRiskSignal(signal) {
   return signal.risk === "high" || signal.level === "S" || signal.level === "A" || signal.level === "CRITICAL";
+}
+
+function isSLevelSignal(signal) {
+  const level = String(signal?.level || "").toUpperCase();
+  return level === "S" || level === "CRITICAL";
 }
 
 function isMediumRiskSignal(signal) {
@@ -353,7 +397,16 @@ function signalTime(signal) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function filterLabel(activeRiskFilter) {
+function filterLabel(activeRiskFilter, viewMode) {
+  if (viewMode === "signals") {
+    return "异常信号：S 级 / Critical";
+  }
+  if (viewMode === "history") {
+    return "信号历史：中风险异常";
+  }
+  if (viewMode === "rules") {
+    return "告警规则：当前有毒订单判断逻辑";
+  }
   if (activeRiskFilter === "medium") {
     return "高风险主列表 + 中风险折叠区";
   }
@@ -361,6 +414,13 @@ function filterLabel(activeRiskFilter) {
     return "高风险主列表（中风险可展开）";
   }
   return `${activeRiskFilter} 风险`;
+}
+
+function viewModeFromPath(pathname) {
+  if (pathname === "/signals") return "signals";
+  if (pathname === "/history") return "history";
+  if (pathname === "/rules") return "rules";
+  return "dashboard";
 }
 
 function MediumRiskSection({

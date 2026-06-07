@@ -126,6 +126,37 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
   });
 
+  it("places S level candidates in the sidebar signals view", async () => {
+    renderDashboard("/signals");
+
+    expect(await screen.findByText("S 级异常信号")).toBeInTheDocument();
+    expect(screen.getByText(/当前筛选：异常信号：S 级/)).toBeInTheDocument();
+    expect(screen.getByTestId("signal-card-sig_001")).toBeInTheDocument();
+    expect(screen.getByTestId("signal-card-sig_007")).toBeInTheDocument();
+    expect(screen.queryByTestId("signal-card-sig_002")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
+  it("places medium-risk candidates in the signal history view", async () => {
+    renderDashboard("/history");
+
+    expect(await screen.findByText("信号历史 · 中风险异常")).toBeInTheDocument();
+    expect(screen.getByText(/当前筛选：信号历史：中风险异常/)).toBeInTheDocument();
+    expect(screen.getByTestId("signal-card-sig_003")).toBeInTheDocument();
+    expect(screen.getByTestId("signal-card-sig_005")).toBeInTheDocument();
+    expect(screen.queryByTestId("signal-card-sig_001")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the current toxic-order decision logic in the warning rules view", async () => {
+    renderDashboard("/rules");
+
+    expect(await screen.findByText("当前有毒订单判断逻辑")).toBeInTheDocument();
+    expect(screen.getByText(/finalRiskScore = 0.4 \* 现货风险/)).toBeInTheDocument();
+    expect(screen.getByText(/Medium 进入信号历史/)).toBeInTheDocument();
+    expect(screen.getByText(/系统只做盘口\/成交异常提醒/)).toBeInTheDocument();
+  });
+
   it("shows the detail panel after selecting replay", async () => {
     const user = userEvent.setup();
     renderDashboard();
@@ -136,9 +167,9 @@ describe("Dashboard interactions", () => {
   });
 });
 
-function renderDashboard() {
+function renderDashboard(path = "/") {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <Dashboard />
     </MemoryRouter>,
   );

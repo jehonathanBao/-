@@ -249,10 +249,13 @@ describe("signals api mapping", () => {
     expect(signal.replaySnapshot).toEqual({ safeSummary: "redacted snapshot" });
   });
 
-  it("does not inject mock data when backend inbox is reachable but empty", async () => {
+  it("uses demo signals when backend inbox is reachable but empty", async () => {
     axios.get.mockResolvedValueOnce({ data: { items: [] } });
 
-    await expect(fetchSignals()).resolves.toEqual([]);
+    const signals = await fetchSignals();
+
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every((signal) => signal.isLive === false)).toBe(true);
   });
 });
 

@@ -23,6 +23,32 @@ export default function RuleStatus({ discordConnected, lastPushedAt, onTestPush,
           {testPending ? "测试中" : "测试推送"}
         </button>
       </div>
+      <div className="mt-5 border-t border-slate-800 pt-4">
+        <div className="flex flex-col gap-1">
+          <h4 className="text-sm font-bold text-white">当前有毒订单判断逻辑</h4>
+          <p className="text-xs text-slate-400">
+            Candidate only，系统只做盘口/成交异常提醒，不执行下单、拦截、封禁或资金操作。
+          </p>
+        </div>
+        <div className="mt-3 grid gap-3 text-xs text-slate-300 lg:grid-cols-4">
+          <RuleItem
+            label="候选生成"
+            value="L2 撤单/挂单、trade imbalance、depth withdrawal、spread widening、VPIN-lite 触发现货 TOF 候选。"
+          />
+          <RuleItem
+            label="合约增强"
+            value="OI、Funding、Liquidation pressure、Aggressive order flow 与现货候选按 symbol 合并。"
+          />
+          <RuleItem
+            label="风险评分"
+            value="finalRiskScore = 0.4 * 现货风险 + 0.3 * TOF-lite + 0.3 * 合约指标；dataQuality 看指标完整性和新鲜度。"
+          />
+          <RuleItem
+            label="推送边界"
+            value="S/Critical/High 且 score >= 80、dataQuality >= 70 才进入 Discord gate；Medium 进入信号历史，Low 仅主动筛选展示。"
+          />
+        </div>
+      </div>
     </section>
   );
 }
@@ -40,6 +66,15 @@ function Status({ label, value, ok }) {
     <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 px-4 py-3">
       <p className="text-xs text-slate-500">{label}</p>
       <p className={ok ? "mt-1 font-semibold text-emerald-300" : "mt-1 font-semibold text-slate-400"}>{value}</p>
+    </div>
+  );
+}
+
+function RuleItem({ label, value }) {
+  return (
+    <div className="border-l border-cyan-400/30 pl-3">
+      <p className="font-semibold text-cyan-200">{label}</p>
+      <p className="mt-1 leading-5 text-slate-400">{value}</p>
     </div>
   );
 }
