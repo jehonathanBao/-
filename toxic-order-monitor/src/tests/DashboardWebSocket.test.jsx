@@ -89,6 +89,14 @@ describe("Dashboard websocket signal stream", () => {
     });
 
     expect(await screen.findByTestId("signal-card-ws-high")).toBeInTheDocument();
+    expect(screen.getByText("Risk 91")).toBeInTheDocument();
+    expect(screen.getByText("Quality 82")).toBeInTheDocument();
+    expect(screen.getByText("TOF 88")).toBeInTheDocument();
+    expect(screen.getByText("Perp 87")).toBeInTheDocument();
+    expect(screen.getAllByText("Advanced 89").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/OpenInterestCandidate/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/MarketPressureHeatmapCandidate/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Discord：未推送，原因：历史缓存不自动推送")).toBeInTheDocument();
     expect(screen.queryByTestId("signal-card-ws-medium")).not.toBeInTheDocument();
     expect(useSignalsStore.getState().rawInboxSignals.map((signal) => signal.id)).toEqual([
       "ws-high",
@@ -228,7 +236,74 @@ function wsItem({ signalId, severity }) {
     finalResult: "Ask/Sell · large ask wall removed",
     coreReason: "large ask wall removed",
     riskScore: severity === "medium" ? 72 : 85,
+    finalRiskScore: severity === "medium" ? 72 : 91,
     dataQuality: 82,
+    tofScore: 88.4,
+    perpScore: 87,
+    perpCandidateType: "OpenInterestCandidate",
+    advancedScore: 89,
+    advancedCandidateType: "MarketPressureHeatmapCandidate",
+    finalCandidateType: "High Risk Bullish Candidate",
+    metricsDirection: "bullish",
+    mergedConfidence: 87,
+    candidateType: "spoofing_candidate",
+    explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
+    directionLabel: "看跌 / Ask-Sell",
+    directionConfidence: 82.5,
+    directionSource: "detector+tof_metrics",
+    alertStatus: severity === "medium" ? "rejected" : "skipped",
+    alertReason: severity === "medium" ? "non_high_risk" : "cached_on_boot",
+    discordAlert: {
+      autoEligible: false,
+      autoSent: false,
+      lastDecision: severity === "medium" ? "rejected" : "skipped",
+      reason: severity === "medium" ? "non_high_risk" : "cached_on_boot",
+      sentAt: null,
+      manualSentAt: null,
+    },
+    tofMetrics: {
+      tofScore: 88.4,
+      vpinProxy: 89,
+      tradeImbalance: -0.43,
+      bidDepthWithdrawal: 58,
+      askDepthWithdrawal: 12,
+      spreadBps: 8.4,
+      metricsConfidence: 82,
+    },
+    perpTofMetrics: {
+      oiChange: 150000,
+      oiDirection: "long_increase",
+      fundingRate: -0.071,
+      fundingSide: "short",
+      liquidationPressure: 82,
+      squeezeSide: "short",
+      aggBuyVolume: 1500000,
+      aggSellVolume: 420000,
+      metricsDirection: "bullish",
+      riskScore: 87,
+      dataQuality: 88,
+      candidateType: "OpenInterestCandidate",
+      explainTags: ["OI long increase"],
+      confidence: 87,
+    },
+    advancedTofMetrics: {
+      vpinEnhanced: 88,
+      largeOrderFlowCluster: 76,
+      historicalFundingOiTrend: 84,
+      marketPressureHeatmap: 91,
+      spotRiskScore: 86,
+      spotTofScore: 88.4,
+      perpScore: 87,
+      finalRiskScore: 89,
+      dataQuality: 86,
+      metricsCompleteness: 95,
+      freshDataCoverage: 92,
+      candidateType: "MarketPressureHeatmapCandidate",
+      finalCandidateType: "High Risk Bullish Advanced Candidate",
+      metricsDirection: "bullish",
+      confidence: 90,
+      explainTags: ["Market pressure heatmap"],
+    },
     qualityBucket: "good",
     readOnly: true,
     runtimeModified: false,

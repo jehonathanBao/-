@@ -68,6 +68,52 @@ describe("ScanLogPanel", () => {
     );
   });
 
+  it("shows contract-side TOF candidate scan log events", async () => {
+    render(<ScanLogPanel />);
+
+    await waitFor(() => expect(wsMock.options?.onMessage).toBeTypeOf("function"));
+    wsMock.options.onMessage({
+      data: JSON.stringify({
+        type: "scan_log_event",
+        item: scanLog({
+          id: "perp-1",
+          kind: "perp_candidate_generated",
+          message:
+            "BTC-PERP perp candidate generated: type=OpenInterestCandidate direction=Bullish score=87",
+        }),
+      }),
+    });
+
+    expect(
+      await screen.findByText(
+        "BTC-PERP perp candidate generated: type=OpenInterestCandidate direction=Bullish score=87",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows advanced metrics scan log events", async () => {
+    render(<ScanLogPanel />);
+
+    await waitFor(() => expect(wsMock.options?.onMessage).toBeTypeOf("function"));
+    wsMock.options.onMessage({
+      data: JSON.stringify({
+        type: "scan_log_event",
+        item: scanLog({
+          id: "advanced-1",
+          kind: "advanced_metrics_computed",
+          message:
+            "BTC-PERP advanced metrics computed: vpinEnhanced=88 flowCluster=76 fundingOiTrend=84 heatmap=91 finalScore=89",
+        }),
+      }),
+    });
+
+    expect(
+      await screen.findByText(
+        "BTC-PERP advanced metrics computed: vpinEnhanced=88 flowCluster=76 fundingOiTrend=84 heatmap=91 finalScore=89",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("clears only the local panel display", async () => {
     const user = userEvent.setup();
     fetchScanLogs.mockResolvedValueOnce([

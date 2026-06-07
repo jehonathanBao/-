@@ -2,7 +2,10 @@ mod support;
 use support::{test_http_client, test_http_get};
 
 use btc_toxic_flow_monitor_rs::{
-    api::server::router,
+    api::{
+        discord_notification_routes::{maybe_auto_push_discord, DiscordNotificationRequest},
+        server::router,
+    },
     app::AppState,
     config::{
         venues::{VenueConfig, VenueConfigs},
@@ -192,7 +195,7 @@ async fn loopback_scan_log_recent_is_read_only_and_redacted() {
     std::env::set_var("OPERATOR_TOKEN", "secret-test-token");
     std::env::set_var(
         "DISCORD_WEBHOOK_URL",
-        "https://discord.com/api/webhooks/123/secret",
+        "https://discord.com/api/webhooks/test-id/test-token",
     );
     let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
 
@@ -215,6 +218,52 @@ async fn loopback_scan_log_recent_is_read_only_and_redacted() {
 
     server.abort();
     clear_operator_env();
+    std::env::remove_var("DISCORD_WEBHOOK_URL");
+}
+
+#[tokio::test]
+async fn auto_push_scan_logs_gate_reason_and_redacts_sensitive_fields() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "secret-test-token");
+    std::env::set_var("DRY_RUN", "true");
+    std::env::set_var("DISCORD_AUTO_PUSH_ENABLED", "true");
+    std::env::set_var(
+        "DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/test-id/test-token",
+    );
+    let state = AppState::new(test_config("127.0.0.1"));
+    let created_at_ms = (state.booted_at_ms() + 1) as u64;
+
+    let decision = maybe_auto_push_discord(&state, discord_request(), created_at_ms).await;
+    assert_eq!(decision.reason, "dry_run");
+
+    let logs = state.recent_scan_logs(20);
+    assert!(logs.iter().any(|item| item.kind == "alert_gate_evaluated"));
+    assert!(logs
+        .iter()
+        .any(|item| item.kind == "discord_auto_push_skipped"
+            && item.message.to_ascii_lowercase().contains("dry run")));
+
+    let text = serde_json::to_string(&logs).expect("scan logs json");
+    for forbidden in [
+        "secret-test-token",
+        "discord.com/api/webhooks",
+        "rawPayload",
+        "evidence",
+        "markout",
+        "webhook",
+        "token",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "forbidden scan log content leaked: {forbidden}"
+        );
+    }
+
+    clear_operator_env();
+    std::env::remove_var("DRY_RUN");
+    std::env::remove_var("DISCORD_AUTO_PUSH_ENABLED");
     std::env::remove_var("DISCORD_WEBHOOK_URL");
 }
 
@@ -390,6 +439,50 @@ fn clear_operator_env() {
         "ALLOWED_DASHBOARD_ORIGIN",
     ] {
         std::env::remove_var(key);
+    }
+}
+
+fn discord_request() -> DiscordNotificationRequest {
+    DiscordNotificationRequest {
+        signal_id: Some("scan-log-high".to_string()),
+        id: Some("scan-log-high".to_string()),
+        dedupe_key: Some("scan-log-high".to_string()),
+        exchange: Some("Runtime".to_string()),
+        symbol: Some("BTC-PERP".to_string()),
+        signal_type: Some("spoofing_candidate".to_string()),
+        level: Some("high".to_string()),
+        side: Some("Ask/Sell".to_string()),
+        score: Some(92),
+        data_quality: Some(88.0),
+        reason: Some("safe final result only".to_string()),
+        impact: Some("rawPayload evidence markout webhook token".to_string()),
+        time: None,
+        price_range: None,
+        add_qty: None,
+        cancel_qty: None,
+        fill_qty: None,
+        cancel_to_trade_ratio: None,
+        depth_before: None,
+        depth_after: None,
+        depth_impact: None,
+        price_impact_bps: None,
+        markout_1s_bps: None,
+        markout_5s_bps: None,
+        markout_30s_bps: None,
+        tof_metrics: None,
+        tof_score: None,
+        candidate_type: Some("spoofing_candidate".to_string()),
+        explain_tags: Some(vec!["high_vpin_proxy".to_string()]),
+        direction_confidence: Some(82.0),
+        perp_tof_metrics: None,
+        perp_score: None,
+        perp_candidate_type: None,
+        final_candidate_type: None,
+        metrics_direction: None,
+        advanced_tof_metrics: None,
+        advanced_score: None,
+        advanced_candidate_type: None,
+        test: None,
     }
 }
 

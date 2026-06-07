@@ -1,5 +1,7 @@
 import { finalResultDescription } from "../utils/signalResult.js";
+import AdvancedTofPanel from "./AdvancedTofPanel.jsx";
 import CandidateExplanation from "./CandidateExplanation.jsx";
+import PerpTofPanel from "./PerpTofPanel.jsx";
 import TofMetricsPanel from "./TofMetricsPanel.jsx";
 
 export default function SignalDetail({ signal }) {
@@ -44,6 +46,8 @@ export default function SignalDetail({ signal }) {
       <div className="mt-5 space-y-4">
         <CandidateExplanation signal={signal} />
         <TofMetricsPanel metrics={signal.tofMetrics} />
+        <PerpTofPanel metrics={signal.perpTofMetrics} />
+        <AdvancedTofPanel metrics={signal.advancedTofMetrics} />
       </div>
 
       <div className="mt-5 rounded-xl border border-slate-700/60 bg-slate-950/40 p-4">

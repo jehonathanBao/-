@@ -137,6 +137,21 @@ describe("Discord push safety", () => {
     await user.click(screen.getByRole("button", { name: /推送 sig_001 到 Discord/ }));
     await waitFor(() => expect(pushDiscordAlert).toHaveBeenCalledTimes(1));
   });
+
+  it("manual push failure shows backend reason", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    pushDiscordAlert.mockResolvedValueOnce({ ok: false, reason: "DISCORD_NOT_CONFIGURED" });
+    renderDashboard();
+
+    await user.click(await screen.findByRole("button", { name: /推送 sig_001 到 Discord/ }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Discord 未配置，推送未发送。");
+    expect(useSignalsStore.getState().pushStatus.sig_001).toMatchObject({
+      status: "failed",
+      reason: "DISCORD_NOT_CONFIGURED",
+    });
+  });
 });
 
 function renderDashboard() {

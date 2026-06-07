@@ -82,10 +82,19 @@ describe("pushDiscordAlert", () => {
       candidateType: "spoofing_candidate",
       explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
       directionConfidence: 84.1,
+      advancedScore: 89,
+      advancedCandidateType: "MarketPressureHeatmapCandidate",
       tofMetrics: {
         tradeImbalance: -0.43,
         vpinProxy: 89,
         bidDepthWithdrawal: 58,
+      },
+      advancedTofMetrics: {
+        vpinEnhanced: 88,
+        largeOrderFlowCluster: 76,
+        historicalFundingOiTrend: 84,
+        marketPressureHeatmap: 91,
+        finalRiskScore: 89,
       },
       evidence: { raw: "must not be sent" },
       markout: { p50: -12 },
@@ -100,6 +109,9 @@ describe("pushDiscordAlert", () => {
         explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
         directionConfidence: 84.1,
         tofMetrics: expect.objectContaining({ vpinProxy: 89 }),
+        advancedScore: 89,
+        advancedCandidateType: "MarketPressureHeatmapCandidate",
+        advancedTofMetrics: expect.objectContaining({ marketPressureHeatmap: 91 }),
       }),
     );
     expect(axios.post.mock.calls[0][1]).not.toHaveProperty("evidence");

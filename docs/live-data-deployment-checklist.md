@@ -8,13 +8,22 @@ Create or update server-local `.env`. Do not commit it.
 
 ```env
 DRY_RUN=false
-OPERATOR_TOKEN=replace-with-long-random-server-token
+OPERATOR_TOKEN=<server-local-operator-token>
 WS_SIGNAL_INTERVAL_MS=1000
 SCAN_LOG_BUFFER_SIZE=200
 TOF_ENABLED=true
 TOF_SCAN_LOG_INTERVAL_SECONDS=5
+PERP_TOF_ENABLED=true
+PERP_OI_BUCKET_SIZE=100000
+PERP_FUNDING_THRESHOLD=0.05
+PERP_LIQUIDATION_WINDOW=5m
+PERP_AGF_VOLUME_THRESHOLD=1000000
+ADVANCED_TOF_ENABLED=true
 
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE/REPLACE
+DISCORD_AUTO_PUSH_ENABLED=true
+DISCORD_AUTO_PUSH_CACHED_ON_BOOT=false
+DISCORD_AUTO_PUSH_INTERVAL_MS=1000
 DISCORD_PUSH_COOLDOWN_SECONDS=60
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=replace-with-server-local-token
@@ -62,11 +71,14 @@ Expected:
 - `扫描日志: connected`
 - High / critical candidates appear in the primary list.
 - TOF-lite summary appears on candidate cards and detail panels.
+- Contract-side TOF summaries appear as aggregate OI, Funding, Liquidation, and Agg Flow fields.
 - Medium candidates remain folded by default.
 - Low candidates do not appear in the primary list.
 - Refreshing the page does not restart `toxic-bot`.
 
 ## Notification Boundary
+
+`READ_ONLY=true` remains monitoring-only and must not block Discord / Telegram alerts. Real sends require `DRY_RUN=false`, a configured server-side webhook/token, High/Critical severity, score `>= 80`, and data quality `>= 70`. Keep `DISCORD_AUTO_PUSH_CACHED_ON_BOOT=false` unless you intentionally want cached candidates from before backend boot to be re-evaluated.
 
 Real notification sending is acceptable for this read-only bot, but messages must remain redacted:
 
@@ -83,9 +95,13 @@ Check the Dashboard scan log panel. Expected events include startup, data-source
 connection, candidate snapshot count, and Discord push queued / sent / skipped /
 failed summaries. The panel must not display raw payloads, evidence, markout,
 authorization headers, tokens, webhook URLs, or Telegram secrets.
-With TOF-lite enabled, expected safe summaries also include `metrics_computed`
-and `direction_resolved`; these must contain only aggregate scores such as VPIN,
-imbalance, spread bps, direction, and confidence.
+With TOF-lite enabled, expected safe summaries also include `metrics_computed`,
+`direction_resolved`, `perp_metrics_computed`, and `perp_candidate_generated`.
+These must contain only aggregate scores such as VPIN, imbalance, spread bps,
+direction, confidence, OI, funding, liquidation pressure, and aggressive flow.
+With v0.6 advanced fusion enabled, expected safe summaries also include
+`advanced_metrics_computed` with VPIN Enhanced, flow cluster, Funding / OI
+trend, heatmap, and final fused score only.
 
 Do not paste logs containing real tokens into tickets or chat.
 

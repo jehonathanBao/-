@@ -14,7 +14,7 @@ export async function pushDiscordAlert(signal) {
           signalType: signal.type,
           level: signal.level,
           side: signal.side,
-          score: signal.score,
+          score: signal.finalRiskScore ?? signal.score,
           dataQuality: signal.dataQuality ?? 100,
           reason: finalResultDescription(signal),
           time: signal.time,
@@ -23,6 +23,14 @@ export async function pushDiscordAlert(signal) {
           candidateType: signal.candidateType,
           explainTags: signal.explainTags,
           directionConfidence: signal.directionConfidence,
+          perpTofMetrics: signal.perpTofMetrics,
+          perpScore: signal.perpScore,
+          perpCandidateType: signal.perpCandidateType,
+          finalCandidateType: signal.finalCandidateType,
+          metricsDirection: signal.metricsDirection,
+          advancedTofMetrics: signal.advancedTofMetrics,
+          advancedScore: signal.advancedScore,
+          advancedCandidateType: signal.advancedCandidateType,
         };
   const response = await axios.post(`${baseURL}/api/discord/push`, compactPayload(body));
   return response.data;

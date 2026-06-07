@@ -32,6 +32,7 @@ export default function Dashboard() {
     setSelectedSignal,
     setRiskFilter,
     markAsPushed,
+    setSignalReviewStatus,
     addPushLog,
     setPushStatus,
     clearSignalInbox,
@@ -276,6 +277,7 @@ export default function Dashboard() {
                   : "默认展示高风险候选信号；刷新页面只重新订阅数据，不会清空历史卡片。"
               }
               onPush={handlePush}
+              onMarkStatus={setSignalReviewStatus}
               onSelect={setSelectedSignal}
               pushStatus={effectivePushStatus}
               selectedSignal={selectedSignal}
@@ -285,6 +287,7 @@ export default function Dashboard() {
               expanded={mediumExpanded}
               inboxStats={stats}
               onPush={handlePush}
+              onMarkStatus={setSignalReviewStatus}
               onSelect={setSelectedSignal}
               pushStatus={effectivePushStatus}
               onToggle={() => setMediumExpanded((value) => !value)}
@@ -366,6 +369,7 @@ function MediumRiskSection({
   selectedSignal,
   onSelect,
   onPush,
+  onMarkStatus,
   inboxStats,
   onToggle,
   pushStatus,
@@ -397,6 +401,7 @@ function MediumRiskSection({
             emptyMessage="暂无中风险候选信号"
             inboxStats={inboxStats}
             onPush={onPush}
+            onMarkStatus={onMarkStatus}
             onSelect={onSelect}
             pushStatus={pushStatus}
             selectedSignal={selectedSignal}

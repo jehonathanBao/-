@@ -37,6 +37,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Candidate replay and calibration tests
         run: cargo test --test candidate_replay_runner_tests --test candidate_markout_evaluator_tests --test candidate_calibration_report_tests
+      - name: TOF metrics, websocket, and Discord embed tests
+        run: cargo test --test oi_metrics_tests --test funding_metrics_tests --test liquidation_metrics_tests --test agg_order_flow_tests --test advanced_tof_metrics_tests --test toxic_signal_ws_routes_tests --test toxic_signal_inbox_routes_tests --test discord_notification_routes_tests
       - name: Production replay config tests
         run: cargo test --test production_replay_config_tests
       - name: Production replay smoke tests
@@ -44,6 +46,14 @@ jobs:
       - name: Docker Compose config
         env:
           OPERATOR_TOKEN: ci-dummy-operator-token
+          PERP_TOF_ENABLED: "true"
+          ADVANCED_TOF_ENABLED: "true"
         run: docker compose config
+      - name: Docker Compose build smoke
+        env:
+          OPERATOR_TOKEN: ci-dummy-operator-token
+          PERP_TOF_ENABLED: "true"
+          ADVANCED_TOF_ENABLED: "true"
+        run: docker compose build
       - name: Rust tests
         run: cargo test --all-targets --all-features --no-fail-fast -j 1

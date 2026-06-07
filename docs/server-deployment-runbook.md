@@ -29,7 +29,7 @@ This deployment keeps the Rust monitor process independent from the React/Vite f
 
 The backend listens on `0.0.0.0:3000` inside Compose and is exposed only on host loopback port `127.0.0.1:8000`.
 
-The frontend listens on `0.0.0.0:5173` and is exposed on host port `5173`.
+The frontend listens on `0.0.0.0:5173` inside Compose and is exposed only on host loopback port `127.0.0.1:5173`.
 
 Open:
 
@@ -134,6 +134,8 @@ Keep the stream read-only:
 - tune `WS_SIGNAL_INTERVAL_MS` for snapshot frequency
 - tune `SCAN_LOG_BUFFER_SIZE` for the in-memory scan log ring buffer
 - tune `TOF_SCAN_LOG_INTERVAL_SECONDS` to avoid metrics summary spam
+- keep `DISCORD_AUTO_PUSH_ENABLED=true` for real High/Critical candidate notifications
+- keep `DISCORD_AUTO_PUSH_CACHED_ON_BOOT=false` to avoid restart-time cached candidate bursts
 - keep `DISCORD_PUSH_COOLDOWN_SECONDS=60` or higher for real notification channels
 
 ## TOF-Lite Metrics
@@ -149,6 +151,58 @@ These fields are read-only operator summaries. They must not include raw order
 books, raw trades, evidence, markout, tokens, or webhook values. If real L2 /
 trade data is incomplete, TOF-lite falls back to the existing risk score and
 lower metrics completeness.
+
+## Contract-Side TOF Metrics
+
+v0.5 also adds read-only perp-side TOF aggregate metrics to the same inbox,
+WebSocket, Discord payload, scan log, and Dashboard surfaces:
+
+```text
+perpTofMetrics, perpScore, perpCandidateType, finalCandidateType, metricsDirection, mergedConfidence
+```
+
+The supported candidate families are `OpenInterestCandidate`,
+`CrowdedLongCandidate`, `CrowdedShortCandidate`, `LongSqueezeCandidate`,
+`ShortSqueezeCandidate`, and `AggressiveOrderFlowCandidate`. These fields are
+safe summaries only: OI change, funding rate, liquidation pressure, aggressive
+buy/sell volume, direction, score, data quality, and explain tags. Do not send
+raw payloads, raw evidence, markout, tokens, or webhook values.
+
+Useful defaults:
+
+```env
+PERP_TOF_ENABLED=true
+PERP_OI_BUCKET_SIZE=100000
+PERP_FUNDING_THRESHOLD=0.05
+PERP_LIQUIDATION_WINDOW=5m
+PERP_AGF_VOLUME_THRESHOLD=1000000
+ADVANCED_TOF_ENABLED=true
+```
+
+High/Critical Discord delivery still uses the same alert gate: score `>= 80`,
+data quality `>= 70`, dedupe, and cooldown. Medium and Low contract candidates
+remain Dashboard-only.
+
+## Advanced TOF Fusion
+
+The v0.6 advanced layer merges spot risk, spot TOF-lite, and perp TOF into a
+single read-only candidate summary:
+
+```text
+advancedTofMetrics, advancedScore, advancedCandidateType
+```
+
+The fusion formula is:
+
+```text
+finalRiskScore = 0.4 * spotRisk + 0.3 * spotTofScore + 0.3 * perpScore
+```
+
+Advanced indicators include VPIN Enhanced, large order-flow clusters,
+historical Funding / OI trend, and market pressure heatmap. Scan logs emit
+`advanced_metrics_computed` with aggregate scores only. Discord embeds may show
+these aggregate indicators and explain tags, but must still omit raw payloads,
+evidence, markout, tokens, and webhook values.
 
 ## Remote Access
 

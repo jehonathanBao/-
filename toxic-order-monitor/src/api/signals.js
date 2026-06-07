@@ -19,11 +19,15 @@ export function mapInboxItemToSignal(item) {
   const createdAtMs = item.createdAtMs ?? Date.parse(item.createdAt || "");
   const score = Number.isFinite(Number(item.finalRiskScore))
     ? Number(item.finalRiskScore)
+    : Number.isFinite(Number(item.advancedTofMetrics?.finalRiskScore))
+      ? Number(item.advancedTofMetrics.finalRiskScore)
     : Number.isFinite(Number(item.riskScore))
       ? Number(item.riskScore)
       : scoreFromSeverity(item.severity);
   const dataQuality = Number.isFinite(Number(item.dataQuality))
     ? Number(item.dataQuality)
+    : Number.isFinite(Number(item.advancedTofMetrics?.dataQuality))
+      ? Number(item.advancedTofMetrics.dataQuality)
     : dataQualityFromBucket(item.quality?.qualityBucket ?? item.qualityBucket);
   return {
     id: signalId,
@@ -42,15 +46,121 @@ export function mapInboxItemToSignal(item) {
     dataQuality,
     tofMetrics: normalizeTofMetrics(item.tofMetrics),
     tofScore: numberOrNull(item.tofScore),
-    finalRiskScore: numberOrNull(item.finalRiskScore),
+    perpTofMetrics: normalizePerpTofMetrics(item.perpTofMetrics),
+    perpScore: numberOrNull(item.perpScore),
+    perpCandidateType: item.perpCandidateType || item.perpTofMetrics?.candidateType || null,
+    advancedTofMetrics: normalizeAdvancedTofMetrics(item.advancedTofMetrics),
+    advancedScore: numberOrNull(item.advancedScore),
+    advancedCandidateType: item.advancedCandidateType || item.advancedTofMetrics?.candidateType || null,
+    finalCandidateType: item.finalCandidateType || null,
+    metricsDirection:
+      item.metricsDirection || item.advancedTofMetrics?.metricsDirection || item.perpTofMetrics?.metricsDirection || null,
+    mergedConfidence: numberOrNull(item.mergedConfidence),
+    finalRiskScore: numberOrNull(item.finalRiskScore ?? item.advancedTofMetrics?.finalRiskScore),
     candidateType: item.candidateType || item.signalKind || item.detector || "toxic_flow_candidate",
     explainTags: Array.isArray(item.explainTags) ? item.explainTags.filter((tag) => typeof tag === "string") : [],
     directionLabel: item.directionLabel || directionLabel(directionBias),
     directionConfidence: numberOrNull(item.directionConfidence),
     directionSource: item.directionSource || "detector",
+    alertStatus: item.alertStatus || item.discordAlert?.lastDecision || "not_evaluated",
+    alertReason: item.alertReason || item.discordAlert?.reason || null,
+    discordAlert: normalizeDiscordAlert(item.discordAlert),
+    replaySnapshot: redactSnapshot(item.replaySnapshot || item.redactedReplaySnapshot || item.replay?.snapshot),
     status: "unhandled",
     pushedAt: null,
     isLive: true,
+  };
+}
+
+function redactSnapshot(value) {
+  if (Array.isArray(value)) {
+    return value.map(redactSnapshot);
+  }
+  if (!value || typeof value !== "object") {
+    return value ?? null;
+  }
+  const forbidden = new Set([
+    "rawpayload",
+    "evidence",
+    "markout",
+    "token",
+    "webhook",
+    "authorization",
+    "apikey",
+    "secret",
+  ]);
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !forbidden.has(key.toLowerCase()))
+      .map(([key, item]) => [key, redactSnapshot(item)]),
+  );
+}
+
+function normalizeAdvancedTofMetrics(metrics) {
+  if (!metrics || typeof metrics !== "object") {
+    return null;
+  }
+  return {
+    vpinEnhanced: numberOrNull(metrics.vpinEnhanced),
+    largeOrderFlowCluster: numberOrNull(metrics.largeOrderFlowCluster),
+    historicalFundingOiTrend: numberOrNull(metrics.historicalFundingOiTrend),
+    marketPressureHeatmap: numberOrNull(metrics.marketPressureHeatmap),
+    spotRiskScore: numberOrNull(metrics.spotRiskScore),
+    spotTofScore: numberOrNull(metrics.spotTofScore),
+    perpScore: numberOrNull(metrics.perpScore),
+    finalRiskScore: numberOrNull(metrics.finalRiskScore),
+    dataQuality: numberOrNull(metrics.dataQuality),
+    metricsCompleteness: numberOrNull(metrics.metricsCompleteness),
+    freshDataCoverage: numberOrNull(metrics.freshDataCoverage),
+    candidateType: typeof metrics.candidateType === "string" ? metrics.candidateType : "AdvancedTofCandidate",
+    finalCandidateType: typeof metrics.finalCandidateType === "string" ? metrics.finalCandidateType : null,
+    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : "neutral",
+    confidence: numberOrNull(metrics.confidence),
+    explainTags: Array.isArray(metrics.explainTags) ? metrics.explainTags.filter((tag) => typeof tag === "string") : [],
+  };
+}
+
+function normalizePerpTofMetrics(metrics) {
+  if (!metrics || typeof metrics !== "object") {
+    return null;
+  }
+  return {
+    oiChange: numberOrNull(metrics.oiChange),
+    oiDirection: typeof metrics.oiDirection === "string" ? metrics.oiDirection : "neutral",
+    fundingRate: numberOrNull(metrics.fundingRate),
+    fundingSide: typeof metrics.fundingSide === "string" ? metrics.fundingSide : "neutral",
+    liquidationPressure: numberOrNull(metrics.liquidationPressure),
+    squeezeSide: typeof metrics.squeezeSide === "string" ? metrics.squeezeSide : "neutral",
+    aggBuyVolume: numberOrNull(metrics.aggBuyVolume),
+    aggSellVolume: numberOrNull(metrics.aggSellVolume),
+    directionBias: typeof metrics.directionBias === "string" ? metrics.directionBias : "neutral",
+    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : "neutral",
+    riskScore: numberOrNull(metrics.riskScore),
+    dataQuality: numberOrNull(metrics.dataQuality),
+    candidateType: typeof metrics.candidateType === "string" ? metrics.candidateType : "PerpTofCandidate",
+    explainTags: Array.isArray(metrics.explainTags) ? metrics.explainTags.filter((tag) => typeof tag === "string") : [],
+    confidence: numberOrNull(metrics.confidence),
+  };
+}
+
+function normalizeDiscordAlert(alert) {
+  if (!alert || typeof alert !== "object") {
+    return {
+      autoEligible: false,
+      autoSent: false,
+      lastDecision: "not_evaluated",
+      reason: null,
+      sentAt: null,
+      manualSentAt: null,
+    };
+  }
+  return {
+    autoEligible: Boolean(alert.autoEligible),
+    autoSent: Boolean(alert.autoSent),
+    lastDecision: typeof alert.lastDecision === "string" ? alert.lastDecision : "not_evaluated",
+    reason: typeof alert.reason === "string" ? alert.reason : null,
+    sentAt: typeof alert.sentAt === "string" ? alert.sentAt : null,
+    manualSentAt: typeof alert.manualSentAt === "string" ? alert.manualSentAt : null,
   };
 }
 

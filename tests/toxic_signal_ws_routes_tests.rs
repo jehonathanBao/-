@@ -9,6 +9,18 @@ fn ws_signals_route_is_read_only_static_contract() {
     assert!(source.contains("read_only: true"));
     assert!(source.contains("runtime_modified: false"));
     assert!(source.contains("execution_enabled: false"));
+    assert!(source.contains("alert_status"));
+    assert!(source.contains("alert_reason"));
+    assert!(source.contains("discord_alert"));
+    assert!(source.contains("perp_tof_metrics"));
+    assert!(source.contains("perp_candidate_type"));
+    assert!(source.contains("final_candidate_type"));
+    assert!(source.contains("metrics_direction"));
+    assert!(source.contains("perp_metrics_computed"));
+    assert!(source.contains("perp_candidate_generated"));
+    assert!(source.contains("advanced_tof_metrics"));
+    assert!(source.contains("advanced_candidate_type"));
+    assert!(source.contains("advanced_metrics_computed"));
     assert!(!source.contains("discord_notification_proxy"));
     assert!(!source.contains("telegram"));
     assert!(!source.contains("clearSignalInbox"));

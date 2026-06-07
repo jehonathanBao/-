@@ -5,9 +5,19 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    api::toxic_quality_scorecard_routes::build_fusion_recent,
+    api::{
+        discord_notification_routes::{
+            discord_alert_status_for_key, evaluate_discord_alert_gate, DiscordAlertMode,
+            DiscordNotificationRequest,
+        },
+        toxic_quality_scorecard_routes::build_fusion_recent,
+    },
     app::AppState,
-    runtime::tof_metrics::{enhance_signal_summary, TofSummaryInput},
+    runtime::{
+        advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput},
+        perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput},
+        tof_metrics::{enhance_signal_summary, TofSummaryInput},
+    },
     toxicity::{
         toxic_governance_ledger_service::toxic_governance_ledger_summary,
         toxic_markout_service::toxic_markout_recent,
@@ -165,15 +175,18 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
     let signal_kind = object
         .get("signalKind")
         .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("unknown")
+        .to_string();
     let direction_bias = object
         .get("directionBias")
         .and_then(|value| value.as_str())
-        .unwrap_or("neutral");
+        .unwrap_or("neutral")
+        .to_string();
     let severity = object
         .get("severity")
         .and_then(|value| value.as_str())
-        .unwrap_or("low");
+        .unwrap_or("low")
+        .to_string();
     let confidence = object
         .get("confidence")
         .and_then(|value| value.as_f64())
@@ -182,35 +195,78 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
         .get("quality")
         .and_then(|value| value.get("qualityBucket"))
         .and_then(|value| value.as_str())
-        .unwrap_or("not_enough_data");
+        .unwrap_or("not_enough_data")
+        .to_string();
     let summary = object
         .get("fusion")
         .and_then(|value| value.get("summary"))
         .and_then(|value| value.as_str())
-        .unwrap_or("candidate signal");
-    let existing_risk_score = risk_score_for_severity(severity);
-    let existing_data_quality = data_quality_for_bucket(quality_bucket);
+        .unwrap_or("candidate signal")
+        .to_string();
+    let symbol = object
+        .get("symbol")
+        .and_then(|value| value.as_str())
+        .unwrap_or("UNKNOWN")
+        .to_string();
+    let existing_risk_score = risk_score_for_severity(&severity);
+    let existing_data_quality = data_quality_for_bucket(&quality_bucket);
     let enhancement = enhance_signal_summary(&TofSummaryInput {
-        signal_kind,
-        direction_bias,
-        severity,
+        signal_kind: &signal_kind,
+        direction_bias: &direction_bias,
+        severity: &severity,
         confidence,
-        quality_bucket,
-        summary,
+        quality_bucket: &quality_bucket,
+        summary: &summary,
         existing_risk_score,
         existing_data_quality,
     });
+    let candidate_type = enhancement.candidate_type.clone();
+    let explain_tags = enhancement.explain_tags.clone();
+    let direction_label = enhancement.direction_label.clone();
+    let direction_source = enhancement.direction_source.clone();
+    let perp_metrics = build_perp_tof_metrics(&PerpTofInput {
+        symbol: &symbol,
+        spot_candidate_type: &candidate_type,
+        spot_direction: enhancement.direction,
+        spot_risk_score: enhancement.final_risk_score,
+        spot_data_quality: existing_data_quality,
+        spot_confidence: confidence,
+        summary: &summary,
+    });
+    let advanced_metrics = build_advanced_tof_metrics(&AdvancedTofInput {
+        symbol: &symbol,
+        spot_candidate_type: &candidate_type,
+        spot_direction: enhancement.direction,
+        spot_risk_score: existing_risk_score,
+        spot_data_quality: existing_data_quality,
+        spot_confidence: confidence,
+        tof_metrics: &enhancement.tof_metrics,
+        spot_tags: &explain_tags,
+        perp_metrics: &perp_metrics,
+        summary: &summary,
+    });
+    let merged_tags = advanced_metrics.explain_tags.clone();
+    let advanced_score = advanced_metrics.final_risk_score;
+    let advanced_data_quality = advanced_metrics.data_quality;
+    let advanced_candidate_type = advanced_metrics.candidate_type.clone();
+    let perp_score = perp_metrics.risk_score;
+    let perp_candidate_type = perp_metrics.candidate_type.clone();
+    let final_candidate_type = advanced_metrics.final_candidate_type.clone();
+    let metrics_direction = serde_json::to_value(advanced_metrics.metrics_direction)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string));
+    let final_risk_score = advanced_score;
     object.insert(
         "tofMetrics".to_string(),
         serde_json::to_value(&enhancement.tof_metrics).unwrap_or(serde_json::Value::Null),
     );
     object.insert(
         "candidateType".to_string(),
-        serde_json::json!(enhancement.candidate_type),
+        serde_json::json!(advanced_candidate_type.clone()),
     );
     object.insert(
         "explainTags".to_string(),
-        serde_json::json!(enhancement.explain_tags),
+        serde_json::json!(merged_tags.clone()),
     );
     object.insert(
         "direction".to_string(),
@@ -218,7 +274,7 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
     );
     object.insert(
         "directionLabel".to_string(),
-        serde_json::json!(enhancement.direction_label),
+        serde_json::json!(direction_label),
     );
     object.insert(
         "directionConfidence".to_string(),
@@ -226,24 +282,146 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
     );
     object.insert(
         "directionSource".to_string(),
-        serde_json::json!(enhancement.direction_source),
+        serde_json::json!(direction_source),
     );
     object.insert(
         "tofScore".to_string(),
         serde_json::json!(enhancement.tof_score),
     );
     object.insert(
-        "finalRiskScore".to_string(),
-        serde_json::json!(enhancement.final_risk_score),
+        "perpTofMetrics".to_string(),
+        serde_json::to_value(&perp_metrics).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert("perpScore".to_string(), serde_json::json!(perp_score));
+    object.insert(
+        "perpCandidateType".to_string(),
+        serde_json::json!(perp_candidate_type.clone()),
     );
     object.insert(
-        "riskScore".to_string(),
-        serde_json::json!(enhancement.final_risk_score),
+        "finalCandidateType".to_string(),
+        serde_json::json!(final_candidate_type.clone()),
     );
+    object.insert(
+        "metricsDirection".to_string(),
+        serde_json::json!(advanced_metrics.metrics_direction),
+    );
+    object.insert(
+        "mergedConfidence".to_string(),
+        serde_json::json!(advanced_metrics.confidence),
+    );
+    object.insert(
+        "advancedTofMetrics".to_string(),
+        serde_json::to_value(&advanced_metrics).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "advancedScore".to_string(),
+        serde_json::json!(advanced_score),
+    );
+    object.insert(
+        "advancedCandidateType".to_string(),
+        serde_json::json!(advanced_candidate_type.clone()),
+    );
+    object.insert(
+        "finalRiskScore".to_string(),
+        serde_json::json!(final_risk_score),
+    );
+    object.insert("riskScore".to_string(), serde_json::json!(final_risk_score));
     object.insert(
         "dataQuality".to_string(),
-        serde_json::json!(existing_data_quality),
+        serde_json::json!(advanced_data_quality),
     );
+    let signal_id = object
+        .get("signalId")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let alert_request = DiscordNotificationRequest {
+        signal_id: signal_id.clone(),
+        id: signal_id.clone(),
+        dedupe_key: signal_id.clone(),
+        exchange: Some("Runtime".to_string()),
+        symbol: Some(symbol),
+        signal_type: Some(signal_kind),
+        level: Some(severity),
+        side: Some(enhancement.direction_label.clone()),
+        score: Some(final_risk_score),
+        data_quality: Some(advanced_data_quality),
+        reason: Some(summary),
+        impact: None,
+        time: None,
+        price_range: None,
+        add_qty: None,
+        cancel_qty: None,
+        fill_qty: None,
+        cancel_to_trade_ratio: None,
+        depth_before: None,
+        depth_after: None,
+        depth_impact: None,
+        price_impact_bps: None,
+        markout_1s_bps: None,
+        markout_5s_bps: None,
+        markout_30s_bps: None,
+        tof_metrics: Some(enhancement.tof_metrics),
+        tof_score: Some(enhancement.tof_score),
+        candidate_type: Some(advanced_candidate_type.clone()),
+        explain_tags: Some(merged_tags),
+        direction_confidence: Some(enhancement.direction_confidence),
+        perp_tof_metrics: Some(perp_metrics),
+        perp_score: Some(perp_score),
+        perp_candidate_type: Some(perp_candidate_type),
+        final_candidate_type: Some(final_candidate_type),
+        metrics_direction,
+        advanced_tof_metrics: Some(advanced_metrics),
+        advanced_score: Some(advanced_score),
+        advanced_candidate_type: Some(advanced_candidate_type),
+        test: None,
+    };
+    let alert_decision = evaluate_discord_alert_gate(&alert_request, DiscordAlertMode::Auto);
+    let stored_alert = signal_id.as_deref().and_then(discord_alert_status_for_key);
+    let alert_status = stored_alert
+        .as_ref()
+        .map(|status| status.last_decision.clone())
+        .unwrap_or_else(|| {
+            alert_status_from_reason(alert_decision.allowed, alert_decision.reason).to_string()
+        });
+    let alert_reason = stored_alert
+        .as_ref()
+        .map(|status| status.reason.clone())
+        .unwrap_or_else(|| alert_decision.reason.to_string());
+    object.insert(
+        "alertStatus".to_string(),
+        serde_json::json!(alert_status.clone()),
+    );
+    object.insert(
+        "alertReason".to_string(),
+        serde_json::json!(alert_reason.clone()),
+    );
+    let discord_alert = stored_alert
+        .map(serde_json::to_value)
+        .and_then(Result::ok)
+        .unwrap_or_else(|| {
+            serde_json::json!({
+            "autoEligible": alert_decision.allowed,
+            "autoSent": false,
+            "lastDecision": alert_status,
+            "reason": alert_reason,
+            "sentAt": null,
+            "manualSentAt": null,
+            })
+        });
+    object.insert("discordAlert".to_string(), discord_alert);
+}
+
+fn alert_status_from_reason(allowed: bool, reason: &str) -> &'static str {
+    if allowed {
+        "eligible"
+    } else if matches!(
+        reason,
+        "score_below_threshold" | "data_quality_below_threshold" | "non_high_risk"
+    ) {
+        "rejected"
+    } else {
+        "skipped"
+    }
 }
 
 fn risk_score_for_severity(severity: &str) -> u8 {

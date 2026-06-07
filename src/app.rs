@@ -10,6 +10,11 @@ use crate::{
         alert_service::{AlertService, DevTestSidecarAlertInput, DevTestSidecarAlertResult},
         alert_types::AlertState,
     },
+    api::{
+        discord_notification_routes::{maybe_auto_push_discord, DiscordNotificationRequest},
+        toxic_signal_inbox_routes::build_recent,
+        toxic_signal_ws_routes::{build_ws_snapshot, ToxicSignalWsItem},
+    },
     config::AppConfig,
     connectors::manager::ConnectorManager,
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
@@ -47,8 +52,10 @@ pub struct AppState {
 
 struct AppStateInner {
     config: AppConfig,
+    booted_at_ms: i64,
     runtime_started: AtomicBool,
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
+    discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     scan_log: ScanLogStore,
     market_data_bus: MarketDataBus,
     connector_manager: ConnectorManager,
@@ -181,8 +188,10 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 config,
+                booted_at_ms: crate::normalizers::trade::now_ms(),
                 runtime_started: AtomicBool::new(false),
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
+                discord_auto_push_task: Arc::new(RwLock::new(None)),
                 scan_log,
                 market_data_bus: bus,
                 connector_manager,
@@ -270,6 +279,7 @@ impl AppState {
         self.inner.orderbook_wall_lifecycle_service.start();
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
+        self.start_discord_auto_push_loop();
         self.record_scan_log(
             "info",
             "data_source_connecting",
@@ -342,6 +352,7 @@ impl AppState {
         self.inner.runtime_started.store(false, Ordering::SeqCst);
         self.inner.connector_manager.stop_all().await;
         self.inner.snapshot_service.stop();
+        self.stop_discord_auto_push_loop();
         self.inner.alert_service.stop();
         self.inner.orderbook_wall_lifecycle_service.stop();
         self.inner.liq_hunt_service.stop();
@@ -377,6 +388,10 @@ impl AppState {
 
     pub fn runtime_started(&self) -> bool {
         self.inner.runtime_started.load(Ordering::SeqCst)
+    }
+
+    pub fn booted_at_ms(&self) -> i64 {
+        self.inner.booted_at_ms
     }
 
     pub fn runtime_control_summary(&self) -> RuntimeControlSummary {
@@ -418,6 +433,39 @@ impl AppState {
 
     pub fn subscribe_scan_logs(&self) -> tokio::sync::broadcast::Receiver<ScanLogItem> {
         self.inner.scan_log.subscribe()
+    }
+
+    fn start_discord_auto_push_loop(&self) {
+        if self.inner.discord_auto_push_task.read().is_some() {
+            return;
+        }
+        let state = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(discord_auto_push_interval());
+            loop {
+                interval.tick().await;
+                state.evaluate_discord_auto_push_once().await;
+            }
+        });
+        *self.inner.discord_auto_push_task.write() = Some(handle);
+    }
+
+    fn stop_discord_auto_push_loop(&self) {
+        if let Some(handle) = self.inner.discord_auto_push_task.write().take() {
+            handle.abort();
+        }
+    }
+
+    async fn evaluate_discord_auto_push_once(&self) {
+        let recent = build_recent(self, &self.config().symbol);
+        if recent.items.is_empty() {
+            return;
+        }
+        let snapshot = build_ws_snapshot(&recent);
+        for (item, signal) in recent.items.iter().zip(snapshot.signals.iter()) {
+            let request = discord_request_from_signal(signal);
+            let _ = maybe_auto_push_discord(self, request, item.created_at_ms).await;
+        }
     }
 
     pub fn venue_health(&self) -> VenueHealthMap {
@@ -598,5 +646,60 @@ impl AppState {
 
     pub fn set_stop_failure_for_tests(&self, error: Option<String>) {
         self.inner.runtime_control.write().forced_stop_failure = error;
+    }
+}
+
+fn discord_auto_push_interval() -> std::time::Duration {
+    let ms = std::env::var("DISCORD_AUTO_PUSH_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (500..=60_000).contains(value))
+        .unwrap_or(1_000);
+    std::time::Duration::from_millis(ms)
+}
+
+fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificationRequest {
+    DiscordNotificationRequest {
+        signal_id: Some(signal.id.clone()),
+        id: Some(signal.id.clone()),
+        dedupe_key: Some(signal.id.clone()),
+        exchange: Some("Runtime".to_string()),
+        symbol: Some(signal.symbol.clone()),
+        signal_type: Some(signal.detector.clone()),
+        level: Some(signal.severity.clone()),
+        side: Some(signal.direction_label.clone()),
+        score: Some(signal.final_risk_score),
+        data_quality: Some(signal.data_quality),
+        reason: Some(signal.final_result.clone()),
+        impact: None,
+        time: Some(signal.created_at.clone()),
+        price_range: None,
+        add_qty: None,
+        cancel_qty: None,
+        fill_qty: None,
+        cancel_to_trade_ratio: None,
+        depth_before: None,
+        depth_after: None,
+        depth_impact: None,
+        price_impact_bps: None,
+        markout_1s_bps: None,
+        markout_5s_bps: None,
+        markout_30s_bps: None,
+        tof_metrics: Some(signal.tof_metrics.clone()),
+        tof_score: Some(signal.tof_score),
+        candidate_type: Some(signal.candidate_type.clone()),
+        explain_tags: Some(signal.explain_tags.clone()),
+        direction_confidence: Some(signal.direction_confidence),
+        perp_tof_metrics: Some(signal.perp_tof_metrics.clone()),
+        perp_score: Some(signal.perp_score),
+        perp_candidate_type: Some(signal.perp_candidate_type.clone()),
+        final_candidate_type: Some(signal.final_candidate_type.clone()),
+        metrics_direction: serde_json::to_value(signal.metrics_direction)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string)),
+        advanced_tof_metrics: Some(signal.advanced_tof_metrics.clone()),
+        advanced_score: Some(signal.advanced_score),
+        advanced_candidate_type: Some(signal.advanced_candidate_type.clone()),
+        test: None,
     }
 }

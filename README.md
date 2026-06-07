@@ -192,8 +192,13 @@ the in-memory ring buffer with:
 
 ```env
 SCAN_LOG_BUFFER_SIZE=200
+DISCORD_AUTO_PUSH_ENABLED=true
+DISCORD_AUTO_PUSH_CACHED_ON_BOOT=false
+DISCORD_AUTO_PUSH_INTERVAL_MS=1000
 DISCORD_PUSH_COOLDOWN_SECONDS=60
 ```
+
+`READ_ONLY=true` keeps the runtime monitoring-only and must not block Discord or Telegram alert delivery. Real Discord delivery still requires `DRY_RUN=false`, a configured server-side `DISCORD_WEBHOOK_URL`, High/Critical severity, score `>= 80`, and data quality `>= 70`. Cached candidates from before backend boot are not auto-pushed unless `DISCORD_AUTO_PUSH_CACHED_ON_BOOT=true`.
 
 Scan log payloads must not contain operator tokens, Discord / Telegram secrets,
 authorization headers, raw payloads, evidence, markout, or webhook URLs. The
@@ -224,4 +229,67 @@ TOF_ORDER_CHURN_THRESHOLD=70
 TOF_SCORE_WEIGHT_EXISTING=0.60
 TOF_SCORE_WEIGHT_METRICS=0.40
 TOF_SCAN_LOG_INTERVAL_SECONDS=5
+```
+
+## v0.5 Contract-Side TOF
+
+v0.5 extends TOF-lite with read-only perp-side aggregate candidates. The
+backend now enriches inbox, `/ws/signals`, scan logs, Dashboard cards, review
+details, and Discord payloads with:
+
+```text
+perpTofMetrics, perpScore, perpCandidateType, finalCandidateType, metricsDirection, mergedConfidence
+```
+
+Supported contract-side candidate families:
+
+- `OpenInterestCandidate`
+- `CrowdedLongCandidate` / `CrowdedShortCandidate`
+- `LongSqueezeCandidate` / `ShortSqueezeCandidate`
+- `AggressiveOrderFlowCandidate`
+
+These fields are safe summaries only: OI change, funding rate, liquidation
+pressure, aggressive buy / sell volume, direction, score, data quality, and
+explain tags. They must not include raw payloads, raw evidence, markout,
+webhook URLs, tokens, or browser-exposed secrets. Discord High/Critical delivery
+still uses the same score `>= 80` and data quality `>= 70` gate; Medium and Low
+contract candidates remain Dashboard-only.
+
+```env
+PERP_TOF_ENABLED=true
+PERP_OI_BUCKET_SIZE=100000
+PERP_FUNDING_THRESHOLD=0.05
+PERP_LIQUIDATION_WINDOW=5m
+PERP_AGF_VOLUME_THRESHOLD=1000000
+```
+
+## v0.6 Advanced TOF Fusion
+
+v0.6 adds an advanced read-only fusion layer above spot TOF-lite and perp TOF:
+
+```text
+advancedTofMetrics, advancedScore, advancedCandidateType
+```
+
+The advanced aggregate indicators are:
+
+- VPIN Enhanced
+- Large order flow cluster
+- Historical Funding / OI trend
+- Market pressure heatmap
+
+The final score uses the Phase 3 weighting:
+
+```text
+finalRiskScore = 0.4 * spotRisk + 0.3 * spotTofScore + 0.3 * perpScore
+```
+
+`dataQuality` combines spot data quality, perp data quality, metrics
+completeness, and fresh data coverage. Discord and Dashboard surfaces show only
+aggregate values and explain tags. Medium / Low candidates remain
+Dashboard-only; High / Critical delivery still requires the configured score and
+data-quality gate.
+
+```env
+ADVANCED_TOF_ENABLED=true
 ```

@@ -13,6 +13,7 @@ function normalizeSignal(signal, now = Date.now()) {
     firstSeenAt: signal?.firstSeenAt ?? now,
     lastSeenAt: signal?.lastSeenAt ?? now,
     isLive: signal?.isLive ?? true,
+    reviewStatus: signal?.reviewStatus ?? null,
   };
 }
 
@@ -173,7 +174,21 @@ export const useSignalsStore = create((set, get) => ({
     const pushedAt = new Date().toLocaleString("zh-CN", { hour12: false }).replace(/\//g, "-");
     set((state) => {
       const updateSignal = (signal) =>
-        signal.id === signalId ? { ...signal, status: "pushed", pushedAt } : signal;
+        signal.id === signalId
+          ? {
+              ...signal,
+              status: "pushed",
+              pushedAt,
+              alertStatus: "sent",
+              alertReason: "manual_sent",
+              discordAlert: {
+                ...(signal.discordAlert || {}),
+                lastDecision: "sent",
+                reason: "manual_sent",
+                manualSentAt: pushedAt,
+              },
+            }
+          : signal;
       const rawInboxSignals = state.rawInboxSignals.map(updateSignal);
       const selectedSignal =
         state.selectedSignal?.id === signalId
@@ -190,6 +205,29 @@ export const useSignalsStore = create((set, get) => ({
       return { ...nextState, storageWarning };
     });
   },
+  setSignalReviewStatus: (signalId, reviewStatus) =>
+    set((state) => {
+      const updateSignal = (signal) =>
+        signal.id === signalId || signalKey(signal) === signalId
+          ? {
+              ...signal,
+              reviewStatus,
+              reviewStatusUpdatedAt: new Date().toISOString(),
+            }
+          : signal;
+      const rawInboxSignals = state.rawInboxSignals.map(updateSignal);
+      const selectedSignal =
+        state.selectedSignal && (state.selectedSignal.id === signalId || signalKey(state.selectedSignal) === signalId)
+          ? updateSignal(state.selectedSignal)
+          : state.selectedSignal;
+      const nextState = {
+        rawInboxSignals,
+        signals: rawInboxSignals,
+        selectedSignal,
+      };
+      const storageWarning = persistInboxState({ ...state, ...nextState });
+      return { ...nextState, storageWarning };
+    }),
   clearSignalInbox: () =>
     set((state) => {
       const clearedSignalKeys = [

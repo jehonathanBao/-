@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SignalTable from "../components/SignalTable.jsx";
@@ -63,6 +64,15 @@ describe("Signal inbox card display", () => {
     expect(state.rawInboxSignals).toHaveLength(1);
     expect(state.rawInboxSignals[0].id).toBe("sig_001");
     expect(state.rawInboxSignals[0].isLive).toBe(false);
+  });
+
+  it("persists local review status markers across refresh state loads", () => {
+    useSignalsStore.getState().setSignalReviewStatus("sig_001", "acknowledged");
+
+    const state = useSignalsStore.getState();
+    expect(state.rawInboxSignals.find((signal) => signal.id === "sig_001").reviewStatus).toBe("acknowledged");
+    const persisted = JSON.parse(window.localStorage.getItem("toxic-order-monitor.signal-inbox.v1"));
+    expect(persisted.rawInboxSignals.find((signal) => signal.id === "sig_001").reviewStatus).toBe("acknowledged");
   });
 
   it("does not render duplicate dedupeKey values twice", () => {
@@ -139,6 +149,78 @@ describe("Signal inbox card display", () => {
     expect(screen.getByText("卖方挂单诱导，潜在下行压力")).toBeInTheDocument();
   });
 
+  it("shows the latest visible signal time in the status cards", () => {
+    renderInbox([mockSignals[0], mockSignals[1]]);
+
+    expect(screen.getByTestId("signal-inbox-updated-at")).toHaveTextContent("更新时间");
+    expect(screen.getByTestId("signal-inbox-updated-at")).toHaveTextContent("12:34:10");
+  });
+
+  it("shows Discord auto push status and opens read-only review details", async () => {
+    const user = userEvent.setup();
+    const onMarkStatus = vi.fn();
+    renderInbox([
+      {
+        ...mockSignals[0],
+        alertStatus: "skipped",
+        alertReason: "cached_on_boot",
+        discordAlert: {
+          autoEligible: false,
+          autoSent: false,
+          lastDecision: "skipped",
+          reason: "cached_on_boot",
+        },
+      },
+    ], { onMarkStatus });
+
+    expect(screen.getByText("Discord：未推送，原因：历史缓存不自动推送")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /查看回放 sig_001/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("Candidate Review")).toBeInTheDocument();
+    expect(screen.getByText("Symbol")).toBeInTheDocument();
+    expect(screen.getAllByText("BTCUSDT", { exact: false })).not.toHaveLength(0);
+    expect(screen.getByText("Risk Score")).toBeInTheDocument();
+    expect(screen.getByText("Data Quality")).toBeInTheDocument();
+    expect(screen.getByText("TOF Score")).toBeInTheDocument();
+    expect(screen.getByText("Discord Alert Status")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "important" }));
+    expect(onMarkStatus).toHaveBeenCalledWith("sig_001", "important");
+  });
+
+  it("opens redacted replay snapshot when replay data exists", async () => {
+    const user = userEvent.setup();
+    renderInbox([
+      {
+        ...mockSignals[0],
+        replaySnapshot: {
+          signalId: "sig_001",
+          symbol: "BTCUSDT",
+          eventType: "book_delta",
+          rawPayload: "must not render",
+          evidence: "must not render",
+          markout: "must not render",
+          token: "must not render",
+          safeSummary: "redacted replay snapshot",
+        },
+      },
+    ]);
+
+    const replayButton = screen.getByRole("button", { name: /查看回放 sig_001/ });
+    expect(replayButton).toBeEnabled();
+    await user.click(replayButton);
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("Replay Snapshot")).toBeInTheDocument();
+    expect(screen.getByText(/redacted replay snapshot/)).toBeInTheDocument();
+    expect(screen.queryByText("must not render")).not.toBeInTheDocument();
+    expect(screen.queryByText("rawPayload")).not.toBeInTheDocument();
+    expect(screen.queryByText("evidence")).not.toBeInTheDocument();
+    expect(screen.queryByText("markout")).not.toBeInTheDocument();
+  });
+
   it("shows medium-risk candidates as display-only for Discord", () => {
     const mediumSignal = {
       ...mockSignals[2],
@@ -153,7 +235,7 @@ describe("Signal inbox card display", () => {
   });
 });
 
-function renderInbox(signals) {
+function renderInbox(signals, overrides = {}) {
   return render(
     React.createElement(SignalTable, {
       inboxStats: { total: signals.length, high: 0, medium: signals.length, low: 0 },
@@ -161,6 +243,7 @@ function renderInbox(signals) {
       onSelect: vi.fn(),
       selectedSignal: signals[0],
       signals,
+      ...overrides,
     }),
   );
 }

@@ -14,7 +14,7 @@ export function canSendDiscord(signal) {
 }
 
 export function evaluateDiscordAlertGate(signal) {
-  const score = Number(signal?.score ?? 0);
+  const score = Number(signal?.finalRiskScore ?? signal?.score ?? 0);
   const dataQuality = Number(signal?.dataQuality ?? 100);
 
   if (!canSendDiscord(signal)) {

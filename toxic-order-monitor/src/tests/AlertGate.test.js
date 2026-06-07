@@ -9,6 +9,20 @@ describe("evaluateDiscordAlertGate", () => {
     });
   });
 
+  it("uses finalRiskScore before legacy score", () => {
+    expect(
+      evaluateDiscordAlertGate({
+        risk: "high",
+        score: 40,
+        finalRiskScore: 88,
+        dataQuality: 90,
+      }),
+    ).toEqual({
+      ok: true,
+      reason: null,
+    });
+  });
+
   it("allows critical level candidates when score and data quality pass", () => {
     expect(evaluateDiscordAlertGate({ riskLevel: "critical", score: 91, dataQuality: 90 })).toEqual({
       ok: true,
