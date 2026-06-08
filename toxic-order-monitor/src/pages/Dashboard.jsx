@@ -14,6 +14,7 @@ import Sidebar from "../components/Sidebar.jsx";
 import SignalDetail from "../components/SignalDetail.jsx";
 import SignalTable from "../components/SignalTable.jsx";
 import SpotWhaleMonitor from "../components/SpotWhaleMonitor.jsx";
+import UsageGuide from "../components/UsageGuide.jsx";
 import { useReconnectingWebSocket } from "../hooks/useReconnectingWebSocket.js";
 import { useSignalsStore } from "../store/signalsStore.js";
 
@@ -27,6 +28,7 @@ export default function Dashboard() {
   const viewMode = viewModeFromPath(location.pathname);
   const isContractWhaleView = viewMode === "contract-whale";
   const isSpotWhaleView = viewMode === "spot-whale";
+  const isUsageGuideView = viewMode === "usage-guide";
   const {
     rawInboxSignals,
     selectedSignal,
@@ -51,7 +53,7 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView || isSpotWhaleView) {
+    if (isContractWhaleView || isSpotWhaleView || isUsageGuideView) {
       return;
     }
     fetchSignals().then((items) => {
@@ -63,7 +65,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isContractWhaleView, isSpotWhaleView, setSelectedSignal, setSignals]);
+  }, [isContractWhaleView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -85,7 +87,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView && !isSpotWhaleView,
+    enabled: !isContractWhaleView && !isSpotWhaleView && !isUsageGuideView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -271,6 +273,8 @@ export default function Dashboard() {
           <ContractWhalePage />
         ) : isSpotWhaleView ? (
           <SpotWhalePage />
+        ) : isUsageGuideView ? (
+          <UsageGuidePage />
         ) : (
           <>
             <RuleStatus
@@ -427,6 +431,26 @@ function SpotWhalePage() {
   );
 }
 
+function UsageGuidePage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">User Manual</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">用户使用指南</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            面向看盘用户的信号解释、页面状态说明和 Discord 提示含义。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          只读指南 · Candidate only
+        </div>
+      </div>
+      <UsageGuide />
+    </>
+  );
+}
+
 function ratio(value, total) {
   if (!total) return 0;
   return Number(((value / total) * 100).toFixed(1));
@@ -486,6 +510,9 @@ function filterLabel(activeRiskFilter, viewMode) {
   if (viewMode === "rules") {
     return "告警规则：当前有毒订单判断逻辑";
   }
+  if (viewMode === "usage-guide") {
+    return "使用指南";
+  }
   if (activeRiskFilter === "medium") {
     return "高风险主列表 + 中风险折叠区";
   }
@@ -498,6 +525,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
   if (pathname === "/spot-whale") return "spot-whale";
+  if (pathname === "/usage-guide") return "usage-guide";
   if (pathname === "/signals") return "signals";
   if (pathname === "/history") return "history";
   if (pathname === "/rules") return "rules";

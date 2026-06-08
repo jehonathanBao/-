@@ -60,6 +60,31 @@ vi.mock("../api/contractWhale.js", () => ({
   fetchContractWhaleHistory: vi.fn(() => Promise.resolve({ summary: null, items: [], error: null })),
 }));
 
+vi.mock("../api/usageGuide.js", () => ({
+  fetchUsageGuide: vi.fn(() =>
+    Promise.resolve({
+      markdown: [
+        "# 有毒订单监控用户使用指南",
+        "",
+        "## 1. 先记住一句话",
+        "",
+        "页面里所有 `Candidate` 都表示候选信号。",
+        "",
+        "## 5. 合约监控信号怎么解读",
+        "",
+        "主力拉盘表示合约主动买入成交突然放大。",
+        "",
+        "## 8. Discord 状态怎么理解",
+        "",
+        "`cooldown` 表示同方向短时间内已经推过。",
+      ].join("\n"),
+      readOnly: true,
+      sourcePath: "docs/usage-guide.md",
+      title: "有毒订单监控用户使用指南",
+    }),
+  ),
+}));
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),
 }));
@@ -169,6 +194,7 @@ describe("Dashboard interactions", () => {
 
     expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
     expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-whale");
+    expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getByText("主力合约监控未启用")).toBeInTheDocument();
@@ -205,6 +231,21 @@ describe("Dashboard interactions", () => {
     expect(screen.getByText(/finalRiskScore = 0.35 \* 现货风险/)).toBeInTheDocument();
     expect(screen.getByText(/CWM 大行情提醒保留独立 gate/)).toBeInTheDocument();
     expect(screen.getByText(/系统只做盘口\/成交异常提醒/)).toBeInTheDocument();
+  });
+
+  it("shows the user usage guide from the docs markdown file", async () => {
+    renderDashboard("/usage-guide");
+
+    expect(await screen.findByText("用户使用指南")).toBeInTheDocument();
+    expect(screen.getByText("1. 先记住一句话")).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) =>
+        element?.tagName === "P" && element.textContent.includes("页面里所有 Candidate 都表示候选信号。"),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("5. 合约监控信号怎么解读")).toBeInTheDocument();
+    expect(screen.getByText("8. Discord 状态怎么理解")).toBeInTheDocument();
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 
   it("shows the detail panel after selecting replay", async () => {

@@ -21,7 +21,7 @@ use crate::{
         toxic_signal_alert_preview_routes, toxic_signal_detail_routes, toxic_signal_group_routes,
         toxic_signal_health_routes, toxic_signal_history_routes, toxic_signal_inbox_routes,
         toxic_signal_report_routes, toxic_signal_routes, toxic_signal_ws_routes,
-        toxic_weight_recommendation_routes, toxic_weight_review_routes,
+        toxic_weight_recommendation_routes, toxic_weight_review_routes, usage_guide_routes,
         whale_flow_calibration_routes, whale_flow_candidate_history_routes, whale_flow_routes,
     },
     app::AppState,
@@ -38,6 +38,10 @@ pub fn router(state: AppState) -> Router {
         .route("/web/app.js", get(static_files::app_js))
         .route("/web/styles.css", get(static_files::styles_css))
         .route("/api/status", get(routes::status))
+        .route(
+            "/api/docs/usage-guide",
+            get(usage_guide_routes::usage_guide_route),
+        )
         .route(
             "/api/runtime/scan-log/recent",
             get(scan_log_routes::scan_log_recent_route),

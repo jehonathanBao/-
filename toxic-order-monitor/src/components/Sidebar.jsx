@@ -7,6 +7,7 @@ const menuItems = [
   { label: "异常信号", path: "/signals" },
   { label: "信号历史", path: "/history" },
   { label: "告警规则", path: "/rules" },
+  { label: "使用指南", path: "/usage-guide" },
   { label: "Discord 设置", path: "/discord" },
   { label: "系统设置", path: "/settings" },
 ];

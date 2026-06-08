@@ -10,6 +10,7 @@ export default function App() {
       <Route path="/signals" element={<Dashboard />} />
       <Route path="/history" element={<Dashboard />} />
       <Route path="/rules" element={<Dashboard />} />
+      <Route path="/usage-guide" element={<Dashboard />} />
       <Route path="/discord" element={<Dashboard />} />
       <Route path="/settings" element={<Dashboard />} />
       <Route path="*" element={<Navigate to="/" replace />} />

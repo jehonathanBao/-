@@ -47,6 +47,7 @@ pub mod toxic_signal_routes;
 pub mod toxic_signal_ws_routes;
 pub mod toxic_weight_recommendation_routes;
 pub mod toxic_weight_review_routes;
+pub mod usage_guide_routes;
 pub mod whale_flow_calibration_routes;
 pub mod whale_flow_candidate_history_routes;
 pub mod whale_flow_routes;
