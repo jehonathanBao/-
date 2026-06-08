@@ -6,7 +6,13 @@ use std::{
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::normalizers::trade::now_ms;
+use crate::{
+    normalizers::trade::now_ms,
+    storage::{
+        spot_whale_repo::{SpotWhaleRepo, SpotWhaleSignalQuery},
+        SqliteStore,
+    },
+};
 
 use super::{
     collector_binance, collector_coinbase,
@@ -32,6 +38,7 @@ pub struct SpotWhaleService {
     enabled: bool,
     dry_run: bool,
     booted_at_ms: i64,
+    store: Option<SqliteStore>,
     state: Arc<RwLock<SpotWhaleState>>,
     tasks: Arc<RwLock<Vec<JoinHandle<()>>>>,
 }
@@ -46,7 +53,12 @@ struct SpotWhaleState {
 }
 
 impl SpotWhaleService {
-    pub fn new(enabled: bool, dry_run: bool, booted_at_ms: i64) -> Self {
+    pub fn new(
+        enabled: bool,
+        dry_run: bool,
+        booted_at_ms: i64,
+        store: Option<SqliteStore>,
+    ) -> Self {
         let runtime_config = spot_whale_runtime_config();
         let mut exchanges = BTreeMap::new();
         exchanges.insert(
@@ -65,16 +77,18 @@ impl SpotWhaleService {
                 SpotExchangeStatus::disabled()
             },
         );
+        let restored = load_persisted_signals(store.as_ref(), MAX_SIGNALS);
         Self {
             enabled,
             dry_run,
             booted_at_ms,
+            store,
             state: Arc::new(RwLock::new(SpotWhaleState {
                 trades: VecDeque::new(),
-                signals: VecDeque::new(),
-                seen_signal_ids: BTreeSet::new(),
+                signals: restored.signals,
+                seen_signal_ids: restored.seen_signal_ids,
                 exchanges,
-                last_discord_sent_at: None,
+                last_discord_sent_at: restored.last_discord_sent_at,
             })),
             tasks: Arc::new(RwLock::new(Vec::new())),
         }
@@ -222,7 +236,8 @@ impl SpotWhaleService {
                 .signals
                 .iter()
                 .filter(|signal| signal.symbol == symbol)
-                .count(),
+                .count()
+                .max(self.persisted_signal_count(&symbol)),
             read_only: true,
             enabled: self.enabled && spot_whale_runtime_config().symbol_enabled(&symbol),
             dry_run: self.dry_run,
@@ -236,15 +251,22 @@ impl SpotWhaleService {
         let symbol = normalize_symbol(symbol);
         let limit = limit.clamp(1, 200);
         let items = self
-            .state
-            .read()
-            .signals
-            .iter()
-            .rev()
-            .filter(|signal| signal.symbol == symbol)
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
+            .query_persisted_signals(SpotWhaleSignalQuery {
+                symbol: Some(symbol.clone()),
+                limit,
+                ..SpotWhaleSignalQuery::default()
+            })
+            .unwrap_or_else(|| {
+                self.state
+                    .read()
+                    .signals
+                    .iter()
+                    .rev()
+                    .filter(|signal| signal.symbol == symbol)
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
         SpotWhaleLatestResponse {
             summary: self.summary(&symbol),
             items,
@@ -254,37 +276,53 @@ impl SpotWhaleService {
 
     pub fn history(&self, query: SpotWhaleQuery) -> SpotWhaleLatestResponse {
         let symbol = query.symbol.unwrap_or_else(|| "BTC".to_string());
+        let symbol = normalize_symbol(&symbol);
         let limit = query.limit.unwrap_or(50).clamp(1, 200);
         let items = self
-            .state
-            .read()
-            .signals
-            .iter()
-            .rev()
-            .filter(|signal| signal.symbol == normalize_symbol(&symbol))
-            .filter(|signal| {
-                query
-                    .severity
-                    .as_deref()
-                    .map(|value| value.eq_ignore_ascii_case(&format!("{:?}", signal.severity)))
-                    .unwrap_or(true)
+            .query_persisted_signals(SpotWhaleSignalQuery {
+                symbol: Some(symbol.clone()),
+                severity: query.severity.clone(),
+                signal_type: query.signal_type.clone(),
+                discord_sent: query.discord_sent,
+                limit,
+                ..SpotWhaleSignalQuery::default()
             })
-            .filter(|signal| {
-                query
-                    .signal_type
-                    .as_deref()
-                    .map(|value| value.eq_ignore_ascii_case(&format!("{:?}", signal.signal_type)))
-                    .unwrap_or(true)
-            })
-            .filter(|signal| {
-                query
-                    .discord_sent
-                    .map(|value| signal.discord_sent == value)
-                    .unwrap_or(true)
-            })
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>();
+            .unwrap_or_else(|| {
+                self.state
+                    .read()
+                    .signals
+                    .iter()
+                    .rev()
+                    .filter(|signal| signal.symbol == symbol)
+                    .filter(|signal| {
+                        query
+                            .severity
+                            .as_deref()
+                            .map(|value| {
+                                value.eq_ignore_ascii_case(&format!("{:?}", signal.severity))
+                            })
+                            .unwrap_or(true)
+                    })
+                    .filter(|signal| {
+                        query
+                            .signal_type
+                            .as_deref()
+                            .map(|value| {
+                                compact_filter_value(value)
+                                    == compact_filter_value(&format!("{:?}", signal.signal_type))
+                            })
+                            .unwrap_or(true)
+                    })
+                    .filter(|signal| {
+                        query
+                            .discord_sent
+                            .map(|value| signal.discord_sent == value)
+                            .unwrap_or(true)
+                    })
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
         SpotWhaleLatestResponse {
             summary: self.summary(&symbol),
             items,
@@ -387,12 +425,14 @@ impl SpotWhaleService {
             return false;
         }
         state.seen_signal_ids.insert(signal.id.clone());
-        state.signals.push_back(signal);
+        state.signals.push_back(signal.clone());
         while state.signals.len() > MAX_SIGNALS {
             if let Some(old) = state.signals.pop_front() {
                 state.seen_signal_ids.remove(&old.id);
             }
         }
+        drop(state);
+        self.persist_signal(&signal);
         true
     }
 
@@ -439,11 +479,69 @@ impl SpotWhaleService {
         {
             signal.discord_sent = sent;
             signal.discord_sent_at = sent_at_ms;
-            signal.discord_reason = reason;
+            signal.discord_reason = reason.clone();
         }
         if sent {
             state.last_discord_sent_at = sent_at_ms;
         }
+        drop(state);
+        self.persist_discord_outcome(signal_id, sent, sent_at_ms, &reason);
+    }
+
+    fn persist_signal(&self, signal: &SpotWhaleSignal) {
+        if let Some(store) = &self.store {
+            if let Err(err) = store.upsert_spot_whale_signal(signal) {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    signal_id = signal.id.as_str(),
+                    "{} failed to persist signal: {err}",
+                    LOG_PREFIX
+                );
+            }
+        }
+    }
+
+    fn persist_discord_outcome(
+        &self,
+        signal_id: &str,
+        sent: bool,
+        sent_at_ms: Option<i64>,
+        reason: &str,
+    ) {
+        if let Some(store) = &self.store {
+            if let Err(err) =
+                store.update_spot_whale_discord_status(signal_id, sent, sent_at_ms, reason)
+            {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    signal_id,
+                    "{} failed to persist discord outcome: {err}",
+                    LOG_PREFIX
+                );
+            }
+        }
+    }
+
+    fn query_persisted_signals(&self, query: SpotWhaleSignalQuery) -> Option<Vec<SpotWhaleSignal>> {
+        let store = self.store.as_ref()?;
+        match store.query_spot_whale_signals(&query) {
+            Ok(signals) => Some(signals),
+            Err(err) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "{} failed to load persisted signals: {err}",
+                    LOG_PREFIX
+                );
+                None
+            }
+        }
+    }
+
+    fn persisted_signal_count(&self, symbol: &str) -> usize {
+        self.store
+            .as_ref()
+            .and_then(|store| store.count_spot_whale_signals(symbol).ok())
+            .unwrap_or(0)
     }
 }
 
@@ -454,6 +552,44 @@ pub struct SpotWhaleQuery {
     pub signal_type: Option<String>,
     pub discord_sent: Option<bool>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+struct RestoredSpotWhaleSignals {
+    signals: VecDeque<SpotWhaleSignal>,
+    seen_signal_ids: BTreeSet<String>,
+    last_discord_sent_at: Option<i64>,
+}
+
+fn load_persisted_signals(store: Option<&SqliteStore>, limit: usize) -> RestoredSpotWhaleSignals {
+    let Some(store) = store else {
+        return RestoredSpotWhaleSignals::default();
+    };
+    let mut signals = match store.query_spot_whale_signals(&SpotWhaleSignalQuery {
+        limit,
+        ..SpotWhaleSignalQuery::default()
+    }) {
+        Ok(signals) => signals,
+        Err(err) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                "{} failed to restore persisted signals: {err}",
+                LOG_PREFIX
+            );
+            return RestoredSpotWhaleSignals::default();
+        }
+    };
+    signals.reverse();
+    let last_discord_sent_at = signals
+        .iter()
+        .filter_map(|signal| signal.discord_sent_at)
+        .max();
+    let seen_signal_ids = signals.iter().map(|signal| signal.id.clone()).collect();
+    RestoredSpotWhaleSignals {
+        signals: VecDeque::from(signals),
+        seen_signal_ids,
+        last_discord_sent_at,
+    }
 }
 
 fn exchange_contributions(trades: &[SpotTrade]) -> Vec<SpotExchangeContribution> {
@@ -582,6 +718,14 @@ fn prune_trades(trades: &mut VecDeque<SpotTrade>, now: i64) {
 
 fn normalize_symbol(symbol: &str) -> String {
     symbol.trim().trim_end_matches("-SPOT").to_ascii_uppercase()
+}
+
+fn compact_filter_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '_')
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
 }
 
 fn status_from_severity(severity: SpotWhaleSeverity) -> &'static str {

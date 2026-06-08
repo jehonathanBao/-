@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn ignores_non_trade_control_payload_without_marking_disconnected() {
-        let service = SpotWhaleService::new(true, true, 1712400000000);
+        let service = SpotWhaleService::new(true, true, 1712400000000, None);
         service.mark_connected(SpotExchange::Binance);
 
         handle_message(r#"{"result":null,"id":1}"#, &service);
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn valid_trade_recovers_after_malformed_binance_payload() {
-        let service = SpotWhaleService::new(true, true, 1712400000000);
+        let service = SpotWhaleService::new(true, true, 1712400000000, None);
         service.mark_connected(SpotExchange::Binance);
 
         handle_message("not json", &service);

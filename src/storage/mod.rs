@@ -2,6 +2,7 @@ pub mod contract_whale_repo;
 pub mod migrations;
 pub mod snapshot_service;
 pub mod snapshots_repo;
+pub mod spot_whale_repo;
 pub mod sqlite;
 pub mod toxic_events_repo;
 pub mod venue_health_repo;

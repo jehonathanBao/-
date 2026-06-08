@@ -200,6 +200,7 @@ impl AppState {
             config.spot_whale_monitor.enabled,
             config.spot_whale_monitor.dry_run,
             booted_at_ms,
+            contract_whale_store.clone(),
         );
         let scan_log = ScanLogStore::new_from_env();
         scan_log.push(

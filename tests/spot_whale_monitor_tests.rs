@@ -1,12 +1,25 @@
-use btc_toxic_flow_monitor_rs::spot_whale_monitor::{
-    config::SpotWhaleRuntimeConfig,
-    detector::{detect_spot_whale_signal_with_config, discord_gate},
-    normalizer::{
-        normalize_binance_spot_trade, normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use btc_toxic_flow_monitor_rs::{
+    spot_whale_monitor::{
+        config::SpotWhaleRuntimeConfig,
+        detector::{detect_spot_whale_signal_with_config, discord_gate},
+        normalizer::{
+            normalize_binance_spot_trade, normalize_coinbase_market_trades_json,
+            BinanceSpotAggTrade,
+        },
+        service::SpotWhaleService,
+        types::{
+            SpotExchange, SpotExchangeContribution, SpotTradeSide, SpotWhaleSeverity,
+            SpotWhaleSignalType, SpotWhaleWindowStats,
+        },
     },
-    types::{
-        SpotExchange, SpotExchangeContribution, SpotTradeSide, SpotWhaleSeverity,
-        SpotWhaleSignalType, SpotWhaleWindowStats,
+    storage::{
+        spot_whale_repo::{SpotWhaleRepo, SpotWhaleSignalQuery},
+        SqliteStore,
     },
 };
 
@@ -91,6 +104,68 @@ fn spot_discord_gate_rejects_medium_and_low_quality() {
     assert_eq!(reason, "data_quality_display_only");
 }
 
+#[test]
+fn spot_whale_signal_history_survives_reopen_and_tracks_discord_state() {
+    let store = temp_store("spot-whale-signals");
+    let config = SpotWhaleRuntimeConfig::default();
+    let signal =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    store.upsert_spot_whale_signal(&signal).unwrap();
+
+    let rows = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            severity: Some("critical".to_string()),
+            signal_type: Some("spotaggressivebuy".to_string()),
+            limit: 10,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, signal.id);
+    assert!(rows[0].discord_eligible);
+    assert!(!rows[0].discord_sent);
+
+    let changed = store
+        .update_spot_whale_discord_status(&signal.id, true, Some(signal.ts + 1), "sent")
+        .unwrap();
+    assert_eq!(changed, 1);
+
+    let reopened = SqliteStore::open(store.path().to_str().unwrap()).unwrap();
+    reopened.migrate().unwrap();
+    assert_eq!(reopened.count_spot_whale_signals("BTC").unwrap(), 1);
+    let rows = reopened
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            discord_sent: Some(true),
+            limit: 10,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, signal.id);
+    assert!(rows[0].discord_sent);
+    assert_eq!(rows[0].discord_sent_at, Some(signal.ts + 1));
+    assert_eq!(rows[0].discord_reason, "sent");
+}
+
+#[test]
+fn spot_whale_service_restores_persisted_history_on_startup() {
+    let store = temp_store("spot-whale-service-restore");
+    let config = SpotWhaleRuntimeConfig::default();
+    let signal =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    store.upsert_spot_whale_signal(&signal).unwrap();
+
+    let service = SpotWhaleService::new(true, true, signal.ts + 60_000, Some(store));
+
+    let latest = service.latest("BTC", 10);
+    assert_eq!(latest.items.len(), 1);
+    assert_eq!(latest.items[0].id, signal.id);
+    assert_eq!(latest.summary.signal_count, 1);
+    assert_eq!(latest.summary.latest_signal_at, Some(signal.ts));
+}
+
 fn high_conviction_stats() -> SpotWhaleWindowStats {
     SpotWhaleWindowStats {
         symbol: "BTC".to_string(),
@@ -115,6 +190,24 @@ fn high_conviction_stats() -> SpotWhaleWindowStats {
         data_quality: 92,
         startup_age_ms: Some(120_000),
     }
+}
+
+fn temp_store(name: &str) -> SqliteStore {
+    let mut path = std::env::temp_dir();
+    path.push("toxic-order-monitor-rs-tests");
+    path.push(unique_path(name));
+    let _ = std::fs::remove_file(&path);
+    let store = SqliteStore::open(path.to_str().expect("utf8 sqlite path")).expect("open sqlite");
+    store.migrate().expect("migrate sqlite");
+    store
+}
+
+fn unique_path(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    PathBuf::from(format!("{name}-{nanos}.sqlite"))
 }
 
 fn contribution(exchange: &str, buy: f64, sell: f64) -> SpotExchangeContribution {
