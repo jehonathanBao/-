@@ -32,6 +32,7 @@ use crate::{
     },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
     runtime::scan_log::{ScanLogItem, ScanLogStore},
+    spot_whale_monitor::service::SpotWhaleService,
     storage::{snapshot_service::StorageState, SnapshotService, SqliteStore},
     toxicity::{
         liq_hunt_service::LiqHuntService, liquidation_service::LiquidationService,
@@ -86,6 +87,7 @@ struct AppStateInner {
     contract_whale_store: Option<SqliteStore>,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
+    spot_whale_service: SpotWhaleService,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +141,7 @@ pub struct StopMonitoringOutcome {
 
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
+        let booted_at_ms = crate::normalizers::trade::now_ms();
         let bus = MarketDataBus::new(4096);
         let flow_service = FlowWindowService::new(bus.clone(), &config);
         let markout_service = MarkoutService::new(bus.clone(), flow_service.clone(), &config);
@@ -193,6 +196,11 @@ impl AppState {
         let contract_whale_store = shared_store_for_state.or_else(|| toxic_service.store());
         let signal_history_service = ToxicSignalHistoryService::default();
         let whale_flow_candidate_history_service = WhaleFlowCandidateHistoryService::default();
+        let spot_whale_service = SpotWhaleService::new(
+            config.spot_whale_monitor.enabled,
+            config.spot_whale_monitor.dry_run,
+            booted_at_ms,
+        );
         let scan_log = ScanLogStore::new_from_env();
         scan_log.push(
             "info",
@@ -256,7 +264,7 @@ impl AppState {
         Self {
             inner: Arc::new(AppStateInner {
                 config,
-                booted_at_ms: crate::normalizers::trade::now_ms(),
+                booted_at_ms,
                 runtime_started: AtomicBool::new(false),
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
@@ -277,6 +285,7 @@ impl AppState {
                 contract_whale_store,
                 signal_history_service,
                 whale_flow_candidate_history_service,
+                spot_whale_service,
             }),
         }
     }
@@ -349,6 +358,7 @@ impl AppState {
         self.inner.orderbook_wall_lifecycle_service.start();
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
+        self.inner.spot_whale_service.start();
         self.start_discord_auto_push_loop();
         self.start_contract_whale_auto_push_loop();
         self.record_scan_log(
@@ -422,6 +432,7 @@ impl AppState {
 
         self.inner.runtime_started.store(false, Ordering::SeqCst);
         self.inner.connector_manager.stop_all().await;
+        self.inner.spot_whale_service.stop();
         self.inner.snapshot_service.stop();
         self.stop_contract_whale_auto_push_loop();
         self.stop_discord_auto_push_loop();
@@ -644,6 +655,10 @@ impl AppState {
 
     pub fn flow_state_for_symbol(&self, symbol: &str) -> FlowState {
         self.inner.flow_service.latest_state_for_symbol(symbol)
+    }
+
+    pub fn spot_whale_service(&self) -> SpotWhaleService {
+        self.inner.spot_whale_service.clone()
     }
 
     pub fn market_data_quality(&self) -> crate::market_data::quality::MarketDataQualityTracker {

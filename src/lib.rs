@@ -10,6 +10,7 @@ pub mod normalizers;
 pub mod replay;
 pub mod runtime;
 pub mod safety;
+pub mod spot_whale_monitor;
 pub mod storage;
 pub mod toxicity;
 pub mod types;

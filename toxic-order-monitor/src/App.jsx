@@ -6,6 +6,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<Dashboard />} />
       <Route path="/contract-whale" element={<Dashboard />} />
+      <Route path="/spot-whale" element={<Dashboard />} />
       <Route path="/signals" element={<Dashboard />} />
       <Route path="/history" element={<Dashboard />} />
       <Route path="/rules" element={<Dashboard />} />

@@ -17,6 +17,12 @@ pub struct ContractWhaleMonitorConfig {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SpotWhaleMonitorConfig {
+    pub enabled: bool,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub app_env: String,
@@ -72,6 +78,7 @@ pub struct AppConfig {
     pub book_stale_ms: i64,
     pub max_buffer_age_ms: i64,
     pub contract_whale_monitor: ContractWhaleMonitorConfig,
+    pub spot_whale_monitor: SpotWhaleMonitorConfig,
 }
 
 impl AppConfig {
@@ -87,6 +94,11 @@ impl AppConfig {
             .context("failed to load config/default")?;
         crate::contract_whale_monitor::config::set_contract_whale_runtime_config(
             crate::contract_whale_monitor::config::load_contract_whale_runtime_config_from_settings(
+                &settings,
+            ),
+        );
+        crate::spot_whale_monitor::config::set_spot_whale_runtime_config(
+            crate::spot_whale_monitor::config::load_spot_whale_runtime_config_from_settings(
                 &settings,
             ),
         );
@@ -194,6 +206,20 @@ impl AppConfig {
                     &settings,
                     "CONTRACT_WHALE_DRY_RUN",
                     "contract_whale_monitor.dry_run",
+                    true,
+                ),
+            },
+            spot_whale_monitor: SpotWhaleMonitorConfig {
+                enabled: bool_setting(
+                    &settings,
+                    "SPOT_WHALE_ENABLED",
+                    "spot_whale_monitor.enabled",
+                    false,
+                ),
+                dry_run: bool_setting(
+                    &settings,
+                    "SPOT_WHALE_DRY_RUN",
+                    "spot_whale_monitor.dry_run",
                     true,
                 ),
             },

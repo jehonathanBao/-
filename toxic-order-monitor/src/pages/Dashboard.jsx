@@ -13,6 +13,7 @@ import ScanLogPanel from "../components/ScanLogPanel.jsx";
 import Sidebar from "../components/Sidebar.jsx";
 import SignalDetail from "../components/SignalDetail.jsx";
 import SignalTable from "../components/SignalTable.jsx";
+import SpotWhaleMonitor from "../components/SpotWhaleMonitor.jsx";
 import { useReconnectingWebSocket } from "../hooks/useReconnectingWebSocket.js";
 import { useSignalsStore } from "../store/signalsStore.js";
 
@@ -25,6 +26,7 @@ export default function Dashboard() {
   const location = useLocation();
   const viewMode = viewModeFromPath(location.pathname);
   const isContractWhaleView = viewMode === "contract-whale";
+  const isSpotWhaleView = viewMode === "spot-whale";
   const {
     rawInboxSignals,
     selectedSignal,
@@ -49,7 +51,7 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView) {
+    if (isContractWhaleView || isSpotWhaleView) {
       return;
     }
     fetchSignals().then((items) => {
@@ -61,7 +63,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isContractWhaleView, setSelectedSignal, setSignals]);
+  }, [isContractWhaleView, isSpotWhaleView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -83,7 +85,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView,
+    enabled: !isContractWhaleView && !isSpotWhaleView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -267,6 +269,8 @@ export default function Dashboard() {
         <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
         {isContractWhaleView ? (
           <ContractWhalePage />
+        ) : isSpotWhaleView ? (
+          <SpotWhalePage />
         ) : (
           <>
             <RuleStatus
@@ -389,9 +393,9 @@ function ContractWhalePage() {
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BTC / ETH Contract Whale Flow</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 巨量成交监控</h2>
+          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 合约监控</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            聚合 Binance / OKX / Bitfinex BTC 与 ETH 永续主动成交流，识别主力拉盘、砸盘、吸收和压制信号。
+            聚合已启用交易所的 BTC 与 ETH 永续主动成交流，识别主力拉盘、砸盘、吸收和压制信号。
           </p>
         </div>
         <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
@@ -399,6 +403,26 @@ function ContractWhalePage() {
         </div>
       </div>
       <ContractWhaleMonitor />
+    </>
+  );
+}
+
+function SpotWhalePage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BTC / ETH Spot Whale Flow</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 现货监控</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            聚合 Binance 与 Coinbase 现货主动成交流，识别主动买入、主动卖出、下方吸收、上方压制和跨所错位。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          只读提醒 · 不下单 · Spot Discord gate 独立
+        </div>
+      </div>
+      <SpotWhaleMonitor />
     </>
   );
 }
@@ -448,7 +472,10 @@ function signalTime(signal) {
 
 function filterLabel(activeRiskFilter, viewMode) {
   if (viewMode === "contract-whale") {
-    return "BTC/ETH 巨量成交";
+    return "BTC/ETH 合约监控";
+  }
+  if (viewMode === "spot-whale") {
+    return "BTC/ETH 现货监控";
   }
   if (viewMode === "signals") {
     return "异常信号：S 级 / Critical";
@@ -470,6 +497,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
+  if (pathname === "/spot-whale") return "spot-whale";
   if (pathname === "/signals") return "signals";
   if (pathname === "/history") return "history";
   if (pathname === "/rules") return "rules";

@@ -481,6 +481,10 @@ fn test_config(sqlite_path: String) -> AppConfig {
                 enabled: false,
                 dry_run: true,
             },
+        spot_whale_monitor: btc_toxic_flow_monitor_rs::config::env::SpotWhaleMonitorConfig {
+            enabled: false,
+            dry_run: true,
+        },
     }
 }
 

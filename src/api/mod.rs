@@ -26,6 +26,7 @@ pub mod runtime_control_routes;
 pub mod scan_log_routes;
 pub mod security;
 pub mod server;
+pub mod spot_whale_routes;
 pub mod static_files;
 pub mod structural_toxicity_routes;
 pub mod toxic_governance_ledger_routes;

@@ -104,3 +104,85 @@ enabled = false
 5 = 400000
 15 = 800000
 60 = 2200000
+
+[spot_whale_monitor]
+enabled = false
+dry_run = true
+
+[spot_whale_monitor.exchanges.binance]
+enabled = true
+
+[spot_whale_monitor.exchanges.coinbase]
+enabled = true
+
+[spot_whale_monitor.data_quality]
+min_discord_quality = 70
+warmup_ms = 60000
+single_exchange_penalty = 20
+heartbeat_stale_ms = 45000
+
+[spot_whale_monitor.symbols.BTC]
+enabled = true
+
+[spot_whale_monitor.symbols.BTC.thresholds_base.high]
+5 = 180
+15 = 300
+60 = 800
+
+[spot_whale_monitor.symbols.BTC.thresholds_base.critical]
+5 = 420
+15 = 700
+60 = 1500
+
+[spot_whale_monitor.symbols.BTC.thresholds_base.s]
+5 = 800
+15 = 1200
+60 = 3000
+
+[spot_whale_monitor.symbols.BTC.thresholds_usd.high]
+5 = 15000000
+15 = 25000000
+60 = 60000000
+
+[spot_whale_monitor.symbols.BTC.thresholds_usd.critical]
+5 = 35000000
+15 = 60000000
+60 = 120000000
+
+[spot_whale_monitor.symbols.BTC.thresholds_usd.s]
+5 = 75000000
+15 = 120000000
+60 = 240000000
+
+[spot_whale_monitor.symbols.ETH]
+enabled = true
+
+[spot_whale_monitor.symbols.ETH.thresholds_base.high]
+5 = 2000
+15 = 4000
+60 = 10000
+
+[spot_whale_monitor.symbols.ETH.thresholds_base.critical]
+5 = 4500
+15 = 9000
+60 = 22000
+
+[spot_whale_monitor.symbols.ETH.thresholds_base.s]
+5 = 8000
+15 = 16000
+60 = 45000
+
+[spot_whale_monitor.symbols.ETH.thresholds_usd.high]
+5 = 8000000
+15 = 15000000
+60 = 40000000
+
+[spot_whale_monitor.symbols.ETH.thresholds_usd.critical]
+5 = 20000000
+15 = 40000000
+60 = 80000000
+
+[spot_whale_monitor.symbols.ETH.thresholds_usd.s]
+5 = 40000000
+15 = 80000000
+60 = 160000000

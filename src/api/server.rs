@@ -14,7 +14,7 @@ use crate::{
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
         orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
         parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
-        scan_log_routes, security, static_files, structural_toxicity_routes,
+        scan_log_routes, security, spot_whale_routes, static_files, structural_toxicity_routes,
         toxic_governance_ledger_routes, toxic_governance_proposal_routes,
         toxic_governance_review_pack_routes, toxic_governance_signoff_pack_routes,
         toxic_markout_routes, toxic_quality_scorecard_routes, toxic_replay_routes,
@@ -58,6 +58,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/contract-whale/metrics",
             get(contract_whale_routes::contract_whale_metrics_route),
+        )
+        .route(
+            "/api/spot-whale/summary",
+            get(spot_whale_routes::spot_whale_summary_route),
+        )
+        .route(
+            "/api/spot-whale/latest",
+            get(spot_whale_routes::spot_whale_latest_route),
+        )
+        .route(
+            "/api/spot-whale/history",
+            get(spot_whale_routes::spot_whale_history_route),
         )
         .route(
             "/api/runtime/start",

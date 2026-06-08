@@ -370,5 +370,9 @@ fn test_config(replay_report_dir: PathBuf, read_only: bool) -> AppConfig {
                 enabled: false,
                 dry_run: true,
             },
+        spot_whale_monitor: btc_toxic_flow_monitor_rs::config::env::SpotWhaleMonitorConfig {
+            enabled: false,
+            dry_run: true,
+        },
     }
 }

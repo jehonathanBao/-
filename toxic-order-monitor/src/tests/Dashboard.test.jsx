@@ -167,8 +167,9 @@ describe("Dashboard interactions", () => {
   it("opens the BTC giant trade monitor from the sidebar route", async () => {
     renderDashboard("/contract-whale");
 
-    expect(screen.getByRole("link", { name: "BTC/ETH 巨量成交" })).toHaveAttribute("href", "/contract-whale");
-    expect(await screen.findByText("BTC / ETH 巨量成交监控")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
+    expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-whale");
+    expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getByText("主力合约监控未启用")).toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
