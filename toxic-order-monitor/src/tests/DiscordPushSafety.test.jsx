@@ -24,6 +24,22 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
+vi.mock("../api/contractWhale.js", () => ({
+  fetchContractWhaleLatest: vi.fn(() =>
+    Promise.resolve({
+      summary: {
+        status: "平静",
+        direction: "neutral",
+        latestSeverity: "calm",
+        latestPushedAtMs: null,
+        signalCount: 0,
+        readOnly: true,
+      },
+      items: [],
+    }),
+  ),
+}));
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),
 }));
@@ -83,6 +99,21 @@ describe("Discord push safety", () => {
       "unhandled",
     );
     expect(await screen.findByRole("status")).toHaveTextContent("Discord 测试消息发送成功");
+  });
+
+  it("explains Discord 403 test failures without leaking webhook details", async () => {
+    const user = userEvent.setup();
+    sendDiscordTestMessage.mockRejectedValueOnce({
+      response: { status: 403, data: { reason: "Request failed with status code 403" } },
+    });
+    renderDashboard();
+
+    await user.click(screen.getByRole("button", { name: /测试 Discord 推送/ }));
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("Discord Webhook 被拒绝(403)");
+    expect(status).toHaveTextContent("后端 .env");
+    expect(status).not.toHaveTextContent("discord.com/api/webhooks");
   });
 
   it("requires confirmation before manual signal push", async () => {

@@ -4,6 +4,7 @@ pub mod app;
 pub mod calibration;
 pub mod config;
 pub mod connectors;
+pub mod contract_whale_monitor;
 pub mod market_data;
 pub mod normalizers;
 pub mod replay;

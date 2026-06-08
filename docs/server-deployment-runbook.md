@@ -29,16 +29,17 @@ This deployment keeps the Rust monitor process independent from the React/Vite f
 
 The backend listens on `0.0.0.0:3000` inside Compose and is exposed only on host loopback port `127.0.0.1:8000`.
 
-The frontend listens on `0.0.0.0:5173` inside Compose and is exposed only on host loopback port `127.0.0.1:5173`.
+The frontend listens on `0.0.0.0:5173` inside Compose and is exposed on host port `0.0.0.0:5173` by default so other terminals on the network can open the dashboard. Set `DASHBOARD_BIND_HOST=127.0.0.1` before `docker compose up` if you need to restrict it back to local-only access.
 
 Open:
 
 ```text
-http://localhost:5173
+http://<server-ip>:5173
 ```
 
 The frontend calls `/api/...` with relative URLs. Vite proxies API calls to `http://backend:3000`.
 It also proxies `/ws/signals` and `/ws/scan-logs` to the backend so browser refreshes reconnect without restarting `toxic-bot`.
+The backend and operator token are still kept server-side; browsers should not call `http://<server-ip>:8000` directly.
 
 ## Required Token
 
@@ -118,6 +119,7 @@ npm run dev -- --host 0.0.0.0
 ```
 
 Refreshing the browser or triggering Vite HMR affects only the frontend session. It does not restart the Rust backend container.
+The expected deployment boundary is that browser refresh and HMR never interrupt the backend bot runtime.
 
 ## WebSocket Boundary
 

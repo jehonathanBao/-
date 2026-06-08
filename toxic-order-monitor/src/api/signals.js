@@ -62,6 +62,7 @@ export function mapInboxItemToSignal(item) {
     advancedTofMetrics: normalizeAdvancedTofMetrics(item.advancedTofMetrics),
     advancedScore: numberOrNull(item.advancedScore),
     advancedCandidateType: item.advancedCandidateType || item.advancedTofMetrics?.candidateType || null,
+    cwmContribution: normalizeCwmContribution(item.cwmContribution),
     finalCandidateType: item.finalCandidateType || null,
     metricsDirection:
       item.metricsDirection || item.advancedTofMetrics?.metricsDirection || item.perpTofMetrics?.metricsDirection || null,
@@ -104,6 +105,38 @@ function redactSnapshot(value) {
       .filter(([key]) => !forbidden.has(key.toLowerCase()))
       .map(([key, item]) => [key, redactSnapshot(item)]),
   );
+}
+
+function normalizeCwmContribution(contribution) {
+  if (!contribution || typeof contribution !== "object") {
+    return {
+      available: false,
+      source: "contract_whale_monitor",
+      formula: "finalRiskScore = spotRisk*0.35 + TOF-lite*0.25 + perpMetrics*0.25 + CWM*0.15",
+      contributionWeight: 0.15,
+      score: null,
+      weightedContribution: 0,
+      summary: "CWM signal unavailable",
+      discordGateIndependent: true,
+    };
+  }
+  return {
+    available: Boolean(contribution.available),
+    source: typeof contribution.source === "string" ? contribution.source : "contract_whale_monitor",
+    formula: typeof contribution.formula === "string" ? contribution.formula : "",
+    contributionWeight: numberOrNull(contribution.contributionWeight),
+    score: numberOrNull(contribution.score),
+    weightedContribution: numberOrNull(contribution.weightedContribution) || 0,
+    signalId: typeof contribution.signalId === "string" ? contribution.signalId : null,
+    severity: typeof contribution.severity === "string" ? contribution.severity : null,
+    signalType: typeof contribution.signalType === "string" ? contribution.signalType : null,
+    direction: typeof contribution.direction === "string" ? contribution.direction : null,
+    windowSec: numberOrNull(contribution.windowSec),
+    dataQuality: numberOrNull(contribution.dataQuality),
+    dominance: numberOrNull(contribution.dominance),
+    summary: typeof contribution.summary === "string" ? contribution.summary : "CWM contribution",
+    discordGateIndependent: contribution.discordGateIndependent !== false,
+  };
 }
 
 function normalizeAdvancedTofMetrics(metrics) {

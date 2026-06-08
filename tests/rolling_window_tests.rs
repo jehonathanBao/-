@@ -7,9 +7,18 @@ use btc_toxic_flow_monitor_rs::{
 };
 
 fn trade(venue: Venue, side: AggressorSide, size_btc: f64) -> NormalizedTrade {
+    trade_for_symbol(venue, "BTC-PERP", side, size_btc)
+}
+
+fn trade_for_symbol(
+    venue: Venue,
+    symbol: &str,
+    side: AggressorSide,
+    size_btc: f64,
+) -> NormalizedTrade {
     NormalizedTrade {
         venue,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         ts: 10_000,
         price: 100_000.0,
         size_btc,
@@ -40,4 +49,38 @@ fn rolling_window_aggregates_mock_flow() {
     assert_eq!(window.venue_breakdown["binance"].net_aggressive_btc, 300.0);
     assert_eq!(window.venue_breakdown["bybit"].aggressive_buy_btc, 300.0);
     assert_eq!(window.venue_breakdown["okx"].aggressive_buy_btc, 200.0);
+}
+
+#[test]
+fn rolling_window_can_compute_btc_and_eth_separately() {
+    let mut buffer = TradeRingBuffer::new(120_000);
+    buffer.add_trade(trade_for_symbol(
+        Venue::Binance,
+        "BTC-PERP",
+        AggressorSide::Buy,
+        400.0,
+    ));
+    buffer.add_trade(trade_for_symbol(
+        Venue::Binance,
+        "ETH-PERP",
+        AggressorSide::Sell,
+        8_000.0,
+    ));
+    let book_state = BookState::default();
+    let price_index = PriceIndex::new(120_000, 5_000);
+    let windows = [5000];
+
+    let btc =
+        RollingWindows::new_for_symbol(&buffer, &book_state, &price_index, &windows, 5_000, "BTC")
+            .compute_window(5000, 10_000);
+    let eth =
+        RollingWindows::new_for_symbol(&buffer, &book_state, &price_index, &windows, 5_000, "ETH")
+            .compute_window(5000, 10_000);
+
+    assert_eq!(btc.symbol, "BTC-PERP");
+    assert_eq!(btc.aggressive_buy_btc, 400.0);
+    assert_eq!(btc.aggressive_sell_btc, 0.0);
+    assert_eq!(eth.symbol, "ETH-PERP");
+    assert_eq!(eth.aggressive_buy_btc, 0.0);
+    assert_eq!(eth.aggressive_sell_btc, 8_000.0);
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -79,14 +79,19 @@ pub fn run_candidate_replay_events(
         collected.extend(detector.detect(&deltas, &trades));
     }
 
-    let mut seen = BTreeSet::new();
+    let mut positions_by_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut deduped_count = 0;
-    let mut unique = Vec::new();
+    let mut unique: Vec<ManipulationSignalV2> = Vec::new();
     for signal in collected {
-        if seen.insert(signal.dedupe_key.clone()) {
-            unique.push(signal);
-        } else {
+        let key = signal.dedupe_key.clone();
+        if let Some(index) = positions_by_key.get(&key).copied() {
             deduped_count += 1;
+            if signal.risk_score > unique[index].risk_score {
+                unique[index] = signal;
+            }
+        } else {
+            positions_by_key.insert(key, unique.len());
+            unique.push(signal);
         }
     }
 

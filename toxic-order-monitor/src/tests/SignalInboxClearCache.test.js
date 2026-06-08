@@ -23,6 +23,22 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
+vi.mock("../api/contractWhale.js", () => ({
+  fetchContractWhaleLatest: vi.fn(() =>
+    Promise.resolve({
+      summary: {
+        status: "平静",
+        direction: "neutral",
+        latestSeverity: "calm",
+        latestPushedAtMs: null,
+        signalCount: 0,
+        readOnly: true,
+      },
+      items: [],
+    }),
+  ),
+}));
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),
 }));

@@ -1,3 +1,4 @@
+pub mod contract_whale_repo;
 pub mod migrations;
 pub mod snapshot_service;
 pub mod snapshots_repo;

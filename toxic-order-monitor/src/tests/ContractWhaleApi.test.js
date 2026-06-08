@@ -1,0 +1,257 @@
+import axios from "axios";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  fetchContractWhaleHistory,
+  fetchContractWhaleLatest,
+  fetchContractWhaleSummary,
+  normalizeContractWhaleSignal,
+} from "../api/contractWhale.js";
+
+vi.mock("axios", () => ({
+  default: {
+    get: vi.fn(),
+  },
+}));
+
+describe("contract whale api", () => {
+  beforeEach(() => {
+    axios.get.mockReset();
+    vi.stubEnv("VITE_API_BASE_URL", "");
+  });
+
+  it("maps latest contract whale response into dashboard shape", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {
+          status: "strong",
+          healthStatus: "healthy",
+          healthReason: "primary_sources_recent",
+          direction: "buy",
+          latestDirection: "buy",
+          latestSeverity: "s",
+          latestPushedAtMs: 1_700_000_000_000,
+          lastDiscordSentAt: 1_700_000_000_100,
+          signalCount: 1,
+          readOnly: true,
+          enabled: true,
+          dryRun: true,
+          trend60s: {
+            buyVolumeBtc: 6200,
+            sellVolumeBtc: 3800,
+            totalVolumeBtc: 10000,
+            netVolumeBtc: 2400,
+            dominance: 0.24,
+            buyRatio: 0.62,
+            sellRatio: 0.38,
+            updatedAtMs: 1_700_000_000_000,
+          },
+          exchanges: {
+            binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
+            okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1 },
+            bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
+          },
+        },
+        items: [contractWhaleItem()],
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20);
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=20&symbol=BTC");
+    expect(payload.summary).toMatchObject({
+      status: "strong",
+      healthStatus: "healthy",
+      healthReason: "primary_sources_recent",
+      direction: "buy",
+      latestDirection: "buy",
+      latestSeverity: "s",
+      signalCount: 1,
+      enabled: true,
+      dryRun: true,
+      lastDiscordSentAt: 1_700_000_000_100,
+      trend60s: {
+        buyVolumeBtc: 6200,
+        sellVolumeBtc: 3800,
+        totalVolumeBtc: 10000,
+        buyRatio: 0.62,
+        sellRatio: 0.38,
+      },
+      exchanges: {
+        binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
+        okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1 },
+        bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
+      },
+    });
+    expect(payload.items[0]).toMatchObject({
+      symbol: "BTC",
+      signalType: "aggressive_buy",
+      severity: "s",
+      score: 94,
+      totalVolumeBtc: 4820,
+      totalNotionalUsd: 337_000_000,
+      dynamicMultiple: 9.4,
+      percentileLevel: 99.9,
+      multiExchangeConfirmed: true,
+      liquidationSuspected: true,
+      liquidationLongBtc: 420,
+      liquidationRatio: 0.087,
+      oiChange5mBtc: 900,
+      oiChangePct: 1.2,
+      oiBias: "rising",
+      fundingRate: 0.00018,
+      fundingBias: "long",
+      discordEligible: true,
+      discordSent: true,
+      discordSentAt: 1_700_000_000_050,
+      mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+    });
+  });
+
+  it("fetches summary health for polling", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        status: "active",
+        healthStatus: "degraded",
+        healthReason: "partial_sources_recent",
+        direction: "buy",
+        latestDirection: "buy",
+        latestSeverity: "high",
+        enabled: true,
+        dryRun: true,
+        exchanges: {
+          binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120, reconnectCount: 0 },
+          okx: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_100, latencyMs: 80, reconnectCount: 1 },
+          bitfinex: { connected: false, status: "reconnecting", lastTradeAt: 1_699_999_900_000, latencyMs: null, reconnectCount: 3 },
+        },
+      },
+    });
+
+    const payload = await fetchContractWhaleSummary();
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=BTC");
+    expect(payload.summary.exchanges.binance).toMatchObject({
+      connected: true,
+      status: "connected",
+      latencyMs: 120,
+    });
+    expect(payload.summary.exchanges.bitfinex.status).toBe("reconnecting");
+    expect(payload.summary.healthStatus).toBe("degraded");
+  });
+
+  it("fetches history with server-side filters", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {},
+        items: [contractWhaleItem()],
+      },
+    });
+
+    const payload = await fetchContractWhaleHistory({
+      symbol: "BTC",
+      severity: "critical",
+      signal_type: "aggressive_buy",
+      direction: "buy",
+      discord_sent: "true",
+      window_sec: "15",
+      exchange: "binance",
+      limit: 50,
+    });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&discord_sent=true&window_sec=15&exchange=binance&limit=50",
+    );
+    expect(payload.items).toHaveLength(1);
+  });
+
+  it("uses latest limit 50 by default", async () => {
+    axios.get.mockResolvedValueOnce({ data: { summary: {}, items: [] } });
+
+    await fetchContractWhaleLatest();
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=50&symbol=BTC");
+  });
+
+  it("fetches ETH summary with symbol query", async () => {
+    axios.get.mockResolvedValueOnce({ data: { status: "calm", enabled: true } });
+
+    await fetchContractWhaleSummary("ETH");
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=ETH");
+  });
+
+  it("falls back to calm state on network failure", async () => {
+    axios.get.mockRejectedValueOnce(new Error("network"));
+
+    const payload = await fetchContractWhaleLatest();
+
+    expect(payload.summary.status).toBe("calm");
+    expect(payload.summary.enabled).toBe(false);
+    expect(payload.summary.dryRun).toBe(true);
+    expect(payload.items).toEqual([]);
+  });
+
+  it("normalizes missing fields without exposing raw internals", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "contract-whale-test",
+      symbol: "BTC",
+      rawPayload: "must not map",
+      webhook: "must not map",
+      token: "must not map",
+    });
+
+    expect(signal.id).toBe("contract-whale-test");
+    expect(signal.rawPayload).toBeUndefined();
+    expect(signal.webhook).toBeUndefined();
+    expect(signal.token).toBeUndefined();
+  });
+});
+
+function contractWhaleItem() {
+  return {
+    id: "contract-whale:BTC:15:1700000000000:buy",
+    ts: 1_700_000_000_000,
+    symbol: "BTC",
+    windowSec: 15,
+    signalType: "aggressive_buy",
+    direction: "buy",
+    severity: "s",
+    score: 94,
+    totalVolumeBtc: 4820,
+    netVolumeBtc: 3260,
+    totalNotionalUsd: 337_000_000,
+    dominance: 0.676,
+    priceMovePct: 0.31,
+    mainExchange: "binance",
+    dynamicMultiple: 9.4,
+    percentileLevel: 99.9,
+    multiExchangeConfirmed: true,
+    liquidationSuspected: true,
+    liquidationLongBtc: 420,
+    liquidationShortBtc: 0,
+    liquidationNotionalUsd: 29_400_000,
+    liquidationRatio: 0.087,
+    oiChange1mBtc: 250,
+    oiChange5mBtc: 900,
+    oiChangePct: 1.2,
+    oiBias: "rising",
+    fundingRate: 0.00018,
+    fundingBias: "long",
+    exchanges: [
+      {
+        exchange: "binance",
+        buyVolumeBtc: 2610,
+        sellVolumeBtc: 200,
+        totalVolumeBtc: 2810,
+        netVolumeBtc: 2410,
+        dominance: 0.858,
+      },
+    ],
+    dataQuality: 91,
+    discordEligible: true,
+    discordSent: true,
+    discordSentAt: 1_700_000_000_050,
+    discordReason: "critical_or_s_gate",
+    finalResult: "多平台主动买入爆发，疑似主力合约拉盘",
+    mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+  };
+}

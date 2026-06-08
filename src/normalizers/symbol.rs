@@ -3,8 +3,10 @@ use crate::types::market::Venue;
 pub fn normalize_symbol(venue: Venue, symbol: &str) -> Option<&'static str> {
     match (venue, symbol) {
         (Venue::Binance, "BTCUSDT" | "btcusdt") => Some("BTC-PERP"),
+        (Venue::Binance, "ETHUSDT" | "ethusdt") => Some("ETH-PERP"),
         (Venue::Bybit, "BTCUSDT") => Some("BTC-PERP"),
         (Venue::Okx, "BTC-USDT-SWAP") => Some("BTC-PERP"),
+        (Venue::Okx, "ETH-USDT-SWAP") => Some("ETH-PERP"),
         _ => None,
     }
 }

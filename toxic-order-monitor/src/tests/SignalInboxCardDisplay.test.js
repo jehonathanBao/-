@@ -190,6 +190,28 @@ describe("Signal inbox card display", () => {
     expect(onMarkStatus).toHaveBeenCalledWith("sig_001", "important");
   });
 
+  it("shows CWM contribution on the card and review modal", async () => {
+    const user = userEvent.setup();
+    renderInbox([
+      {
+        ...mockSignals[0],
+        cwmContribution: {
+          available: true,
+          score: 94,
+          weightedContribution: 14.1,
+          windowSec: 15,
+          discordGateIndependent: true,
+        },
+      },
+    ]);
+
+    expect(screen.getByText(/CWM 94/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
+
+    expect(screen.getByText("CWM Contribution")).toBeInTheDocument();
+    expect(screen.getByText(/Score 94 · contribution \+14.1 · 15s · CWM gate independent/)).toBeInTheDocument();
+  });
+
   it("opens redacted replay snapshot when replay data exists", async () => {
     const user = userEvent.setup();
     renderInbox([

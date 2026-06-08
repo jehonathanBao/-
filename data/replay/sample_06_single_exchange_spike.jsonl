@@ -1,0 +1,2 @@
+{"ts":1712400000000,"exchange":"binance","price":70000,"qty_btc":0.1,"side":"sell","data_quality":85}
+{"ts":1712400015000,"exchange":"binance","price":70084,"qty_btc":1600,"side":"buy","dynamic_multiple":5.2,"percentile_level":99.0,"price_move_pct":0.12,"data_quality":85}

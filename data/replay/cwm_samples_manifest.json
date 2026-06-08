@@ -1,0 +1,47 @@
+{
+  "samples": [
+    {
+      "file": "sample_01_aggressive_buy.jsonl",
+      "expectedSignalType": "aggressive_buy",
+      "expectedSeverity": "s",
+      "expectedDiscordEligible": true
+    },
+    {
+      "file": "sample_02_aggressive_sell.jsonl",
+      "expectedSignalType": "aggressive_sell",
+      "expectedSeverity": "s",
+      "expectedDiscordEligible": true
+    },
+    {
+      "file": "sample_03_absorption.jsonl",
+      "expectedSignalType": "downside_absorption",
+      "expectedSeverity": "critical",
+      "expectedDiscordEligible": true
+    },
+    {
+      "file": "sample_04_resistance.jsonl",
+      "expectedSignalType": "upside_suppression",
+      "expectedSeverity": "critical",
+      "expectedDiscordEligible": true
+    },
+    {
+      "file": "sample_05_noise_no_signal.jsonl",
+      "expectedSignalType": null,
+      "expectedSeverity": "none",
+      "expectedDiscordEligible": false
+    },
+    {
+      "file": "sample_06_single_exchange_spike.jsonl",
+      "expectedSignalType": "aggressive_buy",
+      "expectedSeverity": "high",
+      "expectedDiscordEligible": false
+    },
+    {
+      "file": "sample_07_liquidation_suspected.jsonl",
+      "expectedSignalType": "aggressive_sell",
+      "expectedSeverity": "critical",
+      "expectedDiscordEligible": true,
+      "expectedLiquidationSuspected": true
+    }
+  ]
+}

@@ -21,7 +21,14 @@ fn symbol_normalizer_maps_btc_perps() {
         normalize_symbol(Venue::Okx, "BTC-USDT-SWAP"),
         Some("BTC-PERP")
     );
-    assert_eq!(normalize_symbol(Venue::Binance, "ETHUSDT"), None);
+    assert_eq!(
+        normalize_symbol(Venue::Binance, "ETHUSDT"),
+        Some("ETH-PERP")
+    );
+    assert_eq!(
+        normalize_symbol(Venue::Okx, "ETH-USDT-SWAP"),
+        Some("ETH-PERP")
+    );
 }
 
 #[test]

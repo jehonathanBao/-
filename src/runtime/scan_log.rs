@@ -209,12 +209,6 @@ mod tests {
 
     #[test]
     fn scan_log_redacts_secret_labels_and_values() {
-        std::env::set_var("OPERATOR_TOKEN", "secret-operator-token");
-        std::env::set_var(
-            "DISCORD_WEBHOOK_URL",
-            "https://discord.com/api/webhooks/123/secret",
-        );
-
         let text = sanitize_text(
             "Authorization Bearer secret-operator-token rawPayload markout evidence https://discord.com/api/webhooks/123/secret",
         );
@@ -225,8 +219,5 @@ mod tests {
         assert!(!text.contains("rawPayload"));
         assert!(!text.contains("markout"));
         assert!(!text.contains("evidence"));
-
-        std::env::remove_var("OPERATOR_TOKEN");
-        std::env::remove_var("DISCORD_WEBHOOK_URL");
     }
 }

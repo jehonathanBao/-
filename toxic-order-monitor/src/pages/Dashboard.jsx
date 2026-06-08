@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
 import { pushDiscordAlert, sendDiscordTestMessage } from "../api/discord.js";
 import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
+import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
 import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
@@ -23,6 +24,7 @@ const DISCORD_PUSH_CONFIRM =
 export default function Dashboard() {
   const location = useLocation();
   const viewMode = viewModeFromPath(location.pathname);
+  const isContractWhaleView = viewMode === "contract-whale";
   const {
     rawInboxSignals,
     selectedSignal,
@@ -47,6 +49,9 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
+    if (isContractWhaleView) {
+      return;
+    }
     fetchSignals().then((items) => {
       setSignals(items);
       const state = useSignalsStore.getState();
@@ -56,7 +61,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [setSelectedSignal, setSignals]);
+  }, [isContractWhaleView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -78,6 +83,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
+    enabled: !isContractWhaleView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -244,10 +250,10 @@ export default function Dashboard() {
         message:
           result.reason === "DISCORD_NOT_CONFIGURED"
             ? "Discord 未配置，测试消息未发送。"
-            : `Discord 测试消息失败：${result.reason || "DISCORD_TEST_FAILED"}`,
+            : `Discord 测试消息失败：${discordFailureHint(result.reason || "DISCORD_TEST_FAILED")}`,
       });
     } catch (error) {
-      const reason = error?.response?.data?.reason || error?.message || "NETWORK_ERROR";
+      const reason = discordFailureHint(error?.response?.data?.reason || error?.message || "NETWORK_ERROR", error);
       setPushNotice({ type: "failed", message: `Discord 测试消息失败：${reason}` });
     } finally {
       setTestPushPending(false);
@@ -259,88 +265,96 @@ export default function Dashboard() {
       <Sidebar />
       <main className="min-w-0 flex-1 p-4 lg:p-6">
         <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
-        <RuleStatus
-          discordConnected={discordConnected}
-          lastPushedAt={lastPushedAt}
-          onTestPush={handleTestPush}
-          testPending={testPushPending}
-          wsStatus={wsStatus}
-        />
-        {pushNotice ? (
-          <div
-            className={[
-              "mb-5 rounded-xl border px-4 py-3 text-sm",
-              pushNotice.type === "success"
-                ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-                : pushNotice.type === "pending"
-                  ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-200"
-                  : "border-red-400/40 bg-red-400/10 text-red-200",
-            ].join(" ")}
-            role="status"
-          >
-            {pushNotice.message}
-          </div>
-        ) : null}
-
-        <section className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <RiskCard active={activeRiskFilter === "high"} count={stats.high} onClick={() => setRiskFilter("high")} percentage={ratio(stats.high, stats.all)} risk="high" />
-          <RiskCard active={activeRiskFilter === "medium"} count={stats.medium} onClick={() => { setRiskFilter("medium"); setMediumExpanded(true); }} percentage={ratio(stats.medium, stats.all)} risk="medium" />
-          <RiskCard active={activeRiskFilter === "low"} count={stats.low} onClick={() => setRiskFilter("low")} percentage={ratio(stats.low, stats.all)} risk="low" />
-          <RiskCard active={activeRiskFilter === "all"} count={stats.all} onClick={() => setRiskFilter("all")} percentage={100} risk="all" />
-        </section>
-
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <button className="rounded-lg border border-slate-700/60 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200" onClick={() => setRiskFilter("all")} type="button">
-              全部
-            </button>
-            <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter, viewMode)}</span>
-          </div>
-          <button
-            className="rounded-lg border border-red-400/50 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
-            onClick={handleClearCache}
-            type="button"
-          >
-            清除缓存
-          </button>
-        </div>
-
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
-          <div className="space-y-5">
-            <SignalTable
-              inboxStats={stats}
-              title={primarySignalView.title}
-              description={primarySignalView.description}
-              emptyHint={primarySignalView.emptyHint}
-              emptyMessage={primarySignalView.emptyMessage}
-              onPush={handlePush}
-              onMarkStatus={setSignalReviewStatus}
-              onSelect={setSelectedSignal}
-              pushStatus={effectivePushStatus}
-              selectedSignal={selectedSignal}
-              signals={primarySignalView.signals}
+        {isContractWhaleView ? (
+          <ContractWhalePage />
+        ) : (
+          <>
+            <RuleStatus
+              discordConnected={discordConnected}
+              lastPushedAt={lastPushedAt}
+              onTestPush={handleTestPush}
+              testPending={testPushPending}
+              wsStatus={wsStatus}
             />
-            {showMediumFoldout ? (
-              <MediumRiskSection
-                expanded={mediumExpanded}
-                inboxStats={stats}
-                onPush={handlePush}
-                onMarkStatus={setSignalReviewStatus}
-                onSelect={setSelectedSignal}
-                pushStatus={effectivePushStatus}
-                onToggle={() => setMediumExpanded((value) => !value)}
-                selectedSignal={selectedSignal}
-                signals={mediumRiskSignals}
-              />
+            {pushNotice ? (
+              <div
+                className={[
+                  "mb-5 rounded-xl border px-4 py-3 text-sm",
+                  pushNotice.type === "success"
+                    ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+                    : pushNotice.type === "pending"
+                      ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-200"
+                      : "border-red-400/40 bg-red-400/10 text-red-200",
+                ].join(" ")}
+                role="status"
+              >
+                {pushNotice.message}
+              </div>
             ) : null}
-            <SignalDetail signal={selectedSignal} />
-            <ScanLogPanel />
-          </div>
-          <div className="space-y-5">
-            <RiskCharts signals={rawInboxSignals} />
-            <PushLog logs={pushLogs} />
-          </div>
-        </div>
+
+            {viewMode === "dashboard" ? <ContractWhaleMonitor /> : null}
+
+            <section className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <RiskCard active={activeRiskFilter === "high"} count={stats.high} onClick={() => setRiskFilter("high")} percentage={ratio(stats.high, stats.all)} risk="high" />
+              <RiskCard active={activeRiskFilter === "medium"} count={stats.medium} onClick={() => { setRiskFilter("medium"); setMediumExpanded(true); }} percentage={ratio(stats.medium, stats.all)} risk="medium" />
+              <RiskCard active={activeRiskFilter === "low"} count={stats.low} onClick={() => setRiskFilter("low")} percentage={ratio(stats.low, stats.all)} risk="low" />
+              <RiskCard active={activeRiskFilter === "all"} count={stats.all} onClick={() => setRiskFilter("all")} percentage={100} risk="all" />
+            </section>
+
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button className="rounded-lg border border-slate-700/60 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200" onClick={() => setRiskFilter("all")} type="button">
+                  全部
+                </button>
+                <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter, viewMode)}</span>
+              </div>
+              <button
+                className="rounded-lg border border-red-400/50 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
+                onClick={handleClearCache}
+                type="button"
+              >
+                清除缓存
+              </button>
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+              <div className="space-y-5">
+                <SignalTable
+                  inboxStats={stats}
+                  title={primarySignalView.title}
+                  description={primarySignalView.description}
+                  emptyHint={primarySignalView.emptyHint}
+                  emptyMessage={primarySignalView.emptyMessage}
+                  onPush={handlePush}
+                  onMarkStatus={setSignalReviewStatus}
+                  onSelect={setSelectedSignal}
+                  pushStatus={effectivePushStatus}
+                  selectedSignal={selectedSignal}
+                  signals={primarySignalView.signals}
+                />
+                {showMediumFoldout ? (
+                  <MediumRiskSection
+                    expanded={mediumExpanded}
+                    inboxStats={stats}
+                    onPush={handlePush}
+                    onMarkStatus={setSignalReviewStatus}
+                    onSelect={setSelectedSignal}
+                    pushStatus={effectivePushStatus}
+                    onToggle={() => setMediumExpanded((value) => !value)}
+                    selectedSignal={selectedSignal}
+                    signals={mediumRiskSignals}
+                  />
+                ) : null}
+                <SignalDetail signal={selectedSignal} />
+                <ScanLogPanel />
+              </div>
+              <div className="space-y-5">
+                <RiskCharts signals={rawInboxSignals} />
+                <PushLog logs={pushLogs} />
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   );
@@ -352,6 +366,41 @@ function buildPushStatus(pushStatus, pendingPushIds) {
     next[signalId] = { signalId, status: "pending" };
   }
   return next;
+}
+
+function discordFailureHint(reason, error = null) {
+  const status = error?.response?.status;
+  const text = String(reason || "");
+  if (status === 403 || /status code 403|forbidden/i.test(text)) {
+    return "Discord Webhook 被拒绝(403)：请检查 Webhook URL 是否仍有效、频道权限是否允许发送，以及后端 .env 是否使用正确的 webhook。";
+  }
+  if (status === 404 || /status code 404|not found/i.test(text)) {
+    return "Discord Webhook 不存在(404)：请重新生成 webhook 并只写入后端 .env。";
+  }
+  if (status === 429 || /status code 429|rate limit/i.test(text)) {
+    return "Discord rate limit(429)：请稍后重试，自动推送会继续遵守冷却。";
+  }
+  return text.replace(/https:\/\/discord\.com\/api\/webhooks\/[^\s]+/gi, "[redacted-discord-webhook]");
+}
+
+function ContractWhalePage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BTC / ETH Contract Whale Flow</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 巨量成交监控</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            聚合 Binance / OKX / Bitfinex BTC 与 ETH 永续主动成交流，识别主力拉盘、砸盘、吸收和压制信号。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          只读提醒 · 不下单 · CWM Discord gate 独立
+        </div>
+      </div>
+      <ContractWhaleMonitor />
+    </>
+  );
 }
 
 function ratio(value, total) {
@@ -398,6 +447,9 @@ function signalTime(signal) {
 }
 
 function filterLabel(activeRiskFilter, viewMode) {
+  if (viewMode === "contract-whale") {
+    return "BTC/ETH 巨量成交";
+  }
   if (viewMode === "signals") {
     return "异常信号：S 级 / Critical";
   }
@@ -417,6 +469,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 }
 
 function viewModeFromPath(pathname) {
+  if (pathname === "/contract-whale") return "contract-whale";
   if (pathname === "/signals") return "signals";
   if (pathname === "/history") return "history";
   if (pathname === "/rules") return "rules";

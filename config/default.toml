@@ -19,3 +19,88 @@ sweep_compute_interval_ms = 250
 toxic_compute_interval_ms = 250
 book_stale_ms = 5000
 max_buffer_age_ms = 120000
+
+[contract_whale_monitor]
+enabled = false
+dry_run = true
+
+[contract_whale_monitor.scoring]
+volume_strength_weight = 35
+dynamic_multiple_weight = 20
+dominance_weight = 15
+price_impact_weight = 15
+multi_exchange_weight = 10
+data_quality_weight = 5
+
+[contract_whale_monitor.scoring.penalties]
+single_exchange_only = 10
+liquidation_suspected = 10
+websocket_latency_high = 15
+warmup_period = 20
+
+[contract_whale_monitor.data_quality]
+min_discord_quality = 70
+min_critical_quality = 70
+high_latency_ms = 1000
+warmup_ms = 60000
+min_dynamic_samples = 20
+single_exchange_penalty = 15
+ct_val_missing_penalty = 20
+
+[contract_whale_monitor.retention]
+flow_1s_days = 14
+signals_days = 365
+
+[contract_whale_monitor.symbols.BTC]
+enabled = true
+
+[contract_whale_monitor.symbols.BTC.thresholds_btc.high]
+5 = 800
+15 = 1500
+60 = 3500
+
+[contract_whale_monitor.symbols.BTC.thresholds_btc.critical]
+5 = 1500
+15 = 2800
+60 = 6500
+
+[contract_whale_monitor.symbols.BTC.thresholds_btc.s]
+5 = 2500
+15 = 4500
+60 = 10000
+
+[contract_whale_monitor.symbols.ETH]
+enabled = true
+
+[contract_whale_monitor.symbols.ETH.thresholds_btc.high]
+5 = 5000
+15 = 9000
+60 = 20000
+
+[contract_whale_monitor.symbols.ETH.thresholds_btc.critical]
+5 = 10000
+15 = 18000
+60 = 40000
+
+[contract_whale_monitor.symbols.ETH.thresholds_btc.s]
+5 = 18000
+15 = 32000
+60 = 75000
+
+[contract_whale_monitor.symbols.SOL]
+enabled = false
+
+[contract_whale_monitor.symbols.SOL.thresholds_btc.high]
+5 = 100000
+15 = 220000
+60 = 650000
+
+[contract_whale_monitor.symbols.SOL.thresholds_btc.critical]
+5 = 220000
+15 = 450000
+60 = 1200000
+
+[contract_whale_monitor.symbols.SOL.thresholds_btc.s]
+5 = 400000
+15 = 800000
+60 = 2200000

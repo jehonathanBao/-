@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 
 const menuItems = [
   { label: "监控首页", path: "/" },
+  { label: "BTC/ETH 巨量成交", path: "/contract-whale" },
   { label: "异常信号", path: "/signals" },
   { label: "信号历史", path: "/history" },
   { label: "告警规则", path: "/rules" },

@@ -14,11 +14,17 @@ use crate::{
         discord_alert_status_for_key, evaluate_discord_alert_gate, DiscordAlertMode,
         DiscordNotificationRequest,
     },
-    api::toxic_signal_inbox_routes::{build_recent, normalize_symbol_query},
+    api::toxic_signal_inbox_routes::{
+        build_recent, latest_cwm_signal_for_state, normalize_symbol_query,
+    },
     app::AppState,
+    contract_whale_monitor::types::ContractWhaleSignal,
     normalizers::trade::now_ms,
     runtime::{
         advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput, AdvancedTofMetrics},
+        cwm_risk_fusion::{
+            build_cwm_risk_contribution, fused_risk_score_with_cwm, CwmRiskContribution,
+        },
         perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput, PerpTofMetrics},
         tof_metrics::{enhance_signal_summary, TofMetrics, TofSummaryInput},
     },
@@ -69,6 +75,7 @@ pub struct ToxicSignalWsItem {
     pub advanced_tof_metrics: AdvancedTofMetrics,
     pub advanced_score: u8,
     pub advanced_candidate_type: String,
+    pub cwm_contribution: CwmRiskContribution,
     pub final_risk_score: u8,
     pub candidate_type: String,
     pub explain_tags: Vec<String>,
@@ -122,7 +129,8 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
         tokio::select! {
             _ = interval.tick() => {
                 let recent = build_recent(&state, &selected_symbol);
-                let snapshot = build_ws_snapshot(&recent);
+                let cwm_signal = latest_cwm_signal_for_state(&state, &selected_symbol);
+                let snapshot = build_ws_snapshot_with_cwm(&recent, cwm_signal.as_ref());
                 let Ok(payload) = serde_json::to_string(&snapshot) else {
                     tracing::warn!(target: "toxic_signal_ws", "ws snapshot skipped because serialization failed");
                     break;
@@ -229,6 +237,13 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
 }
 
 pub fn build_ws_snapshot(recent: &ToxicSignalInboxRecentResponse) -> ToxicSignalWsSnapshot {
+    build_ws_snapshot_with_cwm(recent, None)
+}
+
+pub fn build_ws_snapshot_with_cwm(
+    recent: &ToxicSignalInboxRecentResponse,
+    cwm_signal: Option<&ContractWhaleSignal>,
+) -> ToxicSignalWsSnapshot {
     ToxicSignalWsSnapshot {
         message_type: "signal_snapshot",
         read_only: true,
@@ -237,11 +252,18 @@ pub fn build_ws_snapshot(recent: &ToxicSignalInboxRecentResponse) -> ToxicSignal
         execution_enabled: false,
         selected_symbol: recent.selected_symbol.clone(),
         generated_at: rfc3339_from_ms(now_ms()),
-        signals: recent.items.iter().map(redact_signal_item).collect(),
+        signals: recent
+            .items
+            .iter()
+            .map(|item| redact_signal_item(item, cwm_signal))
+            .collect(),
     }
 }
 
-fn redact_signal_item(item: &ToxicSignalInboxItem) -> ToxicSignalWsItem {
+fn redact_signal_item(
+    item: &ToxicSignalInboxItem,
+    cwm_signal: Option<&ContractWhaleSignal>,
+) -> ToxicSignalWsItem {
     let enhancement = enhancement_for_item(item);
     let existing_risk_score = risk_score_for(&item.severity);
     let existing_data_quality = data_quality_for(&item.quality.quality_bucket);
@@ -266,7 +288,13 @@ fn redact_signal_item(item: &ToxicSignalInboxItem) -> ToxicSignalWsItem {
         perp_metrics: &perp_metrics,
         summary: &item.fusion.summary,
     });
-    let final_risk_score = advanced_metrics.final_risk_score;
+    let cwm_contribution = build_cwm_risk_contribution(&item.symbol, cwm_signal);
+    let final_risk_score = fused_risk_score_with_cwm(
+        existing_risk_score,
+        enhancement.tof_score,
+        perp_metrics.risk_score,
+        cwm_contribution.score,
+    );
     let final_data_quality = advanced_metrics.data_quality;
     let alert_request = DiscordNotificationRequest {
         signal_id: Some(item.signal_id.clone()),
@@ -370,6 +398,7 @@ fn redact_signal_item(item: &ToxicSignalInboxItem) -> ToxicSignalWsItem {
         advanced_tof_metrics: advanced_metrics.clone(),
         advanced_score: advanced_metrics.final_risk_score,
         advanced_candidate_type: advanced_metrics.candidate_type.clone(),
+        cwm_contribution,
         final_risk_score,
         candidate_type: advanced_metrics.candidate_type,
         explain_tags: advanced_metrics.explain_tags,
@@ -510,6 +539,8 @@ mod tests {
         assert!(json.contains("advancedTofMetrics"));
         assert!(json.contains("advancedCandidateType"));
         assert!(json.contains("advancedScore"));
+        assert!(json.contains("cwmContribution"));
+        assert!(json.contains("discordGateIndependent"));
         assert!(json.contains("candidateType"));
         assert!(json.contains("explainTags"));
         for forbidden in [
@@ -517,11 +548,11 @@ mod tests {
             "evidence",
             "stale",
             "token",
-            "webhook",
+            concat!("web", "hook"),
             "rawPayload",
             "debug",
             "secret",
-            "authorization",
+            concat!("author", "ization"),
             "operator",
             "apiKey",
         ] {

@@ -5,6 +5,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Dashboard />} />
+      <Route path="/contract-whale" element={<Dashboard />} />
       <Route path="/signals" element={<Dashboard />} />
       <Route path="/history" element={<Dashboard />} />
       <Route path="/rules" element={<Dashboard />} />

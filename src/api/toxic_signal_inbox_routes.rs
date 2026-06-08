@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     api::{
+        contract_whale_routes::build_contract_whale_response_with_runtime,
         discord_notification_routes::{
             discord_alert_status_for_key, evaluate_discord_alert_gate, DiscordAlertMode,
             DiscordNotificationRequest,
@@ -13,11 +14,14 @@ use crate::{
         toxic_quality_scorecard_routes::build_fusion_recent,
     },
     app::AppState,
+    contract_whale_monitor::{config::contract_whale_runtime_config, types::ContractWhaleSignal},
     runtime::{
         advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput},
+        cwm_risk_fusion::{build_cwm_risk_contribution, fused_risk_score_with_cwm},
         perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput},
         tof_metrics::{enhance_signal_summary, TofSummaryInput},
     },
+    storage::contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
     toxicity::{
         toxic_governance_ledger_service::toxic_governance_ledger_summary,
         toxic_markout_service::toxic_markout_recent,
@@ -53,8 +57,12 @@ pub async fn toxic_signal_inbox_recent_route(
     Query(query): Query<ToxicSignalInboxQuery>,
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_query(query.symbol, &state.config().symbol);
+    let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
     Json(with_filter_contract(
-        with_tof_metrics_contract(serde_json::json!(build_recent(&state, &requested_symbol))),
+        with_tof_metrics_contract(
+            serde_json::json!(build_recent(&state, &requested_symbol)),
+            cwm_signal.as_ref(),
+        ),
         &requested_symbol,
     ))
 }
@@ -64,8 +72,12 @@ pub async fn toxic_signal_inbox_for_symbol(
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_text(&symbol, &state.config().symbol);
+    let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
     Json(with_filter_contract(
-        with_tof_metrics_contract(serde_json::json!(build_recent(&state, &requested_symbol))),
+        with_tof_metrics_contract(
+            serde_json::json!(build_recent(&state, &requested_symbol)),
+            cwm_signal.as_ref(),
+        ),
         &requested_symbol,
     ))
 }
@@ -77,9 +89,15 @@ pub async fn toxic_signal_inbox_for_signal(
 ) -> Json<serde_json::Value> {
     let requested_symbol = normalize_symbol_query(query.symbol, &state.config().symbol);
     let recent = build_recent(&state, &requested_symbol);
-    Json(with_tof_metrics_contract(serde_json::json!(
-        toxic_signal_inbox_by_signal_id(&requested_symbol, &signal_id, &recent,)
-    )))
+    let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
+    Json(with_tof_metrics_contract(
+        serde_json::json!(toxic_signal_inbox_by_signal_id(
+            &requested_symbol,
+            &signal_id,
+            &recent,
+        )),
+        cwm_signal.as_ref(),
+    ))
 }
 
 pub(crate) fn build_recent(
@@ -119,6 +137,50 @@ pub(crate) fn build_recent(
     )
 }
 
+pub(crate) fn latest_cwm_signal_for_state(
+    state: &AppState,
+    requested_symbol: &str,
+) -> Option<ContractWhaleSignal> {
+    let cwm_symbol = cwm_symbol_from_requested_symbol(requested_symbol);
+    if !state.config().contract_whale_monitor.enabled
+        || !contract_whale_runtime_config().symbol_enabled(&cwm_symbol)
+    {
+        return None;
+    }
+    if let Some(signal) = state.contract_whale_store().and_then(|store| {
+        store
+            .query_contract_whale_signals(&ContractWhaleSignalQuery {
+                symbol: Some(cwm_symbol.clone()),
+                limit: 1,
+                ..ContractWhaleSignalQuery::default()
+            })
+            .ok()
+            .and_then(|signals| signals.into_iter().next())
+    }) {
+        return Some(signal);
+    }
+    let response = build_contract_whale_response_with_runtime(
+        &state.flow_state(),
+        &cwm_symbol,
+        1,
+        None,
+        state.config().contract_whale_monitor.enabled,
+        state.config().contract_whale_monitor.dry_run,
+        Some(&state.venue_health()),
+    );
+    response.items.into_iter().next()
+}
+
+fn cwm_symbol_from_requested_symbol(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("BTC")
+        .to_ascii_uppercase()
+}
+
 pub(crate) fn normalize_symbol_query(symbol: Option<String>, default_symbol: &str) -> String {
     match symbol {
         Some(symbol) => normalize_symbol_text(&symbol, default_symbol),
@@ -153,22 +215,25 @@ pub(crate) fn with_filter_contract(
     payload
 }
 
-pub(crate) fn with_tof_metrics_contract(mut payload: serde_json::Value) -> serde_json::Value {
+pub(crate) fn with_tof_metrics_contract(
+    mut payload: serde_json::Value,
+    cwm_signal: Option<&ContractWhaleSignal>,
+) -> serde_json::Value {
     if let Some(items) = payload
         .get_mut("items")
         .and_then(|value| value.as_array_mut())
     {
         for item in items {
-            decorate_item_with_tof(item);
+            decorate_item_with_tof(item, cwm_signal);
         }
     }
     if let Some(item) = payload.get_mut("item") {
-        decorate_item_with_tof(item);
+        decorate_item_with_tof(item, cwm_signal);
     }
     payload
 }
 
-fn decorate_item_with_tof(item: &mut serde_json::Value) {
+fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&ContractWhaleSignal>) {
     let Some(object) = item.as_object_mut() else {
         return;
     };
@@ -255,7 +320,13 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
     let metrics_direction = serde_json::to_value(advanced_metrics.metrics_direction)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string));
-    let final_risk_score = advanced_score;
+    let cwm_contribution = build_cwm_risk_contribution(&symbol, cwm_signal);
+    let final_risk_score = fused_risk_score_with_cwm(
+        existing_risk_score,
+        enhancement.tof_score,
+        perp_score,
+        cwm_contribution.score,
+    );
     object.insert(
         "tofMetrics".to_string(),
         serde_json::to_value(&enhancement.tof_metrics).unwrap_or(serde_json::Value::Null),
@@ -320,6 +391,10 @@ fn decorate_item_with_tof(item: &mut serde_json::Value) {
     object.insert(
         "advancedCandidateType".to_string(),
         serde_json::json!(advanced_candidate_type.clone()),
+    );
+    object.insert(
+        "cwmContribution".to_string(),
+        serde_json::to_value(&cwm_contribution).unwrap_or(serde_json::Value::Null),
     );
     object.insert(
         "finalRiskScore".to_string(),

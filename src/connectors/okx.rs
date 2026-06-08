@@ -62,7 +62,9 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                     "op": "subscribe",
                     "args": [
                         { "channel": "trades", "instId": "BTC-USDT-SWAP" },
-                        { "channel": "books5", "instId": "BTC-USDT-SWAP" }
+                        { "channel": "books5", "instId": "BTC-USDT-SWAP" },
+                        { "channel": "trades", "instId": "ETH-USDT-SWAP" },
+                        { "channel": "books5", "instId": "ETH-USDT-SWAP" }
                     ]
                 });
                 let _ = ws.send(Message::Text(subscribe.to_string())).await;

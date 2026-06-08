@@ -11,12 +11,25 @@ use crate::{
         alert_types::AlertState,
     },
     api::{
+        contract_whale_routes::{
+            build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
+            load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
+        },
         discord_notification_routes::{maybe_auto_push_discord, DiscordNotificationRequest},
         toxic_signal_inbox_routes::build_recent,
         toxic_signal_ws_routes::{build_ws_snapshot, ToxicSignalWsItem},
     },
     config::AppConfig,
     connectors::manager::ConnectorManager,
+    contract_whale_monitor::{
+        config::contract_whale_runtime_config,
+        discord_notifier::{notify_contract_whale_discord, ContractWhaleDiscordSettings},
+        log_events as cwm_log_events,
+        persistence::{
+            persist_contract_whale_signal_nonblocking, spawn_contract_whale_retention_task,
+        },
+        LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
+    },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     storage::{snapshot_service::StorageState, SnapshotService, SqliteStore},
@@ -56,6 +69,7 @@ struct AppStateInner {
     runtime_started: AtomicBool,
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
     discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     scan_log: ScanLogStore,
     market_data_bus: MarketDataBus,
     connector_manager: ConnectorManager,
@@ -69,6 +83,7 @@ struct AppStateInner {
     orderbook_wall_lifecycle_service: OrderbookWallLifecycleService,
     alert_service: AlertService,
     snapshot_service: SnapshotService,
+    contract_whale_store: Option<SqliteStore>,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
 }
@@ -138,6 +153,7 @@ impl AppState {
         } else {
             None
         };
+        let shared_store_for_state = shared_store.clone();
         let vpin_service = VpinService::new(bus.clone(), &config, shared_store.clone());
         let liquidation_service = LiquidationService::new(
             flow_service.clone(),
@@ -174,6 +190,7 @@ impl AppState {
             toxic_service.clone(),
             connector_manager.clone(),
         );
+        let contract_whale_store = shared_store_for_state.or_else(|| toxic_service.store());
         let signal_history_service = ToxicSignalHistoryService::default();
         let whale_flow_candidate_history_service = WhaleFlowCandidateHistoryService::default();
         let scan_log = ScanLogStore::new_from_env();
@@ -184,6 +201,57 @@ impl AppState {
             Some(config.symbol.clone()),
             None,
         );
+        tracing::info!(
+            target: CWM_LOG_TARGET,
+            event = cwm_log_events::CONFIG_LOADED,
+            enabled = config.contract_whale_monitor.enabled,
+            dry_run = config.contract_whale_monitor.dry_run,
+            "{} config loaded",
+            CWM_LOG_PREFIX
+        );
+        scan_log.push(
+            "info",
+            cwm_log_events::CONFIG_LOADED,
+            format!(
+                "{} config loaded: enabled={}, dry_run={}",
+                CWM_LOG_PREFIX,
+                config.contract_whale_monitor.enabled,
+                config.contract_whale_monitor.dry_run
+            ),
+            Some(config.symbol.clone()),
+            None,
+        );
+        let cwm_runtime_event = if config.contract_whale_monitor.enabled {
+            cwm_log_events::RUNTIME_STARTED
+        } else {
+            cwm_log_events::RUNTIME_DISABLED
+        };
+        let cwm_runtime_message = if config.contract_whale_monitor.enabled {
+            "runtime enabled"
+        } else {
+            "runtime disabled"
+        };
+        tracing::info!(
+            target: CWM_LOG_TARGET,
+            event = cwm_runtime_event,
+            dry_run = config.contract_whale_monitor.dry_run,
+            "{} {}",
+            CWM_LOG_PREFIX,
+            cwm_runtime_message
+        );
+        scan_log.push(
+            "info",
+            cwm_runtime_event,
+            format!("{} {}", CWM_LOG_PREFIX, cwm_runtime_message),
+            Some(config.symbol.clone()),
+            None,
+        );
+        let cwm_retention = contract_whale_runtime_config().retention;
+        spawn_contract_whale_retention_task(
+            contract_whale_store.clone(),
+            cwm_retention.flow_1s_days,
+            cwm_retention.signals_days,
+        );
 
         Self {
             inner: Arc::new(AppStateInner {
@@ -192,6 +260,7 @@ impl AppState {
                 runtime_started: AtomicBool::new(false),
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
+                cwm_auto_push_task: Arc::new(RwLock::new(None)),
                 scan_log,
                 market_data_bus: bus,
                 connector_manager,
@@ -205,6 +274,7 @@ impl AppState {
                 orderbook_wall_lifecycle_service,
                 alert_service,
                 snapshot_service,
+                contract_whale_store,
                 signal_history_service,
                 whale_flow_candidate_history_service,
             }),
@@ -280,6 +350,7 @@ impl AppState {
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
         self.start_discord_auto_push_loop();
+        self.start_contract_whale_auto_push_loop();
         self.record_scan_log(
             "info",
             "data_source_connecting",
@@ -352,6 +423,7 @@ impl AppState {
         self.inner.runtime_started.store(false, Ordering::SeqCst);
         self.inner.connector_manager.stop_all().await;
         self.inner.snapshot_service.stop();
+        self.stop_contract_whale_auto_push_loop();
         self.stop_discord_auto_push_loop();
         self.inner.alert_service.stop();
         self.inner.orderbook_wall_lifecycle_service.stop();
@@ -456,6 +528,100 @@ impl AppState {
         }
     }
 
+    fn start_contract_whale_auto_push_loop(&self) {
+        if !self.config().contract_whale_monitor.enabled {
+            return;
+        }
+        if self.inner.cwm_auto_push_task.read().is_some() {
+            return;
+        }
+        let state = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(contract_whale_auto_push_interval());
+            loop {
+                interval.tick().await;
+                state.evaluate_contract_whale_auto_push_once().await;
+            }
+        });
+        *self.inner.cwm_auto_push_task.write() = Some(handle);
+    }
+
+    fn stop_contract_whale_auto_push_loop(&self) {
+        if let Some(handle) = self.inner.cwm_auto_push_task.write().take() {
+            handle.abort();
+        }
+    }
+
+    async fn evaluate_contract_whale_auto_push_once(&self) {
+        let config = self.config().contract_whale_monitor;
+        if !config.enabled {
+            return;
+        }
+        let runtime_config = contract_whale_runtime_config();
+        let symbols = runtime_config
+            .symbols
+            .iter()
+            .filter(|(_, symbol_config)| symbol_config.enabled)
+            .map(|(symbol, _)| symbol.clone())
+            .collect::<Vec<_>>();
+        for symbol in symbols {
+            let flow_state = self.flow_state_for_symbol(&symbol);
+            let store = self.contract_whale_store();
+            let baselines = store
+                .as_ref()
+                .map(|store| load_quality_baselines(store, &flow_state, &symbol))
+                .unwrap_or_default();
+            let liquidations = store
+                .as_ref()
+                .map(|store| load_liquidation_contexts(store, &flow_state, &symbol))
+                .unwrap_or_default();
+            let market_context = store
+                .as_ref()
+                .map(|store| load_market_context(store, &flow_state, &symbol))
+                .unwrap_or_default();
+            let venue_health = self.venue_health();
+            let response = build_contract_whale_response_with_runtime_and_baselines(
+                &flow_state,
+                &symbol,
+                10,
+                None,
+                config.enabled,
+                config.dry_run,
+                ContractWhaleResponseRuntime {
+                    venue_health: Some(&venue_health),
+                    baselines: &baselines,
+                    liquidations: &liquidations,
+                    market_context: &market_context,
+                    booted_at_ms: Some(self.booted_at_ms()),
+                },
+            );
+            let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
+            for signal in response.items {
+                let _ =
+                    persist_contract_whale_signal_nonblocking(store.clone(), signal.clone()).await;
+                let outcome =
+                    notify_contract_whale_discord(&settings, &signal, store.clone()).await;
+                self.record_scan_log(
+                    if outcome.sent { "info" } else { "debug" },
+                    if outcome.sent {
+                        cwm_log_events::DISCORD_SENT
+                    } else {
+                        cwm_log_events::DISCORD_SKIPPED
+                    },
+                    format!(
+                        "{} discord {} for {}: {}",
+                        CWM_LOG_PREFIX,
+                        if outcome.sent { "sent" } else { "skipped" },
+                        signal.symbol,
+                        outcome.reason
+                    ),
+                    Some(signal.symbol.clone()),
+                    Some(signal.id.clone()),
+                );
+            }
+        }
+    }
+
     async fn evaluate_discord_auto_push_once(&self) {
         let recent = build_recent(self, &self.config().symbol);
         if recent.items.is_empty() {
@@ -474,6 +640,10 @@ impl AppState {
 
     pub fn flow_state(&self) -> FlowState {
         self.inner.flow_service.latest_state()
+    }
+
+    pub fn flow_state_for_symbol(&self, symbol: &str) -> FlowState {
+        self.inner.flow_service.latest_state_for_symbol(symbol)
     }
 
     pub fn market_data_quality(&self) -> crate::market_data::quality::MarketDataQualityTracker {
@@ -540,6 +710,10 @@ impl AppState {
 
     pub fn whale_flow_candidate_history_service(&self) -> WhaleFlowCandidateHistoryService {
         self.inner.whale_flow_candidate_history_service.clone()
+    }
+
+    pub fn contract_whale_store(&self) -> Option<SqliteStore> {
+        self.inner.contract_whale_store.clone()
     }
 
     pub fn recent_toxic_events(
@@ -655,6 +829,15 @@ fn discord_auto_push_interval() -> std::time::Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (500..=60_000).contains(value))
         .unwrap_or(1_000);
+    std::time::Duration::from_millis(ms)
+}
+
+fn contract_whale_auto_push_interval() -> std::time::Duration {
+    let ms = std::env::var("CONTRACT_WHALE_AUTO_PUSH_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1_000..=60_000).contains(value))
+        .unwrap_or(2_000);
     std::time::Duration::from_millis(ms)
 }
 

@@ -1,0 +1,4 @@
+{"ts":1712400000000,"exchange":"binance","price":70000,"qty_btc":0.1,"side":"buy","data_quality":92}
+{"ts":1712400015000,"exchange":"binance","price":69783,"qty_btc":1800,"side":"sell","dynamic_multiple":8.5,"percentile_level":99.5,"price_move_pct":-0.31,"liquidation_driven":true,"data_quality":92}
+{"ts":1712400015000,"exchange":"okx","price":69783,"qty_btc":1200,"side":"sell","dynamic_multiple":8.5,"percentile_level":99.5,"price_move_pct":-0.31,"liquidation_driven":true,"data_quality":92}
+{"ts":1712400015000,"exchange":"binance","price":69783,"qty_btc":120,"side":"buy","dynamic_multiple":8.5,"percentile_level":99.5,"price_move_pct":-0.31,"liquidation_driven":true,"data_quality":92}

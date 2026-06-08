@@ -1,6 +1,11 @@
 use std::{fs, sync::Mutex};
 
-use btc_toxic_flow_monitor_rs::config::AppConfig;
+use btc_toxic_flow_monitor_rs::{
+    config::AppConfig,
+    contract_whale_monitor::config::{
+        contract_whale_runtime_config, reset_contract_whale_runtime_config,
+    },
+};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -75,6 +80,123 @@ enable_okx = false
     clear_config_env();
 }
 
+#[test]
+fn toml_contract_whale_monitor_flags_default_to_disabled_dry_run() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    let config_path = write_config("cwm-defaults", "");
+
+    let config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+
+    assert!(!config.contract_whale_monitor.enabled);
+    assert!(config.contract_whale_monitor.dry_run);
+    clear_config_env();
+}
+
+#[test]
+fn env_contract_whale_monitor_flags_override_toml() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    std::env::set_var("CONTRACT_WHALE_ENABLED", "false");
+    std::env::set_var("CONTRACT_WHALE_DRY_RUN", "true");
+    let config_path = write_config(
+        "cwm-env-overrides",
+        r#"
+[contract_whale_monitor]
+enabled = true
+dry_run = false
+"#,
+    );
+
+    let config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+
+    assert!(!config.contract_whale_monitor.enabled);
+    assert!(config.contract_whale_monitor.dry_run);
+    clear_config_env();
+}
+
+#[test]
+fn toml_contract_whale_scoring_and_symbol_thresholds_are_loaded() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    reset_contract_whale_runtime_config();
+    let config_path = write_config(
+        "cwm-scoring-thresholds",
+        r#"
+[contract_whale_monitor.scoring]
+volume_strength_weight = 40
+dynamic_multiple_weight = 10
+
+[contract_whale_monitor.scoring.penalties]
+warmup_period = 12
+
+[contract_whale_monitor.data_quality]
+min_dynamic_samples = 7
+
+[contract_whale_monitor.retention]
+flow_1s_days = 10
+signals_days = 180
+
+[contract_whale_monitor.symbols.BTC.thresholds_btc.high]
+15 = 2222
+
+[contract_whale_monitor.symbols.ETH]
+enabled = false
+"#,
+    );
+
+    let _config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+    let cwm = contract_whale_runtime_config();
+
+    assert_eq!(cwm.scoring.volume_strength_weight, 40.0);
+    assert_eq!(cwm.scoring.dynamic_multiple_weight, 10.0);
+    assert_eq!(cwm.scoring.penalties.warmup_period, 12.0);
+    assert_eq!(cwm.data_quality.min_dynamic_samples, 7);
+    assert_eq!(cwm.retention.flow_1s_days, 10);
+    assert_eq!(cwm.retention.signals_days, 180);
+    assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 2222.0);
+    assert!(cwm.symbol_enabled("BTC"));
+    assert!(!cwm.symbol_enabled("ETH"));
+    assert!(!cwm.symbol_enabled("SOL"));
+    assert_ne!(
+        cwm.thresholds_for_symbol_window("SOL", 15).high_btc,
+        cwm.thresholds_for_symbol_window("BTC", 15).high_btc
+    );
+    reset_contract_whale_runtime_config();
+    clear_config_env();
+}
+
+#[test]
+fn invalid_contract_whale_config_values_fall_back_to_defaults() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    reset_contract_whale_runtime_config();
+    let config_path = write_config(
+        "cwm-invalid-fallbacks",
+        r#"
+[contract_whale_monitor.scoring]
+volume_strength_weight = -1
+
+[contract_whale_monitor.data_quality]
+min_discord_quality = 777
+min_dynamic_samples = 0
+
+[contract_whale_monitor.symbols.BTC.thresholds_btc.high]
+15 = -3
+"#,
+    );
+
+    let _config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+    let cwm = contract_whale_runtime_config();
+
+    assert_eq!(cwm.scoring.volume_strength_weight, 35.0);
+    assert_eq!(cwm.data_quality.min_discord_quality, 70);
+    assert_eq!(cwm.data_quality.min_dynamic_samples, 20);
+    assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 1500.0);
+    reset_contract_whale_runtime_config();
+    clear_config_env();
+}
+
 fn write_config(name: &str, content: &str) -> String {
     let base = std::env::temp_dir().join(format!(
         "btc-toxic-flow-monitor-rs-{name}-{}",
@@ -96,6 +218,8 @@ fn clear_config_env() {
         "ENABLE_BINANCE",
         "ENABLE_BYBIT",
         "ENABLE_OKX",
+        "CONTRACT_WHALE_ENABLED",
+        "CONTRACT_WHALE_DRY_RUN",
     ] {
         std::env::remove_var(key);
     }

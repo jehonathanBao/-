@@ -27,6 +27,22 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
+vi.mock("../api/contractWhale.js", () => ({
+  fetchContractWhaleLatest: vi.fn(() =>
+    Promise.resolve({
+      summary: {
+        status: "平静",
+        direction: "neutral",
+        latestSeverity: "calm",
+        latestPushedAtMs: null,
+        signalCount: 0,
+        readOnly: true,
+      },
+      items: [],
+    }),
+  ),
+}));
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn((path, options) => {
     wsMock.optionsByPath.set(path, options);
@@ -94,6 +110,7 @@ describe("Dashboard websocket signal stream", () => {
     expect(screen.getByText("TOF 88")).toBeInTheDocument();
     expect(screen.getByText("Perp 87")).toBeInTheDocument();
     expect(screen.getAllByText("Advanced 89").length).toBeGreaterThan(0);
+    expect(screen.getByText(/CWM 92/)).toBeInTheDocument();
     expect(screen.getAllByText(/OpenInterestCandidate/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/MarketPressureHeatmapCandidate/).length).toBeGreaterThan(0);
     expect(screen.getByText("Discord：未推送，原因：历史缓存不自动推送")).toBeInTheDocument();
@@ -243,6 +260,23 @@ function wsItem({ signalId, severity }) {
     perpCandidateType: "OpenInterestCandidate",
     advancedScore: 89,
     advancedCandidateType: "MarketPressureHeatmapCandidate",
+    cwmContribution: {
+      available: true,
+      source: "contract_whale_monitor",
+      formula: "finalRiskScore = spotRisk*0.35 + TOF-lite*0.25 + perpMetrics*0.25 + CWM*0.15",
+      contributionWeight: 0.15,
+      score: 92,
+      weightedContribution: 13.8,
+      signalId: "contract-whale:BTC:15:1700000000000:buy",
+      severity: "s",
+      signalType: "aggressive_buy",
+      direction: "buy",
+      windowSec: 15,
+      dataQuality: 88,
+      dominance: 0.676,
+      summary: "多平台主动买入爆发",
+      discordGateIndependent: true,
+    },
     finalCandidateType: "High Risk Bullish Candidate",
     metricsDirection: "bullish",
     mergedConfidence: 87,

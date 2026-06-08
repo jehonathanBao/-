@@ -33,6 +33,7 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(compose.contains("VITE_PROXY_API_TARGET: http://backend:3000"));
     assert!(compose.contains("WS_SIGNAL_INTERVAL_MS"));
     assert!(compose.contains("127.0.0.1:8000:3000"));
+    assert!(compose.contains("${DASHBOARD_BIND_HOST:-0.0.0.0}:5173:5173"));
     assert!(compose.contains("./data"));
     assert!(compose.contains("/app/data"));
     assert!(compose.contains("./config"));
@@ -51,6 +52,7 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
         fs::read_to_string(root.join("docs/server-deployment-runbook.md")).expect("runbook");
     assert!(runbook.contains("browser bundle should not receive it"));
     assert!(runbook.contains("127.0.0.1:8000"));
+    assert!(runbook.contains("http://<server-ip>:5173"));
     assert!(runbook.contains("`/ws/signals` streams redacted toxic signal snapshots"));
     assert!(runbook.contains("browser refresh and HMR"));
 

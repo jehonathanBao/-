@@ -1,0 +1,500 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use btc_toxic_flow_monitor_rs::{
+    contract_whale_monitor::{
+        aggregator::{
+            aggregate_1s_buckets, aggregate_liquidation_1s_buckets, compute_percentile_threshold,
+            dynamic_multiple_for_volume, historical_window_average_btc,
+            historical_window_average_btc_with_min_samples, liquidation_context_for_window,
+            market_context_from_snapshots, percentile_level_for_volume, rolling_window_stats,
+        },
+        detector::detect_contract_whale_signal,
+        normalizer::{
+            normalize_binance_agg_trade, normalize_binance_force_order,
+            normalize_binance_funding_rate_json, normalize_binance_open_interest_json,
+            normalize_okx_funding_rate_json, normalize_okx_open_interest_json,
+            normalize_okx_swap_trade,
+        },
+        persistence::flush_contract_flow_buckets_nonblocking,
+        types::{
+            ContractFlowBucket, ContractWhaleDirection, ContractWhaleSeverity,
+            ContractWhaleSignalType,
+        },
+    },
+    storage::{
+        contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+        SqliteStore,
+    },
+};
+
+#[test]
+fn contract_flow_1s_upsert_is_idempotent() {
+    let store = temp_store("contract-flow-1s");
+    let mut bucket = ContractFlowBucket {
+        ts_bucket: 1_700_000_000_000,
+        exchange: "binance".to_string(),
+        symbol: "BTC".to_string(),
+        buy_volume_btc: 10.0,
+        sell_volume_btc: 2.0,
+        buy_notional_usd: 700_000.0,
+        sell_notional_usd: 140_000.0,
+        trade_count: 3,
+        max_single_trade_btc: 8.0,
+        vwap: Some(70_000.0),
+    };
+
+    assert_eq!(
+        store
+            .upsert_contract_flow_buckets(&[bucket.clone()])
+            .unwrap(),
+        1
+    );
+    bucket.buy_volume_btc = 12.0;
+    bucket.trade_count = 4;
+    assert_eq!(
+        store
+            .upsert_contract_flow_buckets(&[bucket.clone()])
+            .unwrap(),
+        1
+    );
+
+    let rows = store.list_recent_contract_flow_buckets("BTC", 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].buy_volume_btc, 12.0);
+    assert_eq!(rows[0].trade_count, 4);
+}
+
+#[tokio::test]
+async fn contract_flow_nonblocking_flush_writes_buckets() {
+    let store = temp_store("contract-flow-nonblocking");
+    let bucket = ContractFlowBucket {
+        ts_bucket: 1_700_000_001_000,
+        exchange: "okx".to_string(),
+        symbol: "BTC".to_string(),
+        buy_volume_btc: 5.0,
+        sell_volume_btc: 1.0,
+        buy_notional_usd: 350_000.0,
+        sell_notional_usd: 70_000.0,
+        trade_count: 2,
+        max_single_trade_btc: 5.0,
+        vwap: Some(70_000.0),
+    };
+
+    let outcome = flush_contract_flow_buckets_nonblocking(Some(store.clone()), vec![bucket]).await;
+
+    assert!(outcome.attempted);
+    assert!(outcome.succeeded);
+    assert_eq!(outcome.written, 1);
+    assert_eq!(
+        store
+            .list_recent_contract_flow_buckets("BTC", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
+    let store = temp_store("contract-whale-signals");
+    let signal = sample_s_signal();
+    store.upsert_contract_whale_signal(&signal).unwrap();
+
+    let rows = store
+        .list_contract_whale_signals("BTC", Some(ContractWhaleSeverity::S), 10)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].discord_eligible);
+    assert!(!rows[0].discord_sent);
+
+    let changed = store
+        .update_contract_whale_discord_status(&signal.id, true, Some(signal.ts + 1))
+        .unwrap();
+    assert_eq!(changed, 1);
+
+    let reopened = SqliteStore::open(store.path().to_str().unwrap()).unwrap();
+    reopened.migrate().unwrap();
+    let rows = reopened
+        .list_contract_whale_signals("BTC", None, 10)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, signal.id);
+    assert!(rows[0].discord_sent);
+    assert_eq!(rows[0].discord_sent_at, Some(signal.ts + 1));
+    assert_eq!(rows[0].total_volume_btc, signal.total_volume_btc);
+}
+
+#[test]
+fn contract_whale_signal_query_filters_and_paginates_history() {
+    let store = temp_store("contract-whale-query");
+    let base = sample_s_signal();
+    let mut buy_critical = base.clone();
+    buy_critical.id = "contract-whale:BTC:15:1700000000000:buy-critical".to_string();
+    buy_critical.ts = 1_700_000_000_000;
+    buy_critical.severity = ContractWhaleSeverity::Critical;
+
+    let mut buy_s = base.clone();
+    buy_s.id = "contract-whale:BTC:15:1700000010000:buy-s".to_string();
+    buy_s.ts = 1_700_000_010_000;
+    buy_s.severity = ContractWhaleSeverity::S;
+    buy_s.discord_sent = true;
+    buy_s.discord_sent_at = Some(buy_s.ts + 1);
+
+    let mut sell_critical = base.clone();
+    sell_critical.id = "contract-whale:BTC:15:1700000020000:sell-critical".to_string();
+    sell_critical.ts = 1_700_000_020_000;
+    sell_critical.severity = ContractWhaleSeverity::Critical;
+    sell_critical.direction = ContractWhaleDirection::Sell;
+    sell_critical.signal_type = ContractWhaleSignalType::AggressiveSell;
+
+    for signal in [&buy_critical, &buy_s, &sell_critical] {
+        store.upsert_contract_whale_signal(signal).unwrap();
+    }
+
+    let critical = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            severity: Some(ContractWhaleSeverity::Critical),
+            from_ts: Some(1_700_000_000_000),
+            to_ts: Some(1_700_086_400_000),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(critical.len(), 2);
+    assert_eq!(critical[0].id, sell_critical.id);
+
+    let buy_only = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            direction: Some(ContractWhaleDirection::Buy),
+            signal_type: Some(ContractWhaleSignalType::AggressiveBuy),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(buy_only.len(), 2);
+    assert!(buy_only
+        .iter()
+        .all(|signal| signal.direction == ContractWhaleDirection::Buy));
+
+    let paged = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 1,
+            offset: 1,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0].id, buy_s.id);
+
+    let unsent_binance_15s = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            discord_sent: Some(false),
+            window_sec: Some(15),
+            exchange: Some("binance".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(unsent_binance_15s.len(), 2);
+    assert!(unsent_binance_15s
+        .iter()
+        .all(|signal| !signal.discord_sent && signal.window_sec == 15));
+}
+
+#[test]
+fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
+    let store = temp_store("contract-whale-retention");
+    let now = 1_700_000_000_000;
+    let buckets = vec![
+        ContractFlowBucket {
+            ts_bucket: now - 20 * 24 * 60 * 60 * 1000,
+            exchange: "binance".to_string(),
+            symbol: "BTC".to_string(),
+            buy_volume_btc: 1.0,
+            sell_volume_btc: 0.0,
+            buy_notional_usd: 70_000.0,
+            sell_notional_usd: 0.0,
+            trade_count: 1,
+            max_single_trade_btc: 1.0,
+            vwap: Some(70_000.0),
+        },
+        ContractFlowBucket {
+            ts_bucket: now - 1_000,
+            exchange: "binance".to_string(),
+            symbol: "BTC".to_string(),
+            buy_volume_btc: 2.0,
+            sell_volume_btc: 0.0,
+            buy_notional_usd: 140_000.0,
+            sell_notional_usd: 0.0,
+            trade_count: 1,
+            max_single_trade_btc: 2.0,
+            vwap: Some(70_000.0),
+        },
+    ];
+    store.upsert_contract_flow_buckets(&buckets).unwrap();
+
+    let mut old_signal = sample_s_signal();
+    old_signal.id = "contract-whale:BTC:15:old:s".to_string();
+    old_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
+    let mut fresh_signal = sample_s_signal();
+    fresh_signal.id = "contract-whale:BTC:15:fresh:s".to_string();
+    fresh_signal.ts = now;
+    store.upsert_contract_whale_signal(&old_signal).unwrap();
+    store.upsert_contract_whale_signal(&fresh_signal).unwrap();
+
+    let result = store
+        .prune_contract_whale_retention(
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 365 * 24 * 60 * 60 * 1000,
+        )
+        .unwrap();
+
+    assert_eq!(result.flow_1s_deleted, 1);
+    assert_eq!(result.signal_deleted, 1);
+    assert_eq!(
+        store
+            .list_recent_contract_flow_buckets("BTC", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    let remaining = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, fresh_signal.id);
+}
+
+#[test]
+fn contract_flow_history_builds_dynamic_average_and_percentile_thresholds() {
+    let store = temp_store("contract-whale-percentiles");
+    let base_ts = 1_700_000_000_000;
+    let buckets = (0..120)
+        .map(|index| ContractFlowBucket {
+            ts_bucket: base_ts + (index * 15_000),
+            exchange: if index % 2 == 0 { "binance" } else { "okx" }.to_string(),
+            symbol: "BTC".to_string(),
+            buy_volume_btc: 100.0 + index as f64,
+            sell_volume_btc: 20.0,
+            buy_notional_usd: (100.0 + index as f64) * 70_000.0,
+            sell_notional_usd: 20.0 * 70_000.0,
+            trade_count: 10,
+            max_single_trade_btc: 100.0 + index as f64,
+            vwap: Some(70_000.0),
+        })
+        .collect::<Vec<_>>();
+    store.upsert_contract_flow_buckets(&buckets).unwrap();
+
+    let rows = store
+        .list_contract_flow_buckets_between("BTC", base_ts, base_ts + 120 * 15_000)
+        .unwrap();
+    let average = historical_window_average_btc(&rows, "BTC", 15, base_ts, base_ts + 120 * 15_000)
+        .expect("average");
+    assert!(historical_window_average_btc_with_min_samples(
+        &rows,
+        "BTC",
+        15,
+        base_ts,
+        base_ts + 120 * 15_000,
+        200,
+    )
+    .is_none());
+    assert!(historical_window_average_btc_with_min_samples(
+        &rows,
+        "BTC",
+        15,
+        base_ts,
+        base_ts + 120 * 15_000,
+        20,
+    )
+    .is_some());
+    let multiple = dynamic_multiple_for_volume(1_500.0, Some(average)).expect("multiple");
+    assert!(multiple > 8.0);
+
+    let threshold = compute_percentile_threshold(
+        &rows,
+        "BTC",
+        "all",
+        15,
+        base_ts,
+        base_ts + 120 * 15_000,
+        base_ts + 2_000_000,
+    )
+    .expect("percentile threshold");
+    assert_eq!(threshold.window_sec, 15);
+    assert_eq!(threshold.exchange, "all");
+    assert!(threshold.p99_9_btc >= threshold.p99_5_btc);
+    assert!(threshold.p99_5_btc >= threshold.p99_0_btc);
+
+    assert_eq!(
+        store
+            .upsert_contract_whale_percentiles(std::slice::from_ref(&threshold))
+            .unwrap(),
+        1
+    );
+    let latest = store
+        .latest_contract_whale_percentile("BTC", "all", 15)
+        .unwrap()
+        .expect("latest percentile");
+    assert_eq!(latest.computed_at, threshold.computed_at);
+    assert_eq!(
+        percentile_level_for_volume(latest.p99_9_btc + 1.0, Some(&latest)),
+        Some(99.9)
+    );
+}
+
+#[test]
+fn contract_liquidation_1s_upsert_and_window_context_are_available() {
+    let store = temp_store("contract-liquidation-1s");
+    let now = 1_700_000_015_000;
+    let liquidations = vec![
+        normalize_binance_force_order(now - 1_000, 70_000.0, 300.0, "SELL").unwrap(),
+        normalize_binance_force_order(now - 1_000, 70_000.0, 120.0, "BUY").unwrap(),
+    ];
+    let buckets = aggregate_liquidation_1s_buckets(&liquidations);
+
+    assert_eq!(
+        store.upsert_contract_liquidation_buckets(&buckets).unwrap(),
+        1
+    );
+    let rows = store
+        .list_contract_liquidation_buckets_between("BTC", now - 15_000, now)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].long_liq_btc, 300.0);
+    assert_eq!(rows[0].short_liq_btc, 120.0);
+
+    let context = liquidation_context_for_window(&rows, "BTC", 15, now, 1_500.0);
+    assert_eq!(context.total_liq_btc, 420.0);
+    assert_eq!(context.liq_to_volume_ratio, Some(0.28));
+}
+
+#[test]
+fn contract_oi_and_funding_snapshots_build_market_context() {
+    let store = temp_store("contract-market-context");
+    let now = 1_700_000_300_000;
+    let oi_snapshots = vec![
+        normalize_binance_open_interest_json(
+            &serde_json::json!({
+                "symbol": "BTCUSDT",
+                "openInterest": "50000",
+                "time": now - 300_000
+            }),
+            Some(70_000.0),
+            now - 300_000,
+        )
+        .unwrap(),
+        normalize_binance_open_interest_json(
+            &serde_json::json!({
+                "symbol": "BTCUSDT",
+                "openInterest": "51500",
+                "time": now
+            }),
+            Some(70_000.0),
+            now,
+        )
+        .unwrap(),
+        normalize_okx_open_interest_json(
+            &serde_json::json!({
+                "data": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "oi": "1000000",
+                    "ts": (now - 300_000).to_string()
+                }]
+            }),
+            0.01,
+        )
+        .unwrap(),
+        normalize_okx_open_interest_json(
+            &serde_json::json!({
+                "data": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "oi": "1050000",
+                    "ts": now.to_string()
+                }]
+            }),
+            0.01,
+        )
+        .unwrap(),
+    ];
+    let funding_snapshots = vec![
+        normalize_binance_funding_rate_json(
+            &serde_json::json!({
+                "symbol": "BTCUSDT",
+                "lastFundingRate": "0.00020",
+                "time": now
+            }),
+            now,
+        )
+        .unwrap(),
+        normalize_okx_funding_rate_json(&serde_json::json!({
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "fundingRate": "0.00010",
+                "ts": now.to_string()
+            }]
+        }))
+        .unwrap(),
+    ];
+
+    assert_eq!(
+        store.upsert_contract_oi_snapshots(&oi_snapshots).unwrap(),
+        4
+    );
+    assert_eq!(
+        store
+            .upsert_contract_funding_snapshots(&funding_snapshots)
+            .unwrap(),
+        2
+    );
+    let stored_oi = store
+        .list_contract_oi_snapshots_between("BTC", now - 360_000, now)
+        .unwrap();
+    let stored_funding = store
+        .list_contract_funding_snapshots_between("BTC", now - 360_000, now)
+        .unwrap();
+    let context = market_context_from_snapshots(&stored_oi, &stored_funding, "BTC", now);
+
+    assert!(context.oi_available);
+    assert!(context.funding_available);
+    assert_eq!(context.oi_bias.as_deref(), Some("rising"));
+    assert_eq!(context.oi_change_5m_btc, Some(2_000.0));
+    assert_eq!(context.funding_bias.as_deref(), Some("long"));
+    assert!((context.funding_rate.expect("funding rate") - 0.00015).abs() < 0.0000001);
+}
+
+fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal
+{
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_200.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 240_000.0, 0.01, "buy").unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 500.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.4), 94)
+        .expect("window stats");
+    detect_contract_whale_signal(&stats).expect("signal")
+}
+
+fn temp_store(name: &str) -> SqliteStore {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "btc-toxic-flow-{name}-{unique}-{}.sqlite",
+        std::process::id()
+    ));
+    let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
+    store.migrate().unwrap();
+    store
+}

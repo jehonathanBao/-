@@ -151,6 +151,10 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
             <span className="rounded-full border border-fuchsia-800 px-2 py-1 text-fuchsia-200">
               Advanced {formatMetric(signal.advancedScore ?? signal.advancedTofMetrics?.finalRiskScore)}
             </span>
+            <span className="rounded-full border border-emerald-800 px-2 py-1 text-emerald-200">
+              CWM {formatMetric(signal.cwmContribution?.score)}
+              {signal.cwmContribution?.available ? ` · +${formatContribution(signal.cwmContribution.weightedContribution)}` : " · N/A"}
+            </span>
           </div>
           <CandidateExplanation compact signal={signal} />
           <TofMetricsPanel compact metrics={signal.tofMetrics} />
@@ -203,6 +207,7 @@ function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
     ["TOF Score", formatMetric(signal.tofScore ?? signal.tofMetrics?.tofScore)],
     ["Perp Score", formatMetric(signal.perpScore ?? signal.perpTofMetrics?.riskScore)],
     ["Advanced Score", formatMetric(signal.advancedScore ?? signal.advancedTofMetrics?.finalRiskScore)],
+    ["CWM Contribution", cwmContributionText(signal.cwmContribution)],
     ["Candidate Type", signal.candidateType || signal.type],
     ["Perp Candidate Type", signal.perpCandidateType || signal.perpTofMetrics?.candidateType],
     ["Advanced Candidate Type", signal.advancedCandidateType || signal.advancedTofMetrics?.candidateType],
@@ -439,6 +444,21 @@ function redactReplaySnapshot(value) {
 function formatMetric(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(number) : "N/A";
+}
+
+function formatContribution(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(1) : "0.0";
+}
+
+function cwmContributionText(contribution) {
+  if (!contribution?.available) {
+    return "N/A · CWM gate independent";
+  }
+  const score = formatMetric(contribution.score);
+  const weighted = formatContribution(contribution.weightedContribution);
+  const window = contribution.windowSec ? `${contribution.windowSec}s` : "N/A";
+  return `Score ${score} · contribution +${weighted} · ${window} · CWM gate independent`;
 }
 
 function discordButtonText(gate) {

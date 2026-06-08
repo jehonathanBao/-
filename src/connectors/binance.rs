@@ -16,10 +16,8 @@ use crate::{
 
 use super::manager::{mark_book, mark_message, mark_parse_error, mark_trade, set_status};
 
-const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth20@100ms";
-const REST_AGG_TRADES_URL: &str =
-    "https://fapi.binance.com/fapi/v1/aggTrades?symbol=BTCUSDT&limit=100";
-const REST_DEPTH_URL: &str = "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=20";
+const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth20@100ms/ethusdt@trade/ethusdt@depth20@100ms";
+const REST_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
 const CONNECT_TIMEOUT_SECS: u64 = 8;
 const REST_POLL_INTERVAL_MS: u64 = 1000;
 
@@ -170,28 +168,31 @@ async fn fetch_rest_trades(
     bus: &MarketDataBus,
     health: &Arc<RwLock<BTreeMap<String, VenueHealth>>>,
 ) -> anyhow::Result<()> {
-    let trades = client
-        .get(REST_AGG_TRADES_URL)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<RestAggTrade>>()
-        .await?;
-    for raw in trades {
-        let raw = BinanceAggTrade {
-            s: "BTCUSDT".to_string(),
-            a: Some(raw.a),
-            t: None,
-            p: raw.p,
-            q: raw.q,
-            trade_time: raw.trade_time,
-            event_time: raw.trade_time,
-            m: raw.m,
-        };
-        if let Some(trade) = normalize_binance_agg_trade(raw) {
-            mark_trade(bus, health, Venue::Binance, trade.ts);
-            bus.publish(MarketDataEvent::Trade(trade));
+    for symbol in REST_SYMBOLS {
+        let url = format!("https://fapi.binance.com/fapi/v1/aggTrades?symbol={symbol}&limit=100");
+        let trades = client
+            .get(url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Vec<RestAggTrade>>()
+            .await?;
+        for raw in trades {
+            let raw = BinanceAggTrade {
+                s: symbol.to_string(),
+                a: Some(raw.a),
+                t: None,
+                p: raw.p,
+                q: raw.q,
+                trade_time: raw.trade_time,
+                event_time: raw.trade_time,
+                m: raw.m,
+            };
+            if let Some(trade) = normalize_binance_agg_trade(raw) {
+                mark_trade(bus, health, Venue::Binance, trade.ts);
+                bus.publish(MarketDataEvent::Trade(trade));
+            }
         }
     }
     Ok(())
@@ -202,15 +203,19 @@ async fn fetch_rest_depth(
     bus: &MarketDataBus,
     health: &Arc<RwLock<BTreeMap<String, VenueHealth>>>,
 ) -> anyhow::Result<()> {
-    let raw = client
-        .get(REST_DEPTH_URL)
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Depth>()
-        .await?;
-    handle_depth(raw, bus, health);
+    for symbol in REST_SYMBOLS {
+        let url = format!("https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit=20");
+        let mut raw = client
+            .get(url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Depth>()
+            .await?;
+        raw.s = Some(symbol.to_string());
+        handle_depth(raw, bus, health);
+    }
     Ok(())
 }
 

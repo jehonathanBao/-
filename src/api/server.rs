@@ -5,7 +5,7 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, calibration_routes, dev_alert_routes,
+        active_trade_toxicity_routes, calibration_routes, contract_whale_routes, dev_alert_routes,
         discord_notification_routes, durable_archive_dryrun_routes,
         durable_archive_write_audit_routes, durable_archive_write_routes,
         liquidation_toxicity_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
@@ -43,6 +43,22 @@ pub fn router(state: AppState) -> Router {
             get(scan_log_routes::scan_log_recent_route),
         )
         .route("/api/venues/diagnostics", get(routes::venues_diagnostics))
+        .route(
+            "/api/contract-whale/summary",
+            get(contract_whale_routes::contract_whale_summary_route),
+        )
+        .route(
+            "/api/contract-whale/latest",
+            get(contract_whale_routes::contract_whale_latest_route),
+        )
+        .route(
+            "/api/contract-whale/history",
+            get(contract_whale_routes::contract_whale_history_route),
+        )
+        .route(
+            "/api/contract-whale/metrics",
+            get(contract_whale_routes::contract_whale_metrics_route),
+        )
         .route(
             "/api/runtime/start",
             axum::routing::post(runtime_control_routes::ensure_monitoring_started),

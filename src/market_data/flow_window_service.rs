@@ -26,6 +26,7 @@ pub struct FlowWindowService {
     price_index: Arc<RwLock<PriceIndex>>,
     latest_state: Arc<RwLock<FlowState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    symbol: String,
 }
 
 impl FlowWindowService {
@@ -33,7 +34,7 @@ impl FlowWindowService {
         let max_age = config.max_buffer_age_ms.max(120_000);
         let windows_ms = config.windows_ms.clone();
         let initial_state = FlowState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: config.symbol.clone(),
             updated_at: now_ms(),
             windows: Default::default(),
         };
@@ -47,6 +48,7 @@ impl FlowWindowService {
             price_index: Arc::new(RwLock::new(PriceIndex::new(max_age, config.book_stale_ms))),
             latest_state: Arc::new(RwLock::new(initial_state)),
             task: Arc::new(RwLock::new(None)),
+            symbol: config.symbol.clone(),
         }
     }
 
@@ -63,6 +65,7 @@ impl FlowWindowService {
         let stale_ms = self.stale_ms;
         let compute_interval_ms = self.compute_interval_ms;
         let quality = self.bus.quality_tracker();
+        let symbol = self.symbol.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval =
@@ -90,7 +93,15 @@ impl FlowWindowService {
                             let trades = trade_buffer.read();
                             let books = book_state.read();
                             let prices = price_index.read();
-                            RollingWindows::new(&trades, &books, &prices, &windows_ms, stale_ms).compute_all(now)
+                            RollingWindows::new_for_symbol(
+                                &trades,
+                                &books,
+                                &prices,
+                                &windows_ms,
+                                stale_ms,
+                                &symbol,
+                            )
+                            .compute_all(now)
                         };
                         *latest_state.write() = state;
                     }
@@ -108,6 +119,28 @@ impl FlowWindowService {
 
     pub fn latest_state(&self) -> FlowState {
         self.latest_state.read().clone()
+    }
+
+    pub fn latest_state_for_symbol(&self, symbol: &str) -> FlowState {
+        if symbol_prefix(symbol) == symbol_prefix(&self.symbol) {
+            return self.latest_state();
+        }
+        let now = now_ms();
+        let state = {
+            let trades = self.trade_buffer.read();
+            let books = self.book_state.read();
+            let prices = self.price_index.read();
+            RollingWindows::new_for_symbol(
+                &trades,
+                &books,
+                &prices,
+                &self.windows_ms,
+                self.stale_ms,
+                symbol,
+            )
+            .compute_all(now)
+        };
+        state
     }
 
     pub fn get_latest_flow_state(&self) -> FlowState {
@@ -177,8 +210,15 @@ impl FlowWindowService {
             let trades = self.trade_buffer.read();
             let books = self.book_state.read();
             let prices = self.price_index.read();
-            RollingWindows::new(&trades, &books, &prices, &self.windows_ms, self.stale_ms)
-                .compute_all(now_ts)
+            RollingWindows::new_for_symbol(
+                &trades,
+                &books,
+                &prices,
+                &self.windows_ms,
+                self.stale_ms,
+                &self.symbol,
+            )
+            .compute_all(now_ts)
         };
         *self.latest_state.write() = state.clone();
         state
@@ -192,4 +232,13 @@ impl FlowWindowService {
         self.book_state.write().update_book(book.clone());
         self.price_index.write().update_book(book);
     }
+}
+
+fn symbol_prefix(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .unwrap_or(symbol)
+        .to_ascii_uppercase()
 }

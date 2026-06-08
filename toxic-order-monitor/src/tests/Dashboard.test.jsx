@@ -23,6 +23,43 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
+vi.mock("../api/contractWhale.js", () => ({
+  fetchContractWhaleSummary: vi.fn(() =>
+    Promise.resolve({
+      summary: {
+        status: "平静",
+        healthStatus: "disabled",
+        direction: "neutral",
+        latestSeverity: "calm",
+        latestPushedAtMs: null,
+        signalCount: 0,
+        readOnly: true,
+        enabled: false,
+        dryRun: true,
+      },
+      error: null,
+    }),
+  ),
+  fetchContractWhaleLatest: vi.fn(() =>
+    Promise.resolve({
+      summary: {
+        status: "平静",
+        healthStatus: "disabled",
+        direction: "neutral",
+        latestSeverity: "calm",
+        latestPushedAtMs: null,
+        signalCount: 0,
+        readOnly: true,
+        enabled: false,
+        dryRun: true,
+      },
+      items: [],
+      error: null,
+    }),
+  ),
+  fetchContractWhaleHistory: vi.fn(() => Promise.resolve({ summary: null, items: [], error: null })),
+}));
+
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),
 }));
@@ -70,6 +107,7 @@ describe("Dashboard interactions", () => {
   it("shows high-risk candidates by default and keeps medium risk collapsed", async () => {
     renderDashboard();
 
+    expect(await screen.findByText("主力合约监控")).toBeInTheDocument();
     expect(await screen.findByTestId("signal-card-sig_001")).toBeInTheDocument();
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Medium Risk Candidates/ })).toHaveAttribute(
@@ -126,6 +164,17 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
   });
 
+  it("opens the BTC giant trade monitor from the sidebar route", async () => {
+    renderDashboard("/contract-whale");
+
+    expect(screen.getByRole("link", { name: "BTC/ETH 巨量成交" })).toHaveAttribute("href", "/contract-whale");
+    expect(await screen.findByText("BTC / ETH 巨量成交监控")).toBeInTheDocument();
+    expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
+    expect(screen.getByText("主力合约监控未启用")).toBeInTheDocument();
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
   it("places S level candidates in the sidebar signals view", async () => {
     renderDashboard("/signals");
 
@@ -152,8 +201,8 @@ describe("Dashboard interactions", () => {
     renderDashboard("/rules");
 
     expect(await screen.findByText("当前有毒订单判断逻辑")).toBeInTheDocument();
-    expect(screen.getByText(/finalRiskScore = 0.4 \* 现货风险/)).toBeInTheDocument();
-    expect(screen.getByText(/Medium 进入信号历史/)).toBeInTheDocument();
+    expect(screen.getByText(/finalRiskScore = 0.35 \* 现货风险/)).toBeInTheDocument();
+    expect(screen.getByText(/CWM 大行情提醒保留独立 gate/)).toBeInTheDocument();
     expect(screen.getByText(/系统只做盘口\/成交异常提醒/)).toBeInTheDocument();
   });
 

@@ -11,6 +11,12 @@ use crate::{
     types::toxic::ToxicSeverity,
 };
 
+#[derive(Debug, Clone, Copy)]
+pub struct ContractWhaleMonitorConfig {
+    pub enabled: bool,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub app_env: String,
@@ -65,6 +71,7 @@ pub struct AppConfig {
     pub liq_hunt_watch_score: f64,
     pub book_stale_ms: i64,
     pub max_buffer_age_ms: i64,
+    pub contract_whale_monitor: ContractWhaleMonitorConfig,
 }
 
 impl AppConfig {
@@ -78,6 +85,11 @@ impl AppConfig {
             .add_source(::config::File::with_name(config_file).required(false))
             .build()
             .context("failed to load config/default")?;
+        crate::contract_whale_monitor::config::set_contract_whale_runtime_config(
+            crate::contract_whale_monitor::config::load_contract_whale_runtime_config_from_settings(
+                &settings,
+            ),
+        );
 
         let read_only = bool_setting(&settings, "READ_ONLY", "read_only", true);
         if !read_only {
@@ -171,6 +183,20 @@ impl AppConfig {
             liq_hunt_watch_score: parse_f64("LIQ_HUNT_WATCH_SCORE", 30.0)?,
             book_stale_ms: parse_i64("BOOK_STALE_MS", 5000)?,
             max_buffer_age_ms: parse_i64("MAX_BUFFER_AGE_MS", 120000)?,
+            contract_whale_monitor: ContractWhaleMonitorConfig {
+                enabled: bool_setting(
+                    &settings,
+                    "CONTRACT_WHALE_ENABLED",
+                    "contract_whale_monitor.enabled",
+                    false,
+                ),
+                dry_run: bool_setting(
+                    &settings,
+                    "CONTRACT_WHALE_DRY_RUN",
+                    "contract_whale_monitor.dry_run",
+                    true,
+                ),
+            },
         };
 
         if !config.api_host.is_loopback()

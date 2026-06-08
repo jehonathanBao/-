@@ -19,7 +19,11 @@ fn signal_inbox_contract_includes_discord_alert_decision_fields() {
     assert!(source.contains("\"advancedTofMetrics\""));
     assert!(source.contains("\"advancedScore\""));
     assert!(source.contains("\"advancedCandidateType\""));
+    assert!(source.contains("\"cwmContribution\""));
     assert!(source.contains("evaluate_discord_alert_gate"));
     assert!(source.contains("build_perp_tof_metrics"));
     assert!(source.contains("build_advanced_tof_metrics"));
+    assert!(source.contains("build_cwm_risk_contribution"));
+    assert!(source.contains("fused_risk_score_with_cwm"));
+    assert!(source.contains("latest_cwm_signal_for_state"));
 }

@@ -1,0 +1,129 @@
+use super::{
+    config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
+    types::{ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleWindowStats},
+};
+
+pub fn score_contract_whale_signal(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+) -> u8 {
+    score_contract_whale_signal_with_config(stats, signal_type, &contract_whale_runtime_config())
+}
+
+pub fn score_contract_whale_signal_with_config(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+) -> u8 {
+    let thresholds = config.thresholds_for_symbol_window(&stats.symbol, stats.window_sec);
+    let scoring = &config.scoring;
+    let volume_score = if thresholds.s_btc.is_finite() {
+        (stats.total_volume_btc / thresholds.s_btc * scoring.volume_strength_weight)
+            .clamp(0.0, scoring.volume_strength_weight)
+    } else {
+        0.0
+    };
+    let dynamic_score = stats
+        .dynamic_multiple
+        .map(|multiple| {
+            (multiple / 10.0 * scoring.dynamic_multiple_weight)
+                .clamp(0.0, scoring.dynamic_multiple_weight)
+        })
+        .unwrap_or(0.0);
+    let dominance_score = ((stats.dominance - 0.50) / 0.25 * scoring.dominance_weight)
+        .clamp(0.0, scoring.dominance_weight);
+    let price_score = price_impact_score(stats, signal_type, scoring.price_impact_weight);
+    let exchange_score = match stats.exchange_count {
+        0 => 0.0,
+        1 => scoring.multi_exchange_weight * 0.4,
+        2 => scoring.multi_exchange_weight * 0.8,
+        _ => scoring.multi_exchange_weight,
+    };
+    let data_quality_score = (stats.data_quality as f64 / 100.0 * scoring.data_quality_weight)
+        .clamp(0.0, scoring.data_quality_weight);
+    let mut score = volume_score
+        + dynamic_score
+        + dominance_score
+        + price_score
+        + exchange_score
+        + data_quality_score
+        + oi_context_adjustment(stats);
+
+    if stats.exchange_count == 1 && stats.total_volume_btc >= thresholds.critical_btc {
+        score -= scoring.penalties.single_exchange_only;
+    }
+    if stats.liquidation_driven {
+        score -= scoring.penalties.liquidation_suspected;
+    }
+    if stats
+        .ws_latency_ms
+        .is_some_and(|latency| latency > config.data_quality.high_latency_ms)
+    {
+        score -= scoring.penalties.websocket_latency_high;
+    }
+    if stats
+        .startup_age_ms
+        .is_some_and(|age| age < config.data_quality.warmup_ms)
+    {
+        score -= scoring.penalties.warmup_period;
+    }
+    if stats.price_jump_anomaly {
+        score -= scoring.penalties.price_jump_anomaly;
+    }
+
+    score.round().clamp(0.0, 100.0) as u8
+}
+
+fn oi_context_adjustment(stats: &ContractWhaleWindowStats) -> f64 {
+    match stats.market_context.oi_change_pct {
+        Some(change_pct) if change_pct >= 0.20 => 4.0,
+        Some(change_pct) if change_pct <= -0.20 => -6.0,
+        _ => 0.0,
+    }
+}
+
+pub fn discord_gate(
+    severity: ContractWhaleSeverity,
+    score: u8,
+    multi_exchange_confirmed: bool,
+    data_quality: u8,
+) -> (bool, String) {
+    if data_quality < 70 {
+        return (false, "data_quality_display_only".to_string());
+    }
+    match severity {
+        ContractWhaleSeverity::S | ContractWhaleSeverity::Critical => {
+            (score >= 80, "critical_or_s_gate".to_string())
+        }
+        ContractWhaleSeverity::High if score >= 85 && multi_exchange_confirmed => {
+            (true, "high_score_multi_exchange".to_string())
+        }
+        ContractWhaleSeverity::High => (false, "high_without_discord_confirmation".to_string()),
+        ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => {
+            (false, "medium_or_low_display_only".to_string())
+        }
+    }
+}
+
+fn price_impact_score(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    weight: f64,
+) -> f64 {
+    let Some(price_move_pct) = stats.price_move_pct else {
+        return 0.0;
+    };
+    match signal_type {
+        ContractWhaleSignalType::AggressiveBuy | ContractWhaleSignalType::AggressiveSell => {
+            (price_move_pct.abs() / 0.25 * weight).clamp(0.0, weight)
+        }
+        ContractWhaleSignalType::DownsideAbsorption
+        | ContractWhaleSignalType::UpsideSuppression => {
+            if price_move_pct.abs() <= 0.05 {
+                weight * 0.8
+            } else {
+                weight * 0.4
+            }
+        }
+    }
+}

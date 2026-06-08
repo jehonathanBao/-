@@ -15,6 +15,7 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn duplicate_discord_push_is_suppressed_for_same_signal_key() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     reset_discord_push_limits_for_tests();
 
     assert_eq!(reserve_discord_push_for_tests("sig_001"), None);
@@ -28,6 +29,7 @@ fn duplicate_discord_push_is_suppressed_for_same_signal_key() {
 
 #[test]
 fn burst_discord_pushes_are_rate_limited() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     reset_discord_push_limits_for_tests();
 
     for index in 0..5 {
@@ -100,6 +102,7 @@ fn auto_push_rejects_medium_low_score_quality_and_missing_webhook() {
 
 #[test]
 fn auto_push_respects_duplicate_and_cooldown_limiters() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
     reset_discord_push_limits_for_tests();
 
     assert_eq!(reserve_discord_push_for_tests("sig_auto_001"), None);

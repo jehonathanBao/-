@@ -1,5 +1,6 @@
 pub mod active_trade_toxicity_routes;
 pub mod calibration_routes;
+pub mod contract_whale_routes;
 pub mod dev_alert_routes;
 pub mod discord_notification_routes;
 pub mod durable_archive_dryrun_routes;

@@ -129,6 +129,8 @@ pub fn tof_score(metrics: &TofMetrics) -> f64 {
 }
 
 pub fn final_risk_score(existing_risk_score: f64, tof_score: f64) -> u8 {
+    let existing_risk_score = clamp_score(existing_risk_score);
+    let tof_score = clamp_score(tof_score);
     let existing_weight = env_f64("TOF_SCORE_WEIGHT_EXISTING", 0.60);
     let metrics_weight = env_f64("TOF_SCORE_WEIGHT_METRICS", 0.40);
     let weight_sum = existing_weight + metrics_weight;

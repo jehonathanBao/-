@@ -13,6 +13,7 @@ pub struct RollingWindows<'a> {
     price_index: &'a PriceIndex,
     windows_ms: &'a [u64],
     stale_ms: i64,
+    symbol_filter: Option<String>,
 }
 
 impl<'a> RollingWindows<'a> {
@@ -29,6 +30,25 @@ impl<'a> RollingWindows<'a> {
             price_index,
             windows_ms,
             stale_ms,
+            symbol_filter: None,
+        }
+    }
+
+    pub fn new_for_symbol(
+        trade_buffer: &'a TradeRingBuffer,
+        book_state: &'a BookState,
+        price_index: &'a PriceIndex,
+        windows_ms: &'a [u64],
+        stale_ms: i64,
+        symbol: &str,
+    ) -> Self {
+        Self {
+            trade_buffer,
+            book_state,
+            price_index,
+            windows_ms,
+            stale_ms,
+            symbol_filter: Some(symbol_prefix(symbol)),
         }
     }
 
@@ -57,6 +77,7 @@ impl<'a> RollingWindows<'a> {
             .get_trades_since(since_ts)
             .into_iter()
             .filter(|trade| trade.ts <= now_ts)
+            .filter(|trade| self.symbol_matches(&trade.symbol))
             .collect::<Vec<_>>();
         let mut venue_breakdown = empty_venue_breakdown();
         let mut aggressive_buy_btc = 0.0;
@@ -95,15 +116,38 @@ impl<'a> RollingWindows<'a> {
         }
 
         let abs_aggressive_btc = aggressive_buy_btc + aggressive_sell_btc;
-        let mid_start = self.price_index.mid_at_or_before(since_ts);
-        let current = self.price_index.current_snapshot(now_ts);
+        let mid_start = if let Some(symbol) = self.symbol_filter.as_deref() {
+            self.price_index
+                .mid_at_or_before_for_symbol(since_ts, symbol)
+        } else {
+            self.price_index.mid_at_or_before(since_ts)
+        };
+        let current = if let Some(symbol) = self.symbol_filter.as_deref() {
+            self.price_index.current_snapshot_for_symbol(now_ts, symbol)
+        } else {
+            self.price_index.current_snapshot(now_ts)
+        };
         let mid_end = current.as_ref().map(|snapshot| snapshot.index_mid);
         let price_move_bps = match (mid_start, mid_end) {
             (Some(start), Some(end)) if start > 0.0 => Some(((end - start) / start) * 10_000.0),
             _ => None,
         };
-        let active_venues = self.book_state.active_venues(now_ts, self.stale_ms);
-        let stale_venues = self.book_state.stale_venues(now_ts, self.stale_ms);
+        let active_venues = self
+            .symbol_filter
+            .as_deref()
+            .map(|symbol| {
+                self.book_state
+                    .active_venues_for_symbol(symbol, now_ts, self.stale_ms)
+            })
+            .unwrap_or_else(|| self.book_state.active_venues(now_ts, self.stale_ms));
+        let stale_venues = self
+            .symbol_filter
+            .as_deref()
+            .map(|symbol| {
+                self.book_state
+                    .stale_venues_for_symbol(symbol, now_ts, self.stale_ms)
+            })
+            .unwrap_or_else(|| self.book_state.stale_venues(now_ts, self.stale_ms));
         let trade_count = trades.len() as u64;
 
         FlowWindow {
@@ -148,9 +192,13 @@ impl<'a> RollingWindows<'a> {
     }
 
     fn infer_symbol(&self, now_ts: i64) -> String {
+        if let Some(symbol) = self.symbol_filter.as_deref() {
+            return format!("{symbol}-PERP");
+        }
         self.trade_buffer
             .get_trades_since(now_ts - self.stale_ms)
-            .last()
+            .into_iter()
+            .rfind(|trade| self.symbol_matches(&trade.symbol))
             .map(|trade| trade.symbol.clone())
             .or_else(|| {
                 self.book_state
@@ -160,6 +208,12 @@ impl<'a> RollingWindows<'a> {
                     .map(|book| book.symbol.clone())
             })
             .unwrap_or_else(|| "BTC-PERP".to_string())
+    }
+
+    fn symbol_matches(&self, symbol: &str) -> bool {
+        self.symbol_filter
+            .as_deref()
+            .is_none_or(|filter| symbol_prefix(symbol) == filter)
     }
 }
 
@@ -178,4 +232,13 @@ fn add_trade(stats: &mut VenueFlowBreakdown, trade: &NormalizedTrade) {
             stats.sell_trade_count += 1;
         }
     }
+}
+
+fn symbol_prefix(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .unwrap_or(symbol)
+        .to_ascii_uppercase()
 }

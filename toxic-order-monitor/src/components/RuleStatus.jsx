@@ -41,11 +41,11 @@ export default function RuleStatus({ discordConnected, lastPushedAt, onTestPush,
           />
           <RuleItem
             label="风险评分"
-            value="finalRiskScore = 0.4 * 现货风险 + 0.3 * TOF-lite + 0.3 * 合约指标；dataQuality 看指标完整性和新鲜度。"
+            value="finalRiskScore = 0.35 * 现货风险 + 0.25 * TOF-lite + 0.25 * 合约指标 + 0.15 * 主力合约异动；无 CWM 信号时保持原 advanced TOF 分数。"
           />
           <RuleItem
             label="推送边界"
-            value="S/Critical/High 且 score >= 80、dataQuality >= 70 才进入 Discord gate；Medium 进入信号历史，Low 仅主动筛选展示。"
+            value="普通毒单 Discord gate 仍按 High/Critical、score >= 80、dataQuality >= 70；CWM 大行情提醒保留独立 gate 和冷却。"
           />
         </div>
       </div>

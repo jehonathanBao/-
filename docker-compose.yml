@@ -73,7 +73,7 @@ services:
       VITE_PROXY_WS_TARGET: ws://backend:3000
       CHOKIDAR_USEPOLLING: "true"
     ports:
-      - "127.0.0.1:5173:5173"
+      - "${DASHBOARD_BIND_HOST:-0.0.0.0}:5173:5173"
     volumes:
       - ./toxic-order-monitor/src:/app/src
       - ./toxic-order-monitor/index.html:/app/index.html
