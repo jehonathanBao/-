@@ -26,7 +26,7 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(backend.contains("cargo build --release --bin btc-toxic-flow-monitor-rs"));
     assert!(backend.contains("READ_ONLY=true"));
     assert!(backend.contains("API_HOST=0.0.0.0"));
-    assert!(backend.contains("CMD [\"./btc-toxic-flow-monitor-rs\", \"serve\"]"));
+    assert!(backend.contains("CMD [\"./btc-toxic-flow-monitor-rs\"]"));
 
     let compose = fs::read_to_string(root.join("docker-compose.yml")).expect("compose");
     assert!(compose.contains("OPERATOR_TOKEN: ${OPERATOR_TOKEN:?"));

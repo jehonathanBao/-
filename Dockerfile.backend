@@ -37,4 +37,4 @@ ENV API_PORT=3000
 ENV SQLITE_PATH=/app/data/btc-toxic-flow.sqlite
 ENV REPLAY_REPORT_DIR=/app/data/reports
 
-CMD ["./btc-toxic-flow-monitor-rs", "serve"]
+CMD ["./btc-toxic-flow-monitor-rs"]
