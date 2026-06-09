@@ -3,7 +3,8 @@ use super::{
     log_events,
     scoring::{discord_gate, score_contract_whale_signal_with_config},
     types::{
-        ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
+        ContractWhaleActiveSourceEntry, ContractWhaleActiveSources, ContractWhaleDirection,
+        ContractWhaleMarketType, ContractWhaleSeverity, ContractWhaleSignal,
         ContractWhaleSignalType, ContractWhaleWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
@@ -70,6 +71,8 @@ pub fn detect_contract_whale_signal_with_config(
         dominance: round(stats.dominance, 4),
         price_move_pct: scoring_stats.price_move_pct.map(|value| round(value, 4)),
         main_exchange: scoring_stats.main_exchange.clone(),
+        market_type: ContractWhaleMarketType::Perp,
+        source_role: signal_source_role(&scoring_stats, config),
         exchanges: scoring_stats.exchanges.clone(),
         dominant_venue_net_contribution_share: scoring_stats
             .dominant_venue_net_contribution_share
@@ -107,6 +110,8 @@ pub fn detect_contract_whale_signal_with_config(
             .map(|value| round(value, 8)),
         funding_bias: scoring_stats.market_context.funding_bias.clone(),
         data_quality: scoring_stats.data_quality,
+        threshold_profile: config.threshold_profile_key().to_string(),
+        active_sources: active_source_snapshot(&scoring_stats, config),
         discord_eligible,
         discord_sent: false,
         discord_sent_at: None,
@@ -408,6 +413,99 @@ fn final_result_text(signal_type: ContractWhaleSignalType, liquidation_suspected
         format!("疑似强平推动，主力确定性降低：{base}")
     } else {
         base.to_string()
+    }
+}
+
+fn signal_source_role(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> super::types::ContractWhaleSourceRole {
+    stats
+        .main_exchange
+        .as_deref()
+        .and_then(|exchange| config.exchange_platform(exchange))
+        .map(|platform| platform.market_role(ContractWhaleMarketType::Perp))
+        .unwrap_or_default()
+}
+
+fn active_source_snapshot(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> ContractWhaleActiveSources {
+    let contract_markets = [
+        ContractWhaleMarketType::Perp,
+        ContractWhaleMarketType::Level2,
+        ContractWhaleMarketType::Funding,
+        ContractWhaleMarketType::Oi,
+        ContractWhaleMarketType::Liquidation,
+    ];
+    let contract = config
+        .platform_keys()
+        .into_iter()
+        .flat_map(|exchange| {
+            contract_markets.into_iter().filter_map(move |market_type| {
+                let platform = config.exchange_platform(&exchange)?;
+                let participated = market_type == ContractWhaleMarketType::Perp
+                    && stats.exchanges.iter().any(|item| {
+                        item.exchange.eq_ignore_ascii_case(&exchange) && item.total_volume_btc > 0.0
+                    });
+                Some(ContractWhaleActiveSourceEntry {
+                    exchange: exchange.clone(),
+                    market_type,
+                    source_role: platform.market_role(market_type),
+                    enabled: platform.market_enabled(market_type),
+                    status: snapshot_market_status(platform, market_type, participated),
+                    product_id: None,
+                })
+            })
+        })
+        .collect();
+
+    let spot = config
+        .platform_keys()
+        .into_iter()
+        .filter_map(|exchange| {
+            let platform = config.exchange_platform(&exchange)?;
+            Some(ContractWhaleActiveSourceEntry {
+                exchange,
+                market_type: ContractWhaleMarketType::Spot,
+                source_role: platform.market_role(ContractWhaleMarketType::Spot),
+                enabled: platform.market_enabled(ContractWhaleMarketType::Spot),
+                status: snapshot_market_status(platform, ContractWhaleMarketType::Spot, false),
+                product_id: None,
+            })
+        })
+        .collect();
+
+    ContractWhaleActiveSources { contract, spot }
+}
+
+fn snapshot_market_status(
+    platform: &super::config::ContractWhalePlatformConfig,
+    market_type: ContractWhaleMarketType,
+    participated: bool,
+) -> String {
+    if !platform.enabled || !platform.any_market_enabled() {
+        return "disabled".to_string();
+    }
+    if platform.market_enabled(market_type) {
+        return if participated {
+            "active".to_string()
+        } else if market_type == ContractWhaleMarketType::Spot
+            && !platform.contract_markets_enabled()
+        {
+            "spot_only".to_string()
+        } else {
+            "configured".to_string()
+        };
+    }
+    if market_type == ContractWhaleMarketType::Perp
+        && platform.market_enabled(ContractWhaleMarketType::Spot)
+        && !platform.contract_markets_enabled()
+    {
+        "spot_only".to_string()
+    } else {
+        "disabled".to_string()
     }
 }
 

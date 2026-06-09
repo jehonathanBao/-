@@ -24,6 +24,114 @@ max_buffer_age_ms = 120000
 enabled = false
 dry_run = true
 
+[contract_whale_monitor.exchanges.binance]
+enabled = true
+
+[contract_whale_monitor.exchanges.binance.spot]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.binance.perp]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.binance.level2]
+enabled = false
+role = "optional"
+
+[contract_whale_monitor.exchanges.binance.funding]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.binance.oi]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.binance.liquidation]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.bitfinex]
+enabled = true
+
+[contract_whale_monitor.exchanges.bitfinex.spot]
+enabled = true
+role = "confirmation"
+
+[contract_whale_monitor.exchanges.bitfinex.perp]
+enabled = true
+role = "confirmation"
+
+[contract_whale_monitor.exchanges.bitfinex.level2]
+enabled = false
+role = "optional"
+
+[contract_whale_monitor.exchanges.bitfinex.funding]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.bitfinex.oi]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.bitfinex.liquidation]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.coinbase]
+enabled = true
+
+[contract_whale_monitor.exchanges.coinbase.spot]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.coinbase.perp]
+enabled = false
+role = "optional"
+
+[contract_whale_monitor.exchanges.coinbase.level2]
+enabled = false
+role = "optional"
+
+[contract_whale_monitor.exchanges.coinbase.funding]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.coinbase.oi]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.coinbase.liquidation]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx]
+enabled = false
+
+[contract_whale_monitor.exchanges.okx.spot]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.perp]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.level2]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.funding]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.oi]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.liquidation]
+enabled = false
+role = "disabled"
+
 [contract_whale_monitor.scoring]
 volume_strength_weight = 35
 dynamic_multiple_weight = 20

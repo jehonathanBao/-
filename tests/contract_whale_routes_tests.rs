@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, MutexGuard, OnceLock},
+};
 
 use btc_toxic_flow_monitor_rs::{
     api::contract_whale_routes::{
@@ -8,17 +11,29 @@ use btc_toxic_flow_monitor_rs::{
         ContractWhaleResponseRuntime,
     },
     contract_whale_monitor::{
-        config::reset_contract_whale_runtime_config,
+        config::{
+            reset_contract_whale_runtime_config, set_contract_whale_runtime_config,
+            ContractWhaleRuntimeConfig,
+        },
         types::{
-            ContractWhaleLiquidationContext, ContractWhaleMarketContext, ContractWhaleSeverity,
-            ContractWhaleTrend60s,
+            ContractWhaleLiquidationContext, ContractWhaleMarketContext, ContractWhaleMarketType,
+            ContractWhaleSeverity, ContractWhaleTrend60s,
         },
     },
     types::flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
 };
 
+fn contract_whale_test_guard() -> MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn contract_whale_response_keeps_eth_flow_separate_from_btc() {
+    let _guard = contract_whale_test_guard();
     reset_contract_whale_runtime_config();
     let mut eth_window = high_conviction_window();
     eth_window.symbol = "ETH-PERP".to_string();
@@ -49,6 +64,7 @@ fn contract_whale_response_keeps_eth_flow_separate_from_btc() {
 
 #[test]
 fn contract_whale_response_is_calm_without_contract_flow_data() {
+    let _guard = contract_whale_test_guard();
     let flow_state = FlowState {
         symbol: "BTC-PERP".to_string(),
         updated_at: 1_700_000_000_000,
@@ -71,6 +87,8 @@ fn contract_whale_response_is_calm_without_contract_flow_data() {
 
 #[test]
 fn contract_whale_response_filters_latest_signals_by_severity() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
     let flow_state = FlowState {
         symbol: "BTC-PERP".to_string(),
         updated_at: 1_700_000_015_000,
@@ -92,6 +110,20 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
         vec!["binance".to_string(), "bitfinex".to_string()]
     );
     assert_eq!(response.summary.disabled_exchanges, vec!["okx".to_string()]);
+    let coinbase_status = response
+        .summary
+        .exchanges
+        .get("coinbase")
+        .expect("coinbase status");
+    assert!(!coinbase_status.connected);
+    assert_eq!(coinbase_status.status, "spot_only");
+    assert!(coinbase_status.platform_enabled);
+    assert!(!coinbase_status.contract_enabled);
+    assert_eq!(coinbase_status.enabled_markets, vec!["spot".to_string()]);
+    assert_eq!(
+        coinbase_status.market_roles.get("spot"),
+        Some(&"primary".to_string())
+    );
     assert_eq!(response.summary.trend_60s.buy_volume_btc, 0.0);
     assert_eq!(
         response
@@ -107,11 +139,40 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
     assert_eq!(okx_status.status, "disabled");
     assert!(response.summary.enabled);
     assert!(response.summary.dry_run);
+    assert_eq!(response.summary.contract_data_quality, 95);
+    assert_eq!(response.summary.spot_data_quality, 78);
+    assert_eq!(response.summary.overall_data_quality, 88);
     assert!(!response.items[0].discord_sent);
+    assert_eq!(response.items[0].market_type.as_key(), "perp");
+    assert_eq!(response.items[0].threshold_profile, "binance_bitfinex");
+    assert!(response.items[0]
+        .active_sources
+        .contract
+        .iter()
+        .any(|entry| entry.exchange == "coinbase"
+            && entry.market_type == ContractWhaleMarketType::Perp
+            && !entry.enabled
+            && entry.status == "spot_only"));
+    assert!(response.items[0]
+        .active_sources
+        .contract
+        .iter()
+        .any(|entry| entry.exchange == "okx"
+            && entry.market_type == ContractWhaleMarketType::Perp
+            && !entry.enabled
+            && entry.status == "disabled"));
+    assert!(response.items[0]
+        .active_sources
+        .spot
+        .iter()
+        .any(|entry| entry.exchange == "coinbase" && entry.status == "spot_only"));
 }
 
 #[test]
 fn contract_whale_summary_includes_60s_trend_and_health() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    set_contract_whale_runtime_config(three_exchange_runtime_config());
     let now = 1_700_000_015_000;
     let mut sixty_sec = high_conviction_window();
     sixty_sec.window_ms = 60_000;
@@ -134,17 +195,66 @@ fn contract_whale_summary_includes_60s_trend_and_health() {
     let response = build_contract_whale_response(&flow_state, "BTC", 50, None, true, true);
 
     assert_eq!(response.summary.health_status, "healthy");
-    assert_eq!(response.summary.threshold_profile, "binance_bitfinex");
-    assert_eq!(response.summary.trend_60s.buy_volume_btc, 4_200.0);
-    assert_eq!(response.summary.trend_60s.sell_volume_btc, 2_400.0);
-    assert_eq!(response.summary.trend_60s.total_volume_btc, 6_600.0);
-    assert_eq!(response.summary.trend_60s.net_volume_btc, 1_800.0);
-    assert!((response.summary.trend_60s.buy_ratio - (4_200.0 / 6_600.0)).abs() < 0.0001);
-    assert!((response.summary.trend_60s.sell_ratio - (2_400.0 / 6_600.0)).abs() < 0.0001);
+    assert_eq!(response.summary.threshold_profile, "three_exchange");
+    assert_eq!(response.summary.trend_60s.buy_volume_btc, 6_200.0);
+    assert_eq!(response.summary.trend_60s.sell_volume_btc, 3_800.0);
+    assert_eq!(response.summary.trend_60s.total_volume_btc, 10_000.0);
+    assert_eq!(response.summary.trend_60s.net_volume_btc, 2_400.0);
+    assert!((response.summary.trend_60s.buy_ratio - 0.62).abs() < 0.0001);
+    assert!((response.summary.trend_60s.sell_ratio - 0.38).abs() < 0.0001);
+    assert_eq!(response.summary.contract_data_quality, 95);
+    assert_eq!(response.summary.spot_data_quality, 78);
+    reset_contract_whale_runtime_config();
+}
+
+#[test]
+fn contract_whale_summary_switches_threshold_profile_when_coinbase_perp_is_enabled() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    let mut config = ContractWhaleRuntimeConfig::default();
+    config.exchanges.coinbase.perp.enabled = true;
+    set_contract_whale_runtime_config(config);
+
+    let flow_state = FlowState {
+        symbol: "BTC-PERP".to_string(),
+        updated_at: 1_700_000_015_000,
+        windows: BTreeMap::from([("15000".to_string(), high_conviction_window())]),
+    };
+
+    let response = build_contract_whale_response(&flow_state, "BTC", 50, Some("high"), true, true);
+
+    assert_eq!(
+        response.summary.threshold_profile,
+        "binance_bitfinex_coinbase"
+    );
+    assert_eq!(response.summary.active_exchange_count, 3);
+    assert_eq!(
+        response.summary.enabled_exchanges,
+        vec![
+            "binance".to_string(),
+            "bitfinex".to_string(),
+            "coinbase".to_string()
+        ]
+    );
+    let coinbase_status = response
+        .summary
+        .exchanges
+        .get("coinbase")
+        .expect("coinbase status");
+    assert!(coinbase_status.contract_enabled);
+    assert!(coinbase_status
+        .enabled_markets
+        .contains(&"perp".to_string()));
+    assert_eq!(response.summary.contract_data_quality, 78);
+
+    reset_contract_whale_runtime_config();
 }
 
 #[test]
 fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    set_contract_whale_runtime_config(three_exchange_runtime_config());
     let flow_state = FlowState {
         symbol: "BTC-PERP".to_string(),
         updated_at: 1_700_000_015_000,
@@ -204,10 +314,12 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
     assert_eq!(response.items[0].liquidation_long_btc, 1_200.0);
     assert_eq!(response.items[0].oi_change_5m_btc, Some(900.0));
     assert_eq!(response.items[0].funding_bias.as_deref(), Some("long"));
+    reset_contract_whale_runtime_config();
 }
 
 #[test]
 fn contract_whale_summary_exposes_warmup_and_disables_push_during_warmup() {
+    let _guard = contract_whale_test_guard();
     let now = 1_700_000_015_000;
     let flow_state = FlowState {
         symbol: "BTC-PERP".to_string(),
@@ -241,6 +353,7 @@ fn contract_whale_summary_exposes_warmup_and_disables_push_during_warmup() {
 
 #[test]
 fn contract_whale_response_merges_same_wave_multi_window_signals() {
+    let _guard = contract_whale_test_guard();
     let now = 1_700_000_015_000;
     let mut five_sec = high_conviction_window();
     five_sec.window_ms = 5_000;
@@ -299,6 +412,7 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
 
 #[test]
 fn contract_whale_response_returns_disabled_empty_state_when_config_disabled() {
+    let _guard = contract_whale_test_guard();
     let flow_state = FlowState {
         symbol: "BTC-PERP".to_string(),
         updated_at: 1_700_000_015_000,
@@ -324,16 +438,67 @@ fn contract_whale_response_returns_disabled_empty_state_when_config_disabled() {
     );
     assert!(!response.summary.enabled);
     assert!(response.summary.dry_run);
+    assert_eq!(response.summary.contract_data_quality, 0);
+    assert_eq!(response.summary.spot_data_quality, 0);
+    assert_eq!(response.summary.overall_data_quality, 0);
     assert!(response.items.is_empty());
     assert_eq!(response.filter.get("enabled"), Some(&"false".to_string()));
     assert_eq!(response.filter.get("dryRun"), Some(&"true".to_string()));
 }
 
 #[test]
+fn contract_whale_history_response_can_surface_coinbase_perp_disabled_meta() {
+    let _guard = contract_whale_test_guard();
+    let response = btc_toxic_flow_monitor_rs::api::contract_whale_routes::build_contract_whale_history_response(
+        Vec::new(),
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        Some(
+            btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleResponseMeta {
+                exchange: Some("coinbase".to_string()),
+                market_type: Some("perp".to_string()),
+                exchange_status: Some("spot_only".to_string()),
+                reason: Some("coinbase_perp_disabled".to_string()),
+            },
+        ),
+    );
+
+    assert!(response.items.is_empty());
+    assert_eq!(
+        response
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.exchange.as_deref()),
+        Some("coinbase")
+    );
+    assert_eq!(
+        response
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.exchange_status.as_deref()),
+        Some("spot_only")
+    );
+    assert_eq!(
+        response
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.reason.as_deref()),
+        Some("coinbase_perp_disabled")
+    );
+}
+
+#[test]
 fn contract_whale_latest_response_clamps_limit_and_keeps_persisted_items() {
+    let _guard = contract_whale_test_guard();
     let signal = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Critical);
+    let mut spot_signal = persisted_signal(1_700_000_031_000, ContractWhaleSeverity::S);
+    spot_signal.id = "contract-whale:BTC:15:spot-row".to_string();
+    spot_signal.market_type = ContractWhaleMarketType::Spot;
     let response = build_contract_whale_items_response(
-        vec![signal.clone()],
+        vec![signal.clone(), spot_signal],
         "BTC",
         200,
         true,
@@ -344,11 +509,14 @@ fn contract_whale_latest_response_clamps_limit_and_keeps_persisted_items() {
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].id, signal.id);
+    assert_eq!(response.items[0].market_type, ContractWhaleMarketType::Perp);
     assert_eq!(response.summary.latest_signal_at, Some(signal.ts));
+    assert_eq!(response.filter.get("marketType"), Some(&"perp".to_string()));
 }
 
 #[test]
 fn contract_whale_history_query_validates_filters_and_clamps_limit() {
+    let _guard = contract_whale_test_guard();
     let query = ContractWhaleQuery {
         symbol: Some("btc".to_string()),
         severity: Some("critical".to_string()),
@@ -376,6 +544,7 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
 
 #[test]
 fn contract_whale_history_query_rejects_invalid_params() {
+    let _guard = contract_whale_test_guard();
     let invalid_severity = ContractWhaleQuery {
         severity: Some("panic".to_string()),
         ..empty_query()
@@ -413,6 +582,7 @@ fn contract_whale_history_query_rejects_invalid_params() {
 
 #[test]
 fn contract_whale_metrics_text_is_prometheus_safe() {
+    let _guard = contract_whale_test_guard();
     let signal = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Critical);
     let response = build_contract_whale_items_response(
         vec![signal],
@@ -544,6 +714,10 @@ fn default_test_exchanges() -> BTreeMap<
                 last_trade_at: Some(1_700_000_030_000),
                 latency_ms: Some(100),
                 reconnect_count: 0,
+                platform_enabled: true,
+                contract_enabled: true,
+                enabled_markets: vec!["perp".to_string()],
+                market_roles: BTreeMap::from([("perp".to_string(), "primary".to_string())]),
             },
         ),
         (
@@ -554,7 +728,21 @@ fn default_test_exchanges() -> BTreeMap<
                 last_trade_at: Some(1_700_000_030_000),
                 latency_ms: Some(120),
                 reconnect_count: 1,
+                platform_enabled: true,
+                contract_enabled: true,
+                enabled_markets: vec!["perp".to_string()],
+                market_roles: BTreeMap::from([("perp".to_string(), "confirmation".to_string())]),
             },
         ),
     ])
+}
+
+fn three_exchange_runtime_config() -> ContractWhaleRuntimeConfig {
+    let mut config = ContractWhaleRuntimeConfig::default();
+    config.exchanges.okx.enabled = true;
+    config.exchanges.okx.perp.enabled = true;
+    config.exchanges.okx.funding.enabled = true;
+    config.exchanges.okx.oi.enabled = true;
+    config.exchanges.okx.liquidation.enabled = true;
+    config
 }

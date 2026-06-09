@@ -1,6 +1,8 @@
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::types::{
-        ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType,
+        ContractWhaleActiveSources, ContractWhaleDirection, ContractWhaleMarketType,
+        ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType,
+        ContractWhaleSourceRole,
     },
     runtime::{
         cwm_risk_fusion::{
@@ -656,6 +658,8 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         dominance: 0.676,
         price_move_pct: Some(0.31),
         main_exchange: Some("binance".to_string()),
+        market_type: ContractWhaleMarketType::Perp,
+        source_role: ContractWhaleSourceRole::Primary,
         exchanges: Vec::new(),
         dominant_venue_net_contribution_share: Some(0.72),
         dynamic_multiple: Some(9.4),
@@ -674,6 +678,8 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         funding_rate: None,
         funding_bias: None,
         data_quality: 91,
+        threshold_profile: "binance_bitfinex".to_string(),
+        active_sources: ContractWhaleActiveSources::default(),
         discord_eligible: true,
         discord_sent: false,
         discord_sent_at: None,

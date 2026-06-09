@@ -6,7 +6,8 @@ use super::{
         ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
         ContractLiquidationOrder, ContractLiquidationSide, ContractOiSnapshot, ContractTrade,
         ContractTradeSide, ContractWhaleLiquidationContext, ContractWhaleMarketContext,
-        ContractWhalePercentileThreshold, ContractWhaleWindowStats, ExchangeFlowContribution,
+        ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleWindowStats,
+        ExchangeFlowContribution,
     },
 };
 
@@ -23,10 +24,16 @@ pub fn aggregate_1s_buckets(trades: &[ContractTrade]) -> Vec<ContractFlowBucket>
         let ts_bucket = trade.ts - (trade.ts % 1000);
         let exchange = trade.exchange.as_key().to_string();
         let key = (ts_bucket, exchange.clone(), trade.symbol.clone());
+        let source_role = contract_whale_runtime_config()
+            .exchange_platform(&exchange)
+            .map(|platform| platform.market_role(ContractWhaleMarketType::Perp))
+            .unwrap_or_default();
         let bucket = buckets.entry(key).or_insert_with(|| ContractFlowBucket {
             ts_bucket,
             exchange,
             symbol: trade.symbol.clone(),
+            market_type: ContractWhaleMarketType::Perp,
+            source_role,
             ..ContractFlowBucket::default()
         });
         match trade.side {

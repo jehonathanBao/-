@@ -25,7 +25,11 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
 
 fn three_exchange_config() -> ContractWhaleRuntimeConfig {
     let mut config = ContractWhaleRuntimeConfig::default();
-    config.exchanges.okx_enabled = true;
+    config.exchanges.okx.enabled = true;
+    config.exchanges.okx.perp.enabled = true;
+    config.exchanges.okx.funding.enabled = true;
+    config.exchanges.okx.oi.enabled = true;
+    config.exchanges.okx.liquidation.enabled = true;
     config
 }
 

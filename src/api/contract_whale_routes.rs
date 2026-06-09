@@ -22,10 +22,11 @@ use crate::{
         merge::merge_contract_whale_signals,
         types::{
             ContractWhaleDirection, ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
-            ContractWhaleLiquidationContext, ContractWhaleMarketContext,
-            ContractWhalePercentileThreshold, ContractWhaleSeverity, ContractWhaleSignal,
-            ContractWhaleSignalType, ContractWhaleSummary, ContractWhaleTrend60s,
-            ContractWhaleWindowStats, ExchangeFlowContribution,
+            ContractWhaleLiquidationContext, ContractWhaleMarketCapability,
+            ContractWhaleMarketContext, ContractWhaleMarketType, ContractWhalePercentileThreshold,
+            ContractWhalePlatformCapability, ContractWhaleResponseMeta, ContractWhaleSeverity,
+            ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSummary,
+            ContractWhaleTrend60s, ContractWhaleWindowStats, ExchangeFlowContribution,
         },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
@@ -81,7 +82,9 @@ pub async fn contract_whale_summary_route(
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult {
     let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
     let config = state.config().contract_whale_monitor;
+    let runtime_config = contract_whale_runtime_config();
     let symbol_enabled = config.enabled && contract_whale_runtime_config().symbol_enabled(&symbol);
     let flow_state = state.flow_state_for_symbol(&symbol);
     let venue_health = state.venue_health();
@@ -112,7 +115,9 @@ pub async fn contract_whale_summary_route(
             booted_at_ms: Some(state.booted_at_ms()),
         },
     );
-    Ok(Json(serde_json::json!(response.summary)))
+    let mut summary = response.summary;
+    summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
+    Ok(Json(serde_json::json!(summary)))
 }
 
 pub async fn contract_whale_latest_route(
@@ -121,11 +126,27 @@ pub async fn contract_whale_latest_route(
 ) -> ApiJsonResult {
     let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
     let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
     let flow_state = state.flow_state_for_symbol(&symbol);
     let venue_health = state.venue_health();
     let config = state.config().contract_whale_monitor;
     let store = state.contract_whale_store();
     let cwm_runtime_config = contract_whale_runtime_config();
+    if let Some(meta) =
+        contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
+    {
+        return Ok(Json(serde_json::json!(
+            build_contract_whale_history_response(
+                Vec::new(),
+                &symbol,
+                limit,
+                None,
+                config.enabled,
+                config.dry_run,
+                Some(meta),
+            )
+        )));
+    }
     if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
         return Ok(Json(serde_json::json!(
             build_contract_whale_response_with_runtime(
@@ -142,6 +163,7 @@ pub async fn contract_whale_latest_route(
     if let Some(store) = store.as_ref() {
         match store.query_contract_whale_signals(&ContractWhaleSignalQuery {
             symbol: Some(symbol.clone()),
+            exchange: exchange_filter.clone(),
             limit,
             ..ContractWhaleSignalQuery::default()
         }) {
@@ -151,7 +173,7 @@ pub async fn contract_whale_latest_route(
                 } else {
                     now_ms()
                 };
-                return Ok(Json(serde_json::json!(
+                return Ok(Json(serde_json::json!(filter_latest_response_by_exchange(
                     build_contract_whale_items_response(
                         items,
                         &symbol,
@@ -165,8 +187,9 @@ pub async fn contract_whale_latest_route(
                             now
                         ),
                         trend_60s_from_flow_state(&flow_state, &symbol, now),
-                    )
-                )));
+                    ),
+                    exchange_filter.as_deref(),
+                ))));
             }
             Ok(_) => {}
             Err(error) => {
@@ -191,7 +214,7 @@ pub async fn contract_whale_latest_route(
         .as_ref()
         .map(|store| load_market_context(store, &flow_state, &symbol))
         .unwrap_or_default();
-    Ok(Json(serde_json::json!(
+    Ok(Json(serde_json::json!(filter_latest_response_by_exchange(
         build_contract_whale_response_with_runtime_and_baselines(
             &flow_state,
             &symbol,
@@ -206,8 +229,9 @@ pub async fn contract_whale_latest_route(
                 market_context: &market_context,
                 booted_at_ms: Some(state.booted_at_ms()),
             },
-        )
-    )))
+        ),
+        exchange_filter.as_deref(),
+    ))))
 }
 
 pub fn build_contract_whale_response(
@@ -230,6 +254,22 @@ pub async fn contract_whale_history_route(
     let history_query = parse_history_query(&query)?;
     let symbol_for_filter = history_query.symbol.as_deref().unwrap_or("all").to_string();
     let config = state.config().contract_whale_monitor;
+    let runtime_config = contract_whale_runtime_config();
+    if let Some(meta) =
+        contract_market_mismatch_meta(&runtime_config, history_query.exchange.as_deref())
+    {
+        return Ok(Json(serde_json::json!(
+            build_contract_whale_history_response(
+                Vec::new(),
+                &symbol_for_filter,
+                history_query.limit,
+                None,
+                config.enabled,
+                config.dry_run,
+                Some(meta),
+            )
+        )));
+    }
     if !config.enabled {
         return Ok(Json(serde_json::json!(
             build_contract_whale_history_response(
@@ -239,6 +279,7 @@ pub async fn contract_whale_history_route(
                 None,
                 false,
                 config.dry_run,
+                None,
             )
         )));
     }
@@ -253,6 +294,7 @@ pub async fn contract_whale_history_route(
                         None,
                         config.enabled,
                         config.dry_run,
+                        None,
                     )
                 )));
             }
@@ -274,6 +316,7 @@ pub async fn contract_whale_history_route(
             None,
             config.enabled,
             config.dry_run,
+            None,
         )
     )))
 }
@@ -458,6 +501,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             summary: disabled_summary(now, dry_run, exchanges, trend_60s),
             items: Vec::new(),
             filter,
+            meta: None,
         };
     }
 
@@ -493,6 +537,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
         summary,
         items,
         filter,
+        meta: None,
     }
 }
 
@@ -500,6 +545,7 @@ fn response_filter(symbol: &str, enabled: bool, dry_run: bool) -> BTreeMap<Strin
     let mut filter = BTreeMap::new();
     filter.insert("symbol".to_string(), symbol.to_string());
     filter.insert("market".to_string(), "perp".to_string());
+    filter.insert("marketType".to_string(), "perp".to_string());
     filter.insert("readOnly".to_string(), "true".to_string());
     filter.insert("enabled".to_string(), enabled.to_string());
     filter.insert("dryRun".to_string(), dry_run.to_string());
@@ -525,6 +571,7 @@ pub fn build_contract_whale_history_response(
     severity: Option<&str>,
     enabled: bool,
     dry_run: bool,
+    meta: Option<ContractWhaleResponseMeta>,
 ) -> ContractWhaleLatestResponse {
     let now = now_ms();
     let filter = response_filter(symbol, enabled, dry_run);
@@ -538,9 +585,10 @@ pub fn build_contract_whale_history_response(
             ),
             items: Vec::new(),
             filter,
+            meta,
         };
     }
-    items.retain(|signal| severity_matches(signal.severity, severity));
+    items.retain(|signal| is_perp_signal(signal) && severity_matches(signal.severity, severity));
     items.sort_by(|left, right| {
         right
             .ts
@@ -562,6 +610,7 @@ pub fn build_contract_whale_history_response(
         summary,
         items,
         filter,
+        meta,
     }
 }
 
@@ -581,8 +630,10 @@ pub fn build_contract_whale_items_response(
             summary: disabled_summary(now, dry_run, exchanges, ContractWhaleTrend60s::default()),
             items: Vec::new(),
             filter,
+            meta: None,
         };
     }
+    items.retain(is_perp_signal);
     items = merge_contract_whale_signals(items);
     items.sort_by(|left, right| {
         right
@@ -605,7 +656,40 @@ pub fn build_contract_whale_items_response(
         summary,
         items,
         filter,
+        meta: None,
     }
+}
+
+fn filter_latest_response_by_exchange(
+    mut response: ContractWhaleLatestResponse,
+    exchange: Option<&str>,
+) -> ContractWhaleLatestResponse {
+    let Some(exchange) = exchange else {
+        return response;
+    };
+    response.items.retain(|signal| {
+        signal
+            .exchanges
+            .iter()
+            .any(|item| item.exchange.eq_ignore_ascii_case(exchange))
+    });
+    response
+        .filter
+        .insert("exchange".to_string(), exchange.to_ascii_lowercase());
+    response.summary = build_summary(
+        &response.items,
+        response.summary.updated_at_ms,
+        response.summary.enabled,
+        response.summary.dry_run,
+        response.summary.exchanges.clone(),
+        ContractWhaleWarmupState {
+            active: response.summary.warmup,
+            until_ms: response.summary.warmup_until_ms,
+            remaining_ms: response.summary.warmup_remaining_ms,
+        },
+        response.summary.trend_60s.clone(),
+    );
+    response
 }
 
 fn flow_window_for_seconds(flow_state: &FlowState, window_sec: u64) -> Option<&FlowWindow> {
@@ -1107,10 +1191,10 @@ fn contract_whale_health_status(
             exchange_recent(exchanges.get(exchange.as_str()), now, silence_ms)
         })
         .count();
-    let primary_recent = ["binance", "okx"].into_iter().any(|exchange| {
-        runtime_config.exchange_enabled(exchange)
-            && exchange_recent(exchanges.get(exchange), now, 30_000)
-    });
+    let primary_recent = runtime_config
+        .primary_contract_exchanges()
+        .iter()
+        .any(|exchange| exchange_recent(exchanges.get(exchange.as_str()), now, 30_000));
     let all_sources_stale = enabled_exchanges.iter().all(|exchange| {
         exchanges
             .get(exchange.as_str())
@@ -1163,10 +1247,13 @@ fn disabled_summary(
         status: "disabled".to_string(),
         health_status: "disabled".to_string(),
         health_reason: "contract_whale_monitor_disabled".to_string(),
+        market_type: "perp".to_string(),
+        meta: None,
         threshold_profile: runtime_config.threshold_profile_key().to_string(),
         active_exchange_count: runtime_config.active_exchange_count(),
         enabled_exchanges: runtime_config.enabled_exchanges(),
         disabled_exchanges: runtime_config.disabled_exchanges(),
+        active_contract_exchanges: runtime_config.enabled_exchanges(),
         direction: "disabled".to_string(),
         latest_direction: "disabled".to_string(),
         latest_severity: ContractWhaleSeverity::Calm,
@@ -1178,11 +1265,15 @@ fn disabled_summary(
         read_only: true,
         enabled: false,
         dry_run,
+        contract_data_quality: 0,
+        spot_data_quality: 0,
+        overall_data_quality: 0,
         warmup: false,
         warmup_until_ms: None,
         warmup_remaining_ms: None,
         trend_60s,
         exchanges,
+        platforms: build_platform_capabilities(&runtime_config),
     }
 }
 
@@ -1215,6 +1306,8 @@ fn build_summary(
         CWM_LOG_PREFIX
     );
     let runtime_config = contract_whale_runtime_config();
+    let (contract_data_quality, spot_data_quality, overall_data_quality) =
+        summary_data_quality_scores(&runtime_config, &exchanges, now, warmup.active);
     ContractWhaleSummary {
         status: if warmup.active {
             "warmup".to_string()
@@ -1226,10 +1319,13 @@ fn build_summary(
         },
         health_status,
         health_reason,
+        market_type: "perp".to_string(),
+        meta: None,
         threshold_profile: runtime_config.threshold_profile_key().to_string(),
         active_exchange_count: runtime_config.active_exchange_count(),
         enabled_exchanges: runtime_config.enabled_exchanges(),
         disabled_exchanges: runtime_config.disabled_exchanges(),
+        active_contract_exchanges: runtime_config.enabled_exchanges(),
         direction: latest_direction.clone(),
         latest_direction,
         latest_severity: latest
@@ -1243,12 +1339,225 @@ fn build_summary(
         read_only: true,
         enabled,
         dry_run,
+        contract_data_quality,
+        spot_data_quality,
+        overall_data_quality,
         warmup: warmup.active,
         warmup_until_ms: warmup.until_ms,
         warmup_remaining_ms: warmup.remaining_ms,
         trend_60s,
         exchanges,
+        platforms: build_platform_capabilities(&runtime_config),
     }
+}
+
+fn build_platform_capabilities(
+    runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+) -> BTreeMap<String, ContractWhalePlatformCapability> {
+    runtime_config
+        .platform_keys()
+        .into_iter()
+        .map(|exchange| {
+            let capability = runtime_config
+                .exchange_platform(&exchange)
+                .map(platform_capability_from_config)
+                .unwrap_or_default();
+            (exchange, capability)
+        })
+        .collect()
+}
+
+fn platform_capability_from_config(
+    platform: &crate::contract_whale_monitor::config::ContractWhalePlatformConfig,
+) -> ContractWhalePlatformCapability {
+    let status = if !platform.enabled {
+        "disabled"
+    } else if platform.contract_markets_enabled() {
+        "active"
+    } else if platform.any_market_enabled() {
+        "spot_only"
+    } else {
+        "disabled"
+    };
+    ContractWhalePlatformCapability {
+        platform_enabled: platform.enabled,
+        status: status.to_string(),
+        markets: [
+            market_capability_entry("spot", platform.spot.enabled, platform.spot.role.as_key()),
+            market_capability_entry("perp", platform.perp.enabled, platform.perp.role.as_key()),
+            market_capability_entry(
+                "level2",
+                platform.level2.enabled,
+                platform.level2.role.as_key(),
+            ),
+            market_capability_entry(
+                "funding",
+                platform.funding.enabled,
+                platform.funding.role.as_key(),
+            ),
+            market_capability_entry("oi", platform.oi.enabled, platform.oi.role.as_key()),
+            market_capability_entry(
+                "liquidation",
+                platform.liquidation.enabled,
+                platform.liquidation.role.as_key(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    }
+}
+
+fn market_capability_entry(
+    market: &str,
+    enabled: bool,
+    role: &str,
+) -> (String, ContractWhaleMarketCapability) {
+    (
+        market.to_string(),
+        ContractWhaleMarketCapability {
+            enabled,
+            status: if enabled {
+                if market == "perp" {
+                    "active".to_string()
+                } else {
+                    "enabled".to_string()
+                }
+            } else {
+                "disabled".to_string()
+            },
+            role: role.to_string(),
+        },
+    )
+}
+
+fn summary_data_quality_scores(
+    runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
+    now: i64,
+    warmup_active: bool,
+) -> (u8, u8, u8) {
+    let contract_data_quality =
+        contract_data_quality_score(runtime_config, exchanges, now, warmup_active);
+    let spot_data_quality = spot_data_quality_score(runtime_config, exchanges, now, warmup_active);
+    let overall_data_quality =
+        ((contract_data_quality as f64 * 0.60) + (spot_data_quality as f64 * 0.40)).round() as u8;
+    (
+        contract_data_quality,
+        spot_data_quality,
+        overall_data_quality.min(100),
+    )
+}
+
+fn contract_data_quality_score(
+    runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
+    now: i64,
+    warmup_active: bool,
+) -> u8 {
+    let enabled_exchanges = runtime_config.enabled_exchanges();
+    if enabled_exchanges.is_empty() {
+        return 0;
+    }
+    let recent_count = enabled_exchanges
+        .iter()
+        .filter(|exchange| exchange_recent(exchanges.get(*exchange), now, 30_000))
+        .count();
+    let primary_recent = runtime_config
+        .primary_contract_exchanges()
+        .iter()
+        .all(|exchange| exchange_recent(exchanges.get(exchange), now, 30_000));
+    let mut score: u8 = if recent_count == 0 {
+        20
+    } else if recent_count == enabled_exchanges.len() && primary_recent {
+        95
+    } else if primary_recent && recent_count + 1 >= enabled_exchanges.len() {
+        78
+    } else if primary_recent {
+        72
+    } else if recent_count > 0 {
+        58
+    } else {
+        20
+    };
+    if warmup_active {
+        score = score.saturating_sub(20);
+    }
+    score
+}
+
+fn spot_data_quality_score(
+    runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
+    now: i64,
+    warmup_active: bool,
+) -> u8 {
+    let enabled_spot_sources: Vec<String> = runtime_config
+        .platform_keys()
+        .into_iter()
+        .filter(|exchange| {
+            runtime_config.market_enabled(
+                exchange,
+                crate::contract_whale_monitor::types::ContractWhaleMarketType::Spot,
+            )
+        })
+        .collect();
+    if enabled_spot_sources.is_empty() {
+        return 0;
+    }
+    let recent_count = enabled_spot_sources
+        .iter()
+        .filter(|exchange| exchange_recent(exchanges.get(*exchange), now, 30_000))
+        .count();
+    let mut score: u8 = if recent_count == 0 {
+        25
+    } else if recent_count == enabled_spot_sources.len() {
+        92
+    } else if recent_count + 1 >= enabled_spot_sources.len() {
+        78
+    } else {
+        60
+    };
+    if warmup_active {
+        score = score.saturating_sub(10);
+    }
+    score
+}
+
+fn contract_market_mismatch_meta(
+    runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    exchange: Option<&str>,
+) -> Option<ContractWhaleResponseMeta> {
+    let exchange = exchange?;
+    let platform = runtime_config.exchange_platform(exchange)?;
+    if platform.market_enabled(ContractWhaleMarketType::Perp) {
+        return None;
+    }
+    let spot_enabled = platform.market_enabled(ContractWhaleMarketType::Spot);
+    let reason = if exchange.eq_ignore_ascii_case("coinbase") && platform.enabled && spot_enabled {
+        "coinbase_perp_disabled"
+    } else if platform.enabled && spot_enabled {
+        "perp_market_disabled"
+    } else if platform.enabled {
+        "contract_market_disabled"
+    } else {
+        "exchange_disabled"
+    };
+    Some(ContractWhaleResponseMeta {
+        exchange: Some(exchange.to_string()),
+        market_type: Some("perp".to_string()),
+        exchange_status: Some(
+            if platform.enabled && spot_enabled && !platform.contract_markets_enabled() {
+                "spot_only".to_string()
+            } else {
+                "disabled".to_string()
+            },
+        ),
+        reason: Some(reason.to_string()),
+    })
+}
+
+fn is_perp_signal(signal: &ContractWhaleSignal) -> bool {
+    signal.market_type == ContractWhaleMarketType::Perp
 }
 
 fn warmup_state(now: i64, enabled: bool, booted_at_ms: Option<i64>) -> ContractWhaleWarmupState {
@@ -1280,40 +1589,54 @@ fn contract_exchange_statuses(
     let mut statuses = default_exchange_statuses();
     let flow_last_trades = flow_last_trades(flow_state);
     let runtime_config = contract_whale_runtime_config();
-    for exchange in ["binance", "okx", "bitfinex"] {
-        let exchange_enabled = enabled && runtime_config.exchange_enabled(exchange);
-        let last_trade_at = if exchange_enabled {
+    for exchange in runtime_config.platform_keys() {
+        let platform = runtime_config
+            .exchange_platform(&exchange)
+            .expect("known contract whale platform");
+        let platform_enabled = enabled && platform.any_market_enabled();
+        let contract_enabled = enabled && runtime_config.exchange_enabled(&exchange);
+        let last_trade_at = if contract_enabled {
             max_option(
-                flow_last_trades.get(exchange).copied().flatten(),
-                health_for_exchange(venue_health, exchange).and_then(health_last_trade_at),
+                flow_last_trades.get(&exchange).copied().flatten(),
+                health_for_exchange(venue_health, &exchange).and_then(health_last_trade_at),
             )
+        } else if platform_enabled
+            && platform
+                .market_enabled(crate::contract_whale_monitor::types::ContractWhaleMarketType::Spot)
+        {
+            health_for_exchange(venue_health, &exchange).and_then(health_last_trade_at)
         } else {
             None
         };
-        let reconnect_count = health_for_exchange(venue_health, exchange)
+        let reconnect_count = health_for_exchange(venue_health, &exchange)
             .map(|health| health.ws_reconnect_count.max(health.reconnect_count))
             .unwrap_or(0);
-        let health_connected = health_for_exchange(venue_health, exchange)
+        let health_connected = health_for_exchange(venue_health, &exchange)
             .map(health_connected)
             .unwrap_or(false);
         let flow_connected = last_trade_at.is_some_and(|ts| now.saturating_sub(ts) <= 30_000);
-        let connected = exchange_enabled && (health_connected || flow_connected);
+        let connected = contract_enabled && (health_connected || flow_connected);
         let status = exchange_status_label(
-            exchange_enabled,
+            platform_enabled,
+            contract_enabled,
             connected,
-            health_for_exchange(venue_health, exchange),
+            health_for_exchange(venue_health, &exchange),
         );
         let latency_ms = last_trade_at
             .map(|ts| now.saturating_sub(ts).max(0))
             .filter(|latency| *latency <= 24 * 60 * 60 * 1000);
         statuses.insert(
-            exchange.to_string(),
+            exchange.clone(),
             ContractWhaleExchangeStatus {
                 connected,
                 status: status.to_string(),
                 last_trade_at,
                 latency_ms,
                 reconnect_count,
+                platform_enabled,
+                contract_enabled,
+                enabled_markets: platform.enabled_markets(),
+                market_roles: platform.enabled_market_roles(),
             },
         );
     }
@@ -1321,17 +1644,22 @@ fn contract_exchange_statuses(
 }
 
 fn default_exchange_statuses() -> BTreeMap<String, ContractWhaleExchangeStatus> {
-    ["binance", "okx", "bitfinex"]
+    contract_whale_runtime_config()
+        .platform_keys()
         .into_iter()
         .map(|exchange| {
             (
-                exchange.to_string(),
+                exchange,
                 ContractWhaleExchangeStatus {
                     connected: false,
                     status: "disabled".to_string(),
                     last_trade_at: None,
                     latency_ms: None,
                     reconnect_count: 0,
+                    platform_enabled: false,
+                    contract_enabled: false,
+                    enabled_markets: Vec::new(),
+                    market_roles: BTreeMap::new(),
                 },
             )
         })
@@ -1340,9 +1668,10 @@ fn default_exchange_statuses() -> BTreeMap<String, ContractWhaleExchangeStatus> 
 
 fn flow_last_trades(flow_state: &FlowState) -> BTreeMap<String, Option<i64>> {
     let mut last_trades: BTreeMap<String, Option<i64>> = BTreeMap::new();
+    let runtime_config = contract_whale_runtime_config();
     for window in flow_state.windows.values() {
         for (exchange, breakdown) in &window.venue_breakdown {
-            if !matches!(exchange.as_str(), "binance" | "okx" | "bitfinex") {
+            if runtime_config.exchange_platform(exchange).is_none() {
                 continue;
             }
             let candidate = breakdown.last_trade_ts.or_else(|| {
@@ -1381,12 +1710,16 @@ fn health_connected(health: &VenueHealth) -> bool {
 }
 
 fn exchange_status_label(
-    enabled: bool,
+    platform_enabled: bool,
+    contract_enabled: bool,
     connected: bool,
     health: Option<&VenueHealth>,
 ) -> &'static str {
-    if !enabled {
+    if !platform_enabled {
         return "disabled";
+    }
+    if !contract_enabled {
+        return "spot_only";
     }
     if connected {
         return "connected";
@@ -1549,7 +1882,7 @@ fn parse_exchange_filter(
         return Ok(None);
     };
     match filter.to_ascii_lowercase().as_str() {
-        "binance" | "okx" | "bitfinex" => Ok(Some(filter.to_ascii_lowercase())),
+        "binance" | "okx" | "bitfinex" | "coinbase" => Ok(Some(filter.to_ascii_lowercase())),
         _ => Err(bad_request("exchange_invalid")),
     }
 }

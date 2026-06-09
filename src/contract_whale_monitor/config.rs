@@ -3,7 +3,10 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-use super::{types::ContractWhaleThresholds, LOG_PREFIX, LOG_TARGET};
+use super::{
+    types::{ContractWhaleMarketType, ContractWhaleSourceRole, ContractWhaleThresholds},
+    LOG_PREFIX, LOG_TARGET,
+};
 
 const DEFAULT_VOLUME_STRENGTH_WEIGHT: f64 = 35.0;
 const DEFAULT_DYNAMIC_MULTIPLE_WEIGHT: f64 = 20.0;
@@ -60,19 +63,14 @@ impl ContractWhaleRuntimeConfig {
     }
 
     pub fn exchange_enabled(&self, exchange: &str) -> bool {
-        match exchange.to_ascii_lowercase().as_str() {
-            "binance" => self.exchanges.binance_enabled,
-            "okx" => self.exchanges.okx_enabled,
-            "bitfinex" => self.exchanges.bitfinex_enabled,
-            _ => false,
-        }
+        self.exchange_platform(exchange)
+            .is_some_and(ContractWhalePlatformConfig::contract_markets_enabled)
     }
 
     pub fn enabled_exchanges(&self) -> Vec<String> {
-        ["binance", "okx", "bitfinex"]
+        self.threshold_participating_exchanges()
             .into_iter()
             .filter(|exchange| self.exchange_enabled(exchange))
-            .map(ToString::to_string)
             .collect()
     }
 
@@ -81,10 +79,9 @@ impl ContractWhaleRuntimeConfig {
     }
 
     pub fn disabled_exchanges(&self) -> Vec<String> {
-        ["binance", "okx", "bitfinex"]
+        self.threshold_participating_exchanges()
             .into_iter()
             .filter(|exchange| !self.exchange_enabled(exchange))
-            .map(ToString::to_string)
             .collect()
     }
 
@@ -93,11 +90,17 @@ impl ContractWhaleRuntimeConfig {
     }
 
     pub fn threshold_profile(&self) -> ContractWhaleThresholdProfile {
-        if self.exchanges.binance_enabled
-            && self.exchanges.bitfinex_enabled
-            && !self.exchanges.okx_enabled
-        {
+        let enabled = self.enabled_exchange_set();
+        let binance_bitfinex = BTreeSet::from(["binance".to_string(), "bitfinex".to_string()]);
+        let binance_bitfinex_coinbase = BTreeSet::from([
+            "binance".to_string(),
+            "bitfinex".to_string(),
+            "coinbase".to_string(),
+        ]);
+        if enabled == binance_bitfinex {
             ContractWhaleThresholdProfile::BinanceBitfinex
+        } else if enabled == binance_bitfinex_coinbase {
+            ContractWhaleThresholdProfile::BinanceBitfinexCoinbase
         } else {
             ContractWhaleThresholdProfile::ThreeExchange
         }
@@ -109,6 +112,59 @@ impl ContractWhaleRuntimeConfig {
 
     pub fn notional_thresholds_usd(&self) -> ContractWhaleNotionalThresholds {
         self.threshold_profile().notional_thresholds_usd()
+    }
+
+    pub fn exchange_platform(&self, exchange: &str) -> Option<&ContractWhalePlatformConfig> {
+        match exchange.to_ascii_lowercase().as_str() {
+            "binance" => Some(&self.exchanges.binance),
+            "okx" => Some(&self.exchanges.okx),
+            "bitfinex" => Some(&self.exchanges.bitfinex),
+            "coinbase" => Some(&self.exchanges.coinbase),
+            _ => None,
+        }
+    }
+
+    pub fn market_enabled(&self, exchange: &str, market: ContractWhaleMarketType) -> bool {
+        self.exchange_platform(exchange)
+            .is_some_and(|platform| platform.market_enabled(market))
+    }
+
+    pub fn platform_keys(&self) -> Vec<String> {
+        ["binance", "bitfinex", "coinbase", "okx"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub fn primary_contract_exchanges(&self) -> Vec<String> {
+        self.platform_keys()
+            .into_iter()
+            .filter(|exchange| {
+                self.exchange_platform(exchange).is_some_and(|platform| {
+                    platform.market_enabled(ContractWhaleMarketType::Perp)
+                        && platform.market_role(ContractWhaleMarketType::Perp)
+                            == ContractWhaleSourceRole::Primary
+                })
+            })
+            .collect()
+    }
+
+    fn threshold_participating_exchanges(&self) -> Vec<String> {
+        let mut exchanges = vec![
+            "binance".to_string(),
+            "okx".to_string(),
+            "bitfinex".to_string(),
+        ];
+        if self.exchange_platform("coinbase").is_some_and(|platform| {
+            platform.market_enabled(ContractWhaleMarketType::Perp)
+                || platform.market_enabled(ContractWhaleMarketType::Level2)
+                || platform.market_enabled(ContractWhaleMarketType::Funding)
+                || platform.market_enabled(ContractWhaleMarketType::Oi)
+                || platform.market_enabled(ContractWhaleMarketType::Liquidation)
+        }) {
+            exchanges.push("coinbase".to_string());
+        }
+        exchanges
     }
 }
 
@@ -141,6 +197,7 @@ impl Default for ContractWhaleRuntimeConfig {
 pub enum ContractWhaleThresholdProfile {
     ThreeExchange,
     BinanceBitfinex,
+    BinanceBitfinexCoinbase,
 }
 
 impl ContractWhaleThresholdProfile {
@@ -148,6 +205,7 @@ impl ContractWhaleThresholdProfile {
         match self {
             Self::ThreeExchange => "three_exchange",
             Self::BinanceBitfinex => "binance_bitfinex",
+            Self::BinanceBitfinexCoinbase => "binance_bitfinex_coinbase",
         }
     }
 
@@ -163,6 +221,11 @@ impl ContractWhaleThresholdProfile {
                 critical: 95_000_000.0,
                 s: 200_000_000.0,
             },
+            Self::BinanceBitfinexCoinbase => ContractWhaleNotionalThresholds {
+                high: 50_000_000.0,
+                critical: 120_000_000.0,
+                s: 250_000_000.0,
+            },
         }
     }
 }
@@ -176,18 +239,182 @@ pub struct ContractWhaleNotionalThresholds {
 
 #[derive(Debug, Clone)]
 pub struct ContractWhaleExchangeConfig {
-    pub binance_enabled: bool,
-    pub okx_enabled: bool,
-    pub bitfinex_enabled: bool,
+    pub binance: ContractWhalePlatformConfig,
+    pub okx: ContractWhalePlatformConfig,
+    pub bitfinex: ContractWhalePlatformConfig,
+    pub coinbase: ContractWhalePlatformConfig,
 }
 
 impl Default for ContractWhaleExchangeConfig {
     fn default() -> Self {
         Self {
-            binance_enabled: true,
-            okx_enabled: false,
-            bitfinex_enabled: true,
+            binance: ContractWhalePlatformConfig::binance_default(),
+            okx: ContractWhalePlatformConfig::okx_default(),
+            bitfinex: ContractWhalePlatformConfig::bitfinex_default(),
+            coinbase: ContractWhalePlatformConfig::coinbase_default(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhalePlatformConfig {
+    pub enabled: bool,
+    pub spot: ContractWhaleSourceConfig,
+    pub perp: ContractWhaleSourceConfig,
+    pub level2: ContractWhaleSourceConfig,
+    pub funding: ContractWhaleSourceConfig,
+    pub oi: ContractWhaleSourceConfig,
+    pub liquidation: ContractWhaleSourceConfig,
+}
+
+impl ContractWhalePlatformConfig {
+    pub fn any_market_enabled(&self) -> bool {
+        self.enabled
+            && [
+                self.spot.enabled,
+                self.perp.enabled,
+                self.level2.enabled,
+                self.funding.enabled,
+                self.oi.enabled,
+                self.liquidation.enabled,
+            ]
+            .into_iter()
+            .any(|enabled| enabled)
+    }
+
+    pub fn contract_markets_enabled(&self) -> bool {
+        self.enabled
+            && [
+                self.perp.enabled,
+                self.level2.enabled,
+                self.funding.enabled,
+                self.oi.enabled,
+                self.liquidation.enabled,
+            ]
+            .into_iter()
+            .any(|enabled| enabled)
+    }
+
+    pub fn market_enabled(&self, market: ContractWhaleMarketType) -> bool {
+        self.enabled && self.source_for_market(market).enabled
+    }
+
+    pub fn market_role(&self, market: ContractWhaleMarketType) -> ContractWhaleSourceRole {
+        if !self.enabled {
+            ContractWhaleSourceRole::Disabled
+        } else {
+            self.source_for_market(market).role
+        }
+    }
+
+    pub fn enabled_markets(&self) -> Vec<String> {
+        [
+            ContractWhaleMarketType::Spot,
+            ContractWhaleMarketType::Perp,
+            ContractWhaleMarketType::Level2,
+            ContractWhaleMarketType::Funding,
+            ContractWhaleMarketType::Oi,
+            ContractWhaleMarketType::Liquidation,
+        ]
+        .into_iter()
+        .filter(|market| self.market_enabled(*market))
+        .map(|market| market.as_key().to_string())
+        .collect()
+    }
+
+    pub fn enabled_market_roles(&self) -> BTreeMap<String, String> {
+        [
+            ContractWhaleMarketType::Spot,
+            ContractWhaleMarketType::Perp,
+            ContractWhaleMarketType::Level2,
+            ContractWhaleMarketType::Funding,
+            ContractWhaleMarketType::Oi,
+            ContractWhaleMarketType::Liquidation,
+        ]
+        .into_iter()
+        .filter(|market| self.market_enabled(*market))
+        .map(|market| {
+            (
+                market.as_key().to_string(),
+                self.market_role(market).as_key().to_string(),
+            )
+        })
+        .collect()
+    }
+
+    fn source_for_market(&self, market: ContractWhaleMarketType) -> &ContractWhaleSourceConfig {
+        match market {
+            ContractWhaleMarketType::Spot => &self.spot,
+            ContractWhaleMarketType::Perp => &self.perp,
+            ContractWhaleMarketType::Level2 => &self.level2,
+            ContractWhaleMarketType::Funding => &self.funding,
+            ContractWhaleMarketType::Oi => &self.oi,
+            ContractWhaleMarketType::Liquidation => &self.liquidation,
+        }
+    }
+
+    fn binance_default() -> Self {
+        Self {
+            enabled: true,
+            spot: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+            perp: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+            level2: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
+            funding: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+            oi: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+            liquidation: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+        }
+    }
+
+    fn okx_default() -> Self {
+        Self {
+            enabled: false,
+            spot: ContractWhaleSourceConfig::disabled(),
+            perp: ContractWhaleSourceConfig::disabled(),
+            level2: ContractWhaleSourceConfig::disabled(),
+            funding: ContractWhaleSourceConfig::disabled(),
+            oi: ContractWhaleSourceConfig::disabled(),
+            liquidation: ContractWhaleSourceConfig::disabled(),
+        }
+    }
+
+    fn bitfinex_default() -> Self {
+        Self {
+            enabled: true,
+            spot: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Confirmation),
+            perp: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Confirmation),
+            level2: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
+            funding: ContractWhaleSourceConfig::disabled(),
+            oi: ContractWhaleSourceConfig::disabled(),
+            liquidation: ContractWhaleSourceConfig::disabled(),
+        }
+    }
+
+    fn coinbase_default() -> Self {
+        Self {
+            enabled: true,
+            spot: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
+            perp: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
+            level2: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
+            funding: ContractWhaleSourceConfig::disabled(),
+            oi: ContractWhaleSourceConfig::disabled(),
+            liquidation: ContractWhaleSourceConfig::disabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContractWhaleSourceConfig {
+    pub enabled: bool,
+    pub role: ContractWhaleSourceRole,
+}
+
+impl ContractWhaleSourceConfig {
+    pub const fn new(enabled: bool, role: ContractWhaleSourceRole) -> Self {
+        Self { enabled, role }
+    }
+
+    pub const fn disabled() -> Self {
+        Self::new(false, ContractWhaleSourceRole::Disabled)
     }
 }
 
@@ -367,24 +594,147 @@ pub fn load_contract_whale_runtime_config_from_settings(
 
 fn load_exchange_config(settings: &::config::Config) -> ContractWhaleExchangeConfig {
     ContractWhaleExchangeConfig {
-        binance_enabled: bool_setting(
+        binance: load_platform_config(
             settings,
-            "CONTRACT_WHALE_BINANCE_ENABLED",
-            "contract_whale_monitor.exchanges.binance.enabled",
+            "binance",
+            &ContractWhalePlatformConfig::binance_default(),
+            Some("CONTRACT_WHALE_BINANCE_ENABLED"),
             bool_setting(settings, "ENABLE_BINANCE", "enable_binance", true),
         ),
-        okx_enabled: bool_setting(
+        okx: load_platform_config(
             settings,
-            "CONTRACT_WHALE_OKX_ENABLED",
-            "contract_whale_monitor.exchanges.okx.enabled",
+            "okx",
+            &ContractWhalePlatformConfig::okx_default(),
+            Some("CONTRACT_WHALE_OKX_ENABLED"),
             bool_setting(settings, "ENABLE_OKX", "enable_okx", false),
         ),
-        bitfinex_enabled: bool_setting(
+        bitfinex: load_platform_config(
             settings,
-            "CONTRACT_WHALE_BITFINEX_ENABLED",
-            "contract_whale_monitor.exchanges.bitfinex.enabled",
+            "bitfinex",
+            &ContractWhalePlatformConfig::bitfinex_default(),
+            Some("CONTRACT_WHALE_BITFINEX_ENABLED"),
             true,
         ),
+        coinbase: load_platform_config(
+            settings,
+            "coinbase",
+            &ContractWhalePlatformConfig::coinbase_default(),
+            Some("CONTRACT_WHALE_COINBASE_ENABLED"),
+            true,
+        ),
+    }
+}
+
+fn load_platform_config(
+    settings: &::config::Config,
+    exchange: &str,
+    default: &ContractWhalePlatformConfig,
+    enabled_env_key: Option<&str>,
+    enabled_default: bool,
+) -> ContractWhalePlatformConfig {
+    let exchange_upper = exchange.to_ascii_uppercase();
+    let enabled = enabled_env_key
+        .and_then(|env_key| std::env::var(env_key).ok())
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .or_else(|| {
+            settings
+                .get_bool(&format!(
+                    "contract_whale_monitor.exchanges.{exchange}.enabled"
+                ))
+                .ok()
+        })
+        .unwrap_or(enabled_default);
+    ContractWhalePlatformConfig {
+        enabled,
+        spot: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Spot,
+            default.spot,
+        ),
+        perp: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Perp,
+            default.perp,
+        ),
+        level2: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Level2,
+            default.level2,
+        ),
+        funding: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Funding,
+            default.funding,
+        ),
+        oi: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Oi,
+            default.oi,
+        ),
+        liquidation: load_source_config(
+            settings,
+            exchange,
+            &exchange_upper,
+            ContractWhaleMarketType::Liquidation,
+            default.liquidation,
+        ),
+    }
+}
+
+fn load_source_config(
+    settings: &::config::Config,
+    exchange: &str,
+    exchange_upper: &str,
+    market: ContractWhaleMarketType,
+    default: ContractWhaleSourceConfig,
+) -> ContractWhaleSourceConfig {
+    let market_key = market.as_key();
+    let enabled = bool_setting(
+        settings,
+        &format!(
+            "CONTRACT_WHALE_{exchange_upper}_{}_ENABLED",
+            market.as_env_key()
+        ),
+        &format!("contract_whale_monitor.exchanges.{exchange}.{market_key}.enabled"),
+        default.enabled,
+    );
+    let role = source_role_setting(
+        settings,
+        &format!("contract_whale_monitor.exchanges.{exchange}.{market_key}.role"),
+        default.role,
+    );
+    ContractWhaleSourceConfig { enabled, role }
+}
+
+fn source_role_setting(
+    settings: &::config::Config,
+    path: &str,
+    default: ContractWhaleSourceRole,
+) -> ContractWhaleSourceRole {
+    settings
+        .get_string(path)
+        .ok()
+        .and_then(|value| parse_source_role(&value))
+        .unwrap_or(default)
+}
+
+fn parse_source_role(value: &str) -> Option<ContractWhaleSourceRole> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "primary" => Some(ContractWhaleSourceRole::Primary),
+        "confirmation" => Some(ContractWhaleSourceRole::Confirmation),
+        "optional" => Some(ContractWhaleSourceRole::Optional),
+        "disabled" => Some(ContractWhaleSourceRole::Disabled),
+        _ => None,
     }
 }
 

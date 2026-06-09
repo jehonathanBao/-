@@ -4,10 +4,13 @@ const calmSummary = {
   status: "calm",
   healthStatus: "disabled",
   healthReason: "contract_whale_monitor_disabled",
+  marketType: "perp",
+  meta: null,
   thresholdProfile: "binance_bitfinex",
   activeExchangeCount: 0,
   enabledExchanges: [],
   disabledExchanges: ["binance", "okx", "bitfinex"],
+  activeContractExchanges: [],
   direction: "neutral",
   latestSeverity: "calm",
   latestPushedAtMs: null,
@@ -19,6 +22,9 @@ const calmSummary = {
   readOnly: true,
   enabled: false,
   dryRun: true,
+  contractDataQuality: 0,
+  spotDataQuality: 0,
+  overallDataQuality: 0,
   trend60s: {
     buyVolumeBtc: 0,
     sellVolumeBtc: 0,
@@ -33,6 +39,13 @@ const calmSummary = {
     binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+    coinbase: { connected: false, status: "spot_only", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+  },
+  platforms: {
+    binance: { platformEnabled: true, status: "active", markets: {} },
+    bitfinex: { platformEnabled: true, status: "active", markets: {} },
+    coinbase: { platformEnabled: true, status: "spot_only", markets: {} },
+    okx: { platformEnabled: false, status: "disabled", markets: {} },
   },
 };
 
@@ -43,10 +56,11 @@ export async function fetchContractWhaleSummary(symbol = "BTC") {
     const response = await axios.get(`${baseURL}/api/contract-whale/summary?${query}`);
     return {
       summary: normalizeSummary(response.data),
+      meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, error: "summary_unavailable" };
+    return { summary: calmSummary, meta: null, error: "summary_unavailable" };
   }
 }
 
@@ -59,10 +73,11 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC") {
     return {
       summary: normalizeSummary(response.data?.summary),
       items: items.map(normalizeContractWhaleSignal),
+      meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], error: "latest_unavailable" };
+    return { summary: calmSummary, items: [], meta: null, error: "latest_unavailable" };
   }
 }
 
@@ -75,10 +90,11 @@ export async function fetchContractWhaleHistory(filters = {}) {
     return {
       summary: normalizeSummary(response.data?.summary),
       items: items.map(normalizeContractWhaleSignal),
+      meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], error: "history_unavailable" };
+    return { summary: calmSummary, items: [], meta: null, error: "history_unavailable" };
   }
 }
 
@@ -98,6 +114,8 @@ export async function fetchContractWhaleEvents(filters = {}) {
 }
 
 export function normalizeContractWhaleSignal(item) {
+  const totalVolumeBtc = numberOrNull(item.totalVolumeBtc) || 0;
+  const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   return {
     id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -107,12 +125,15 @@ export function normalizeContractWhaleSignal(item) {
     direction: item.direction || "neutral",
     severity: item.severity || "medium",
     score: numberOrNull(item.score) || 0,
-    totalVolumeBtc: numberOrNull(item.totalVolumeBtc) || 0,
+    totalVolumeBtc,
     netVolumeBtc: numberOrNull(item.netVolumeBtc) || 0,
-    totalNotionalUsd: numberOrNull(item.totalNotionalUsd) || 0,
+    totalNotionalUsd,
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
+    triggerPriceUsd: normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd),
     mainExchange: item.mainExchange || "Multi",
+    marketType: item.marketType ? String(item.marketType).toLowerCase() : "perp",
+    sourceRole: item.sourceRole ? String(item.sourceRole).toLowerCase() : "optional",
     dominantVenueNetContributionShare: numberOrNull(item.dominantVenueNetContributionShare),
     dynamicMultiple: numberOrNull(item.dynamicMultiple),
     percentileLevel: numberOrNull(item.percentileLevel),
@@ -131,6 +152,8 @@ export function normalizeContractWhaleSignal(item) {
     fundingBias: item.fundingBias || "unknown",
     exchanges: normalizeSignalExchanges(item.exchanges),
     dataQuality: numberOrNull(item.dataQuality) || 0,
+    thresholdProfile: item.thresholdProfile ? String(item.thresholdProfile).toLowerCase() : "three_exchange",
+    activeSources: normalizeActiveSources(item.activeSources),
     discordEligible: Boolean(item.discordEligible),
     discordSent: Boolean(item.discordSent),
     discordSentAt: numberOrNull(item.discordSentAt),
@@ -138,6 +161,21 @@ export function normalizeContractWhaleSignal(item) {
     finalResult: item.finalResult || "contract whale flow candidate",
     mergedFrom: Array.isArray(item.mergedFrom) ? item.mergedFrom.filter(Boolean).map(String) : [],
   };
+}
+
+function normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd) {
+  const explicit =
+    numberOrNull(item.triggerPriceUsd) ??
+    numberOrNull(item.triggerPrice) ??
+    numberOrNull(item.price) ??
+    numberOrNull(item.avgPriceUsd);
+  if (explicit !== null && explicit > 0) {
+    return explicit;
+  }
+  if (totalVolumeBtc > 0 && totalNotionalUsd > 0) {
+    return totalNotionalUsd / totalVolumeBtc;
+  }
+  return null;
 }
 
 export function normalizeMainForceEvent(item) {
@@ -182,6 +220,26 @@ function normalizeSignalExchanges(exchanges) {
   }));
 }
 
+function normalizeActiveSources(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    contract: normalizeActiveSourceEntries(source.contract),
+    spot: normalizeActiveSourceEntries(source.spot),
+  };
+}
+
+function normalizeActiveSourceEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map((entry) => ({
+    exchange: entry.exchange ? String(entry.exchange).toLowerCase() : "unknown",
+    marketType: entry.marketType ? String(entry.marketType).toLowerCase() : "perp",
+    sourceRole: entry.sourceRole ? String(entry.sourceRole).toLowerCase() : "optional",
+    enabled: Boolean(entry.enabled),
+    status: entry.status ? String(entry.status).toLowerCase() : "configured",
+    productId: entry.productId ? String(entry.productId) : null,
+  }));
+}
+
 function normalizeSummary(summary) {
   if (!summary || typeof summary !== "object") {
     return calmSummary;
@@ -190,10 +248,13 @@ function normalizeSummary(summary) {
     status: summary.status || calmSummary.status,
     healthStatus: summary.healthStatus || calmSummary.healthStatus,
     healthReason: summary.healthReason || calmSummary.healthReason,
+    marketType: summary.marketType ? String(summary.marketType).toLowerCase() : calmSummary.marketType,
+    meta: normalizeResponseMeta(summary.meta),
     thresholdProfile: summary.thresholdProfile || calmSummary.thresholdProfile,
     activeExchangeCount: numberOrNull(summary.activeExchangeCount) || 0,
     enabledExchanges: normalizeStringArray(summary.enabledExchanges),
     disabledExchanges: normalizeStringArray(summary.disabledExchanges),
+    activeContractExchanges: normalizeStringArray(summary.activeContractExchanges),
     direction: summary.direction || calmSummary.direction,
     latestDirection: summary.latestDirection || summary.direction || calmSummary.latestDirection,
     latestSeverity: summary.latestSeverity || calmSummary.latestSeverity,
@@ -205,8 +266,22 @@ function normalizeSummary(summary) {
     readOnly: summary.readOnly !== false,
     enabled: Boolean(summary.enabled),
     dryRun: summary.dryRun !== false,
+    contractDataQuality: numberOrNull(summary.contractDataQuality) || 0,
+    spotDataQuality: numberOrNull(summary.spotDataQuality) || 0,
+    overallDataQuality: numberOrNull(summary.overallDataQuality) || 0,
     trend60s: normalizeTrend60s(summary.trend60s),
     exchanges: normalizeExchanges(summary.exchanges),
+    platforms: normalizePlatforms(summary.platforms),
+  };
+}
+
+function normalizeResponseMeta(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  return {
+    exchange: meta.exchange ? String(meta.exchange).toLowerCase() : null,
+    marketType: meta.marketType ? String(meta.marketType).toLowerCase() : null,
+    exchangeStatus: meta.exchangeStatus ? String(meta.exchangeStatus).toLowerCase() : null,
+    reason: meta.reason ? String(meta.reason).toLowerCase() : null,
   };
 }
 
@@ -234,7 +309,7 @@ function numberOrNull(value) {
 
 function normalizeExchanges(exchanges) {
   const source = exchanges && typeof exchanges === "object" ? exchanges : {};
-  return ["binance", "okx", "bitfinex"].reduce((acc, key) => {
+  return ["binance", "okx", "bitfinex", "coinbase"].reduce((acc, key) => {
     const item = source[key] && typeof source[key] === "object" ? source[key] : {};
     acc[key] = {
       connected: Boolean(item.connected),
@@ -242,9 +317,48 @@ function normalizeExchanges(exchanges) {
       lastTradeAt: numberOrNull(item.lastTradeAt),
       latencyMs: numberOrNull(item.latencyMs),
       reconnectCount: numberOrNull(item.reconnectCount) || 0,
+      platformEnabled: Boolean(item.platformEnabled),
+      contractEnabled: Boolean(item.contractEnabled),
+      enabledMarkets: normalizeStringArray(item.enabledMarkets),
+      marketRoles: normalizeStringMap(item.marketRoles),
     };
     return acc;
   }, {});
+}
+
+function normalizePlatforms(platforms) {
+  const source = platforms && typeof platforms === "object" ? platforms : {};
+  return ["binance", "okx", "bitfinex", "coinbase"].reduce((acc, key) => {
+    const item = source[key] && typeof source[key] === "object" ? source[key] : {};
+    acc[key] = {
+      platformEnabled: Boolean(item.platformEnabled),
+      status: item.status || "disabled",
+      markets: normalizePlatformMarkets(item.markets),
+    };
+    return acc;
+  }, {});
+}
+
+function normalizePlatformMarkets(markets) {
+  const source = markets && typeof markets === "object" ? markets : {};
+  return ["spot", "perp", "level2", "funding", "oi", "liquidation"].reduce((acc, key) => {
+    const item = source[key] && typeof source[key] === "object" ? source[key] : {};
+    acc[key] = {
+      enabled: Boolean(item.enabled),
+      status: item.status || (item.enabled ? "enabled" : "disabled"),
+      role: item.role || "disabled",
+    };
+    return acc;
+  }, {});
+}
+
+function normalizeStringMap(value) {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [String(key || "").toLowerCase(), String(item || "").toLowerCase()])
+      .filter(([key]) => Boolean(key)),
+  );
 }
 
 function normalizeTrend60s(trend) {

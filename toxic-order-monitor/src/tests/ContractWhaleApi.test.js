@@ -31,6 +31,7 @@ describe("contract whale api", () => {
           activeExchangeCount: 2,
           enabledExchanges: ["binance", "bitfinex"],
           disabledExchanges: ["okx"],
+          activeContractExchanges: ["binance", "bitfinex"],
           direction: "buy",
           latestDirection: "buy",
           latestSeverity: "s",
@@ -40,6 +41,9 @@ describe("contract whale api", () => {
           readOnly: true,
           enabled: true,
           dryRun: true,
+          contractDataQuality: 95,
+          spotDataQuality: 78,
+          overallDataQuality: 88,
           trend60s: {
             buyVolumeBtc: 6200,
             sellVolumeBtc: 3800,
@@ -51,9 +55,16 @@ describe("contract whale api", () => {
             updatedAtMs: 1_700_000_000_000,
           },
           exchanges: {
-            binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
-            okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1 },
-            bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
+            binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp"], marketRoles: { spot: "primary", perp: "primary" } },
+            okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1, platformEnabled: false, contractEnabled: false, enabledMarkets: [], marketRoles: {} },
+            bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp"], marketRoles: { spot: "confirmation", perp: "confirmation" } },
+            coinbase: { connected: false, status: "spot_only", lastTradeAt: null, reconnectCount: 0, platformEnabled: true, contractEnabled: false, enabledMarkets: ["spot"], marketRoles: { spot: "primary" } },
+          },
+          platforms: {
+            binance: { platformEnabled: true, status: "active", markets: { spot: { enabled: true, status: "enabled", role: "primary" }, perp: { enabled: true, status: "active", role: "primary" } } },
+            bitfinex: { platformEnabled: true, status: "active", markets: { spot: { enabled: true, status: "enabled", role: "confirmation" }, perp: { enabled: true, status: "active", role: "confirmation" } } },
+            coinbase: { platformEnabled: true, status: "spot_only", markets: { spot: { enabled: true, status: "enabled", role: "primary" }, perp: { enabled: false, status: "disabled", role: "optional" } } },
+            okx: { platformEnabled: false, status: "disabled", markets: {} },
           },
         },
         items: [contractWhaleItem()],
@@ -71,6 +82,11 @@ describe("contract whale api", () => {
       activeExchangeCount: 2,
       enabledExchanges: ["binance", "bitfinex"],
       disabledExchanges: ["okx"],
+      activeContractExchanges: ["binance", "bitfinex"],
+      contractDataQuality: 95,
+      spotDataQuality: 78,
+      overallDataQuality: 88,
+      marketType: "perp",
       direction: "buy",
       latestDirection: "buy",
       latestSeverity: "s",
@@ -89,6 +105,10 @@ describe("contract whale api", () => {
         binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
         okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1 },
         bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
+        coinbase: { status: "spot_only", contractEnabled: false },
+      },
+      platforms: {
+        coinbase: { status: "spot_only" },
       },
     });
     expect(payload.items[0]).toMatchObject({
@@ -110,10 +130,24 @@ describe("contract whale api", () => {
       oiBias: "rising",
       fundingRate: 0.00018,
       fundingBias: "long",
+      marketType: "perp",
+      sourceRole: "primary",
+      thresholdProfile: "binance_bitfinex",
+      activeSources: {
+        contract: expect.arrayContaining([
+          expect.objectContaining({ exchange: "binance", marketType: "perp", status: "active" }),
+          expect.objectContaining({ exchange: "coinbase", marketType: "perp", status: "spot_only", enabled: false }),
+          expect.objectContaining({ exchange: "okx", marketType: "perp", status: "disabled", enabled: false }),
+        ]),
+        spot: expect.arrayContaining([
+          expect.objectContaining({ exchange: "coinbase", marketType: "spot", status: "spot_only" }),
+        ]),
+      },
       discordEligible: true,
       discordSent: true,
       discordSentAt: 1_700_000_000_050,
       mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+      triggerPriceUsd: 337_000_000 / 4_820,
     });
   });
 
@@ -127,15 +161,23 @@ describe("contract whale api", () => {
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
+        activeContractExchanges: ["binance", "bitfinex"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "high",
         enabled: true,
         dryRun: true,
+        contractDataQuality: 72,
+        spotDataQuality: 84,
+        overallDataQuality: 77,
         exchanges: {
           binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120, reconnectCount: 0 },
           okx: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_100, latencyMs: 80, reconnectCount: 1 },
           bitfinex: { connected: false, status: "reconnecting", lastTradeAt: 1_699_999_900_000, latencyMs: null, reconnectCount: 3 },
+          coinbase: { connected: false, status: "spot_only", lastTradeAt: null, latencyMs: null, reconnectCount: 0, platformEnabled: true, contractEnabled: false, enabledMarkets: ["spot"], marketRoles: { spot: "primary" } },
+        },
+        platforms: {
+          coinbase: { platformEnabled: true, status: "spot_only", markets: { spot: { enabled: true, status: "enabled", role: "primary" } } },
         },
       },
     });
@@ -153,6 +195,13 @@ describe("contract whale api", () => {
     expect(payload.summary.thresholdProfile).toBe("binance_bitfinex");
     expect(payload.summary.enabledExchanges).toEqual(["binance", "bitfinex"]);
     expect(payload.summary.disabledExchanges).toEqual(["okx"]);
+    expect(payload.summary.activeContractExchanges).toEqual(["binance", "bitfinex"]);
+    expect(payload.summary.contractDataQuality).toBe(72);
+    expect(payload.summary.spotDataQuality).toBe(84);
+    expect(payload.summary.overallDataQuality).toBe(77);
+    expect(payload.summary.exchanges.coinbase.status).toBe("spot_only");
+    expect(payload.summary.platforms.coinbase.status).toBe("spot_only");
+    expect(payload.summary.marketType).toBe("perp");
   });
 
   it("fetches history with server-side filters", async () => {
@@ -160,6 +209,12 @@ describe("contract whale api", () => {
       data: {
         summary: {},
         items: [contractWhaleItem()],
+        meta: {
+          exchange: "coinbase",
+          marketType: "perp",
+          exchangeStatus: "spot_only",
+          reason: "coinbase_perp_disabled",
+        },
       },
     });
 
@@ -178,6 +233,12 @@ describe("contract whale api", () => {
       "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&discord_sent=true&window_sec=15&exchange=binance&limit=50",
     );
     expect(payload.items).toHaveLength(1);
+    expect(payload.meta).toMatchObject({
+      exchange: "coinbase",
+      marketType: "perp",
+      exchangeStatus: "spot_only",
+      reason: "coinbase_perp_disabled",
+    });
   });
 
   it("fetches main-force event history for timeline markers", async () => {
@@ -304,6 +365,21 @@ function contractWhaleItem() {
     oiBias: "rising",
     fundingRate: 0.00018,
     fundingBias: "long",
+    marketType: "perp",
+    sourceRole: "primary",
+    thresholdProfile: "binance_bitfinex",
+    activeSources: {
+      contract: [
+        { exchange: "binance", marketType: "perp", sourceRole: "primary", enabled: true, status: "active" },
+        { exchange: "bitfinex", marketType: "perp", sourceRole: "confirmation", enabled: true, status: "configured" },
+        { exchange: "coinbase", marketType: "perp", sourceRole: "optional", enabled: false, status: "spot_only" },
+        { exchange: "okx", marketType: "perp", sourceRole: "disabled", enabled: false, status: "disabled" },
+      ],
+      spot: [
+        { exchange: "binance", marketType: "spot", sourceRole: "primary", enabled: true, status: "configured" },
+        { exchange: "coinbase", marketType: "spot", sourceRole: "primary", enabled: true, status: "spot_only" },
+      ],
+    },
     exchanges: [
       {
         exchange: "binance",

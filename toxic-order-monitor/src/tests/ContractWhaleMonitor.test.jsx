@@ -11,6 +11,10 @@ import {
   fetchContractWhaleSummary,
 } from "../api/contractWhale.js";
 
+function hasPriceText(text) {
+  return typeof text === "string" && text.includes("69,917");
+}
+
 vi.mock("../api/contractWhale.js", () => ({
   fetchContractWhaleSummary: vi.fn(() =>
     Promise.resolve({
@@ -22,6 +26,7 @@ vi.mock("../api/contractWhale.js", () => ({
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
+        activeContractExchanges: ["binance", "bitfinex"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "s",
@@ -31,6 +36,9 @@ vi.mock("../api/contractWhale.js", () => ({
         readOnly: true,
         enabled: true,
         dryRun: true,
+        contractDataQuality: 95,
+        spotDataQuality: 78,
+        overallDataQuality: 88,
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -42,9 +50,46 @@ vi.mock("../api/contractWhale.js", () => ({
           updatedAtMs: 1_700_000_000_000,
         },
         exchanges: {
-          binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
-          okx: { connected: false, status: "disabled", lastTradeAt: null, reconnectCount: 0 },
-          bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
+          binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, reconnectCount: 0, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp", "funding", "oi", "liquidation"], marketRoles: { spot: "primary", perp: "primary", funding: "primary", oi: "primary", liquidation: "primary" } },
+          okx: { connected: false, status: "disabled", lastTradeAt: null, reconnectCount: 0, platformEnabled: false, contractEnabled: false, enabledMarkets: [], marketRoles: {} },
+          bitfinex: { connected: false, status: "reconnecting", lastTradeAt: null, reconnectCount: 3, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp"], marketRoles: { spot: "confirmation", perp: "confirmation" } },
+          coinbase: { connected: false, status: "spot_only", lastTradeAt: null, reconnectCount: 0, platformEnabled: true, contractEnabled: false, enabledMarkets: ["spot"], marketRoles: { spot: "spot_confirmation" } },
+        },
+        platforms: {
+          binance: {
+            platformEnabled: true,
+            status: "active",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              perp: { enabled: true, status: "active", role: "primary_liquidity" },
+              funding: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              oi: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              liquidation: { enabled: true, status: "enabled", role: "primary_liquidity" },
+            },
+          },
+          bitfinex: {
+            platformEnabled: true,
+            status: "active",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "confirmation" },
+              perp: { enabled: true, status: "active", role: "confirmation" },
+            },
+          },
+          coinbase: {
+            platformEnabled: true,
+            status: "spot_only",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "spot_confirmation" },
+              perp: { enabled: false, status: "disabled", role: "optional" },
+            },
+          },
+          okx: {
+            platformEnabled: false,
+            status: "disabled",
+            markets: {
+              perp: { enabled: false, status: "disabled", role: "optional" },
+            },
+          },
         },
       },
       error: null,
@@ -60,6 +105,7 @@ vi.mock("../api/contractWhale.js", () => ({
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
+        activeContractExchanges: ["binance", "bitfinex"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "s",
@@ -69,6 +115,9 @@ vi.mock("../api/contractWhale.js", () => ({
         readOnly: true,
         enabled: true,
         dryRun: true,
+        contractDataQuality: 95,
+        spotDataQuality: 78,
+        overallDataQuality: 88,
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -80,9 +129,46 @@ vi.mock("../api/contractWhale.js", () => ({
           updatedAtMs: 1_700_000_000_000,
         },
         exchanges: {
-          binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120, reconnectCount: 0 },
-          okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
-          bitfinex: { connected: false, status: "reconnecting", lastTradeAt: null, latencyMs: null, reconnectCount: 3 },
+          binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120, reconnectCount: 0, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp", "funding", "oi", "liquidation"], marketRoles: { spot: "primary", perp: "primary", funding: "primary", oi: "primary", liquidation: "primary" } },
+          okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0, platformEnabled: false, contractEnabled: false, enabledMarkets: [], marketRoles: {} },
+          bitfinex: { connected: false, status: "reconnecting", lastTradeAt: null, latencyMs: null, reconnectCount: 3, platformEnabled: true, contractEnabled: true, enabledMarkets: ["spot", "perp"], marketRoles: { spot: "confirmation", perp: "confirmation" } },
+          coinbase: { connected: false, status: "spot_only", lastTradeAt: null, latencyMs: null, reconnectCount: 0, platformEnabled: true, contractEnabled: false, enabledMarkets: ["spot"], marketRoles: { spot: "spot_confirmation" } },
+        },
+        platforms: {
+          binance: {
+            platformEnabled: true,
+            status: "active",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              perp: { enabled: true, status: "active", role: "primary_liquidity" },
+              funding: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              oi: { enabled: true, status: "enabled", role: "primary_liquidity" },
+              liquidation: { enabled: true, status: "enabled", role: "primary_liquidity" },
+            },
+          },
+          bitfinex: {
+            platformEnabled: true,
+            status: "active",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "confirmation" },
+              perp: { enabled: true, status: "active", role: "confirmation" },
+            },
+          },
+          coinbase: {
+            platformEnabled: true,
+            status: "spot_only",
+            markets: {
+              spot: { enabled: true, status: "enabled", role: "spot_confirmation" },
+              perp: { enabled: false, status: "disabled", role: "optional" },
+            },
+          },
+          okx: {
+            platformEnabled: false,
+            status: "disabled",
+            markets: {
+              perp: { enabled: false, status: "disabled", role: "optional" },
+            },
+          },
         },
       },
       items: [
@@ -114,6 +200,21 @@ vi.mock("../api/contractWhale.js", () => ({
           oiBias: "rising",
           fundingRate: 0.00018,
           fundingBias: "long",
+          marketType: "perp",
+          sourceRole: "primary",
+          thresholdProfile: "binance_bitfinex",
+          activeSources: {
+            contract: [
+              { exchange: "binance", marketType: "perp", sourceRole: "primary", enabled: true, status: "active" },
+              { exchange: "bitfinex", marketType: "perp", sourceRole: "confirmation", enabled: true, status: "configured" },
+              { exchange: "coinbase", marketType: "perp", sourceRole: "optional", enabled: false, status: "spot_only" },
+              { exchange: "okx", marketType: "perp", sourceRole: "disabled", enabled: false, status: "disabled" },
+            ],
+            spot: [
+              { exchange: "binance", marketType: "spot", sourceRole: "primary", enabled: true, status: "configured" },
+              { exchange: "coinbase", marketType: "spot", sourceRole: "spot_confirmation", enabled: true, status: "spot_only" },
+            ],
+          },
           dataQuality: 91,
           discordEligible: true,
           discordSent: false,
@@ -159,6 +260,7 @@ vi.mock("../api/contractWhale.js", () => ({
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
+        activeContractExchanges: ["binance", "bitfinex"],
         direction: "sell",
         latestDirection: "sell",
         latestSeverity: "critical",
@@ -166,6 +268,9 @@ vi.mock("../api/contractWhale.js", () => ({
         readOnly: true,
         enabled: true,
         dryRun: true,
+        contractDataQuality: 72,
+        spotDataQuality: 84,
+        overallDataQuality: 77,
         trend60s: {
           buyVolumeBtc: 1000,
           sellVolumeBtc: 4000,
@@ -177,6 +282,7 @@ vi.mock("../api/contractWhale.js", () => ({
           updatedAtMs: 1_700_000_010_000,
         },
         exchanges: {},
+        platforms: {},
       },
       items: [],
       error: null,
@@ -228,16 +334,24 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("总量 10,000 BTC · dominance 24.0%")).toBeInTheDocument();
     expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getByText("当前统计数据源：Binance · Binance+Bitfinex")).toBeInTheDocument();
+    expect(screen.getByText("合约数据质量 95/100 · 现货数据质量 78/100 · 总体 88/100")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getAllByText("在线")).toHaveLength(1);
-    expect(screen.getByText("未启用")).toBeInTheDocument();
+    expect(screen.getAllByText("未启用").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Bitfinex").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Coinbase").length).toBeGreaterThan(0);
     expect(screen.getByText("重连中")).toBeInTheDocument();
+    expect(screen.getByText("现货专用")).toBeInTheDocument();
     expect(screen.getByText("延迟 120ms")).toBeInTheDocument();
     expect(screen.getByText("重连 3")).toBeInTheDocument();
+    expect(screen.getByText("平台能力")).toBeInTheDocument();
+    expect(screen.getByTestId("platform-capability-coinbase")).toBeInTheDocument();
+    expect(screen.getByText("当前仅启用现货，用于现货确认和中长线结构评分。")).toBeInTheDocument();
+    expect(screen.getByText("现货确认源")).toBeInTheDocument();
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(screen.getByText("4,820 BTC")).toBeInTheDocument();
     expect(screen.getByText("$337M")).toBeInTheDocument();
+    expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
     expect(screen.getByText("净买入 3,260 BTC")).toBeInTheDocument();
     expect(screen.getByText("67.6%")).toBeInTheDocument();
     expect(screen.getByText("9.4x")).toBeInTheDocument();
@@ -280,6 +394,68 @@ describe("ContractWhaleMonitor", () => {
     );
   });
 
+  it("shows a spot-only explanation when coinbase is selected in contract history", async () => {
+    const user = userEvent.setup();
+    fetchContractWhaleHistory.mockResolvedValueOnce({
+      summary: {
+        status: "calm",
+        healthStatus: "healthy",
+        healthReason: "primary_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        activeExchangeCount: 2,
+        enabledExchanges: ["binance", "bitfinex"],
+        disabledExchanges: ["okx"],
+        activeContractExchanges: ["binance", "bitfinex"],
+        direction: "neutral",
+        latestDirection: "neutral",
+        latestSeverity: "calm",
+        signalCount: 0,
+        readOnly: true,
+        enabled: true,
+        dryRun: true,
+        contractDataQuality: 95,
+        spotDataQuality: 78,
+        overallDataQuality: 88,
+        trend60s: {
+          buyVolumeBtc: 0,
+          sellVolumeBtc: 0,
+          totalVolumeBtc: 0,
+          netVolumeBtc: 0,
+          dominance: 0,
+          buyRatio: 0,
+          sellRatio: 0,
+          updatedAtMs: 1_700_000_000_000,
+        },
+        exchanges: {},
+        platforms: {},
+      },
+      items: [],
+      meta: {
+        exchange: "coinbase",
+        marketType: "perp",
+        exchangeStatus: "spot_only",
+        reason: "coinbase_perp_disabled",
+      },
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("主力合约监控");
+    await user.selectOptions(screen.getByLabelText("交易所"), "coinbase");
+
+    await waitFor(() =>
+      expect(fetchContractWhaleHistory).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          symbol: "BTC",
+          exchange: "coinbase",
+          limit: 50,
+        }),
+      ),
+    );
+    expect(screen.getByText("Coinbase 当前仅启用现货，未启用合约；本页只统计 perp 合约成交，因此不会返回 Coinbase 合约信号。")).toBeInTheDocument();
+  });
+
   it("opens a read-only detail modal from the signal row", async () => {
     const user = userEvent.setup();
     render(<ContractWhaleMonitor />);
@@ -292,6 +468,14 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Discord Gate")).toBeInTheDocument();
     expect(screen.getByText("可进入推送判断")).toBeInTheDocument();
     expect(screen.getByText("critical_or_s_gate")).toBeInTheDocument();
+    expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
+    expect(screen.getByText("合约源")).toBeInTheDocument();
+    expect(screen.getByText("现货源")).toBeInTheDocument();
+    expect(screen.getByText("已参与")).toBeInTheDocument();
+    expect(screen.getAllByText("仅现货").length).toBeGreaterThan(0);
+    expect(screen.getByText("Coinbase · Perp")).toBeInTheDocument();
+    expect(screen.getByText("OKX · Perp")).toBeInTheDocument();
+    expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
     expect(screen.getByText("5s / 15s / 60s 窗口数据")).toBeInTheDocument();
     expect(screen.getByText("平台拆分")).toBeInTheDocument();
     expect(screen.getByText("主动买入：2,610 BTC")).toBeInTheDocument();

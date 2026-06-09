@@ -3,8 +3,9 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-    ContractOiSnapshot, ContractWhaleDirection, ContractWhalePercentileThreshold,
-    ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType,
+    ContractOiSnapshot, ContractWhaleDirection, ContractWhaleMarketType,
+    ContractWhalePercentileThreshold, ContractWhaleSeverity, ContractWhaleSignal,
+    ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 
 use super::sqlite::SqliteStore;
@@ -124,12 +125,15 @@ impl ContractWhaleRepo for SqliteStore {
                     r#"
                     INSERT INTO contract_flow_1s (
                       ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
+                      market_type, source_role, product_id,
                       buy_notional_usd, sell_notional_usd, trade_count,
                       max_single_trade_btc, vwap, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                    ON CONFLICT(ts_bucket, exchange, symbol) DO UPDATE SET
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                    ON CONFLICT(ts_bucket, exchange, symbol, market_type) DO UPDATE SET
                       buy_volume_btc = excluded.buy_volume_btc,
                       sell_volume_btc = excluded.sell_volume_btc,
+                      source_role = excluded.source_role,
+                      product_id = excluded.product_id,
                       buy_notional_usd = excluded.buy_notional_usd,
                       sell_notional_usd = excluded.sell_notional_usd,
                       trade_count = excluded.trade_count,
@@ -140,12 +144,17 @@ impl ContractWhaleRepo for SqliteStore {
                 )?;
                 let now = crate::normalizers::trade::now_ms();
                 for bucket in buckets {
+                    let market_type = enum_value(bucket.market_type)?;
+                    let source_role = enum_value(bucket.source_role)?;
                     stmt.execute(params![
                         bucket.ts_bucket,
                         bucket.exchange,
                         bucket.symbol,
                         bucket.buy_volume_btc,
                         bucket.sell_volume_btc,
+                        market_type,
+                        source_role,
+                        bucket.product_id,
                         bucket.buy_notional_usd,
                         bucket.sell_notional_usd,
                         bucket.trade_count as i64,
@@ -171,10 +180,12 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = conn.prepare(
                 r#"
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
+                       market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
                        max_single_trade_btc, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
+                  AND market_type = 'perp'
                 ORDER BY ts_bucket DESC
                 LIMIT ?2
                 "#,
@@ -186,11 +197,14 @@ impl ContractWhaleRepo for SqliteStore {
                     symbol: row.get(2)?,
                     buy_volume_btc: row.get(3)?,
                     sell_volume_btc: row.get(4)?,
-                    buy_notional_usd: row.get(5)?,
-                    sell_notional_usd: row.get(6)?,
-                    trade_count: row.get::<_, i64>(7)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
-                    vwap: row.get(9)?,
+                    market_type: market_type_from_key(row.get::<_, String>(5)?.as_str()),
+                    source_role: source_role_from_key(row.get::<_, String>(6)?.as_str()),
+                    product_id: row.get(7)?,
+                    buy_notional_usd: row.get(8)?,
+                    sell_notional_usd: row.get(9)?,
+                    trade_count: row.get::<_, i64>(10)?.max(0) as u64,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
+                    vwap: row.get(12)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -211,10 +225,12 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = conn.prepare(
                 r#"
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
+                       market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
                        max_single_trade_btc, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
+                  AND market_type = 'perp'
                   AND ts_bucket >= ?2
                   AND ts_bucket <= ?3
                 ORDER BY ts_bucket ASC
@@ -227,11 +243,14 @@ impl ContractWhaleRepo for SqliteStore {
                     symbol: row.get(2)?,
                     buy_volume_btc: row.get(3)?,
                     sell_volume_btc: row.get(4)?,
-                    buy_notional_usd: row.get(5)?,
-                    sell_notional_usd: row.get(6)?,
-                    trade_count: row.get::<_, i64>(7)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
-                    vwap: row.get(9)?,
+                    market_type: market_type_from_key(row.get::<_, String>(5)?.as_str()),
+                    source_role: source_role_from_key(row.get::<_, String>(6)?.as_str()),
+                    product_id: row.get(7)?,
+                    buy_notional_usd: row.get(8)?,
+                    sell_notional_usd: row.get(9)?,
+                    trade_count: row.get::<_, i64>(10)?.max(0) as u64,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
+                    vwap: row.get(12)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -482,7 +501,10 @@ impl ContractWhaleRepo for SqliteStore {
         let signal_type = enum_value(signal.signal_type)?;
         let direction = enum_value(signal.direction)?;
         let severity = enum_value(signal.severity)?;
+        let market_type = enum_value(signal.market_type)?;
+        let source_role = enum_value(signal.source_role)?;
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
+        let active_sources_json = serde_json::to_string(&signal.active_sources)?;
         let payload_json = serde_json::to_string(signal)?;
         self.with_connection(|conn| {
             conn.execute(
@@ -490,11 +512,12 @@ impl ContractWhaleRepo for SqliteStore {
                 INSERT INTO contract_whale_signals (
                   signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
                   total_volume_btc, net_volume_btc, total_notional_usd, dominance,
-                  price_start, price_end, price_move_pct, main_exchange, exchanges_json,
+                  price_start, price_end, price_move_pct, main_exchange, market_type,
+                  source_role, exchanges_json, active_sources_json, threshold_profile,
                   dynamic_multiple, data_quality, discord_eligible, discord_sent,
                   discord_sent_at, payload_json, created_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                          NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                          NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
                 ON CONFLICT(signal_id) DO UPDATE SET
                   ts = excluded.ts,
                   symbol = excluded.symbol,
@@ -509,7 +532,11 @@ impl ContractWhaleRepo for SqliteStore {
                   dominance = excluded.dominance,
                   price_move_pct = excluded.price_move_pct,
                   main_exchange = excluded.main_exchange,
+                  market_type = excluded.market_type,
+                  source_role = excluded.source_role,
                   exchanges_json = excluded.exchanges_json,
+                  active_sources_json = excluded.active_sources_json,
+                  threshold_profile = excluded.threshold_profile,
                   dynamic_multiple = excluded.dynamic_multiple,
                   data_quality = excluded.data_quality,
                   discord_eligible = excluded.discord_eligible,
@@ -533,7 +560,11 @@ impl ContractWhaleRepo for SqliteStore {
                     signal.dominance,
                     signal.price_move_pct,
                     signal.main_exchange,
+                    market_type,
+                    source_role,
                     exchanges_json,
+                    active_sources_json,
+                    signal.threshold_profile,
                     signal.dynamic_multiple,
                     signal.data_quality as i64,
                     bool_to_int(signal.discord_eligible),
@@ -580,7 +611,8 @@ impl ContractWhaleRepo for SqliteStore {
                 r#"
                 SELECT payload_json, discord_eligible, discord_sent, discord_sent_at
                 FROM contract_whale_signals
-                WHERE (?1 IS NULL OR symbol = ?1)
+                WHERE market_type = 'perp'
+                  AND (?1 IS NULL OR symbol = ?1)
                   AND (?2 IS NULL OR severity = ?2)
                   AND (?3 IS NULL OR signal_type = ?3)
                   AND (?4 IS NULL OR direction = ?4)
@@ -788,7 +820,28 @@ fn exchange_from_key(value: &str) -> ContractExchange {
     match value.to_ascii_lowercase().as_str() {
         "okx" => ContractExchange::Okx,
         "bitfinex" => ContractExchange::Bitfinex,
+        "coinbase" => ContractExchange::Coinbase,
         _ => ContractExchange::Binance,
+    }
+}
+
+fn market_type_from_key(value: &str) -> ContractWhaleMarketType {
+    match value.to_ascii_lowercase().as_str() {
+        "spot" => ContractWhaleMarketType::Spot,
+        "level2" => ContractWhaleMarketType::Level2,
+        "funding" => ContractWhaleMarketType::Funding,
+        "oi" => ContractWhaleMarketType::Oi,
+        "liquidation" => ContractWhaleMarketType::Liquidation,
+        _ => ContractWhaleMarketType::Perp,
+    }
+}
+
+fn source_role_from_key(value: &str) -> ContractWhaleSourceRole {
+    match value.to_ascii_lowercase().as_str() {
+        "primary" => ContractWhaleSourceRole::Primary,
+        "confirmation" => ContractWhaleSourceRole::Confirmation,
+        "disabled" => ContractWhaleSourceRole::Disabled,
+        _ => ContractWhaleSourceRole::Optional,
     }
 }
 

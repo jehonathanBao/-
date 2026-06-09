@@ -18,8 +18,8 @@ use btc_toxic_flow_monitor_rs::{
         },
         persistence::flush_contract_flow_buckets_nonblocking,
         types::{
-            ContractFlowBucket, ContractWhaleDirection, ContractWhaleSeverity,
-            ContractWhaleSignalType,
+            ContractFlowBucket, ContractWhaleDirection, ContractWhaleMarketType,
+            ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleSourceRole,
         },
     },
     storage::{
@@ -37,6 +37,9 @@ fn contract_flow_1s_upsert_is_idempotent() {
         ts_bucket: 1_700_000_000_000,
         exchange: "binance".to_string(),
         symbol: "BTC".to_string(),
+        market_type: ContractWhaleMarketType::Perp,
+        source_role: ContractWhaleSourceRole::Primary,
+        product_id: Some("BTCUSDT".to_string()),
         buy_volume_btc: 10.0,
         sell_volume_btc: 2.0,
         buy_notional_usd: 700_000.0,
@@ -65,6 +68,63 @@ fn contract_flow_1s_upsert_is_idempotent() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].buy_volume_btc, 12.0);
     assert_eq!(rows[0].trade_count, 4);
+    assert_eq!(rows[0].market_type, ContractWhaleMarketType::Perp);
+    assert_eq!(rows[0].source_role, ContractWhaleSourceRole::Primary);
+    assert_eq!(rows[0].product_id.as_deref(), Some("BTCUSDT"));
+}
+
+#[test]
+fn contract_flow_1s_keeps_spot_rows_out_of_perp_queries() {
+    let store = temp_store("contract-flow-market-type");
+    let perp_bucket = ContractFlowBucket {
+        ts_bucket: 1_700_000_002_000,
+        exchange: "binance".to_string(),
+        symbol: "BTC".to_string(),
+        market_type: ContractWhaleMarketType::Perp,
+        source_role: ContractWhaleSourceRole::Primary,
+        product_id: Some("BTCUSDT".to_string()),
+        buy_volume_btc: 10.0,
+        sell_volume_btc: 2.0,
+        buy_notional_usd: 700_000.0,
+        sell_notional_usd: 140_000.0,
+        trade_count: 3,
+        max_single_trade_btc: 8.0,
+        vwap: Some(70_000.0),
+    };
+    let spot_bucket = ContractFlowBucket {
+        market_type: ContractWhaleMarketType::Spot,
+        source_role: ContractWhaleSourceRole::Primary,
+        product_id: Some("BTC-USDT".to_string()),
+        buy_volume_btc: 999.0,
+        sell_volume_btc: 0.0,
+        buy_notional_usd: 69_930_000.0,
+        sell_notional_usd: 0.0,
+        trade_count: 99,
+        max_single_trade_btc: 999.0,
+        ..perp_bucket.clone()
+    };
+
+    assert_eq!(
+        store
+            .upsert_contract_flow_buckets(&[perp_bucket.clone(), spot_bucket])
+            .unwrap(),
+        2
+    );
+
+    let rows = store.list_recent_contract_flow_buckets("BTC", 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].market_type, ContractWhaleMarketType::Perp);
+    assert_eq!(rows[0].buy_volume_btc, perp_bucket.buy_volume_btc);
+    let raw_count: i64 = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM contract_flow_1s WHERE ts_bucket = ?1 AND exchange = ?2 AND symbol = ?3",
+                rusqlite::params![perp_bucket.ts_bucket, perp_bucket.exchange, perp_bucket.symbol],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(raw_count, 2);
 }
 
 #[tokio::test]
@@ -74,6 +134,9 @@ async fn contract_flow_nonblocking_flush_writes_buckets() {
         ts_bucket: 1_700_000_001_000,
         exchange: "okx".to_string(),
         symbol: "BTC".to_string(),
+        market_type: ContractWhaleMarketType::Perp,
+        source_role: ContractWhaleSourceRole::Disabled,
+        product_id: Some("BTC-USDT-SWAP".to_string()),
         buy_volume_btc: 5.0,
         sell_volume_btc: 1.0,
         buy_notional_usd: 350_000.0,
@@ -125,6 +188,38 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
     assert!(rows[0].discord_sent);
     assert_eq!(rows[0].discord_sent_at, Some(signal.ts + 1));
     assert_eq!(rows[0].total_volume_btc, signal.total_volume_btc);
+    assert_eq!(rows[0].market_type, ContractWhaleMarketType::Perp);
+    assert_eq!(rows[0].threshold_profile, "binance_bitfinex");
+    assert!(!rows[0].active_sources.contract.is_empty());
+    assert!(rows[0]
+        .active_sources
+        .contract
+        .iter()
+        .any(|entry| entry.exchange == "binance"
+            && entry.market_type == ContractWhaleMarketType::Perp
+            && entry.enabled
+            && entry.status == "active"));
+    assert!(rows[0]
+        .active_sources
+        .contract
+        .iter()
+        .any(|entry| entry.exchange == "coinbase"
+            && entry.market_type == ContractWhaleMarketType::Perp
+            && !entry.enabled
+            && entry.status == "spot_only"));
+    assert!(rows[0]
+        .active_sources
+        .contract
+        .iter()
+        .any(|entry| entry.exchange == "okx"
+            && entry.market_type == ContractWhaleMarketType::Perp
+            && !entry.enabled
+            && entry.status == "disabled"));
+    assert!(rows[0]
+        .active_sources
+        .spot
+        .iter()
+        .any(|entry| entry.exchange == "coinbase" && entry.status == "spot_only"));
 }
 
 #[test]
@@ -153,6 +248,11 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     for signal in [&buy_critical, &buy_s, &sell_critical] {
         store.upsert_contract_whale_signal(signal).unwrap();
     }
+    let mut spot_signal = base.clone();
+    spot_signal.id = "contract-whale:BTC:15:spot-row".to_string();
+    spot_signal.ts = 1_700_000_030_000;
+    spot_signal.market_type = ContractWhaleMarketType::Spot;
+    store.upsert_contract_whale_signal(&spot_signal).unwrap();
 
     let critical = store
         .query_contract_whale_signals(&ContractWhaleSignalQuery {
@@ -180,6 +280,10 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     assert!(buy_only
         .iter()
         .all(|signal| signal.direction == ContractWhaleDirection::Buy));
+    assert!(buy_only
+        .iter()
+        .all(|signal| signal.market_type == ContractWhaleMarketType::Perp));
+    assert!(!buy_only.iter().any(|signal| signal.id == spot_signal.id));
 
     let paged = store
         .query_contract_whale_signals(&ContractWhaleSignalQuery {
@@ -217,6 +321,9 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             ts_bucket: now - 20 * 24 * 60 * 60 * 1000,
             exchange: "binance".to_string(),
             symbol: "BTC".to_string(),
+            market_type: ContractWhaleMarketType::Perp,
+            source_role: ContractWhaleSourceRole::Primary,
+            product_id: None,
             buy_volume_btc: 1.0,
             sell_volume_btc: 0.0,
             buy_notional_usd: 70_000.0,
@@ -229,6 +336,9 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             ts_bucket: now - 1_000,
             exchange: "binance".to_string(),
             symbol: "BTC".to_string(),
+            market_type: ContractWhaleMarketType::Perp,
+            source_role: ContractWhaleSourceRole::Primary,
+            product_id: None,
             buy_volume_btc: 2.0,
             sell_volume_btc: 0.0,
             buy_notional_usd: 140_000.0,
@@ -285,6 +395,13 @@ fn contract_flow_history_builds_dynamic_average_and_percentile_thresholds() {
             ts_bucket: base_ts + (index * 15_000),
             exchange: if index % 2 == 0 { "binance" } else { "okx" }.to_string(),
             symbol: "BTC".to_string(),
+            market_type: ContractWhaleMarketType::Perp,
+            source_role: if index % 2 == 0 {
+                ContractWhaleSourceRole::Primary
+            } else {
+                ContractWhaleSourceRole::Disabled
+            },
+            product_id: None,
             buy_volume_btc: 100.0 + index as f64,
             sell_volume_btc: 20.0,
             buy_notional_usd: (100.0 + index as f64) * 70_000.0,
