@@ -117,6 +117,58 @@ dry_run = false
 }
 
 #[test]
+fn app_config_file_env_loads_overlay_for_personal_cwm_runtime() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    let config_path = write_config(
+        "app-config-file-overlay",
+        r#"
+[contract_whale_monitor]
+enabled = true
+dry_run = true
+
+[spot_whale_monitor]
+enabled = true
+dry_run = true
+"#,
+    );
+    std::env::set_var("APP_CONFIG_FILE", config_path);
+
+    let config = AppConfig::from_env().expect("config");
+
+    assert!(config.contract_whale_monitor.enabled);
+    assert!(config.contract_whale_monitor.dry_run);
+    assert!(config.spot_whale_monitor.enabled);
+    assert!(config.spot_whale_monitor.dry_run);
+    clear_config_env();
+}
+
+#[test]
+fn personal_cwm_example_enables_dry_run_binance_bitfinex_with_coinbase_spot_only() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    reset_contract_whale_runtime_config();
+
+    let config = AppConfig::from_env_with_config_file("config/cwm.personal.example")
+        .expect("personal CWM config");
+    let cwm = contract_whale_runtime_config();
+    let resolution = cwm.threshold_profile_resolution();
+
+    assert!(config.contract_whale_monitor.enabled);
+    assert!(config.contract_whale_monitor.dry_run);
+    assert!(config.spot_whale_monitor.enabled);
+    assert!(config.spot_whale_monitor.dry_run);
+    assert_eq!(resolution.profile_name, "binance_bitfinex");
+    assert_eq!(resolution.active_keys(), vec!["binance", "bitfinex"]);
+    assert!(cwm.exchanges.coinbase.spot.enabled);
+    assert!(!cwm.exchanges.coinbase.perp.enabled);
+    assert!(!cwm.exchanges.okx.perp.enabled);
+
+    reset_contract_whale_runtime_config();
+    clear_config_env();
+}
+
+#[test]
 fn toml_contract_whale_scoring_and_symbol_thresholds_are_loaded() {
     let _guard = ENV_LOCK.lock().expect("env lock poisoned");
     clear_config_env();
@@ -288,6 +340,9 @@ fn clear_config_env() {
         "ENABLE_OKX",
         "CONTRACT_WHALE_ENABLED",
         "CONTRACT_WHALE_DRY_RUN",
+        "SPOT_WHALE_ENABLED",
+        "SPOT_WHALE_DRY_RUN",
+        "APP_CONFIG_FILE",
     ] {
         std::env::remove_var(key);
     }

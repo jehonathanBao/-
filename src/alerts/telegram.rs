@@ -133,12 +133,7 @@ fn alert_http_timeout_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
+    use crate::test_support::env_lock;
 
     #[test]
     fn alert_http_timeout_uses_env_or_safe_default() {

@@ -1620,7 +1620,7 @@ fn build_market_structure_reasons(
             "gate",
             direction,
             &format!(
-                "operator gate requires mainForceScore>={}, confidence>={}, dataQuality>={}, and at least {}/{} confirmation checks; current {}/{}",
+                "review gate requires mainForceScore>={}, confidence>={}, dataQuality>={}, and at least {}/{} confirmation checks; current {}/{}",
                 confirmation.min_main_force_score,
                 fmt_weight(confirmation.min_confidence),
                 fmt_weight(confirmation.min_data_quality),

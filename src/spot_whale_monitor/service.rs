@@ -822,8 +822,7 @@ fn summarized_exchange_status(
             }
         }
         None if item.connected || item.status == "connected" => {
-            item.connected = false;
-            item.status = "waiting_for_trades".to_string();
+            item.connected = true;
             item.latency_ms = None;
         }
         None => {}

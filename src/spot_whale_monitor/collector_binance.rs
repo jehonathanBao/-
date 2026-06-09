@@ -156,10 +156,11 @@ mod tests {
         assert!(binance.connected);
         assert_eq!(binance.status, "degraded");
 
-        handle_message(
-            r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1712400000000,"s":"BTCUSDT","a":1,"p":"70000.00","q":"0.50","T":1712400000000,"m":false}}"#,
-            &service,
+        let ts = crate::normalizers::trade::now_ms();
+        let message = format!(
+            r#"{{"stream":"btcusdt@aggTrade","data":{{"e":"aggTrade","E":{ts},"s":"BTCUSDT","a":1,"p":"70000.00","q":"0.50","T":{ts},"m":false}}}}"#
         );
+        handle_message(&message, &service);
 
         let summary = service.summary("BTC");
         let binance = summary.exchanges.get("binance").expect("binance status");

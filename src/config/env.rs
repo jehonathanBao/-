@@ -83,7 +83,9 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> anyhow::Result<Self> {
-        Self::from_env_with_config_file("config/default")
+        let config_file =
+            env::var("APP_CONFIG_FILE").unwrap_or_else(|_| "config/default".to_string());
+        Self::from_env_with_config_file(&config_file)
     }
 
     pub fn from_env_with_config_file(config_file: &str) -> anyhow::Result<Self> {

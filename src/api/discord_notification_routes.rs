@@ -1052,7 +1052,7 @@ fn short_toxic_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPay
         inline: false,
     });
     fields.push(DiscordEmbedField {
-        name: "判断".to_string(),
+        name: "最终结果".to_string(),
         value: format!(
             "{}；短线扫盘 / 插针风险升高，不代表中长线趋势。",
             final_result.trim_end_matches('。')
@@ -1897,6 +1897,8 @@ fn now_rfc3339() -> String {
 mod tests {
     use std::sync::{Mutex, OnceLock};
 
+    use crate::test_support;
+
     use super::{
         discord_payload, evaluate_discord_alert_gate, validate_discord_webhook_url,
         DiscordAlertMode, DiscordNotificationRequest, DiscordPushLimiter,
@@ -2028,7 +2030,7 @@ mod tests {
 
     #[test]
     fn alert_http_timeout_uses_env_or_safe_default() {
-        let _guard = env_lock().lock().expect("env lock");
+        let _guard = test_support::env_lock().lock().expect("env lock");
         std::env::remove_var("ALERT_HTTP_TIMEOUT_SECS");
         assert_eq!(super::alert_http_timeout_secs(), 5);
 

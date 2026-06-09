@@ -15,6 +15,7 @@ data/production_replay/labels/
 !data/production_replay/README.md
 !data/production_replay/.gitkeep
 config/replay.production.local.toml
+config/cwm.personal.local.toml
 .env
 .env.*
 !.env.example

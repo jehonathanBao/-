@@ -1,0 +1,71 @@
+# Personal CWM dry-run overlay.
+#
+# Copy this file to `config/cwm.personal.local.toml`, keep the local file
+# uncommitted, then start the backend with:
+#
+#   $env:APP_CONFIG_FILE = "config/cwm.personal.local"
+#   cargo run -- serve
+#
+# This overlay keeps the system read-only and Discord in dry-run mode.
+
+[contract_whale_monitor]
+enabled = true
+dry_run = true
+
+[contract_whale_monitor.exchanges.binance]
+enabled = true
+
+[contract_whale_monitor.exchanges.binance.perp]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.binance.spot]
+enabled = true
+role = "primary"
+
+[contract_whale_monitor.exchanges.bitfinex]
+enabled = true
+
+[contract_whale_monitor.exchanges.bitfinex.perp]
+enabled = true
+role = "confirmation"
+
+[contract_whale_monitor.exchanges.bitfinex.spot]
+enabled = true
+role = "confirmation"
+
+[contract_whale_monitor.exchanges.coinbase]
+enabled = true
+
+[contract_whale_monitor.exchanges.coinbase.spot]
+enabled = true
+role = "spot_confirmation"
+
+[contract_whale_monitor.exchanges.coinbase.perp]
+enabled = false
+product = "BTC-PERP"
+source = "coinbase_intx_match"
+role = "confirmation"
+requires_auth = true
+market_data_only = true
+
+[contract_whale_monitor.exchanges.okx]
+enabled = false
+
+[contract_whale_monitor.exchanges.okx.spot]
+enabled = false
+role = "disabled"
+
+[contract_whale_monitor.exchanges.okx.perp]
+enabled = false
+role = "disabled"
+
+[spot_whale_monitor]
+enabled = true
+dry_run = true
+
+[spot_whale_monitor.exchanges.binance]
+enabled = true
+
+[spot_whale_monitor.exchanges.coinbase]
+enabled = true

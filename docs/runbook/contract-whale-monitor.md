@@ -14,6 +14,43 @@ dry_run = true
 
 Dry-run allows collection, signal generation, history writes, and `cwm.discord.would_send` logs. It does not call the Discord webhook.
 
+## Personal MVP Quick Start
+
+For a personal local run that enables Binance/Bitfinex perp monitoring, keeps
+Coinbase as spot-only confirmation, disables OKX, and keeps Discord dry-run:
+
+```powershell
+Copy-Item config\cwm.personal.example.toml config\cwm.personal.local.toml
+$env:APP_CONFIG_FILE = "config/cwm.personal.local"
+$env:RUST_LOG = "info,contract_whale_monitor=debug"
+cargo run -- serve
+```
+
+`config/cwm.personal.local.toml` is ignored by Git. Keep webhook URLs and any
+operator tokens in `.env` or server environment variables, never in the config
+file.
+
+Expected startup behavior:
+
+- CWM summary shows `enabled=true` and `dryRun=true`.
+- `thresholdProfile` resolves to `binance_bitfinex`.
+- Active contract sources are Binance and Bitfinex perp.
+- Coinbase appears as `spot_only` and can be used for spot context, but it is
+  not counted as a contract source.
+- OKX appears as `disabled`, not as a data failure.
+- Discord logs use `cwm.discord.would_send`; no real webhook request is made.
+
+Quick checks:
+
+```powershell
+curl "http://127.0.0.1:3000/api/contract-whale/summary?symbol=BTC"
+curl "http://127.0.0.1:3000/api/contract-whale/latest?symbol=BTC&limit=50"
+curl "http://127.0.0.1:3000/api/contract-whale/history?symbol=BTC&limit=50"
+```
+
+To bind the API to a non-loopback address, set `API_HOST` and also set
+`OPERATOR_TOKEN`; non-loopback GET APIs reject unauthenticated requests.
+
 ## Check Runtime Health
 
 ```bash
