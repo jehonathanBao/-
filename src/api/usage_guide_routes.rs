@@ -17,6 +17,9 @@ mod tests {
 
     #[test]
     fn usage_guide_markdown_contains_signal_interpretation_sections() {
+        assert!(USAGE_GUIDE_MARKDOWN.contains("当前有毒订单判断逻辑"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("mainForceConfirmed = true"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("OKX 关闭时"));
         assert!(USAGE_GUIDE_MARKDOWN.contains("信号卡片字段怎么看"));
         assert!(USAGE_GUIDE_MARKDOWN.contains("合约监控信号怎么解读"));
         assert!(USAGE_GUIDE_MARKDOWN.contains("Discord 状态怎么理解"));

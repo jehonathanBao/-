@@ -83,11 +83,15 @@ vi.mock("../api/usageGuide.js", () => ({
         "",
         "页面里所有 `Candidate` 都表示候选信号。",
         "",
-        "## 5. 合约监控信号怎么解读",
+        "## 3. 当前有毒订单判断逻辑",
+        "",
+        "Candidate only，系统只做盘口 / L2 / 成交异常提醒。",
+        "",
+        "## 7. 合约监控信号怎么解读",
         "",
         "主力拉盘表示合约主动买入成交突然放大。",
         "",
-        "## 8. Discord 状态怎么理解",
+        "## 9. Discord 状态怎么理解",
         "",
         "`cooldown` 表示同方向短时间内已经推过。",
       ].join("\n"),
@@ -242,11 +246,10 @@ describe("Dashboard interactions", () => {
   it("shows the current toxic-order decision logic in the warning rules view", async () => {
     renderDashboard("/rules");
 
-    expect(await screen.findByText("当前有毒订单判断逻辑")).toBeInTheDocument();
-    expect(screen.getByText(/短线有毒订单评分 toxicScore/)).toBeInTheDocument();
-    expect(screen.getByText(/structureBias 单独表示方向/)).toBeInTheDocument();
-    expect(screen.getByText(/CWM 大行情提醒保留独立 gate/)).toBeInTheDocument();
-    expect(screen.getByText(/系统只做盘口\/成交异常提醒/)).toBeInTheDocument();
+    expect(await screen.findByText("判断逻辑已移至使用指南")).toBeInTheDocument();
+    expect(screen.getByText(/系统只做盘口 \/ 成交异常提醒/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开使用指南" })).toHaveAttribute("href", "/usage-guide");
+    expect(screen.queryByText(/短线有毒订单评分 toxicScore/)).not.toBeInTheDocument();
   });
 
   it("shows the user usage guide from the docs markdown file", async () => {
@@ -259,8 +262,9 @@ describe("Dashboard interactions", () => {
         element?.tagName === "P" && element.textContent.includes("页面里所有 Candidate 都表示候选信号。"),
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("5. 合约监控信号怎么解读")).toBeInTheDocument();
-    expect(screen.getByText("8. Discord 状态怎么理解")).toBeInTheDocument();
+    expect(screen.getByText("3. 当前有毒订单判断逻辑")).toBeInTheDocument();
+    expect(screen.getByText("7. 合约监控信号怎么解读")).toBeInTheDocument();
+    expect(screen.getByText("9. Discord 状态怎么理解")).toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 

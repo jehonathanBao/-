@@ -33,7 +33,186 @@
 现货 + 合约主力结构评分负责告诉你：这里是不是发生过真正有意义的主力行为。
 ```
 
-## 3. 首页两张评分卡怎么看
+## 3. 当前有毒订单判断逻辑
+
+这部分原来展示在监控首页。现在统一放到使用指南里，首页只保留状态摘要，避免占用看盘空间。
+
+### 安全边界
+
+系统只做盘口 / L2 / 成交异常提醒，不执行下单、拦截、封禁或资金操作。
+所有结果都是 `Candidate only`，意思是“候选信号，需要人工复核”，不是执法结论，也不是买卖指令。
+
+### 候选生成
+
+候选信号来自公开盘口和成交数据。
+
+触发线索包括：
+
+- L2 撤单 / 挂单异常
+- trade imbalance
+- depth withdrawal
+- spread widening
+- VPIN-lite
+- 主动扫盘
+- 盘口突然变薄
+- 成交后价格反向伤害
+
+这些线索会生成现货 TOF 候选和短线有毒订单候选。
+
+### 合约增强
+
+合约侧会把下面这些指标作为增强确认：
+
+- OI
+- Funding
+- Liquidation pressure
+- Aggressive order flow
+- CWM 主力合约成交流
+
+系统会把现货候选和合约候选按 `symbol` 合并，但不会因为单独合约爆量就直接确认主力。
+
+### 双评分系统
+
+当前不是一个总分系统，而是两套分开的评分：
+
+- 短线有毒订单评分 `toxicScore`：使用 `1s / 5s / 15s / 60s`，判断短线扫盘、插针、假突破风险。
+- 现货 + 合约主力结构评分 `mainForceScore`：使用现货、合约、OI、清算、Funding、Basis、价格响应和跨市场确认，判断是否出现主力结构。
+
+现货 `spotScore` 主要按五项计算：
+
+- CVD
+- 成交量异常
+- 吸收
+- 盘口变化
+- 价格响应
+
+合约 `contractScore` 主要按六项计算：
+
+- CWM 主动流
+- OI 冲击
+- 清算环境
+- Funding 拥挤
+- Basis
+- enabled 交易所确认
+
+### 跨市场确认
+
+`crossConfirmScore` 的核心是判断现货和合约是不是互相确认。
+
+计算口径：
+
+```text
+crossConfirmScore =
+0.40 * 现货合约方向一致
++ 0.25 * 多窗口一致
++ 0.20 * 价格响应一致
++ 0.15 * 数据源覆盖
+```
+
+`SourceCoverage` 只按 enabled source 算。
+例如 OKX 已关闭时，它不会参与覆盖率，也不会降低数据质量。
+
+### 主力确认
+
+`mainForceConfirmed = true` 需要同时满足：
+
+```text
+mainForceScore >= 75
+confidence >= 70
+dataQuality >= 70
+7 个确认条件里至少命中 3 个
+```
+
+确认条件包括：
+
+- `spotScore >= 60`
+- `contractScore >= 70`
+- `crossConfirmScore >= 60`
+- OI 与方向一致
+- 价格响应或吸收结构明确
+- 清算不是主要驱动
+- 至少两个时间窗口方向一致
+
+前端会显示已确认、待确认和命中情况。没有达到这些条件时，即使合约成交量很大，也只应理解为“合约冲击”或“观察信号”。
+
+### 极端行情与结构分类
+
+`extremeImpactConfirmed` 只表示冲击很剧烈，不等于主力确认。
+
+`regimeType` 会把结构归类成：
+
+- 主力建多
+- 主力建空
+- 现货吸筹
+- 现货派发
+- 空头挤压
+- 多头踩踏
+- 下方吸收
+- 上方压制
+- 高换手震荡
+- 合约冲击
+
+如果清算量很大、OI 快速下降、价格单边滑动，系统会提高 `extremeImpactScore`，但会降低 `mainForceScore`，避免把清算瀑布误报成主力建仓。
+
+### 方向与置信度
+
+`structureBias` 单独表示方向，范围是 `-100` 到 `+100`：
+
+- 正数：偏多结构
+- 负数：偏空结构
+- 接近 0：中性、吸收、压制或尚未展开
+
+`mainForceScore` 表示主力结构强度，不直接表示方向。
+
+`confidence` 和 `dataQuality` 也要分开看：
+
+- `dataQuality` 看数据健康，例如交易所在线、延迟、warmup、enabled source 覆盖。
+- `confidence` 还要看 sourceCoverage、多窗口一致性和 signalAgreement。
+
+### 交易所确认
+
+当前合约监控只按 enabled 交易所计算。
+
+OKX 关闭时：
+
+- 不参与总成交量
+- 不参与数据质量扣分
+- 不参与多平台确认
+- 不影响 Discord gate
+
+当前口径里，Binance 是主流动性源，Bitfinex 是确认源。
+只有 Binance + Bitfinex 同向确认时，才给 S 级空间。
+
+### 短线衰减
+
+短线 `toxicScore` 使用 `Calm / Watch / High / Critical / S` 等级。
+
+它是短生命周期信号：
+
+```text
+halfLifeSec 通常 30 - 45 秒
+max TTL 约 3 - 5 分钟
+```
+
+如果后续没有持续异常，`decayedScore` 会快速下降。
+
+### 推送边界
+
+短线有毒订单 Discord gate 通常要求：
+
+```text
+toxicScore >= 85
+confidence >= 70
+dataQuality >= 70
+cooldown >= 60s
+```
+
+文案会明确提示“不代表中长线趋势”。
+
+CWM 大行情提醒保留独立 gate、独立冷却和 dry-run 观察。
+Medium / Low 只在前端展示，不自动推送 Discord。
+
+## 4. 首页两张评分卡怎么看
 
 ### 短线有毒订单评分
 
@@ -161,7 +340,7 @@ dataQuality >= 70
 - 不是清算主导
 - 多个时间窗口方向一致
 
-## 4. 信号卡片字段怎么看
+## 5. 信号卡片字段怎么看
 
 ### Symbol
 
@@ -284,7 +463,7 @@ Discord 推送状态。
 - `structureBias`
 - `extremeImpactScore`
 
-## 5. regimeType 怎么解读
+## 6. regimeType 怎么解读
 
 ### main_force_long_build / 主力建多
 
@@ -386,7 +565,7 @@ Discord 推送状态。
 这是合约侧冲击，不是主力确认。
 ```
 
-## 6. 合约监控信号怎么解读
+## 7. 合约监控信号怎么解读
 
 合约监控看的是 BTC / ETH 永续合约主动成交流。
 
@@ -428,7 +607,7 @@ Discord 推送状态。
 主力确认
 ```
 
-## 7. 现货监控信号怎么解读
+## 8. 现货监控信号怎么解读
 
 现货监控看的是 Binance Spot 和 Coinbase Spot 的主动成交流。
 
@@ -454,7 +633,7 @@ Discord 推送状态。
 现货强 + 合约弱 = 更像现货吸筹或派发，需要等合约确认。
 ```
 
-## 8. Discord 状态怎么理解
+## 9. Discord 状态怎么理解
 
 当前系统有两条 Discord 链路：
 
@@ -513,7 +692,7 @@ dataQuality >= 70
 - `429`：Discord 限流，系统会避免刷屏。
 - `dry_run`：只模拟发送，不会真的发到频道。
 
-## 9. 常见场景怎么判断
+## 10. 常见场景怎么判断
 
 ### toxicScore 高，mainForceScore 低
 
@@ -611,7 +790,7 @@ dataQuality >= 70
 - 不要直接判定主力。
 - 等现货、OI、价格响应进一步确认。
 
-## 10. 信号历史和主力事件怎么看
+## 11. 信号历史和主力事件怎么看
 
 信号历史用于复盘短线和中长线信号。
 
@@ -662,7 +841,7 @@ mainForceScore < 55
 14:35 - 15:20 主力建多，峰值评分 88。
 ```
 
-## 11. 最容易误读的地方
+## 12. 最容易误读的地方
 
 ### 误读 1：短线 toxic 高，就等于主力建仓
 
@@ -697,7 +876,7 @@ mainForceScore < 55
 
 如果主动买入很大但价格涨不动，可能是上方压制。
 
-## 12. 日常使用建议
+## 13. 日常使用建议
 
 开盘或打开页面后，建议这样看：
 
