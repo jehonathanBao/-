@@ -1243,17 +1243,21 @@ fn disabled_summary(
     trend_60s: ContractWhaleTrend60s,
 ) -> ContractWhaleSummary {
     let runtime_config = contract_whale_runtime_config();
+    let resolution = runtime_config.threshold_profile_resolution_with_statuses(&exchanges, now);
     ContractWhaleSummary {
         status: "disabled".to_string(),
         health_status: "disabled".to_string(),
         health_reason: "contract_whale_monitor_disabled".to_string(),
         market_type: "perp".to_string(),
         meta: None,
-        threshold_profile: runtime_config.threshold_profile_key().to_string(),
-        active_exchange_count: runtime_config.active_exchange_count(),
-        enabled_exchanges: runtime_config.enabled_exchanges(),
+        threshold_profile: resolution.profile_name.clone(),
+        threshold_profile_reason: resolution.reason.clone(),
+        configured_contract_sources: resolution.configured_keys(),
+        eligible_contract_sources: resolution.eligible_keys(),
+        active_exchange_count: resolution.active_contract_sources.len(),
+        enabled_exchanges: resolution.active_keys(),
         disabled_exchanges: runtime_config.disabled_exchanges(),
-        active_contract_exchanges: runtime_config.enabled_exchanges(),
+        active_contract_exchanges: resolution.active_keys(),
         direction: "disabled".to_string(),
         latest_direction: "disabled".to_string(),
         latest_severity: ContractWhaleSeverity::Calm,
@@ -1306,8 +1310,15 @@ fn build_summary(
         CWM_LOG_PREFIX
     );
     let runtime_config = contract_whale_runtime_config();
+    let resolution = runtime_config.threshold_profile_resolution_with_statuses(&exchanges, now);
     let (contract_data_quality, spot_data_quality, overall_data_quality) =
-        summary_data_quality_scores(&runtime_config, &exchanges, now, warmup.active);
+        summary_data_quality_scores(
+            &runtime_config,
+            &resolution.active_keys(),
+            &exchanges,
+            now,
+            warmup.active,
+        );
     ContractWhaleSummary {
         status: if warmup.active {
             "warmup".to_string()
@@ -1321,11 +1332,14 @@ fn build_summary(
         health_reason,
         market_type: "perp".to_string(),
         meta: None,
-        threshold_profile: runtime_config.threshold_profile_key().to_string(),
-        active_exchange_count: runtime_config.active_exchange_count(),
-        enabled_exchanges: runtime_config.enabled_exchanges(),
+        threshold_profile: resolution.profile_name.clone(),
+        threshold_profile_reason: resolution.reason.clone(),
+        configured_contract_sources: resolution.configured_keys(),
+        eligible_contract_sources: resolution.eligible_keys(),
+        active_exchange_count: resolution.active_contract_sources.len(),
+        enabled_exchanges: resolution.active_keys(),
         disabled_exchanges: runtime_config.disabled_exchanges(),
-        active_contract_exchanges: runtime_config.enabled_exchanges(),
+        active_contract_exchanges: resolution.active_keys(),
         direction: latest_direction.clone(),
         latest_direction,
         latest_severity: latest
@@ -1372,6 +1386,11 @@ fn platform_capability_from_config(
 ) -> ContractWhalePlatformCapability {
     let status = if !platform.enabled {
         "disabled"
+    } else if platform.perp.enabled
+        && platform.perp.requires_auth
+        && !platform.perp.auth_configured()
+    {
+        "degraded"
     } else if platform.contract_markets_enabled() {
         "active"
     } else if platform.any_market_enabled() {
@@ -1383,23 +1402,41 @@ fn platform_capability_from_config(
         platform_enabled: platform.enabled,
         status: status.to_string(),
         markets: [
-            market_capability_entry("spot", platform.spot.enabled, platform.spot.role.as_key()),
-            market_capability_entry("perp", platform.perp.enabled, platform.perp.role.as_key()),
+            market_capability_entry(
+                "spot",
+                platform.spot.enabled,
+                platform.spot.role.as_key(),
+                &platform.spot,
+            ),
+            market_capability_entry(
+                "perp",
+                platform.perp.enabled,
+                platform.perp.role.as_key(),
+                &platform.perp,
+            ),
             market_capability_entry(
                 "level2",
                 platform.level2.enabled,
                 platform.level2.role.as_key(),
+                &platform.level2,
             ),
             market_capability_entry(
                 "funding",
                 platform.funding.enabled,
                 platform.funding.role.as_key(),
+                &platform.funding,
             ),
-            market_capability_entry("oi", platform.oi.enabled, platform.oi.role.as_key()),
+            market_capability_entry(
+                "oi",
+                platform.oi.enabled,
+                platform.oi.role.as_key(),
+                &platform.oi,
+            ),
             market_capability_entry(
                 "liquidation",
                 platform.liquidation.enabled,
                 platform.liquidation.role.as_key(),
+                &platform.liquidation,
             ),
         ]
         .into_iter()
@@ -1411,33 +1448,47 @@ fn market_capability_entry(
     market: &str,
     enabled: bool,
     role: &str,
+    source: &crate::contract_whale_monitor::config::ContractWhaleSourceConfig,
 ) -> (String, ContractWhaleMarketCapability) {
     (
         market.to_string(),
         ContractWhaleMarketCapability {
             enabled,
-            status: if enabled {
-                if market == "perp" {
-                    "active".to_string()
-                } else {
-                    "enabled".to_string()
-                }
-            } else {
+            status: if !enabled {
                 "disabled".to_string()
+            } else if market == "perp" && source.requires_auth && !source.auth_configured() {
+                "auth_missing".to_string()
+            } else if market == "perp" && source.requires_auth {
+                "ready".to_string()
+            } else if market == "perp" {
+                "active".to_string()
+            } else {
+                "enabled".to_string()
             },
             role: role.to_string(),
+            product: source.product.clone(),
+            source: source.source.clone(),
+            requires_auth: source.requires_auth,
+            market_data_only: source.market_data_only,
+            auth_configured: source.auth_configured(),
         },
     )
 }
 
 fn summary_data_quality_scores(
     runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    active_contract_exchanges: &[String],
     exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
     now: i64,
     warmup_active: bool,
 ) -> (u8, u8, u8) {
-    let contract_data_quality =
-        contract_data_quality_score(runtime_config, exchanges, now, warmup_active);
+    let contract_data_quality = contract_data_quality_score(
+        runtime_config,
+        active_contract_exchanges,
+        exchanges,
+        now,
+        warmup_active,
+    );
     let spot_data_quality = spot_data_quality_score(runtime_config, exchanges, now, warmup_active);
     let overall_data_quality =
         ((contract_data_quality as f64 * 0.60) + (spot_data_quality as f64 * 0.40)).round() as u8;
@@ -1450,11 +1501,12 @@ fn summary_data_quality_scores(
 
 fn contract_data_quality_score(
     runtime_config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+    active_contract_exchanges: &[String],
     exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
     now: i64,
     warmup_active: bool,
 ) -> u8 {
-    let enabled_exchanges = runtime_config.enabled_exchanges();
+    let enabled_exchanges = active_contract_exchanges;
     if enabled_exchanges.is_empty() {
         return 0;
     }
@@ -1462,8 +1514,12 @@ fn contract_data_quality_score(
         .iter()
         .filter(|exchange| exchange_recent(exchanges.get(*exchange), now, 30_000))
         .count();
-    let primary_recent = runtime_config
+    let primary_exchanges = runtime_config
         .primary_contract_exchanges()
+        .into_iter()
+        .filter(|exchange| enabled_exchanges.iter().any(|active| active == exchange))
+        .collect::<Vec<_>>();
+    let primary_recent = primary_exchanges
         .iter()
         .all(|exchange| exchange_recent(exchanges.get(exchange), now, 30_000));
     let mut score: u8 = if recent_count == 0 {

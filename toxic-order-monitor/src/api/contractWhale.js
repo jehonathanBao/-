@@ -7,6 +7,9 @@ const calmSummary = {
   marketType: "perp",
   meta: null,
   thresholdProfile: "binance_bitfinex",
+  thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+  configuredContractSources: ["binance", "bitfinex"],
+  eligibleContractSources: ["binance", "bitfinex"],
   activeExchangeCount: 0,
   enabledExchanges: [],
   disabledExchanges: ["binance", "okx", "bitfinex"],
@@ -225,6 +228,11 @@ function normalizeActiveSources(value) {
   return {
     contract: normalizeActiveSourceEntries(source.contract),
     spot: normalizeActiveSourceEntries(source.spot),
+    thresholdProfile: source.thresholdProfile ? String(source.thresholdProfile).toLowerCase() : "three_exchange",
+    thresholdProfileReason: source.thresholdProfileReason ? String(source.thresholdProfileReason) : "",
+    configuredContractSources: normalizeStringArray(source.configuredContractSources),
+    eligibleContractSources: normalizeStringArray(source.eligibleContractSources),
+    activeContractSources: normalizeStringArray(source.activeContractSources),
   };
 }
 
@@ -251,6 +259,9 @@ function normalizeSummary(summary) {
     marketType: summary.marketType ? String(summary.marketType).toLowerCase() : calmSummary.marketType,
     meta: normalizeResponseMeta(summary.meta),
     thresholdProfile: summary.thresholdProfile || calmSummary.thresholdProfile,
+    thresholdProfileReason: summary.thresholdProfileReason || calmSummary.thresholdProfileReason,
+    configuredContractSources: normalizeStringArray(summary.configuredContractSources),
+    eligibleContractSources: normalizeStringArray(summary.eligibleContractSources),
     activeExchangeCount: numberOrNull(summary.activeExchangeCount) || 0,
     enabledExchanges: normalizeStringArray(summary.enabledExchanges),
     disabledExchanges: normalizeStringArray(summary.disabledExchanges),
@@ -347,6 +358,11 @@ function normalizePlatformMarkets(markets) {
       enabled: Boolean(item.enabled),
       status: item.status || (item.enabled ? "enabled" : "disabled"),
       role: item.role || "disabled",
+      product: item.product ? String(item.product) : null,
+      source: item.source ? String(item.source) : null,
+      requiresAuth: Boolean(item.requiresAuth),
+      marketDataOnly: item.marketDataOnly !== false,
+      authConfigured: Boolean(item.authConfigured),
     };
     return acc;
   }, {});

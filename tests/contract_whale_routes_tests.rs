@@ -208,7 +208,7 @@ fn contract_whale_summary_includes_60s_trend_and_health() {
 }
 
 #[test]
-fn contract_whale_summary_switches_threshold_profile_when_coinbase_perp_is_enabled() {
+fn contract_whale_summary_keeps_coinbase_perp_out_of_profile_until_ready() {
     let _guard = contract_whale_test_guard();
     reset_contract_whale_runtime_config();
     let mut config = ContractWhaleRuntimeConfig::default();
@@ -223,18 +223,27 @@ fn contract_whale_summary_switches_threshold_profile_when_coinbase_perp_is_enabl
 
     let response = build_contract_whale_response(&flow_state, "BTC", 50, Some("high"), true, true);
 
+    assert_eq!(response.summary.threshold_profile, "binance_bitfinex");
     assert_eq!(
-        response.summary.threshold_profile,
-        "binance_bitfinex_coinbase"
+        response.summary.threshold_profile_reason,
+        "coinbase_perp_auth_missing"
     );
-    assert_eq!(response.summary.active_exchange_count, 3);
+    assert_eq!(response.summary.active_exchange_count, 2);
     assert_eq!(
-        response.summary.enabled_exchanges,
+        response.summary.configured_contract_sources,
         vec![
             "binance".to_string(),
             "bitfinex".to_string(),
             "coinbase".to_string()
         ]
+    );
+    assert_eq!(
+        response.summary.eligible_contract_sources,
+        vec!["binance".to_string(), "bitfinex".to_string()]
+    );
+    assert_eq!(
+        response.summary.enabled_exchanges,
+        vec!["binance".to_string(), "bitfinex".to_string()]
     );
     let coinbase_status = response
         .summary
@@ -245,7 +254,8 @@ fn contract_whale_summary_switches_threshold_profile_when_coinbase_perp_is_enabl
     assert!(coinbase_status
         .enabled_markets
         .contains(&"perp".to_string()));
-    assert_eq!(response.summary.contract_data_quality, 78);
+    assert_eq!(coinbase_status.status, "disconnected");
+    assert_eq!(response.summary.contract_data_quality, 95);
 
     reset_contract_whale_runtime_config();
 }

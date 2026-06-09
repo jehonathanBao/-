@@ -15,14 +15,14 @@
     {
       "file": "sample_03_absorption.jsonl",
       "expectedSignalType": "downside_absorption",
-      "expectedSeverity": "critical",
-      "expectedDiscordEligible": true
+      "expectedSeverity": "high",
+      "expectedDiscordEligible": false
     },
     {
       "file": "sample_04_resistance.jsonl",
       "expectedSignalType": "upside_suppression",
-      "expectedSeverity": "critical",
-      "expectedDiscordEligible": true
+      "expectedSeverity": "high",
+      "expectedDiscordEligible": false
     },
     {
       "file": "sample_05_noise_no_signal.jsonl",
@@ -40,7 +40,7 @@
       "file": "sample_07_liquidation_suspected.jsonl",
       "expectedSignalType": "aggressive_sell",
       "expectedSeverity": "critical",
-      "expectedDiscordEligible": true,
+      "expectedDiscordEligible": false,
       "expectedLiquidationSuspected": true
     }
   ]

@@ -1,7 +1,9 @@
 use super::{
-    config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
+    config::{
+        contract_whale_runtime_config, ContractWhaleRuntimeConfig, ThresholdProfileResolution,
+    },
     log_events,
-    scoring::{discord_gate, score_contract_whale_signal_with_config},
+    scoring::{discord_gate, score_contract_whale_signal_with_profile},
     types::{
         ContractWhaleActiveSourceEntry, ContractWhaleActiveSources, ContractWhaleDirection,
         ContractWhaleMarketType, ContractWhaleSeverity, ContractWhaleSignal,
@@ -23,6 +25,12 @@ pub fn detect_contract_whale_signal_with_config(
     if !config.symbol_enabled(&stats.symbol) {
         return None;
     }
+    let resolution = config.threshold_profile_resolution_for_observed_sources(
+        stats.exchanges.iter().map(|item| item.exchange.clone()),
+    );
+    if resolution.active_contract_sources.is_empty() {
+        return None;
+    }
     let mut scoring_stats = stats.clone();
     scoring_stats.data_quality = effective_data_quality(&scoring_stats, config);
     if scoring_stats.total_volume_btc <= 0.0 || scoring_stats.data_quality < 50 {
@@ -31,12 +39,18 @@ pub fn detect_contract_whale_signal_with_config(
     let signal_type = classify_signal_type(&scoring_stats)?;
     let liquidation_suspected = liquidation_suspected(&scoring_stats, config);
     scoring_stats.liquidation_driven = liquidation_suspected;
-    let severity = classify_severity(&scoring_stats, signal_type, config);
+    let severity = classify_severity(&scoring_stats, signal_type, config, &resolution);
     if severity == ContractWhaleSeverity::Calm {
         return None;
     }
-    let score = score_contract_whale_signal_with_config(&scoring_stats, signal_type, config);
-    let multi_exchange_confirmed = multi_exchange_confirmed_with_config(&scoring_stats, config);
+    let score = score_contract_whale_signal_with_profile(
+        &scoring_stats,
+        signal_type,
+        config,
+        resolution.profile,
+    );
+    let multi_exchange_confirmed =
+        multi_exchange_confirmed_with_config(&scoring_stats, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         severity,
@@ -110,8 +124,8 @@ pub fn detect_contract_whale_signal_with_config(
             .map(|value| round(value, 8)),
         funding_bias: scoring_stats.market_context.funding_bias.clone(),
         data_quality: scoring_stats.data_quality,
-        threshold_profile: config.threshold_profile_key().to_string(),
-        active_sources: active_source_snapshot(&scoring_stats, config),
+        threshold_profile: resolution.profile_name.clone(),
+        active_sources: active_source_snapshot(&scoring_stats, config, &resolution),
         discord_eligible,
         discord_sent: false,
         discord_sent_at: None,
@@ -160,21 +174,26 @@ fn classify_severity(
     stats: &ContractWhaleWindowStats,
     signal_type: ContractWhaleSignalType,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> ContractWhaleSeverity {
-    let thresholds = config.thresholds_for_symbol_window(&stats.symbol, stats.window_sec);
+    let thresholds = config.thresholds_for_symbol_window_with_profile(
+        &stats.symbol,
+        stats.window_sec,
+        resolution.profile,
+    );
     if !thresholds.high_btc.is_finite() {
         return ContractWhaleSeverity::Calm;
     }
     let dynamic_multiple = stats.dynamic_multiple.unwrap_or(0.0);
     let same_direction_price_move = same_direction_price_move(stats, signal_type);
-    let notional_thresholds = config.notional_thresholds_usd();
+    let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
     let muted_absorption = matches!(
         signal_type,
         ContractWhaleSignalType::DownsideAbsorption | ContractWhaleSignalType::UpsideSuppression
     ) && (stats.price_move_pct.unwrap_or(0.0).abs() <= 0.05
         || stats.price_reversal_ratio.unwrap_or(0.0) >= 0.50);
-    let primary_source_confirmed = active_primary_same_direction(stats, config);
-    let multi_exchange_confirmed = multi_exchange_confirmed_with_config(stats, config);
+    let primary_source_confirmed = active_primary_same_direction(stats, config, resolution);
+    let multi_exchange_confirmed = multi_exchange_confirmed_with_config(stats, config, resolution);
 
     if stats.total_volume_btc >= thresholds.s_btc
         && stats.total_notional_usd >= notional_thresholds.s
@@ -258,7 +277,14 @@ fn liquidation_shape_suspected(
 ) -> bool {
     let price_move = stats.price_move_pct.unwrap_or(0.0).abs();
     let reversal = stats.price_reversal_ratio.unwrap_or(0.0);
-    let thresholds = config.thresholds_for_symbol_window(&stats.symbol, stats.window_sec);
+    let profile = config.threshold_profile_resolution_for_observed_sources(
+        stats.exchanges.iter().map(|item| item.exchange.clone()),
+    );
+    let thresholds = config.thresholds_for_symbol_window_with_profile(
+        &stats.symbol,
+        stats.window_sec,
+        profile.profile,
+    );
     stats.total_volume_btc >= thresholds.critical_btc
         && stats.dominance >= 0.80
         && price_move >= 0.25
@@ -324,11 +350,13 @@ fn same_direction_price_move(
 fn same_direction_exchange_count(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> usize {
     let net_positive = stats.net_volume_btc > 0.0;
     stats
         .exchanges
         .iter()
+        .filter(|item| active_source_contains(resolution, &item.exchange))
         .filter(|item| config.exchange_enabled(&item.exchange))
         .filter(|item| item.total_volume_btc > 0.0)
         .filter(|item| item.dominance >= 0.55)
@@ -339,10 +367,12 @@ fn same_direction_exchange_count(
 fn active_primary_same_direction(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> bool {
     let net_positive = stats.net_volume_btc > 0.0;
     stats.exchanges.iter().any(|item| {
-        config.exchange_enabled(&item.exchange)
+        active_source_contains(resolution, &item.exchange)
+            && config.exchange_enabled(&item.exchange)
             && matches!(item.exchange.as_str(), "binance" | "okx")
             && item.total_volume_btc > 0.0
             && item.dominance >= 0.55
@@ -353,22 +383,24 @@ fn active_primary_same_direction(
 fn multi_exchange_confirmed_with_config(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> bool {
-    if config.active_exchange_count() < 2 {
+    if resolution.active_contract_sources.len() < 2 {
         return false;
     }
     let min_confirmed_exchanges = 2;
     stats.exchange_count >= min_confirmed_exchanges
-        && same_direction_exchange_count(stats, config) >= min_confirmed_exchanges
-        && active_primary_same_direction(stats, config)
-        && bitfinex_confirmation_ok(stats, config)
+        && same_direction_exchange_count(stats, config, resolution) >= min_confirmed_exchanges
+        && active_primary_same_direction(stats, config, resolution)
+        && bitfinex_confirmation_ok(stats, resolution)
 }
 
 fn bitfinex_confirmation_ok(
     stats: &ContractWhaleWindowStats,
-    config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> bool {
-    if config.threshold_profile_key() != "binance_bitfinex" || config.active_exchange_count() < 2 {
+    if resolution.profile_name != "binance_bitfinex" || resolution.active_contract_sources.len() < 2
+    {
         return true;
     }
     let net_positive = stats.net_volume_btc > 0.0;
@@ -378,6 +410,13 @@ fn bitfinex_confirmation_ok(
             && item.net_contribution_share >= 0.05
             && (item.net_volume_btc > 0.0) == net_positive
     })
+}
+
+fn active_source_contains(resolution: &ThresholdProfileResolution, exchange: &str) -> bool {
+    resolution
+        .active_contract_sources
+        .iter()
+        .any(|source| source.as_key().eq_ignore_ascii_case(exchange))
 }
 
 fn direction_for(signal_type: ContractWhaleSignalType) -> ContractWhaleDirection {
@@ -431,6 +470,7 @@ fn signal_source_role(
 fn active_source_snapshot(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> ContractWhaleActiveSources {
     let contract_markets = [
         ContractWhaleMarketType::Perp,
@@ -455,7 +495,7 @@ fn active_source_snapshot(
                     source_role: platform.market_role(market_type),
                     enabled: platform.market_enabled(market_type),
                     status: snapshot_market_status(platform, market_type, participated),
-                    product_id: None,
+                    product_id: platform.source_for_market(market_type).product.clone(),
                 })
             })
         })
@@ -472,12 +512,23 @@ fn active_source_snapshot(
                 source_role: platform.market_role(ContractWhaleMarketType::Spot),
                 enabled: platform.market_enabled(ContractWhaleMarketType::Spot),
                 status: snapshot_market_status(platform, ContractWhaleMarketType::Spot, false),
-                product_id: None,
+                product_id: platform
+                    .source_for_market(ContractWhaleMarketType::Spot)
+                    .product
+                    .clone(),
             })
         })
         .collect();
 
-    ContractWhaleActiveSources { contract, spot }
+    ContractWhaleActiveSources {
+        contract,
+        spot,
+        threshold_profile: resolution.profile_name.clone(),
+        threshold_profile_reason: resolution.reason.clone(),
+        configured_contract_sources: resolution.configured_keys(),
+        eligible_contract_sources: resolution.eligible_keys(),
+        active_contract_sources: resolution.active_keys(),
+    }
 }
 
 fn snapshot_market_status(
@@ -489,6 +540,16 @@ fn snapshot_market_status(
         return "disabled".to_string();
     }
     if platform.market_enabled(market_type) {
+        let source = platform.source_for_market(market_type);
+        if market_type == ContractWhaleMarketType::Perp
+            && source.requires_auth
+            && !source.auth_configured()
+        {
+            return "auth_missing".to_string();
+        }
+        if market_type == ContractWhaleMarketType::Perp && source.requires_auth && !participated {
+            return "ready".to_string();
+        }
         return if participated {
             "active".to_string()
         } else if market_type == ContractWhaleMarketType::Spot

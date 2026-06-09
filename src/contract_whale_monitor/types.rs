@@ -23,11 +23,21 @@ impl ContractExchange {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ContractWhaleMarketType {
     Spot,
+    #[default]
     Perp,
     Level2,
     Funding,
@@ -59,19 +69,23 @@ impl ContractWhaleMarketType {
     }
 }
 
-impl Default for ContractWhaleMarketType {
-    fn default() -> Self {
-        Self::Perp
-    }
-}
-
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ContractWhaleSourceRole {
     Primary,
     Confirmation,
+    #[default]
     Optional,
     Disabled,
 }
@@ -84,12 +98,6 @@ impl ContractWhaleSourceRole {
             Self::Optional => "optional",
             Self::Disabled => "disabled",
         }
-    }
-}
-
-impl Default for ContractWhaleSourceRole {
-    fn default() -> Self {
-        Self::Optional
     }
 }
 
@@ -262,6 +270,16 @@ pub struct ContractWhaleActiveSources {
     pub contract: Vec<ContractWhaleActiveSourceEntry>,
     #[serde(default)]
     pub spot: Vec<ContractWhaleActiveSourceEntry>,
+    #[serde(default = "default_threshold_profile")]
+    pub threshold_profile: String,
+    #[serde(default)]
+    pub threshold_profile_reason: String,
+    #[serde(default)]
+    pub configured_contract_sources: Vec<String>,
+    #[serde(default)]
+    pub eligible_contract_sources: Vec<String>,
+    #[serde(default)]
+    pub active_contract_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -453,6 +471,12 @@ pub struct ContractWhaleSummary {
     #[serde(default)]
     pub threshold_profile: String,
     #[serde(default)]
+    pub threshold_profile_reason: String,
+    #[serde(default)]
+    pub configured_contract_sources: Vec<String>,
+    #[serde(default)]
+    pub eligible_contract_sources: Vec<String>,
+    #[serde(default)]
     pub active_exchange_count: usize,
     #[serde(default)]
     pub enabled_exchanges: Vec<String>,
@@ -535,6 +559,16 @@ pub struct ContractWhaleMarketCapability {
     pub enabled: bool,
     pub status: String,
     pub role: String,
+    #[serde(default)]
+    pub product: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub requires_auth: bool,
+    #[serde(default)]
+    pub market_data_only: bool,
+    #[serde(default)]
+    pub auth_configured: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -109,6 +109,9 @@ export default function ContractWhaleMonitor() {
     healthStatus: "disabled",
     healthReason: "contract_whale_monitor_disabled",
     thresholdProfile: "binance_bitfinex",
+    thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+    configuredContractSources: ["binance", "bitfinex"],
+    eligibleContractSources: ["binance", "bitfinex"],
     activeExchangeCount: 0,
     enabledExchanges: [],
     disabledExchanges: ["binance", "okx", "bitfinex"],
@@ -176,7 +179,7 @@ export default function ContractWhaleMonitor() {
       <ContractWhaleTrendBar exchanges={exchangeStatuses} summary={summary} trend={summary.trend60s} />
 
       <p className="mt-3 text-xs text-slate-500">
-        合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)}
+        合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
       </p>
 
       <div className="mt-4 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
@@ -433,6 +436,10 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Risk Score", `${signal.score}/100`],
                 ["Data Quality", `${signal.dataQuality}/100`],
                 ["Threshold Profile", thresholdProfileLabel(signal.thresholdProfile || summary?.thresholdProfile)],
+                ["Profile Reason", signal.activeSources?.thresholdProfileReason || summary?.thresholdProfileReason || "N/A"],
+                ["Configured Sources", sourceListLabel(signal.activeSources?.configuredContractSources || summary?.configuredContractSources)],
+                ["Eligible Sources", sourceListLabel(signal.activeSources?.eligibleContractSources || summary?.eligibleContractSources)],
+                ["Active Sources", sourceListLabel(signal.activeSources?.activeContractSources || summary?.activeContractExchanges)],
               ]}
             />
           </DetailSection>
@@ -754,6 +761,14 @@ function PlatformCapabilitySection({ platforms }) {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-300">{sourceRoleLabel(capability.role)}</p>
+                  {capability.source ? (
+                    <p className="mt-1 text-[11px] text-slate-500">{capability.source}</p>
+                  ) : null}
+                  {capability.requiresAuth ? (
+                    <p className="mt-1 text-[11px] text-cyan-200">
+                      {capability.marketDataOnly ? "只读 market data" : "需要凭证"} · {capability.authConfigured ? "凭证已配置" : "缺少凭证"}
+                    </p>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -915,7 +930,9 @@ function modeLabel(summary) {
 
 function thresholdProfileLabel(profile) {
   const value = String(profile || "").toLowerCase();
+  if (value === "no_contract_sources") return "无合约源";
   if (value === "binance_bitfinex") return "Binance+Bitfinex";
+  if (value === "binance_bitfinex_coinbase") return "Binance+Bitfinex+Coinbase";
   if (value === "three_exchange") return "三平台";
   return "默认";
 }
@@ -975,6 +992,7 @@ function visibleMarketEntries(markets) {
 function platformStatusLabel(status) {
   const value = String(status || "disabled").toLowerCase();
   if (value === "active") return "合约运行中";
+  if (value === "degraded") return "待配置";
   if (value === "spot_only") return "spot_only";
   return "disabled";
 }
@@ -982,6 +1000,7 @@ function platformStatusLabel(status) {
 function platformStatusDescription(status) {
   const value = String(status || "disabled").toLowerCase();
   if (value === "active") return "现货与合约能力已配置，合约源可参与 CWM。";
+  if (value === "degraded") return "合约源已启用但缺少只读 market data 配置，不参与 CWM。";
   if (value === "spot_only") return "当前仅启用现货，用于现货确认和中长线结构评分。";
   return "当前未启用，不参与现货或合约监控。";
 }
@@ -989,6 +1008,7 @@ function platformStatusDescription(status) {
 function platformStatusClass(status) {
   const value = String(status || "disabled").toLowerCase();
   if (value === "active") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (value === "degraded") return "border border-yellow-500/40 bg-yellow-500/15 text-yellow-100";
   if (value === "spot_only") return "border border-cyan-500/40 bg-cyan-500/15 text-cyan-200";
   return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
 }
@@ -997,6 +1017,8 @@ function platformMarketStatusLabel(status) {
   const value = String(status || "disabled").toLowerCase();
   if (value === "active") return "运行中";
   if (value === "enabled") return "启用";
+  if (value === "auth_missing") return "缺少凭证";
+  if (value === "ready") return "就绪";
   return "未启用";
 }
 
@@ -1004,6 +1026,8 @@ function platformMarketStatusClass(status) {
   const value = String(status || "disabled").toLowerCase();
   if (value === "active") return "text-emerald-300";
   if (value === "enabled") return "text-cyan-300";
+  if (value === "ready") return "text-cyan-300";
+  if (value === "auth_missing") return "text-yellow-300";
   return "text-slate-500";
 }
 
@@ -1043,6 +1067,11 @@ function marketLabel(value) {
     level2: "Level2",
   };
   return labels[value] || value;
+}
+
+function sourceListLabel(value) {
+  if (!Array.isArray(value) || value.length === 0) return "无";
+  return value.map(exchangeLabel).join(", ");
 }
 
 function activeContractSourceLabel(exchanges, summary) {

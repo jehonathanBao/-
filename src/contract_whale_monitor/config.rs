@@ -4,7 +4,10 @@ use std::{
 };
 
 use super::{
-    types::{ContractWhaleMarketType, ContractWhaleSourceRole, ContractWhaleThresholds},
+    types::{
+        ContractExchange, ContractWhaleExchangeStatus, ContractWhaleMarketType,
+        ContractWhaleSourceRole, ContractWhaleThresholds,
+    },
     LOG_PREFIX, LOG_TARGET,
 };
 
@@ -34,8 +37,82 @@ pub struct ContractWhaleRuntimeConfig {
     pub exchanges: ContractWhaleExchangeConfig,
     pub scoring: ContractWhaleScoringConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
+    pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
     pub retention: ContractWhaleRetentionConfig,
+}
+
+const CONTRACT_SOURCE_ORDER: [ContractExchange; 4] = [
+    ContractExchange::Binance,
+    ContractExchange::Bitfinex,
+    ContractExchange::Coinbase,
+    ContractExchange::Okx,
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContractSourceSet {
+    pub sources: BTreeSet<ContractExchange>,
+}
+
+impl ContractSourceSet {
+    pub fn from_exchanges(exchanges: impl IntoIterator<Item = ContractExchange>) -> Self {
+        Self {
+            sources: exchanges.into_iter().collect(),
+        }
+    }
+
+    pub fn from_keys(keys: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            sources: keys
+                .into_iter()
+                .filter_map(|key| contract_exchange_from_key(&key))
+                .collect(),
+        }
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        ordered_contract_sources(&self.sources)
+            .into_iter()
+            .map(|exchange| exchange.as_key().to_string())
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThresholdProfileResolution {
+    pub profile: ContractWhaleThresholdProfile,
+    pub profile_name: String,
+    pub reason: String,
+    pub configured_contract_sources: Vec<ContractExchange>,
+    pub eligible_contract_sources: Vec<ContractExchange>,
+    pub active_contract_sources: Vec<ContractExchange>,
+}
+
+impl ThresholdProfileResolution {
+    pub fn configured_keys(&self) -> Vec<String> {
+        self.configured_contract_sources
+            .iter()
+            .map(|exchange| exchange.as_key().to_string())
+            .collect()
+    }
+
+    pub fn eligible_keys(&self) -> Vec<String> {
+        self.eligible_contract_sources
+            .iter()
+            .map(|exchange| exchange.as_key().to_string())
+            .collect()
+    }
+
+    pub fn active_keys(&self) -> Vec<String> {
+        self.active_contract_sources
+            .iter()
+            .map(|exchange| exchange.as_key().to_string())
+            .collect()
+    }
 }
 
 impl ContractWhaleRuntimeConfig {
@@ -44,15 +121,58 @@ impl ContractWhaleRuntimeConfig {
         symbol: &str,
         window_sec: u64,
     ) -> ContractWhaleThresholds {
-        if normalize_symbol(symbol) == "BTC"
-            && self.threshold_profile() == ContractWhaleThresholdProfile::BinanceBitfinex
-        {
-            return ContractWhaleThresholds::binance_bitfinex_for_window(window_sec);
+        self.thresholds_for_symbol_window_with_profile(symbol, window_sec, self.threshold_profile())
+    }
+
+    pub fn thresholds_for_symbol_window_with_profile(
+        &self,
+        symbol: &str,
+        window_sec: u64,
+        profile: ContractWhaleThresholdProfile,
+    ) -> ContractWhaleThresholds {
+        if profile == ContractWhaleThresholdProfile::NoContractSources {
+            return ContractWhaleThresholds {
+                high_btc: f64::INFINITY,
+                critical_btc: f64::INFINITY,
+                s_btc: f64::INFINITY,
+            };
+        }
+        if normalize_symbol(symbol) == "BTC" {
+            if let Some(override_thresholds) = self.btc_symbol_threshold_override(window_sec) {
+                return override_thresholds;
+            }
+            if let Some(thresholds) = self
+                .threshold_profiles
+                .get(profile.as_key())
+                .and_then(|profile| profile.thresholds_btc.get(&window_sec))
+                .copied()
+            {
+                return thresholds;
+            }
         }
         self.symbols
             .get(&normalize_symbol(symbol))
             .and_then(|symbol_config| symbol_config.thresholds_btc.get(&window_sec).copied())
             .unwrap_or_else(|| ContractWhaleThresholds::for_window(window_sec))
+    }
+
+    fn btc_symbol_threshold_override(&self, window_sec: u64) -> Option<ContractWhaleThresholds> {
+        let configured = self
+            .symbols
+            .get("BTC")?
+            .thresholds_btc
+            .get(&window_sec)
+            .copied()?;
+        let default = ContractWhaleSymbolConfig::btc_default(true)
+            .thresholds_btc
+            .get(&window_sec)
+            .copied()
+            .unwrap_or_else(|| ContractWhaleThresholds::for_window(window_sec));
+        if threshold_differs(configured, default) {
+            Some(configured)
+        } else {
+            None
+        }
     }
 
     pub fn symbol_enabled(&self, symbol: &str) -> bool {
@@ -68,10 +188,7 @@ impl ContractWhaleRuntimeConfig {
     }
 
     pub fn enabled_exchanges(&self) -> Vec<String> {
-        self.threshold_participating_exchanges()
-            .into_iter()
-            .filter(|exchange| self.exchange_enabled(exchange))
-            .collect()
+        self.threshold_profile_resolution().active_keys()
     }
 
     pub fn active_exchange_count(&self) -> usize {
@@ -81,7 +198,13 @@ impl ContractWhaleRuntimeConfig {
     pub fn disabled_exchanges(&self) -> Vec<String> {
         self.threshold_participating_exchanges()
             .into_iter()
-            .filter(|exchange| !self.exchange_enabled(exchange))
+            .filter(|exchange| {
+                !self
+                    .threshold_profile_resolution()
+                    .active_keys()
+                    .iter()
+                    .any(|active| active == exchange)
+            })
             .collect()
     }
 
@@ -90,6 +213,154 @@ impl ContractWhaleRuntimeConfig {
     }
 
     pub fn threshold_profile(&self) -> ContractWhaleThresholdProfile {
+        self.threshold_profile_resolution().profile
+    }
+
+    pub fn threshold_profile_resolution(&self) -> ThresholdProfileResolution {
+        self.threshold_profile_resolution_from_active_override(None)
+    }
+
+    pub fn threshold_profile_resolution_for_observed_sources(
+        &self,
+        observed_sources: impl IntoIterator<Item = String>,
+    ) -> ThresholdProfileResolution {
+        let observed = ContractSourceSet::from_keys(observed_sources);
+        self.threshold_profile_resolution_from_active_override(Some(&observed))
+    }
+
+    pub fn threshold_profile_resolution_with_statuses(
+        &self,
+        statuses: &BTreeMap<String, ContractWhaleExchangeStatus>,
+        now: i64,
+    ) -> ThresholdProfileResolution {
+        let configured = self.configured_contract_source_set();
+        let eligible = self.eligible_contract_source_set(&configured);
+        let active =
+            ContractSourceSet::from_exchanges(eligible.sources.iter().copied().filter(
+                |exchange| self.contract_source_active_with_status(*exchange, statuses, now),
+            ));
+        self.build_threshold_profile_resolution(configured, eligible, active)
+    }
+
+    fn threshold_profile_resolution_from_active_override(
+        &self,
+        active_override: Option<&ContractSourceSet>,
+    ) -> ThresholdProfileResolution {
+        let configured = self.configured_contract_source_set();
+        let eligible = self.eligible_contract_source_set(&configured);
+        let active = ContractSourceSet::from_exchanges(eligible.sources.iter().copied().filter(
+            |exchange| {
+                if let Some(override_set) = active_override {
+                    return override_set.sources.contains(exchange);
+                }
+                if matches!(exchange, ContractExchange::Coinbase) {
+                    return false;
+                }
+                true
+            },
+        ));
+        self.build_threshold_profile_resolution(configured, eligible, active)
+    }
+
+    fn build_threshold_profile_resolution(
+        &self,
+        configured: ContractSourceSet,
+        eligible: ContractSourceSet,
+        active: ContractSourceSet,
+    ) -> ThresholdProfileResolution {
+        let profile = threshold_profile_for_active_sources(&active);
+        let mut reason = if active.is_empty() {
+            "no_contract_sources".to_string()
+        } else {
+            format!("active_contract_sources={}", active.keys().join(","))
+        };
+        if configured.sources.contains(&ContractExchange::Coinbase)
+            && !eligible.sources.contains(&ContractExchange::Coinbase)
+        {
+            reason = "coinbase_perp_auth_missing".to_string();
+        } else if eligible.sources.contains(&ContractExchange::Coinbase)
+            && !active.sources.contains(&ContractExchange::Coinbase)
+        {
+            reason = "coinbase_perp_not_active".to_string();
+        }
+        ThresholdProfileResolution {
+            profile,
+            profile_name: profile.as_key().to_string(),
+            reason,
+            configured_contract_sources: ordered_contract_sources(&configured.sources),
+            eligible_contract_sources: ordered_contract_sources(&eligible.sources),
+            active_contract_sources: ordered_contract_sources(&active.sources),
+        }
+    }
+
+    fn configured_contract_source_set(&self) -> ContractSourceSet {
+        ContractSourceSet::from_exchanges(CONTRACT_SOURCE_ORDER.into_iter().filter(|exchange| {
+            self.exchange_platform(exchange.as_key())
+                .is_some_and(|platform| platform.market_enabled(ContractWhaleMarketType::Perp))
+        }))
+    }
+
+    fn eligible_contract_source_set(&self, configured: &ContractSourceSet) -> ContractSourceSet {
+        ContractSourceSet::from_exchanges(configured.sources.iter().copied().filter(|exchange| {
+            self.exchange_platform(exchange.as_key())
+                .is_some_and(|platform| platform.perp.eligible_for_contract_threshold())
+        }))
+    }
+
+    fn contract_source_active_with_status(
+        &self,
+        exchange: ContractExchange,
+        statuses: &BTreeMap<String, ContractWhaleExchangeStatus>,
+        now: i64,
+    ) -> bool {
+        if !self
+            .exchange_platform(exchange.as_key())
+            .is_some_and(|platform| platform.perp.eligible_for_contract_threshold())
+        {
+            return false;
+        }
+        if !matches!(exchange, ContractExchange::Coinbase) {
+            return true;
+        }
+        statuses.get(exchange.as_key()).is_some_and(|status| {
+            status.connected && exchange_recent(status.last_trade_at, now, 30_000)
+        })
+    }
+
+    pub fn threshold_profile_for_active_sources(
+        &self,
+        active_sources: &ContractSourceSet,
+    ) -> ContractWhaleThresholdProfile {
+        threshold_profile_for_active_sources(active_sources)
+    }
+
+    pub fn threshold_profile_for_observed_sources(
+        &self,
+        observed_sources: impl IntoIterator<Item = String>,
+    ) -> ContractWhaleThresholdProfile {
+        self.threshold_profile_resolution_for_observed_sources(observed_sources)
+            .profile
+    }
+
+    pub fn threshold_profile_key(&self) -> &'static str {
+        self.threshold_profile().as_key()
+    }
+
+    pub fn notional_thresholds_usd_for_profile(
+        &self,
+        profile: ContractWhaleThresholdProfile,
+    ) -> ContractWhaleNotionalThresholds {
+        self.threshold_profiles
+            .get(profile.as_key())
+            .map(|profile| profile.notional_usd)
+            .unwrap_or_else(|| profile.notional_thresholds_usd())
+    }
+
+    pub fn notional_thresholds_usd(&self) -> ContractWhaleNotionalThresholds {
+        self.notional_thresholds_usd_for_profile(self.threshold_profile())
+    }
+
+    pub fn legacy_threshold_profile(&self) -> ContractWhaleThresholdProfile {
         let enabled = self.enabled_exchange_set();
         let binance_bitfinex = BTreeSet::from(["binance".to_string(), "bitfinex".to_string()]);
         let binance_bitfinex_coinbase = BTreeSet::from([
@@ -104,14 +375,6 @@ impl ContractWhaleRuntimeConfig {
         } else {
             ContractWhaleThresholdProfile::ThreeExchange
         }
-    }
-
-    pub fn threshold_profile_key(&self) -> &'static str {
-        self.threshold_profile().as_key()
-    }
-
-    pub fn notional_thresholds_usd(&self) -> ContractWhaleNotionalThresholds {
-        self.threshold_profile().notional_thresholds_usd()
     }
 
     pub fn exchange_platform(&self, exchange: &str) -> Option<&ContractWhalePlatformConfig> {
@@ -168,6 +431,42 @@ impl ContractWhaleRuntimeConfig {
     }
 }
 
+fn threshold_profile_for_active_sources(
+    active_sources: &ContractSourceSet,
+) -> ContractWhaleThresholdProfile {
+    let keys = active_sources.keys();
+    if keys.is_empty() {
+        ContractWhaleThresholdProfile::NoContractSources
+    } else if keys.iter().any(|key| key == "okx") {
+        ContractWhaleThresholdProfile::ThreeExchange
+    } else if keys.iter().any(|key| key == "coinbase") {
+        ContractWhaleThresholdProfile::BinanceBitfinexCoinbase
+    } else {
+        ContractWhaleThresholdProfile::BinanceBitfinex
+    }
+}
+
+fn ordered_contract_sources(sources: &BTreeSet<ContractExchange>) -> Vec<ContractExchange> {
+    CONTRACT_SOURCE_ORDER
+        .into_iter()
+        .filter(|exchange| sources.contains(exchange))
+        .collect()
+}
+
+fn contract_exchange_from_key(value: &str) -> Option<ContractExchange> {
+    match value.to_ascii_lowercase().as_str() {
+        "binance" => Some(ContractExchange::Binance),
+        "bitfinex" => Some(ContractExchange::Bitfinex),
+        "coinbase" => Some(ContractExchange::Coinbase),
+        "okx" => Some(ContractExchange::Okx),
+        _ => None,
+    }
+}
+
+fn exchange_recent(last_trade_at: Option<i64>, now: i64, max_silence_ms: i64) -> bool {
+    last_trade_at.is_some_and(|last_trade_at| now.saturating_sub(last_trade_at) <= max_silence_ms)
+}
+
 impl Default for ContractWhaleRuntimeConfig {
     fn default() -> Self {
         let mut symbols = BTreeMap::new();
@@ -187,14 +486,111 @@ impl Default for ContractWhaleRuntimeConfig {
             exchanges: ContractWhaleExchangeConfig::default(),
             scoring: ContractWhaleScoringConfig::default(),
             symbols,
+            threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
             retention: ContractWhaleRetentionConfig::default(),
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractWhaleThresholdProfileConfig {
+    pub active_contract_sources: Vec<String>,
+    pub thresholds_btc: BTreeMap<u64, ContractWhaleThresholds>,
+    pub notional_usd: ContractWhaleNotionalThresholds,
+}
+
+fn default_threshold_profiles() -> BTreeMap<String, ContractWhaleThresholdProfileConfig> {
+    [
+        (
+            "binance_bitfinex",
+            ContractWhaleThresholdProfileConfig {
+                active_contract_sources: vec!["binance".to_string(), "bitfinex".to_string()],
+                thresholds_btc: threshold_map([
+                    (5, (650.0, 1_200.0, 2_000.0)),
+                    (15, (1_200.0, 2_200.0, 3_600.0)),
+                    (60, (2_800.0, 5_200.0, 8_000.0)),
+                ]),
+                notional_usd: ContractWhaleNotionalThresholds {
+                    high: 40_000_000.0,
+                    critical: 95_000_000.0,
+                    s: 200_000_000.0,
+                },
+            },
+        ),
+        (
+            "binance_bitfinex_coinbase",
+            ContractWhaleThresholdProfileConfig {
+                active_contract_sources: vec![
+                    "binance".to_string(),
+                    "bitfinex".to_string(),
+                    "coinbase".to_string(),
+                ],
+                thresholds_btc: threshold_map([
+                    (5, (750.0, 1_400.0, 2_300.0)),
+                    (15, (1_400.0, 2_600.0, 4_200.0)),
+                    (60, (3_200.0, 6_000.0, 9_200.0)),
+                ]),
+                notional_usd: ContractWhaleNotionalThresholds {
+                    high: 50_000_000.0,
+                    critical: 115_000_000.0,
+                    s: 230_000_000.0,
+                },
+            },
+        ),
+        (
+            "three_exchange",
+            ContractWhaleThresholdProfileConfig {
+                active_contract_sources: vec![
+                    "binance".to_string(),
+                    "bitfinex".to_string(),
+                    "okx".to_string(),
+                ],
+                thresholds_btc: threshold_map([
+                    (5, (800.0, 1_500.0, 2_500.0)),
+                    (15, (1_500.0, 2_800.0, 4_500.0)),
+                    (60, (3_500.0, 6_500.0, 10_000.0)),
+                ]),
+                notional_usd: ContractWhaleNotionalThresholds {
+                    high: 50_000_000.0,
+                    critical: 120_000_000.0,
+                    s: 250_000_000.0,
+                },
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(key, profile)| (key.to_string(), profile))
+    .collect()
+}
+
+fn threshold_map(
+    entries: impl IntoIterator<Item = (u64, (f64, f64, f64))>,
+) -> BTreeMap<u64, ContractWhaleThresholds> {
+    entries
+        .into_iter()
+        .map(|(window_sec, (high_btc, critical_btc, s_btc))| {
+            (
+                window_sec,
+                ContractWhaleThresholds {
+                    high_btc,
+                    critical_btc,
+                    s_btc,
+                },
+            )
+        })
+        .collect()
+}
+
+fn threshold_differs(left: ContractWhaleThresholds, right: ContractWhaleThresholds) -> bool {
+    (left.high_btc - right.high_btc).abs() > f64::EPSILON
+        || (left.critical_btc - right.critical_btc).abs() > f64::EPSILON
+        || (left.s_btc - right.s_btc).abs() > f64::EPSILON
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractWhaleThresholdProfile {
+    NoContractSources,
     ThreeExchange,
     BinanceBitfinex,
     BinanceBitfinexCoinbase,
@@ -203,6 +599,7 @@ pub enum ContractWhaleThresholdProfile {
 impl ContractWhaleThresholdProfile {
     pub fn as_key(self) -> &'static str {
         match self {
+            Self::NoContractSources => "no_contract_sources",
             Self::ThreeExchange => "three_exchange",
             Self::BinanceBitfinex => "binance_bitfinex",
             Self::BinanceBitfinexCoinbase => "binance_bitfinex_coinbase",
@@ -211,6 +608,11 @@ impl ContractWhaleThresholdProfile {
 
     pub fn notional_thresholds_usd(self) -> ContractWhaleNotionalThresholds {
         match self {
+            Self::NoContractSources => ContractWhaleNotionalThresholds {
+                high: f64::INFINITY,
+                critical: f64::INFINITY,
+                s: f64::INFINITY,
+            },
             Self::ThreeExchange => ContractWhaleNotionalThresholds {
                 high: 50_000_000.0,
                 critical: 120_000_000.0,
@@ -342,7 +744,7 @@ impl ContractWhalePlatformConfig {
         .collect()
     }
 
-    fn source_for_market(&self, market: ContractWhaleMarketType) -> &ContractWhaleSourceConfig {
+    pub fn source_for_market(&self, market: ContractWhaleMarketType) -> &ContractWhaleSourceConfig {
         match market {
             ContractWhaleMarketType::Spot => &self.spot,
             ContractWhaleMarketType::Perp => &self.perp,
@@ -393,7 +795,19 @@ impl ContractWhalePlatformConfig {
         Self {
             enabled: true,
             spot: ContractWhaleSourceConfig::new(true, ContractWhaleSourceRole::Primary),
-            perp: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
+            perp: ContractWhaleSourceConfig {
+                enabled: false,
+                role: ContractWhaleSourceRole::Confirmation,
+                product: Some("BTC-PERP".to_string()),
+                source: Some("coinbase_intx_match".to_string()),
+                requires_auth: true,
+                market_data_only: true,
+                auth: ContractWhaleSourceAuthConfig {
+                    key_env: Some("COINBASE_INTX_KEY".to_string()),
+                    secret_env: Some("COINBASE_INTX_SECRET".to_string()),
+                    passphrase_env: Some("COINBASE_INTX_PASSPHRASE".to_string()),
+                },
+            },
             level2: ContractWhaleSourceConfig::new(false, ContractWhaleSourceRole::Optional),
             funding: ContractWhaleSourceConfig::disabled(),
             oi: ContractWhaleSourceConfig::disabled(),
@@ -402,20 +816,61 @@ impl ContractWhalePlatformConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ContractWhaleSourceConfig {
     pub enabled: bool,
     pub role: ContractWhaleSourceRole,
+    pub product: Option<String>,
+    pub source: Option<String>,
+    pub requires_auth: bool,
+    pub market_data_only: bool,
+    pub auth: ContractWhaleSourceAuthConfig,
 }
 
 impl ContractWhaleSourceConfig {
-    pub const fn new(enabled: bool, role: ContractWhaleSourceRole) -> Self {
-        Self { enabled, role }
+    pub fn new(enabled: bool, role: ContractWhaleSourceRole) -> Self {
+        Self {
+            enabled,
+            role,
+            product: None,
+            source: None,
+            requires_auth: false,
+            market_data_only: true,
+            auth: ContractWhaleSourceAuthConfig::default(),
+        }
     }
 
-    pub const fn disabled() -> Self {
+    pub fn disabled() -> Self {
         Self::new(false, ContractWhaleSourceRole::Disabled)
     }
+
+    pub fn auth_configured(&self) -> bool {
+        if !self.requires_auth {
+            return true;
+        }
+        let required = [
+            self.auth.key_env.as_deref(),
+            self.auth.secret_env.as_deref(),
+            self.auth.passphrase_env.as_deref(),
+        ];
+        required.into_iter().all(|env_key| {
+            env_key
+                .filter(|key| !key.trim().is_empty())
+                .and_then(|key| std::env::var(key).ok())
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+    }
+
+    pub fn eligible_for_contract_threshold(&self) -> bool {
+        self.enabled && self.market_data_only && self.auth_configured()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ContractWhaleSourceAuthConfig {
+    pub key_env: Option<String>,
+    pub secret_env: Option<String>,
+    pub passphrase_env: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -588,6 +1043,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
         scoring: load_scoring_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
+        threshold_profiles: load_threshold_profiles(settings),
         retention: load_retention_config(settings),
     }
 }
@@ -651,42 +1107,42 @@ fn load_platform_config(
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Spot,
-            default.spot,
+            default.spot.clone(),
         ),
         perp: load_source_config(
             settings,
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Perp,
-            default.perp,
+            default.perp.clone(),
         ),
         level2: load_source_config(
             settings,
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Level2,
-            default.level2,
+            default.level2.clone(),
         ),
         funding: load_source_config(
             settings,
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Funding,
-            default.funding,
+            default.funding.clone(),
         ),
         oi: load_source_config(
             settings,
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Oi,
-            default.oi,
+            default.oi.clone(),
         ),
         liquidation: load_source_config(
             settings,
             exchange,
             &exchange_upper,
             ContractWhaleMarketType::Liquidation,
-            default.liquidation,
+            default.liquidation.clone(),
         ),
     }
 }
@@ -713,7 +1169,48 @@ fn load_source_config(
         &format!("contract_whale_monitor.exchanges.{exchange}.{market_key}.role"),
         default.role,
     );
-    ContractWhaleSourceConfig { enabled, role }
+    let path = format!("contract_whale_monitor.exchanges.{exchange}.{market_key}");
+    ContractWhaleSourceConfig {
+        enabled,
+        role,
+        product: optional_string_setting(settings, &format!("{path}.product"), default.product),
+        source: optional_string_setting(settings, &format!("{path}.source"), default.source),
+        requires_auth: bool_setting(
+            settings,
+            &format!(
+                "CONTRACT_WHALE_{exchange_upper}_{}_REQUIRES_AUTH",
+                market.as_env_key()
+            ),
+            &format!("{path}.requires_auth"),
+            default.requires_auth,
+        ),
+        market_data_only: bool_setting(
+            settings,
+            &format!(
+                "CONTRACT_WHALE_{exchange_upper}_{}_MARKET_DATA_ONLY",
+                market.as_env_key()
+            ),
+            &format!("{path}.market_data_only"),
+            default.market_data_only,
+        ),
+        auth: ContractWhaleSourceAuthConfig {
+            key_env: optional_string_setting(
+                settings,
+                &format!("{path}.auth.key_env"),
+                default.auth.key_env,
+            ),
+            secret_env: optional_string_setting(
+                settings,
+                &format!("{path}.auth.secret_env"),
+                default.auth.secret_env,
+            ),
+            passphrase_env: optional_string_setting(
+                settings,
+                &format!("{path}.auth.passphrase_env"),
+                default.auth.passphrase_env,
+            ),
+        },
+    }
 }
 
 fn source_role_setting(
@@ -844,6 +1341,97 @@ fn load_data_quality_config(settings: &::config::Config) -> ContractWhaleDataQua
             defaults.ct_val_missing_penalty,
         ),
     }
+}
+
+fn load_threshold_profiles(
+    settings: &::config::Config,
+) -> BTreeMap<String, ContractWhaleThresholdProfileConfig> {
+    let mut profiles = default_threshold_profiles();
+    for profile_key in [
+        "binance_bitfinex",
+        "binance_bitfinex_coinbase",
+        "three_exchange",
+    ] {
+        let path = format!("contract_whale_monitor.threshold_profiles.{profile_key}");
+        let fallback = profiles.get(profile_key).cloned().unwrap_or_else(|| {
+            ContractWhaleThresholdProfileConfig {
+                active_contract_sources: Vec::new(),
+                thresholds_btc: BTreeMap::new(),
+                notional_usd: ContractWhaleNotionalThresholds {
+                    high: 0.0,
+                    critical: 0.0,
+                    s: 0.0,
+                },
+            }
+        });
+        profiles.insert(
+            profile_key.to_string(),
+            ContractWhaleThresholdProfileConfig {
+                active_contract_sources: string_array_setting(
+                    settings,
+                    &format!("{path}.active_contract_sources"),
+                    fallback.active_contract_sources.clone(),
+                ),
+                thresholds_btc: load_threshold_profile_windows(settings, &path, &fallback),
+                notional_usd: ContractWhaleNotionalThresholds {
+                    high: positive_float_setting(
+                        settings,
+                        &format!("{path}.notional_usd.high"),
+                        fallback.notional_usd.high,
+                    ),
+                    critical: positive_float_setting(
+                        settings,
+                        &format!("{path}.notional_usd.critical"),
+                        fallback.notional_usd.critical,
+                    ),
+                    s: positive_float_setting(
+                        settings,
+                        &format!("{path}.notional_usd.s"),
+                        fallback.notional_usd.s,
+                    ),
+                },
+            },
+        );
+    }
+    profiles
+}
+
+fn load_threshold_profile_windows(
+    settings: &::config::Config,
+    profile_path: &str,
+    fallback: &ContractWhaleThresholdProfileConfig,
+) -> BTreeMap<u64, ContractWhaleThresholds> {
+    [5_u64, 15, 60]
+        .into_iter()
+        .map(|window_sec| {
+            let default = fallback
+                .thresholds_btc
+                .get(&window_sec)
+                .copied()
+                .unwrap_or_else(|| ContractWhaleThresholds::for_window(window_sec));
+            let window_key = format!("window_{window_sec}s");
+            (
+                window_sec,
+                ContractWhaleThresholds {
+                    high_btc: positive_float_setting(
+                        settings,
+                        &format!("{profile_path}.high.{window_key}"),
+                        default.high_btc,
+                    ),
+                    critical_btc: positive_float_setting(
+                        settings,
+                        &format!("{profile_path}.critical.{window_key}"),
+                        default.critical_btc,
+                    ),
+                    s_btc: positive_float_setting(
+                        settings,
+                        &format!("{profile_path}.s.{window_key}"),
+                        default.s_btc,
+                    ),
+                },
+            )
+        })
+        .collect()
 }
 
 fn load_retention_config(settings: &::config::Config) -> ContractWhaleRetentionConfig {
@@ -984,6 +1572,39 @@ fn bool_setting(settings: &::config::Config, env_key: &str, toml_key: &str, defa
         .ok()
         .map(|value| value.eq_ignore_ascii_case("true"))
         .or_else(|| settings.get_bool(toml_key).ok())
+        .unwrap_or(default)
+}
+
+fn optional_string_setting(
+    settings: &::config::Config,
+    path: &str,
+    default: Option<String>,
+) -> Option<String> {
+    settings
+        .get_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(default)
+}
+
+fn string_array_setting(
+    settings: &::config::Config,
+    path: &str,
+    default: Vec<String>,
+) -> Vec<String> {
+    settings
+        .get_array(path)
+        .ok()
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|item| item.into_string().ok())
+                .map(|item| item.trim().to_ascii_lowercase())
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
         .unwrap_or(default)
 }
 

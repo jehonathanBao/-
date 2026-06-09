@@ -23,6 +23,9 @@ vi.mock("../api/contractWhale.js", () => ({
         healthStatus: "healthy",
         healthReason: "primary_sources_recent",
         thresholdProfile: "binance_bitfinex",
+        thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+        configuredContractSources: ["binance", "bitfinex"],
+        eligibleContractSources: ["binance", "bitfinex"],
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
@@ -102,6 +105,9 @@ vi.mock("../api/contractWhale.js", () => ({
         healthStatus: "healthy",
         healthReason: "primary_sources_recent",
         thresholdProfile: "binance_bitfinex",
+        thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+        configuredContractSources: ["binance", "bitfinex"],
+        eligibleContractSources: ["binance", "bitfinex"],
         activeExchangeCount: 2,
         enabledExchanges: ["binance", "bitfinex"],
         disabledExchanges: ["okx"],
@@ -334,7 +340,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("总量 10,000 BTC · dominance 24.0%")).toBeInTheDocument();
     expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getByText("当前统计数据源：Binance · Binance+Bitfinex")).toBeInTheDocument();
-    expect(screen.getByText("合约数据质量 95/100 · 现货数据质量 78/100 · 总体 88/100")).toBeInTheDocument();
+    expect(screen.getByText("合约数据质量 95/100 · 现货数据质量 78/100 · 总体 88/100 · active_contract_sources=binance,bitfinex")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getAllByText("在线")).toHaveLength(1);
     expect(screen.getAllByText("未启用").length).toBeGreaterThan(0);

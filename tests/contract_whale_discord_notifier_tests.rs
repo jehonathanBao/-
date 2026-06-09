@@ -10,7 +10,7 @@ use btc_toxic_flow_monitor_rs::{
             validate_discord_webhook_url, ContractWhaleDiscordCooldownStore,
             ContractWhaleDiscordSettings,
         },
-        normalizer::{normalize_binance_agg_trade, normalize_okx_swap_trade},
+        normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
         types::{ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignalType},
     },
     storage::{contract_whale_repo::ContractWhaleRepo, SqliteStore},
@@ -229,7 +229,7 @@ fn cwm_discord_payload_snapshots_cover_core_signal_language() {
         assert!(text.contains("Exchanges"));
         assert!(text.contains("Price Move"));
         assert!(text.contains("binance"));
-        assert!(text.contains("okx"));
+        assert!(text.contains("bitfinex"));
         for expected in expected_text {
             assert!(text.contains(expected), "missing `{expected}` in {text}");
         }
@@ -285,7 +285,7 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_200.0, false).unwrap(),
-        normalize_okx_swap_trade(now - 1_000, 70_000.0, 240_000.0, 0.01, "buy").unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 430.0).unwrap(),
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 500.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);

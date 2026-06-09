@@ -260,7 +260,7 @@ min_dynamic_samples = 0
     assert_eq!(cwm.scoring.volume_strength_weight, 35.0);
     assert_eq!(cwm.data_quality.min_discord_quality, 70);
     assert_eq!(cwm.data_quality.min_dynamic_samples, 20);
-    assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 1500.0);
+    assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 1200.0);
     reset_contract_whale_runtime_config();
     clear_config_env();
 }

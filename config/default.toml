@@ -87,7 +87,16 @@ role = "primary"
 
 [contract_whale_monitor.exchanges.coinbase.perp]
 enabled = false
-role = "optional"
+product = "BTC-PERP"
+source = "coinbase_intx_match"
+role = "confirmation"
+requires_auth = true
+market_data_only = true
+
+[contract_whale_monitor.exchanges.coinbase.perp.auth]
+key_env = "COINBASE_INTX_KEY"
+secret_env = "COINBASE_INTX_SECRET"
+passphrase_env = "COINBASE_INTX_PASSPHRASE"
 
 [contract_whale_monitor.exchanges.coinbase.level2]
 enabled = false
@@ -158,6 +167,75 @@ ct_val_missing_penalty = 20
 [contract_whale_monitor.retention]
 flow_1s_days = 14
 signals_days = 365
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex]
+active_contract_sources = ["binance", "bitfinex"]
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex.high]
+window_5s = 650
+window_15s = 1200
+window_60s = 2800
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex.critical]
+window_5s = 1200
+window_15s = 2200
+window_60s = 5200
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex.s]
+window_5s = 2000
+window_15s = 3600
+window_60s = 8000
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex.notional_usd]
+high = 40000000
+critical = 95000000
+s = 200000000
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex_coinbase]
+active_contract_sources = ["binance", "bitfinex", "coinbase"]
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex_coinbase.high]
+window_5s = 750
+window_15s = 1400
+window_60s = 3200
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex_coinbase.critical]
+window_5s = 1400
+window_15s = 2600
+window_60s = 6000
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex_coinbase.s]
+window_5s = 2300
+window_15s = 4200
+window_60s = 9200
+
+[contract_whale_monitor.threshold_profiles.binance_bitfinex_coinbase.notional_usd]
+high = 50000000
+critical = 115000000
+s = 230000000
+
+[contract_whale_monitor.threshold_profiles.three_exchange]
+active_contract_sources = ["binance", "bitfinex", "okx"]
+
+[contract_whale_monitor.threshold_profiles.three_exchange.high]
+window_5s = 800
+window_15s = 1500
+window_60s = 3500
+
+[contract_whale_monitor.threshold_profiles.three_exchange.critical]
+window_5s = 1500
+window_15s = 2800
+window_60s = 6500
+
+[contract_whale_monitor.threshold_profiles.three_exchange.s]
+window_5s = 2500
+window_15s = 4500
+window_60s = 10000
+
+[contract_whale_monitor.threshold_profiles.three_exchange.notional_usd]
+high = 50000000
+critical = 120000000
+s = 250000000
 
 [contract_whale_monitor.symbols.BTC]
 enabled = true

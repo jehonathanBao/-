@@ -1,5 +1,7 @@
 use super::{
-    config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
+    config::{
+        contract_whale_runtime_config, ContractWhaleRuntimeConfig, ContractWhaleThresholdProfile,
+    },
     types::{ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleWindowStats},
 };
 
@@ -15,7 +17,17 @@ pub fn score_contract_whale_signal_with_config(
     signal_type: ContractWhaleSignalType,
     config: &ContractWhaleRuntimeConfig,
 ) -> u8 {
-    let thresholds = config.thresholds_for_symbol_window(&stats.symbol, stats.window_sec);
+    score_contract_whale_signal_with_profile(stats, signal_type, config, config.threshold_profile())
+}
+
+pub fn score_contract_whale_signal_with_profile(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+    profile: ContractWhaleThresholdProfile,
+) -> u8 {
+    let thresholds =
+        config.thresholds_for_symbol_window_with_profile(&stats.symbol, stats.window_sec, profile);
     let scoring = &config.scoring;
     let volume_score = if thresholds.s_btc.is_finite() {
         (stats.total_volume_btc / thresholds.s_btc * scoring.volume_strength_weight)
