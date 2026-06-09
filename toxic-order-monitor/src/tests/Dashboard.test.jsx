@@ -211,14 +211,29 @@ describe("Dashboard interactions", () => {
   it("opens the BTC giant trade monitor from the sidebar route", async () => {
     renderDashboard("/contract-whale");
 
+    expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
-    expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-whale");
+    expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor");
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getByText("主力合约监控未启用")).toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps dashboard and spot monitor route aliases working", async () => {
+    renderDashboard("/dashboard");
+
+    expect(await screen.findByText("High / Critical Risk Candidates")).toBeInTheDocument();
+    cleanup();
+    resetSignalsStore();
+
+    renderDashboard("/spot-monitor");
+
+    expect((await screen.findAllByText("BTC / ETH 现货监控")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 
   it("places S level candidates in the sidebar signals view", async () => {

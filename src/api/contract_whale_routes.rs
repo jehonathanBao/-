@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::{
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -80,7 +80,9 @@ pub struct ContractWhaleResponseRuntime<'a> {
 pub async fn contract_whale_summary_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
+    headers: HeaderMap,
 ) -> ApiJsonResult {
+    log_summary_access(&headers);
     let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
     let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
     let config = state.config().contract_whale_monitor;
@@ -118,6 +120,26 @@ pub async fn contract_whale_summary_route(
     let mut summary = response.summary;
     summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
     Ok(Json(serde_json::json!(summary)))
+}
+
+fn log_summary_access(headers: &HeaderMap) {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(sanitize_user_agent)
+        .unwrap_or_else(|| "unknown".to_string());
+    tracing::info!(
+        target: CWM_LOG_TARGET,
+        "{CWM_LOG_PREFIX} summary requested user_agent={user_agent}"
+    );
+}
+
+fn sanitize_user_agent(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(180)
+        .collect()
 }
 
 pub async fn contract_whale_latest_route(

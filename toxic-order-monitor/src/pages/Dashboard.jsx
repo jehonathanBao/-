@@ -269,9 +269,9 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="flex min-h-screen bg-[#07111f]">
+    <div className="flex min-h-screen flex-col bg-[#07111f] lg:flex-row">
       <Sidebar />
-      <main className="min-w-0 flex-1 p-4 lg:p-6">
+      <main className="w-full min-w-0 flex-1 p-4 lg:p-6">
         <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
         {isContractWhaleView ? (
           <ContractWhalePage />
@@ -529,7 +529,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
-  if (pathname === "/spot-whale") return "spot-whale";
+  if (pathname === "/spot-whale" || pathname === "/spot-monitor") return "spot-whale";
   if (pathname === "/usage-guide") return "usage-guide";
   if (pathname === "/signals") return "signals";
   if (pathname === "/history") return "history";
