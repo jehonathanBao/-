@@ -12,6 +12,7 @@ const DEFAULT_FILTERS = {
   severity: "all",
   signal_type: "all",
   discord_sent: "all",
+  net_direction: "all",
 };
 
 export default function SpotWhaleMonitor() {
@@ -91,6 +92,7 @@ export default function SpotWhaleMonitor() {
   const summary = state.summary || fallbackSummary(filters.symbol);
   const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
   const exchanges = summary.exchanges || {};
+  const visibleItems = filterByNetDirection(state.items, filters.net_direction);
 
   return (
     <section className="mb-5 rounded-2xl border border-slate-700/60 bg-slate-900/80 p-5 shadow-glow">
@@ -139,9 +141,13 @@ export default function SpotWhaleMonitor() {
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             现货监控载入中...
           </p>
-        ) : state.items.length === 0 ? (
+        ) : visibleItems.length === 0 ? (
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
-            {summary.enabled ? "暂无 BTC/ETH 现货异动" : "现货监控未启用"}
+            {summary.enabled
+              ? filters.net_direction === "all"
+                ? "暂无 BTC/ETH 现货异动"
+                : "暂无匹配净方向阈值的现货异动"
+              : "现货监控未启用"}
           </p>
         ) : (
           <table className="min-w-full table-fixed text-left text-xs">
@@ -165,7 +171,7 @@ export default function SpotWhaleMonitor() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
-              {state.items.map((item) => (
+              {visibleItems.map((item) => (
                 <tr
                   className="cursor-pointer align-top transition hover:bg-slate-800/30"
                   data-testid={`spot-whale-row-${item.id}`}
@@ -174,7 +180,9 @@ export default function SpotWhaleMonitor() {
                   tabIndex={0}
                 >
                   <Cell>{formatTime(item.ts)}</Cell>
-                  <Cell>{item.symbol}</Cell>
+                  <Cell>
+                    <SymbolWithPrice item={item} />
+                  </Cell>
                   <Cell>{signalTypeLabel(item.signalType)}</Cell>
                   <Cell>
                     <span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>
@@ -223,7 +231,7 @@ export default function SpotWhaleMonitor() {
 
 function SpotWhaleFilters({ filters, onChange }) {
   return (
-    <div className="mt-5 grid gap-3 text-xs md:grid-cols-4">
+    <div className="mt-5 grid gap-3 text-xs md:grid-cols-5">
       <label className="space-y-1">
         <span className="text-slate-500">币种</span>
         <select
@@ -276,7 +284,33 @@ function SpotWhaleFilters({ filters, onChange }) {
           <option value="false">未推送</option>
         </select>
       </label>
+      <label className="space-y-1">
+        <span className="text-slate-500">净方向</span>
+        <select
+          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+          onChange={(event) => onChange({ ...filters, net_direction: event.target.value })}
+          value={filters.net_direction}
+        >
+          <option value="all">全部</option>
+          <option value="pos50">净买入 ≥ 50</option>
+          <option value="pos100">净买入 ≥ 100</option>
+          <option value="pos200">净买入 ≥ 200</option>
+          <option value="neg50">净卖出 ≤ -50</option>
+          <option value="neg100">净卖出 ≤ -100</option>
+          <option value="neg200">净卖出 ≤ -200</option>
+        </select>
+      </label>
     </div>
+  );
+}
+
+function SymbolWithPrice({ item }) {
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-slate-100">
+      <span>{item.symbol}</span>
+      <span className="text-slate-500">·</span>
+      <span className="text-cyan-200">{formatPrice(signalTriggerPrice(item))}</span>
+    </span>
   );
 }
 
@@ -401,6 +435,19 @@ function Cell({ children }) {
 
 function shouldUseHistory(filters) {
   return filters.severity !== "all" || filters.signal_type !== "all" || filters.discord_sent !== "all";
+}
+
+function filterByNetDirection(items, filter) {
+  if (!Array.isArray(items)) return [];
+  const value = String(filter || "all").toLowerCase();
+  if (value === "all") return items;
+  const match = value.match(/^(pos|neg)(50|100|200)$/);
+  if (!match) return items;
+  const threshold = Number(match[2]);
+  return items.filter((item) => {
+    const net = Number(item?.netVolumeBase || 0);
+    return match[1] === "pos" ? net >= threshold : net <= -threshold;
+  });
 }
 
 function fallbackSummary(symbol) {

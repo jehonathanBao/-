@@ -89,8 +89,31 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getByText("Coinbase")).toBeInTheDocument();
     expect(await screen.findByText("现货主动买入")).toBeInTheDocument();
-    expect(screen.getByText("$75,610")).toBeInTheDocument();
+    expect(screen.getByLabelText("净方向")).toBeInTheDocument();
+    expect(
+      screen.getAllByText((_, element) => {
+        const text = element?.textContent || "";
+        return text.includes("BTC") && text.includes("$75,610");
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByText("$75,610").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("符合 gate")).toBeInTheDocument();
+  });
+
+  it("filters visible spot signals by signed net direction threshold", async () => {
+    const user = userEvent.setup();
+    render(<SpotWhaleMonitor />);
+
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("净方向"), "pos100");
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("净方向"), "neg50");
+    await waitFor(() => {
+      expect(screen.queryByTestId("spot-whale-row-spot-whale-BTC")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("暂无匹配净方向阈值的现货异动")).toBeInTheDocument();
   });
 
   it("refreshes summary and latest when switching to ETH", async () => {
