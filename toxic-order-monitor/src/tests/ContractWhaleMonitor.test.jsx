@@ -209,12 +209,14 @@ vi.mock("../api/contractWhale.js", () => ({
           marketType: "perp",
           sourceRole: "primary",
           thresholdProfile: "binance_bitfinex",
+          thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+          configuredContractSources: ["binance", "bitfinex"],
+          eligibleContractSources: ["binance", "bitfinex"],
+          activeContractSources: ["binance", "bitfinex"],
           activeSources: {
             contract: [
               { exchange: "binance", marketType: "perp", sourceRole: "primary", enabled: true, status: "active" },
               { exchange: "bitfinex", marketType: "perp", sourceRole: "confirmation", enabled: true, status: "configured" },
-              { exchange: "coinbase", marketType: "perp", sourceRole: "optional", enabled: false, status: "spot_only" },
-              { exchange: "okx", marketType: "perp", sourceRole: "disabled", enabled: false, status: "disabled" },
             ],
             spot: [
               { exchange: "binance", marketType: "spot", sourceRole: "primary", enabled: true, status: "configured" },
@@ -479,8 +481,9 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("现货源")).toBeInTheDocument();
     expect(screen.getByText("已参与")).toBeInTheDocument();
     expect(screen.getAllByText("仅现货").length).toBeGreaterThan(0);
-    expect(screen.getByText("Coinbase · Perp")).toBeInTheDocument();
-    expect(screen.getByText("OKX · Perp")).toBeInTheDocument();
+    expect(screen.getByText("Coinbase · Spot")).toBeInTheDocument();
+    expect(screen.queryByText("Coinbase · Perp")).not.toBeInTheDocument();
+    expect(screen.queryByText("OKX · Perp")).not.toBeInTheDocument();
     expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
     expect(screen.getByText("5s / 15s / 60s 窗口数据")).toBeInTheDocument();
     expect(screen.getByText("平台拆分")).toBeInTheDocument();

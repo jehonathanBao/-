@@ -64,6 +64,7 @@ pub fn detect_contract_whale_signal_with_config(
     }
     let direction = direction_for(signal_type);
 
+    let active_sources = active_source_snapshot(&scoring_stats, config, &resolution);
     let signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
@@ -125,7 +126,11 @@ pub fn detect_contract_whale_signal_with_config(
         funding_bias: scoring_stats.market_context.funding_bias.clone(),
         data_quality: scoring_stats.data_quality,
         threshold_profile: resolution.profile_name.clone(),
-        active_sources: active_source_snapshot(&scoring_stats, config, &resolution),
+        threshold_profile_reason: resolution.reason.clone(),
+        configured_contract_sources: resolution.configured_keys(),
+        eligible_contract_sources: resolution.eligible_keys(),
+        active_contract_sources: resolution.active_keys(),
+        active_sources,
         discord_eligible,
         discord_sent: false,
         discord_sent_at: None,
@@ -485,6 +490,9 @@ fn active_source_snapshot(
         .flat_map(|exchange| {
             contract_markets.into_iter().filter_map(move |market_type| {
                 let platform = config.exchange_platform(&exchange)?;
+                if !platform.market_enabled(market_type) {
+                    return None;
+                }
                 let participated = market_type == ContractWhaleMarketType::Perp
                     && stats.exchanges.iter().any(|item| {
                         item.exchange.eq_ignore_ascii_case(&exchange) && item.total_volume_btc > 0.0

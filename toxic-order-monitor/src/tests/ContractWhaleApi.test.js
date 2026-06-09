@@ -28,6 +28,9 @@ describe("contract whale api", () => {
           healthStatus: "healthy",
           healthReason: "primary_sources_recent",
           thresholdProfile: "binance_bitfinex",
+          thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+          configuredContractSources: ["binance", "bitfinex"],
+          eligibleContractSources: ["binance", "bitfinex"],
           activeExchangeCount: 2,
           enabledExchanges: ["binance", "bitfinex"],
           disabledExchanges: ["okx"],
@@ -79,6 +82,9 @@ describe("contract whale api", () => {
       healthStatus: "healthy",
       healthReason: "primary_sources_recent",
       thresholdProfile: "binance_bitfinex",
+      thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+      configuredContractSources: ["binance", "bitfinex"],
+      eligibleContractSources: ["binance", "bitfinex"],
       activeExchangeCount: 2,
       enabledExchanges: ["binance", "bitfinex"],
       disabledExchanges: ["okx"],
@@ -133,11 +139,13 @@ describe("contract whale api", () => {
       marketType: "perp",
       sourceRole: "primary",
       thresholdProfile: "binance_bitfinex",
+      thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+      configuredContractSources: ["binance", "bitfinex"],
+      eligibleContractSources: ["binance", "bitfinex"],
+      activeContractSources: ["binance", "bitfinex"],
       activeSources: {
         contract: expect.arrayContaining([
           expect.objectContaining({ exchange: "binance", marketType: "perp", status: "active" }),
-          expect.objectContaining({ exchange: "coinbase", marketType: "perp", status: "spot_only", enabled: false }),
-          expect.objectContaining({ exchange: "okx", marketType: "perp", status: "disabled", enabled: false }),
         ]),
         spot: expect.arrayContaining([
           expect.objectContaining({ exchange: "coinbase", marketType: "spot", status: "spot_only" }),
@@ -149,6 +157,16 @@ describe("contract whale api", () => {
       mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
       triggerPriceUsd: 337_000_000 / 4_820,
     });
+    expect(payload.items[0].activeSources.contract).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ exchange: "coinbase", marketType: "perp" }),
+      ]),
+    );
+    expect(payload.items[0].activeSources.contract).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ exchange: "okx", marketType: "perp" }),
+      ]),
+    );
   });
 
   it("fetches summary health for polling", async () => {
@@ -368,12 +386,14 @@ function contractWhaleItem() {
     marketType: "perp",
     sourceRole: "primary",
     thresholdProfile: "binance_bitfinex",
+    thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+    configuredContractSources: ["binance", "bitfinex"],
+    eligibleContractSources: ["binance", "bitfinex"],
+    activeContractSources: ["binance", "bitfinex"],
     activeSources: {
       contract: [
         { exchange: "binance", marketType: "perp", sourceRole: "primary", enabled: true, status: "active" },
         { exchange: "bitfinex", marketType: "perp", sourceRole: "confirmation", enabled: true, status: "configured" },
-        { exchange: "coinbase", marketType: "perp", sourceRole: "optional", enabled: false, status: "spot_only" },
-        { exchange: "okx", marketType: "perp", sourceRole: "disabled", enabled: false, status: "disabled" },
       ],
       spot: [
         { exchange: "binance", marketType: "spot", sourceRole: "primary", enabled: true, status: "configured" },

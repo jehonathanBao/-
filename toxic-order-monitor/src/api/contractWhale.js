@@ -119,6 +119,7 @@ export async function fetchContractWhaleEvents(filters = {}) {
 export function normalizeContractWhaleSignal(item) {
   const totalVolumeBtc = numberOrNull(item.totalVolumeBtc) || 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
+  const activeSources = normalizeActiveSources(item.activeSources);
   return {
     id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -155,8 +156,18 @@ export function normalizeContractWhaleSignal(item) {
     fundingBias: item.fundingBias || "unknown",
     exchanges: normalizeSignalExchanges(item.exchanges),
     dataQuality: numberOrNull(item.dataQuality) || 0,
-    thresholdProfile: item.thresholdProfile ? String(item.thresholdProfile).toLowerCase() : "three_exchange",
-    activeSources: normalizeActiveSources(item.activeSources),
+    thresholdProfile: item.thresholdProfile ? String(item.thresholdProfile).toLowerCase() : activeSources.thresholdProfile,
+    thresholdProfileReason: item.thresholdProfileReason ? String(item.thresholdProfileReason) : activeSources.thresholdProfileReason,
+    configuredContractSources: normalizeStringArray(item.configuredContractSources).length
+      ? normalizeStringArray(item.configuredContractSources)
+      : activeSources.configuredContractSources,
+    eligibleContractSources: normalizeStringArray(item.eligibleContractSources).length
+      ? normalizeStringArray(item.eligibleContractSources)
+      : activeSources.eligibleContractSources,
+    activeContractSources: normalizeStringArray(item.activeContractSources).length
+      ? normalizeStringArray(item.activeContractSources)
+      : activeSources.activeContractSources,
+    activeSources,
     discordEligible: Boolean(item.discordEligible),
     discordSent: Boolean(item.discordSent),
     discordSentAt: numberOrNull(item.discordSentAt),

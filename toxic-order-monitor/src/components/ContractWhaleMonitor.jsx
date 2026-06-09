@@ -436,10 +436,10 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Risk Score", `${signal.score}/100`],
                 ["Data Quality", `${signal.dataQuality}/100`],
                 ["Threshold Profile", thresholdProfileLabel(signal.thresholdProfile || summary?.thresholdProfile)],
-                ["Profile Reason", signal.activeSources?.thresholdProfileReason || summary?.thresholdProfileReason || "N/A"],
-                ["Configured Sources", sourceListLabel(signal.activeSources?.configuredContractSources || summary?.configuredContractSources)],
-                ["Eligible Sources", sourceListLabel(signal.activeSources?.eligibleContractSources || summary?.eligibleContractSources)],
-                ["Active Sources", sourceListLabel(signal.activeSources?.activeContractSources || summary?.activeContractExchanges)],
+                ["Profile Reason", signal.thresholdProfileReason || signal.activeSources?.thresholdProfileReason || summary?.thresholdProfileReason || "N/A"],
+                ["Configured Sources", sourceListLabel(signal.configuredContractSources || signal.activeSources?.configuredContractSources || summary?.configuredContractSources)],
+                ["Eligible Sources", sourceListLabel(signal.eligibleContractSources || signal.activeSources?.eligibleContractSources || summary?.eligibleContractSources)],
+                ["Active Sources", sourceListLabel(signal.activeContractSources || signal.activeSources?.activeContractSources || summary?.activeContractExchanges)],
               ]}
             />
           </DetailSection>

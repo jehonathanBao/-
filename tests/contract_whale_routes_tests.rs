@@ -145,22 +145,20 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
     assert!(!response.items[0].discord_sent);
     assert_eq!(response.items[0].market_type.as_key(), "perp");
     assert_eq!(response.items[0].threshold_profile, "binance_bitfinex");
-    assert!(response.items[0]
+    assert!(!response.items[0]
         .active_sources
         .contract
         .iter()
         .any(|entry| entry.exchange == "coinbase"
-            && entry.market_type == ContractWhaleMarketType::Perp
-            && !entry.enabled
-            && entry.status == "spot_only"));
-    assert!(response.items[0]
-        .active_sources
-        .contract
-        .iter()
-        .any(|entry| entry.exchange == "okx"
-            && entry.market_type == ContractWhaleMarketType::Perp
-            && !entry.enabled
-            && entry.status == "disabled"));
+            && entry.market_type == ContractWhaleMarketType::Perp));
+    assert!(
+        !response.items[0]
+            .active_sources
+            .contract
+            .iter()
+            .any(|entry| entry.exchange == "okx"
+                && entry.market_type == ContractWhaleMarketType::Perp)
+    );
     assert!(response.items[0]
         .active_sources
         .spot

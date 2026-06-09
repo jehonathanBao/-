@@ -440,6 +440,14 @@ pub struct ContractWhaleSignal {
     #[serde(default = "default_threshold_profile")]
     pub threshold_profile: String,
     #[serde(default)]
+    pub threshold_profile_reason: String,
+    #[serde(default)]
+    pub configured_contract_sources: Vec<String>,
+    #[serde(default)]
+    pub eligible_contract_sources: Vec<String>,
+    #[serde(default)]
+    pub active_contract_sources: Vec<String>,
+    #[serde(default)]
     pub active_sources: ContractWhaleActiveSources,
     pub discord_eligible: bool,
     pub discord_sent: bool,

@@ -13,8 +13,8 @@ use btc_toxic_flow_monitor_rs::{
         normalizer::{
             normalize_binance_agg_trade, normalize_binance_force_order,
             normalize_binance_funding_rate_json, normalize_binance_open_interest_json,
-            normalize_okx_funding_rate_json, normalize_okx_open_interest_json,
-            normalize_okx_swap_trade,
+            normalize_bitfinex_trade, normalize_okx_funding_rate_json,
+            normalize_okx_open_interest_json,
         },
         persistence::flush_contract_flow_buckets_nonblocking,
         types::{
@@ -190,6 +190,22 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
     assert_eq!(rows[0].total_volume_btc, signal.total_volume_btc);
     assert_eq!(rows[0].market_type, ContractWhaleMarketType::Perp);
     assert_eq!(rows[0].threshold_profile, "binance_bitfinex");
+    assert_eq!(
+        rows[0].threshold_profile_reason,
+        "active_contract_sources=binance,bitfinex"
+    );
+    assert_eq!(
+        rows[0].configured_contract_sources,
+        vec!["binance".to_string(), "bitfinex".to_string()]
+    );
+    assert_eq!(
+        rows[0].eligible_contract_sources,
+        vec!["binance".to_string(), "bitfinex".to_string()]
+    );
+    assert_eq!(
+        rows[0].active_contract_sources,
+        vec!["binance".to_string(), "bitfinex".to_string()]
+    );
     assert!(!rows[0].active_sources.contract.is_empty());
     assert!(rows[0]
         .active_sources
@@ -199,27 +215,97 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
             && entry.market_type == ContractWhaleMarketType::Perp
             && entry.enabled
             && entry.status == "active"));
-    assert!(rows[0]
+    assert!(!rows[0]
         .active_sources
         .contract
         .iter()
         .any(|entry| entry.exchange == "coinbase"
-            && entry.market_type == ContractWhaleMarketType::Perp
-            && !entry.enabled
-            && entry.status == "spot_only"));
-    assert!(rows[0]
-        .active_sources
-        .contract
-        .iter()
-        .any(|entry| entry.exchange == "okx"
-            && entry.market_type == ContractWhaleMarketType::Perp
-            && !entry.enabled
-            && entry.status == "disabled"));
+            && entry.market_type == ContractWhaleMarketType::Perp));
+    assert!(
+        !rows[0]
+            .active_sources
+            .contract
+            .iter()
+            .any(|entry| entry.exchange == "okx"
+                && entry.market_type == ContractWhaleMarketType::Perp)
+    );
     assert!(rows[0]
         .active_sources
         .spot
         .iter()
         .any(|entry| entry.exchange == "coinbase" && entry.status == "spot_only"));
+}
+
+#[test]
+fn contract_whale_signal_history_recovers_legacy_profile_snapshot() {
+    let store = temp_store("contract-whale-legacy-signal");
+    let mut legacy = sample_s_signal();
+    legacy.id = "contract-whale:legacy:15:1700000015000:buy".to_string();
+    let mut payload = serde_json::to_value(&legacy).unwrap();
+    let payload_object = payload.as_object_mut().expect("legacy payload object");
+    payload_object.remove("thresholdProfile");
+    payload_object.remove("thresholdProfileReason");
+    payload_object.remove("configuredContractSources");
+    payload_object.remove("eligibleContractSources");
+    payload_object.remove("activeContractSources");
+    payload_object.remove("activeSources");
+    let payload_json = serde_json::to_string(&payload).unwrap();
+
+    store
+        .with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO contract_whale_signals (
+                  signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
+                  total_volume_btc, net_volume_btc, total_notional_usd, dominance,
+                  price_move_pct, main_exchange, market_type, source_role, exchanges_json,
+                  active_sources_json, threshold_profile, dynamic_multiple, data_quality,
+                  discord_eligible, discord_sent, discord_sent_at, payload_json, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                          ?13, ?14, 'perp', 'primary', '[]',
+                          '{"contract":[],"spot":[]}', 'three_exchange', ?15, ?16,
+                          0, 0, NULL, ?17, ?18)
+                "#,
+                rusqlite::params![
+                    legacy.id,
+                    legacy.ts,
+                    legacy.symbol,
+                    legacy.window_sec as i64,
+                    "aggressive_buy",
+                    "buy",
+                    "s",
+                    legacy.score as i64,
+                    legacy.total_volume_btc,
+                    legacy.net_volume_btc,
+                    legacy.total_notional_usd,
+                    legacy.dominance,
+                    legacy.price_move_pct,
+                    legacy.main_exchange,
+                    legacy.dynamic_multiple,
+                    legacy.data_quality as i64,
+                    payload_json,
+                    legacy.ts,
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let rows = store.list_contract_whale_signals("BTC", None, 10).unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].threshold_profile, "unknown");
+    assert_eq!(rows[0].threshold_profile_reason, "legacy_signal");
+    assert!(rows[0].configured_contract_sources.is_empty());
+    assert!(rows[0].eligible_contract_sources.is_empty());
+    assert!(rows[0].active_contract_sources.is_empty());
+    assert!(rows[0].active_sources.contract.is_empty());
+    assert!(rows[0].active_sources.spot.is_empty());
+    assert_eq!(rows[0].active_sources.threshold_profile, "unknown");
+    assert_eq!(
+        rows[0].active_sources.threshold_profile_reason,
+        "legacy_signal"
+    );
 }
 
 #[test]
@@ -680,7 +766,7 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_200.0, false).unwrap(),
-        normalize_okx_swap_trade(now - 1_000, 70_000.0, 240_000.0, 0.01, "buy").unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 430.0).unwrap(),
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 500.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);

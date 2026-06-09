@@ -3,9 +3,9 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-    ContractOiSnapshot, ContractWhaleDirection, ContractWhaleMarketType,
-    ContractWhalePercentileThreshold, ContractWhaleSeverity, ContractWhaleSignal,
-    ContractWhaleSignalType, ContractWhaleSourceRole,
+    ContractOiSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
+    ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleSeverity,
+    ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 
 use super::sqlite::SqliteStore;
@@ -609,7 +609,8 @@ impl ContractWhaleRepo for SqliteStore {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT payload_json, discord_eligible, discord_sent, discord_sent_at
+                SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
+                       active_sources_json, threshold_profile
                 FROM contract_whale_signals
                 WHERE market_type = 'perp'
                   AND (?1 IS NULL OR symbol = ?1)
@@ -806,7 +807,111 @@ fn decode_signal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContractWhaleS
     signal.discord_eligible = row.get::<_, i64>(1)? != 0;
     signal.discord_sent = row.get::<_, i64>(2)? != 0;
     signal.discord_sent_at = row.get(3)?;
+    let active_sources_json: Option<String> = row.get(4)?;
+    let threshold_profile: Option<String> = row.get(5)?;
+    repair_signal_profile_snapshot(&mut signal, active_sources_json, threshold_profile)?;
     Ok(signal)
+}
+
+fn repair_signal_profile_snapshot(
+    signal: &mut ContractWhaleSignal,
+    active_sources_json: Option<String>,
+    threshold_profile: Option<String>,
+) -> rusqlite::Result<()> {
+    let column_sources = active_sources_json
+        .as_deref()
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<ContractWhaleActiveSources>(json)
+                .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))
+        })
+        .transpose()?;
+    let column_profile = threshold_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let signal_has_snapshot = !signal.active_sources.contract.is_empty()
+        || !signal.active_sources.spot.is_empty()
+        || !signal.active_sources.configured_contract_sources.is_empty()
+        || !signal.active_sources.eligible_contract_sources.is_empty()
+        || !signal.active_sources.active_contract_sources.is_empty();
+    let column_has_snapshot = column_sources.as_ref().is_some_and(|sources| {
+        !sources.contract.is_empty()
+            || !sources.spot.is_empty()
+            || !sources.configured_contract_sources.is_empty()
+            || !sources.eligible_contract_sources.is_empty()
+            || !sources.active_contract_sources.is_empty()
+    });
+
+    if !signal_has_snapshot {
+        if let Some(sources) = column_sources {
+            signal.active_sources = sources;
+        }
+        signal.threshold_profile = column_profile
+            .or_else(|| {
+                (!signal.active_sources.threshold_profile.trim().is_empty())
+                    .then_some(signal.active_sources.threshold_profile.as_str())
+            })
+            .unwrap_or("unknown")
+            .to_string();
+    }
+
+    let has_recovered_snapshot = signal_has_snapshot || column_has_snapshot;
+    if !has_recovered_snapshot {
+        signal.threshold_profile = "unknown".to_string();
+        signal.threshold_profile_reason = "legacy_signal".to_string();
+        signal.configured_contract_sources.clear();
+        signal.eligible_contract_sources.clear();
+        signal.active_contract_sources.clear();
+        signal.active_sources.threshold_profile = "unknown".to_string();
+        signal.active_sources.threshold_profile_reason = "legacy_signal".to_string();
+        signal.active_sources.configured_contract_sources.clear();
+        signal.active_sources.eligible_contract_sources.clear();
+        signal.active_sources.active_contract_sources.clear();
+        return Ok(());
+    }
+
+    if signal.threshold_profile.trim().is_empty() {
+        signal.threshold_profile = column_profile.unwrap_or("unknown").to_string();
+    }
+    if signal.threshold_profile_reason.trim().is_empty() {
+        signal.threshold_profile_reason = signal.active_sources.threshold_profile_reason.clone();
+    }
+    if signal.configured_contract_sources.is_empty() {
+        signal.configured_contract_sources =
+            signal.active_sources.configured_contract_sources.clone();
+    }
+    if signal.eligible_contract_sources.is_empty() {
+        signal.eligible_contract_sources = signal.active_sources.eligible_contract_sources.clone();
+    }
+    if signal.active_contract_sources.is_empty() {
+        signal.active_contract_sources = signal.active_sources.active_contract_sources.clone();
+    }
+    if signal.active_sources.threshold_profile.trim().is_empty()
+        || signal.active_sources.threshold_profile == "three_exchange"
+            && signal.threshold_profile != "three_exchange"
+    {
+        signal.active_sources.threshold_profile = signal.threshold_profile.clone();
+    }
+    if signal
+        .active_sources
+        .threshold_profile_reason
+        .trim()
+        .is_empty()
+    {
+        signal.active_sources.threshold_profile_reason = signal.threshold_profile_reason.clone();
+    }
+    if signal.active_sources.configured_contract_sources.is_empty() {
+        signal.active_sources.configured_contract_sources =
+            signal.configured_contract_sources.clone();
+    }
+    if signal.active_sources.eligible_contract_sources.is_empty() {
+        signal.active_sources.eligible_contract_sources = signal.eligible_contract_sources.clone();
+    }
+    if signal.active_sources.active_contract_sources.is_empty() {
+        signal.active_sources.active_contract_sources = signal.active_contract_sources.clone();
+    }
+    Ok(())
 }
 
 fn enum_value<T: serde::Serialize>(value: T) -> anyhow::Result<String> {
