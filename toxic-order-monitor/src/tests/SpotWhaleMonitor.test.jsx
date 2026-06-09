@@ -89,6 +89,7 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getByText("Coinbase")).toBeInTheDocument();
     expect(await screen.findByText("现货主动买入")).toBeInTheDocument();
+    expect(screen.getByText("$75,610")).toBeInTheDocument();
     expect(screen.getByText("符合 gate")).toBeInTheDocument();
   });
 

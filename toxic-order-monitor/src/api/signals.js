@@ -65,6 +65,7 @@ export function mapInboxItemToSignal(item) {
     score,
     confidence,
     dataQuality,
+    triggerPriceUsd: normalizeSignalPrice(item),
     tofMetrics: normalizeTofMetrics(item.tofMetrics),
     tofScore: numberOrNull(item.tofScore),
     perpTofMetrics: normalizePerpTofMetrics(item.perpTofMetrics),
@@ -167,6 +168,52 @@ export function mapInboxItemToSignal(item) {
     pushedAt: null,
     isLive: true,
   };
+}
+
+function normalizeSignalPrice(item) {
+  const candidates = [
+    item.triggerPriceUsd,
+    item.triggerPrice,
+    item.priceUsd,
+    item.price,
+    item.markPrice,
+    item.midPrice,
+    item.currentPrice,
+    item.indexMid,
+    item.markout?.priceAtSignal,
+    item.markout?.price_at_signal,
+    item.markout?.windows?.find?.((window) => numberOrNull(window?.priceAtSignal) !== null)?.priceAtSignal,
+    item.markout?.windows?.find?.((window) => numberOrNull(window?.price_at_signal) !== null)?.price_at_signal,
+    item.replaySnapshot?.price?.currentPriceReference,
+    item.replaySnapshot?.price?.triggerPriceUsd,
+    item.redactedReplaySnapshot?.price?.currentPriceReference,
+    item.replay?.snapshot?.price?.currentPriceReference,
+  ];
+  for (const candidate of candidates) {
+    const value = numberOrNull(candidate);
+    if (value !== null && value > 0) {
+      return value;
+    }
+  }
+  return priceFromRange(item.priceRange ?? item.price_range);
+}
+
+function priceFromRange(value) {
+  if (typeof value !== "string" || /depth|qty|quantity|volume|amount/i.test(value)) {
+    return null;
+  }
+  const matches = value
+    .replace(/,/g, "")
+    .match(/-?\d+(?:\.\d+)?/g)
+    ?.map(Number)
+    .filter((number) => Number.isFinite(number) && number > 0);
+  if (!matches || matches.length === 0) {
+    return null;
+  }
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  return (matches[0] + matches[1]) / 2;
 }
 
 function redactSnapshot(value) {

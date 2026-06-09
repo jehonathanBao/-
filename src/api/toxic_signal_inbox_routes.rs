@@ -62,7 +62,10 @@ pub async fn toxic_signal_inbox_recent_route(
     let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
     Json(with_filter_contract(
         with_tof_metrics_contract(
-            serde_json::json!(build_recent(&state, &requested_symbol)),
+            with_trigger_prices(
+                serde_json::json!(build_recent(&state, &requested_symbol)),
+                &state,
+            ),
             cwm_signal.as_ref(),
         ),
         &requested_symbol,
@@ -77,7 +80,10 @@ pub async fn toxic_signal_inbox_for_symbol(
     let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
     Json(with_filter_contract(
         with_tof_metrics_contract(
-            serde_json::json!(build_recent(&state, &requested_symbol)),
+            with_trigger_prices(
+                serde_json::json!(build_recent(&state, &requested_symbol)),
+                &state,
+            ),
             cwm_signal.as_ref(),
         ),
         &requested_symbol,
@@ -93,11 +99,14 @@ pub async fn toxic_signal_inbox_for_signal(
     let recent = build_recent(&state, &requested_symbol);
     let cwm_signal = latest_cwm_signal_for_state(&state, &requested_symbol);
     Json(with_tof_metrics_contract(
-        serde_json::json!(toxic_signal_inbox_by_signal_id(
-            &requested_symbol,
-            &signal_id,
-            &recent,
-        )),
+        with_trigger_prices(
+            serde_json::json!(toxic_signal_inbox_by_signal_id(
+                &requested_symbol,
+                &signal_id,
+                &recent,
+            )),
+            &state,
+        ),
         cwm_signal.as_ref(),
     ))
 }
@@ -233,6 +242,67 @@ pub(crate) fn with_tof_metrics_contract(
         decorate_item_with_tof(item, cwm_signal);
     }
     payload
+}
+
+pub(crate) fn with_trigger_prices(
+    mut payload: serde_json::Value,
+    state: &AppState,
+) -> serde_json::Value {
+    if let Some(items) = payload
+        .get_mut("items")
+        .and_then(|value| value.as_array_mut())
+    {
+        for item in items {
+            decorate_item_with_trigger_price(item, state);
+        }
+    }
+    if let Some(item) = payload.get_mut("item") {
+        decorate_item_with_trigger_price(item, state);
+    }
+    payload
+}
+
+fn decorate_item_with_trigger_price(item: &mut serde_json::Value, state: &AppState) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    if object
+        .get("triggerPriceUsd")
+        .and_then(positive_number_from_value)
+        .is_some()
+    {
+        return;
+    }
+    let Some(created_at_ms) = object.get("createdAtMs").and_then(i64_from_json_number) else {
+        return;
+    };
+    let Some(price) = state
+        .price_snapshot_at_or_before(created_at_ms)
+        .map(|snapshot| snapshot.index_mid)
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return;
+    };
+    object.insert(
+        "triggerPriceUsd".to_string(),
+        serde_json::json!(round_price(price)),
+    );
+}
+
+fn i64_from_json_number(value: &serde_json::Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+}
+
+fn positive_number_from_value(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|number| number.is_finite() && *number > 0.0)
+}
+
+fn round_price(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&ContractWhaleSignal>) {

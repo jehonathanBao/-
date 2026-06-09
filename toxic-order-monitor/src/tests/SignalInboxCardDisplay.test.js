@@ -147,6 +147,18 @@ describe("Signal inbox card display", () => {
 
     expect(screen.getByRole("button", { name: /推送 sig_001 到 Discord/ })).toHaveTextContent("手动推送");
     expect(screen.getByText("卖方挂单诱导，潜在下行压力")).toBeInTheDocument();
+    expect(screen.getByText("价格 $103,200")).toBeInTheDocument();
+  });
+
+  it("shows trigger price on signal cards and review modal", async () => {
+    const user = userEvent.setup();
+    renderInbox([{ ...mockSignals[0], triggerPriceUsd: 102_888.42 }]);
+
+    expect(screen.getByText("价格 $102,888")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
+
+    expect(screen.getByText("Trigger Price")).toBeInTheDocument();
+    expect(screen.getAllByText("$102,888").length).toBeGreaterThan(0);
   });
 
   it("shows the latest visible signal time in the status cards", () => {

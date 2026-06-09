@@ -154,6 +154,7 @@ export default function SpotWhaleMonitor() {
                 <HeaderCell>窗口</HeaderCell>
                 <HeaderCell>成交量</HeaderCell>
                 <HeaderCell>名义金额</HeaderCell>
+                <HeaderCell>价格</HeaderCell>
                 <HeaderCell>净方向</HeaderCell>
                 <HeaderCell>方向占比</HeaderCell>
                 <HeaderCell>Coinbase 溢价</HeaderCell>
@@ -183,6 +184,7 @@ export default function SpotWhaleMonitor() {
                   <Cell>{item.windowSec}s</Cell>
                   <Cell>{formatBase(item.totalVolumeBase, item.symbol)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
+                  <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
                   <Cell>{formatSignedBase(item.netVolumeBase, item.symbol)}</Cell>
                   <Cell>{formatPct(item.dominance * 100)}</Cell>
                   <Cell>{formatSignedPct(item.coinbasePremiumPct)}</Cell>
@@ -339,6 +341,7 @@ function SpotSignalDetail({ signal, onClose }) {
           <Detail label="Total Volume" value={formatBase(signal.totalVolumeBase, signal.symbol)} />
           <Detail label="Net Direction" value={formatSignedBase(signal.netVolumeBase, signal.symbol)} />
           <Detail label="Notional" value={formatUsd(signal.totalNotionalUsd)} />
+          <Detail label="Trigger Price" value={formatPrice(signalTriggerPrice(signal))} />
           <Detail label="Coinbase Premium" value={formatSignedPct(signal.coinbasePremiumPct)} />
           <Detail label="Discord Alert Status" value={discordStatus(signal)} />
           <Detail label="Core Reason" value={signal.finalResult} wide />
@@ -532,6 +535,33 @@ function formatUsd(value) {
   const number = Number(value || 0);
   if (number >= 1_000_000) return `$${(number / 1_000_000).toFixed(1)}M`;
   return `$${Math.round(number).toLocaleString("en-US")}`;
+}
+
+function signalTriggerPrice(item) {
+  const explicit = Number(
+    item?.triggerPriceUsd ??
+      item?.triggerPrice ??
+      item?.avgPriceUsd ??
+      item?.priceUsd ??
+      item?.price,
+  );
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const totalVolumeBase = Number(item?.totalVolumeBase || 0);
+  const totalNotionalUsd = Number(item?.totalNotionalUsd || 0);
+  if (totalVolumeBase > 0 && totalNotionalUsd > 0) {
+    return totalNotionalUsd / totalVolumeBase;
+  }
+  return null;
+}
+
+function formatPrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  if (number >= 1000) return `$${Math.round(number).toLocaleString("en-US")}`;
+  if (number >= 1) return `$${number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${number.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 }
 
 function formatPct(value) {

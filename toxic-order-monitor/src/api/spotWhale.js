@@ -75,6 +75,8 @@ export async function fetchSpotWhaleHistory(filters = {}) {
 }
 
 export function normalizeSpotWhaleSignal(item) {
+  const totalVolumeBase = numberOrNull(item.totalVolumeBase) || 0;
+  const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   return {
     id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -84,9 +86,10 @@ export function normalizeSpotWhaleSignal(item) {
     direction: item.direction || "neutral",
     severity: item.severity || "medium",
     score: numberOrNull(item.score) || 0,
-    totalVolumeBase: numberOrNull(item.totalVolumeBase) || 0,
+    totalVolumeBase,
     netVolumeBase: numberOrNull(item.netVolumeBase) || 0,
-    totalNotionalUsd: numberOrNull(item.totalNotionalUsd) || 0,
+    totalNotionalUsd,
+    triggerPriceUsd: normalizeTriggerPrice(item, totalVolumeBase, totalNotionalUsd),
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
     coinbasePremiumPct: numberOrNull(item.coinbasePremiumPct),
@@ -101,6 +104,22 @@ export function normalizeSpotWhaleSignal(item) {
     discordReason: item.discordReason || "not_sent",
     finalResult: item.finalResult || "spot whale flow candidate",
   };
+}
+
+function normalizeTriggerPrice(item, totalVolumeBase, totalNotionalUsd) {
+  const explicit =
+    numberOrNull(item.triggerPriceUsd) ??
+    numberOrNull(item.triggerPrice) ??
+    numberOrNull(item.priceUsd) ??
+    numberOrNull(item.price) ??
+    numberOrNull(item.avgPriceUsd);
+  if (explicit !== null && explicit > 0) {
+    return explicit;
+  }
+  if (totalVolumeBase > 0 && totalNotionalUsd > 0) {
+    return totalNotionalUsd / totalVolumeBase;
+  }
+  return null;
 }
 
 function normalizeSummary(summary) {

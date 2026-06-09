@@ -247,6 +247,7 @@ pub fn build_spot_whale_discord_payload(signal: &SpotWhaleSignal) -> Value {
                 {"name": "Data Quality", "value": format!("{}/100", signal.data_quality), "inline": true},
                 {"name": "Total Volume", "value": format!("{:.2} {}", signal.total_volume_base, signal.symbol), "inline": true},
                 {"name": "Notional", "value": format!("${:.1}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
+                {"name": "Price", "value": trigger_price_label(signal.total_volume_base, signal.total_notional_usd), "inline": true},
                 {"name": "Net Direction", "value": format!("{:+.2} {}", signal.net_volume_base, signal.symbol), "inline": true},
                 {"name": "Dominance", "value": format!("{:.1}%", signal.dominance * 100.0), "inline": true},
                 {"name": "Price Move", "value": signal.price_move_pct.map(|value| format!("{value:+.2}%")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
@@ -258,6 +259,26 @@ pub fn build_spot_whale_discord_payload(signal: &SpotWhaleSignal) -> Value {
             "footer": {"text": format!("Candidate only | Signal: {}", signal.id)}
         }]
     })
+}
+
+fn trigger_price_label(total_volume_base: f64, total_notional_usd: f64) -> String {
+    if total_volume_base <= 0.0 || total_notional_usd <= 0.0 {
+        return "n/a".to_string();
+    }
+    format_price(total_notional_usd / total_volume_base)
+}
+
+fn format_price(price: f64) -> String {
+    if !price.is_finite() || price <= 0.0 {
+        return "n/a".to_string();
+    }
+    if price >= 1000.0 {
+        format!("${price:.0}")
+    } else if price >= 1.0 {
+        format!("${price:.2}")
+    } else {
+        format!("${price:.4}")
+    }
 }
 
 fn outcome(

@@ -55,6 +55,7 @@ fn signal_inbox_contract_includes_discord_alert_decision_fields() {
     assert!(source.contains("\"marketStructureReasons\""));
     assert!(source.contains("\"finalRiskScore\""));
     assert!(source.contains("\"riskScore\""));
+    assert!(source.contains("\"triggerPriceUsd\""));
     assert!(source.contains("\"perpTofMetrics\""));
     assert!(source.contains("\"perpScore\""));
     assert!(source.contains("\"perpCandidateType\""));

@@ -39,6 +39,18 @@ vi.mock("../api/contractWhale.js", () => ({
       items: [],
     }),
   ),
+  normalizePlatformStatus: vi.fn((platform) => ({
+    key: platform?.platformEnabled ? "active" : "disabled",
+    label: platform?.platformEnabled ? "运行中" : "未启用",
+    description: "test platform status",
+    tone: platform?.platformEnabled ? "emerald" : "slate",
+  })),
+  normalizeMarketStatus: vi.fn((market) => ({
+    key: market?.enabled ? "active" : "disabled",
+    label: market?.enabled ? "运行中" : "未启用",
+    detail: "test market status",
+    tone: market?.enabled ? "emerald" : "slate",
+  })),
 }));
 
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({

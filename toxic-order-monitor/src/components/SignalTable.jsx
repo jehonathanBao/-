@@ -136,6 +136,9 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
           </div>
           <p className="mt-3 line-clamp-2 text-sm font-semibold leading-6 text-slate-100">{finalResult}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-300">
+            <span className="rounded-full border border-cyan-800 px-2 py-1 text-cyan-200">
+              价格 {formatPrice(signalTriggerPrice(signal))}
+            </span>
             <span className="rounded-full border border-slate-700 px-2 py-1">
               短线毒性 {formatMetric(signal.toxicScore ?? signal.finalRiskScore ?? signal.score)}
             </span>
@@ -231,6 +234,7 @@ function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
   const finalResult = finalResultDescription(signal);
   const rows = [
     ["Symbol", signal.symbol],
+    ["Trigger Price", formatPrice(signalTriggerPrice(signal))],
     ["Direction", signal.directionLabel || signal.side],
     ["Toxic Score", formatMetric(signal.toxicScore ?? signal.finalRiskScore ?? signal.score)],
     ["Short Pressure", formatSignedMetric(signal.shortPressure)],
@@ -517,6 +521,48 @@ function reviewStatusClass(status) {
 
 function replaySnapshotFor(signal) {
   return signal?.replaySnapshot || signal?.redactedReplaySnapshot || signal?.replay?.snapshot || null;
+}
+
+function signalTriggerPrice(signal) {
+  const explicit = Number(
+    signal?.triggerPriceUsd ??
+      signal?.triggerPrice ??
+      signal?.priceUsd ??
+      signal?.price ??
+      signal?.markPrice ??
+      signal?.midPrice ??
+      signal?.currentPrice,
+  );
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  return priceFromRange(signal?.priceRange ?? signal?.price_range);
+}
+
+function priceFromRange(value) {
+  if (typeof value !== "string" || /depth|qty|quantity|volume|amount/i.test(value)) {
+    return null;
+  }
+  const matches = value
+    .replace(/,/g, "")
+    .match(/-?\d+(?:\.\d+)?/g)
+    ?.map(Number)
+    .filter((number) => Number.isFinite(number) && number > 0);
+  if (!matches || matches.length === 0) {
+    return null;
+  }
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  return (matches[0] + matches[1]) / 2;
+}
+
+function formatPrice(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  if (number >= 1000) return `$${Math.round(number).toLocaleString("en-US")}`;
+  if (number >= 1) return `$${number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${number.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 }
 
 function redactReplaySnapshot(value) {

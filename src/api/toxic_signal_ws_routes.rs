@@ -66,6 +66,7 @@ pub struct ToxicSignalWsItem {
     pub core_reason: String,
     pub risk_score: u8,
     pub data_quality: f64,
+    pub trigger_price_usd: Option<f64>,
     pub tof_metrics: TofMetrics,
     pub tof_score: f64,
     pub perp_tof_metrics: PerpTofMetrics,
@@ -186,7 +187,9 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
             _ = interval.tick() => {
                 let recent = build_recent(&state, &selected_symbol);
                 let cwm_signal = latest_cwm_signal_for_state(&state, &selected_symbol);
-                let snapshot = build_ws_snapshot_with_cwm(&recent, cwm_signal.as_ref());
+                let snapshot = build_ws_snapshot_with_cwm_and_prices(&recent, cwm_signal.as_ref(), |item| {
+                    trigger_price_for_item(&state, item)
+                });
                 let Ok(payload) = serde_json::to_string(&snapshot) else {
                     tracing::warn!(target: "toxic_signal_ws", "ws snapshot skipped because serialization failed");
                     break;
@@ -301,6 +304,17 @@ pub fn build_ws_snapshot_with_cwm(
     recent: &ToxicSignalInboxRecentResponse,
     cwm_signal: Option<&ContractWhaleSignal>,
 ) -> ToxicSignalWsSnapshot {
+    build_ws_snapshot_with_cwm_and_prices(recent, cwm_signal, |_| None)
+}
+
+pub fn build_ws_snapshot_with_cwm_and_prices<F>(
+    recent: &ToxicSignalInboxRecentResponse,
+    cwm_signal: Option<&ContractWhaleSignal>,
+    trigger_price_for: F,
+) -> ToxicSignalWsSnapshot
+where
+    F: Fn(&ToxicSignalInboxItem) -> Option<f64>,
+{
     ToxicSignalWsSnapshot {
         message_type: "signal_snapshot",
         read_only: true,
@@ -312,7 +326,7 @@ pub fn build_ws_snapshot_with_cwm(
         signals: recent
             .items
             .iter()
-            .map(|item| redact_signal_item(item, cwm_signal))
+            .map(|item| redact_signal_item(item, cwm_signal, trigger_price_for(item)))
             .collect(),
     }
 }
@@ -320,6 +334,7 @@ pub fn build_ws_snapshot_with_cwm(
 fn redact_signal_item(
     item: &ToxicSignalInboxItem,
     cwm_signal: Option<&ContractWhaleSignal>,
+    trigger_price_usd: Option<f64>,
 ) -> ToxicSignalWsItem {
     let enhancement = enhancement_for_item(item);
     let existing_risk_score = risk_score_for(&item.severity);
@@ -530,6 +545,7 @@ fn redact_signal_item(
         core_reason: item.fusion.summary.clone(),
         risk_score: toxic_score,
         data_quality: final_data_quality,
+        trigger_price_usd,
         tof_metrics: enhancement.tof_metrics,
         tof_score: enhancement.tof_score,
         perp_tof_metrics: perp_metrics.clone(),
@@ -610,6 +626,18 @@ fn redact_signal_item(
         analysis_only: true,
         execution_enabled: false,
     }
+}
+
+fn trigger_price_for_item(state: &AppState, item: &ToxicSignalInboxItem) -> Option<f64> {
+    state
+        .price_snapshot_at_or_before(item.created_at_ms as i64)
+        .map(|snapshot| snapshot.index_mid)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(round_price)
+}
+
+fn round_price(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
 }
 
 fn alert_status_from_reason(allowed: bool, reason: &str) -> &'static str {

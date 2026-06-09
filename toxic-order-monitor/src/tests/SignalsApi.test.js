@@ -55,10 +55,21 @@ describe("signals api mapping", () => {
         signalId: "runtime-short",
         directionBias: "short_bias",
         fusionSummary: "large ask wall removed",
+        triggerPriceUsd: 103_250,
       }),
     );
 
     expect(signal.finalResult).toBe("Ask/Sell · large ask wall removed");
+    expect(signal.triggerPriceUsd).toBe(103_250);
+  });
+
+  it("can derive a display price from a safe price range", () => {
+    const signal = mapInboxItemToSignal({
+      ...inboxItem({ signalId: "runtime-range" }),
+      priceRange: "103,150 - 103,250",
+    });
+
+    expect(signal.triggerPriceUsd).toBe(103_200);
   });
 
   it("maps redacted websocket signal summaries without technical fields", () => {
@@ -661,6 +672,7 @@ function inboxItem({
   qualityBucket = "good",
   directionBias = "short_bias",
   fusionSummary = "runtime candidate",
+  triggerPriceUsd,
 } = {}) {
   return {
     signalId,
@@ -670,6 +682,7 @@ function inboxItem({
     severity,
     confidence: 0.82,
     createdAtMs: 1_700_000_000_000,
+    triggerPriceUsd,
     fusion: { available: true, summary: fusionSummary },
     quality: { available: true, qualityBucket },
     recommendation: { action: "review_evidence" },

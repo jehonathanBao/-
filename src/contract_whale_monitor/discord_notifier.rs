@@ -229,6 +229,7 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
                 {"name": "Data Quality", "value": format!("{}/100", signal.data_quality), "inline": true},
                 {"name": "Total Volume", "value": format!("{:.0} BTC", signal.total_volume_btc), "inline": true},
                 {"name": "Notional", "value": format!("${:.0}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
+                {"name": "Price", "value": trigger_price_label(signal.total_volume_btc, signal.total_notional_usd), "inline": true},
                 {"name": "Net Direction", "value": format!("{:.0} BTC", signal.net_volume_btc), "inline": true},
                 {"name": "Dominance", "value": format!("{:.1}%", signal.dominance * 100.0), "inline": true},
                 {"name": "Price Move", "value": signal.price_move_pct.map(|value| format!("{value:+.2}%")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
@@ -246,6 +247,26 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
             }
         }]
     })
+}
+
+fn trigger_price_label(total_volume_btc: f64, total_notional_usd: f64) -> String {
+    if total_volume_btc <= 0.0 || total_notional_usd <= 0.0 {
+        return "n/a".to_string();
+    }
+    format_price(total_notional_usd / total_volume_btc)
+}
+
+fn format_price(price: f64) -> String {
+    if !price.is_finite() || price <= 0.0 {
+        return "n/a".to_string();
+    }
+    if price >= 1000.0 {
+        format!("${price:.0}")
+    } else if price >= 1.0 {
+        format!("${price:.2}")
+    } else {
+        format!("${price:.4}")
+    }
 }
 
 pub fn build_contract_whale_discord_log_preview(signal: &ContractWhaleSignal) -> String {

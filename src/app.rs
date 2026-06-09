@@ -934,7 +934,7 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         reason: Some(signal.final_result.clone()),
         impact: None,
         time: Some(signal.created_at.clone()),
-        price_range: None,
+        price_range: signal.trigger_price_usd.map(format_trigger_price_range),
         add_qty: None,
         cancel_qty: None,
         fill_qty: None,
@@ -980,4 +980,14 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
     };
     request.alert_family = Some(preferred_discord_alert_family(&request).to_string());
     request
+}
+
+fn format_trigger_price_range(price: f64) -> String {
+    if price >= 1000.0 {
+        format!("${price:.0}")
+    } else if price >= 1.0 {
+        format!("${price:.2}")
+    } else {
+        format!("${price:.4}")
+    }
 }

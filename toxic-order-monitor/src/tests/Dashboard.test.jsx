@@ -59,6 +59,18 @@ vi.mock("../api/contractWhale.js", () => ({
   ),
   fetchContractWhaleHistory: vi.fn(() => Promise.resolve({ summary: null, items: [], error: null })),
   fetchContractWhaleEvents: vi.fn(() => Promise.resolve({ items: [], error: null })),
+  normalizePlatformStatus: vi.fn((platform) => ({
+    key: platform?.platformEnabled ? "active" : "disabled",
+    label: platform?.platformEnabled ? "运行中" : "未启用",
+    description: "test platform status",
+    tone: platform?.platformEnabled ? "emerald" : "slate",
+  })),
+  normalizeMarketStatus: vi.fn((market) => ({
+    key: market?.enabled ? "active" : "disabled",
+    label: market?.enabled ? "运行中" : "未启用",
+    detail: "test market status",
+    tone: market?.enabled ? "emerald" : "slate",
+  })),
 }));
 
 vi.mock("../api/usageGuide.js", () => ({

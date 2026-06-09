@@ -47,6 +47,7 @@ describe("spotWhale API", () => {
             signalType: "spot_aggressive_buy",
             severity: "critical",
             totalVolumeBase: 820,
+            totalNotionalUsd: 51_250_000,
             coinbasePremiumPct: 0.04,
             discordEligible: true,
             exchanges: [{ exchange: "coinbase", buyVolumeBase: 320 }],
@@ -59,6 +60,7 @@ describe("spotWhale API", () => {
 
     expect(axios.get).toHaveBeenCalledWith("/api/spot-whale/latest?limit=50&symbol=BTC");
     expect(result.items[0].totalVolumeBase).toBe(820);
+    expect(result.items[0].triggerPriceUsd).toBe(62_500);
     expect(result.items[0].coinbasePremiumPct).toBe(0.04);
     expect(result.items[0].exchanges[0].exchange).toBe("coinbase");
   });
