@@ -154,7 +154,7 @@ export default function SpotWhaleMonitor() {
             <thead className="text-slate-500">
               <tr>
                 <HeaderCell>时间</HeaderCell>
-                <HeaderCell>币种</HeaderCell>
+                <HeaderCell>币种 / 价格</HeaderCell>
                 <HeaderCell>类型</HeaderCell>
                 <HeaderCell>等级</HeaderCell>
                 <HeaderCell>窗口</HeaderCell>
@@ -306,10 +306,9 @@ function SpotWhaleFilters({ filters, onChange }) {
 
 function SymbolWithPrice({ item }) {
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap font-semibold text-slate-100">
-      <span>{item.symbol}</span>
-      <span className="text-slate-500">·</span>
-      <span className="text-cyan-200">{formatPrice(signalTriggerPrice(item))}</span>
+    <span className="flex min-w-[96px] flex-col leading-tight">
+      <span className="font-semibold text-slate-100">{item.symbol}</span>
+      <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(signalTriggerPrice(item))}</span>
     </span>
   );
 }

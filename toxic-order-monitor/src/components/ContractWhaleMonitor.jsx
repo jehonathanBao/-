@@ -221,7 +221,7 @@ export default function ContractWhaleMonitor() {
             <thead className="text-slate-500">
               <tr>
                 <HeaderCell>时间</HeaderCell>
-                <HeaderCell>币种</HeaderCell>
+                <HeaderCell>币种 / 价格</HeaderCell>
                 <HeaderCell>类型</HeaderCell>
                 <HeaderCell>等级</HeaderCell>
                 <HeaderCell>窗口</HeaderCell>
@@ -257,7 +257,9 @@ export default function ContractWhaleMonitor() {
                   tabIndex={0}
                 >
                   <Cell>{formatTime(item.ts)}</Cell>
-                  <Cell>{item.symbol}</Cell>
+                  <Cell>
+                    <SymbolWithPrice item={item} />
+                  </Cell>
                   <Cell>
                     <span className="inline-flex items-center gap-1">
                       <span className={signalTypeIconClass(item.signalType)} aria-hidden="true">
@@ -835,6 +837,15 @@ function HeaderCell({ children }) {
 
 function Cell({ children }) {
   return <td className="whitespace-nowrap px-3 py-3">{children}</td>;
+}
+
+function SymbolWithPrice({ item }) {
+  return (
+    <span className="flex min-w-[96px] flex-col leading-tight">
+      <span className="font-semibold text-slate-100">{item.symbol}</span>
+      <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(signalTriggerPrice(item))}</span>
+    </span>
+  );
 }
 
 function signalTypeLabel(type) {

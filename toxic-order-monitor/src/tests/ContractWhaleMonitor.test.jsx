@@ -413,6 +413,12 @@ describe("ContractWhaleMonitor", () => {
     expect(okxCard.queryByText("延迟 N/A")).not.toBeInTheDocument();
     expect(okxCard.queryByText("重连 0")).not.toBeInTheDocument();
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText((_, element) => {
+        const text = element?.textContent || "";
+        return text.includes("BTC") && text.includes("$69,917");
+      }).length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("4,820 BTC")).toBeInTheDocument();
     expect(screen.getByText("$337M")).toBeInTheDocument();
     expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
