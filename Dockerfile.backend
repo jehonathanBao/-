@@ -6,6 +6,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY config ./config
+COPY docs ./docs
 COPY web ./web
 
 RUN cargo build --release --bin btc-toxic-flow-monitor-rs
