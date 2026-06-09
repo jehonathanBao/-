@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -390,28 +390,23 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getByText("最近 60 秒主动成交流只表示 flow，不用于判断平台在线 / 离线状态。")).toBeInTheDocument();
     expect(screen.getByText("合约数据质量 95/100 · 现货数据质量 78/100 · 总体 88/100 · active_contract_sources=binance,bitfinex")).toBeInTheDocument();
-    expect(screen.getByText("平台数据源")).toBeInTheDocument();
-    expect(screen.getByText("状态来自 summary.platforms / activeSources，不从 60s 成交量反推。")).toBeInTheDocument();
-    expect(screen.getByText("Binance Perp, Bitfinex Perp")).toBeInTheDocument();
-    expect(screen.getByText("Coinbase Spot, Binance Spot, Bitfinex Spot")).toBeInTheDocument();
-    expect(screen.getByText("Coinbase 当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。")).toBeInTheDocument();
+    expect(screen.getByTestId("platform-status-strip")).toBeInTheDocument();
+    expect(screen.getByText("平台状态")).toBeInTheDocument();
+    expect(screen.getByText(/合约源 Binance Perp, Bitfinex Perp/)).toBeInTheDocument();
+    expect(screen.getByText(/现货确认 Coinbase Spot, Binance Spot, Bitfinex Spot/)).toBeInTheDocument();
+    expect(screen.getByText("Coinbase 仅现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getAllByText("运行中").length).toBeGreaterThan(0);
     expect(screen.getAllByText("未启用").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Coinbase").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("已启用 / 等待数据").length).toBeGreaterThan(0);
-    expect(screen.getByText("现货专用")).toBeInTheDocument();
-    expect(screen.getByText("延迟 120ms")).toBeInTheDocument();
-    expect(screen.getByText("重连 3")).toBeInTheDocument();
-    expect(screen.getByTestId("platform-capability-coinbase")).toBeInTheDocument();
-    expect(screen.getAllByText("现货确认源").length).toBeGreaterThan(0);
-    const okxCard = within(screen.getByTestId("platform-capability-okx"));
-    expect(okxCard.getAllByText("未启用").length).toBeGreaterThan(0);
-    expect(okxCard.getByText("不参与当前合约监控。")).toBeInTheDocument();
-    expect(okxCard.queryByText("暂无成交")).not.toBeInTheDocument();
-    expect(okxCard.queryByText("延迟 N/A")).not.toBeInTheDocument();
-    expect(okxCard.queryByText("重连 0")).not.toBeInTheDocument();
+    expect(screen.getByTestId("platform-status-chip-binance")).toHaveTextContent("Binance");
+    expect(screen.getByTestId("platform-status-chip-bitfinex")).toHaveTextContent("重连中");
+    expect(screen.getByTestId("platform-status-chip-coinbase")).toHaveTextContent("仅现货");
+    expect(screen.getByTestId("platform-status-chip-okx")).toHaveTextContent("未启用");
+    expect(screen.queryByTestId("platform-capability-coinbase")).not.toBeInTheDocument();
+    expect(screen.queryByText("SPOT")).not.toBeInTheDocument();
+    expect(screen.queryByText("FUNDING")).not.toBeInTheDocument();
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText((_, element) => {

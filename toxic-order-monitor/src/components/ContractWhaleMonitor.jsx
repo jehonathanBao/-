@@ -4,8 +4,6 @@ import {
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
-  normalizeMarketStatus,
-  normalizePlatformStatus,
 } from "../api/contractWhale.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
@@ -691,110 +689,44 @@ function EventTag({ label, tone }) {
 }
 
 function PlatformCapabilitySection({ exchanges, platforms, summary }) {
-  const visible = visiblePlatformCapabilities(platforms);
   const contractSources = contractSourceLabels(summary);
   const spotSources = spotSourceLabels(platforms);
+  const platformStatuses = compactPlatformStatuses(exchanges, platforms);
   return (
-    <section className="mt-5">
-      <div className="mb-3 flex items-end justify-between gap-3">
+    <section className="mt-4 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-3" data-testid="platform-status-strip">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Platform Sources</p>
-          <h4 className="mt-1 text-sm font-bold text-white">平台数据源</h4>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Platform Status</p>
+          <h4 className="mt-1 text-sm font-bold text-white">平台状态</h4>
+          <p className="mt-1 text-xs text-slate-400">
+            合约源 {contractSources.length ? contractSources.join(", ") : "无"} · 现货确认 {spotSources.length ? spotSources.join(", ") : "无"} · 阈值 {thresholdProfileLabel(summary?.thresholdProfile)}
+          </p>
         </div>
-        <p className="text-xs text-slate-500">状态来自 summary.platforms / activeSources，不从 60s 成交量反推。</p>
+        <div className="flex flex-wrap gap-2">
+          {platformStatuses.map((entry) => (
+            <PlatformStatusChip entry={entry} key={entry.exchange} />
+          ))}
+        </div>
       </div>
-      <div className="grid gap-2 text-xs md:grid-cols-2 xl:grid-cols-4">
-        <SourceSummaryTile label="当前合约源" value={contractSources.length ? contractSources.join(", ") : "无"} />
-        <SourceSummaryTile label="当前现货确认源" value={spotSources.length ? spotSources.join(", ") : "无"} />
-        <SourceSummaryTile label="阈值配置" value={thresholdProfileLabel(summary?.thresholdProfile)} />
-        <SourceSummaryTile label="Profile Reason" value={summary?.thresholdProfileReason || "N/A"} />
-      </div>
-      <p className="mt-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-        Coinbase 当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。
-      </p>
-      <div className="grid gap-3 xl:grid-cols-2">
-        {visible.map(([exchange, platform]) => (
-          <PlatformSourceCard exchange={exchange} exchangeStatus={exchanges?.[exchange]} key={exchange} platform={platform} />
-        ))}
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+        <span>profile: {summary?.thresholdProfileReason || "N/A"}</span>
+        <span>Coinbase 仅现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。</span>
       </div>
     </section>
   );
 }
 
-function SourceSummaryTile({ label, value }) {
+function PlatformStatusChip({ entry }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
-      <p className="text-[11px] text-slate-500">{label}</p>
-      <p className="mt-1 break-words font-semibold text-slate-100">{value}</p>
-    </div>
-  );
-}
-
-function PlatformSourceCard({ exchange, exchangeStatus, platform }) {
-  const platformView = normalizePlatformStatus(platform);
-  const runtime = exchangeStatus || {};
-  const disabled = platformView.key === "disabled";
-  return (
-    <article
-      className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
-      data-testid={`platform-capability-${exchange}`}
+    <span
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${compactPlatformStatusClass(entry.tone)}`}
+      data-testid={`platform-status-chip-${entry.exchange}`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="font-semibold text-slate-100">{exchangeLabel(exchange)}</p>
-          <p className="mt-1 text-xs text-slate-500">{platformView.description}</p>
-        </div>
-        <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${statusBadgeClass(platformView.tone)}`}>
-          {platformView.label}
-        </span>
-      </div>
-      {disabled ? (
-        <p className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-500">
-          不参与当前合约监控。
-        </p>
-      ) : (
-        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
-          {runtime.lastTradeAt ? <span>最近成交 {relativeAge(runtime.lastTradeAt)}</span> : <span>等待成交更新</span>}
-          {runtime.latencyMs !== null && runtime.latencyMs !== undefined ? <span>延迟 {formatLatency(runtime.latencyMs)}</span> : null}
-          {Number(runtime.reconnectCount || 0) > 0 ? <span>重连 {Number(runtime.reconnectCount || 0)}</span> : null}
-        </div>
-      )}
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {visibleMarketEntries(platform.markets).map(([market, capability]) => {
-          const view = normalizeMarketStatus(
-            {
-              ...capability,
-              lastTradeAt: capability.lastTradeAt ?? runtime.lastTradeAt,
-              latencyMs: capability.latencyMs ?? runtime.latencyMs,
-              reconnectCount: capability.reconnectCount ?? runtime.reconnectCount,
-            },
-            market,
-          );
-          return (
-            <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2" key={`${exchange}-${market}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{marketLabel(market)}</p>
-                  <p className="mt-1 text-xs text-slate-300">{sourceRoleLabel(capability.role)}</p>
-                  <p className="mt-1 text-[11px] text-slate-500">{view.detail}</p>
-                </div>
-                <span className={`text-right text-[11px] font-semibold ${statusTextClass(view.tone)}`}>
-                  {view.label}
-                </span>
-              </div>
-              {capability.source ? (
-                <p className="mt-1 text-[11px] text-slate-500">{capability.source}</p>
-              ) : null}
-              {capability.requiresAuth ? (
-                <p className="mt-1 text-[11px] text-cyan-200">
-                  {capability.marketDataOnly ? "只读 market data" : "需要凭证"} · {capability.authConfigured ? "凭证已配置" : "缺少凭证"}
-                </p>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-    </article>
+      <span className={`h-2 w-2 rounded-full ${compactPlatformDotClass(entry.tone)}`} aria-hidden="true" />
+      <span>{exchangeLabel(entry.exchange)}</span>
+      <span className="text-slate-400">·</span>
+      <span>{entry.label}</span>
+    </span>
   );
 }
 
@@ -975,15 +907,6 @@ function exchangeLabel(exchange) {
   return labels[exchange] || exchange;
 }
 
-function visiblePlatformCapabilities(platforms) {
-  const source = platforms && typeof platforms === "object" ? platforms : {};
-  const entries = ["binance", "bitfinex", "coinbase", "okx"].map((exchange) => [
-    exchange,
-    source[exchange] || { platformEnabled: false, status: "disabled", markets: {} },
-  ]);
-  return entries;
-}
-
 function contractSourceLabels(summary) {
   const sources = Array.isArray(summary?.activeContractSources) && summary.activeContractSources.length
     ? summary.activeContractSources
@@ -1005,29 +928,58 @@ function spotSourceLabels(platforms) {
     .map((exchange) => `${exchangeLabel(exchange)} Spot`);
 }
 
-function visibleMarketEntries(markets) {
-  const source = markets && typeof markets === "object" ? markets : {};
-  return ["spot", "perp", "funding", "oi", "liquidation", "level2"]
-    .filter((market) => source[market])
-    .map((market) => [market, source[market]]);
+function compactPlatformStatuses(exchanges, platforms) {
+  const platformSource = platforms && typeof platforms === "object" ? platforms : {};
+  return ["binance", "bitfinex", "coinbase", "okx"].map((exchange) => {
+    const platform = platformSource[exchange] || { platformEnabled: false, status: "disabled", markets: {} };
+    const runtime = exchanges?.[exchange] || {};
+    return {
+      exchange,
+      ...compactPlatformStatus(platform, runtime),
+    };
+  });
 }
 
-function statusBadgeClass(tone) {
-  if (tone === "emerald") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
-  if (tone === "cyan") return "border border-cyan-500/40 bg-cyan-500/15 text-cyan-200";
-  if (tone === "yellow") return "border border-yellow-500/40 bg-yellow-500/15 text-yellow-100";
-  if (tone === "orange") return "border border-orange-500/40 bg-orange-500/15 text-orange-100";
-  if (tone === "red") return "border border-red-500/40 bg-red-500/15 text-red-100";
-  return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
+function compactPlatformStatus(platform, runtime) {
+  const platformStatus = String(platform?.status || runtime?.status || "disabled").toLowerCase();
+  const runtimeStatus = String(runtime?.status || "").toLowerCase();
+  const platformEnabled = Boolean(platform?.platformEnabled ?? platform?.enabled);
+  const connected = Boolean(runtime?.connected) || runtimeStatus === "connected";
+  if (!platformEnabled || platformStatus === "disabled") {
+    return { label: "未启用", tone: "slate" };
+  }
+  if (platformStatus === "spot_only") {
+    return { label: "仅现货", tone: "cyan" };
+  }
+  if (runtimeStatus === "reconnecting" || platformStatus === "reconnecting") {
+    return { label: "重连中", tone: "yellow" };
+  }
+  if (connected) {
+    return { label: "运行中", tone: "emerald" };
+  }
+  if (runtimeStatus === "disconnected" || platformStatus === "disconnected") {
+    return { label: "离线", tone: "red" };
+  }
+  if (platformStatus === "active" || platformStatus === "enabled") {
+    return { label: "已启用", tone: "cyan" };
+  }
+  return { label: "等待数据", tone: "cyan" };
 }
 
-function statusTextClass(tone) {
-  if (tone === "emerald") return "text-emerald-300";
-  if (tone === "cyan") return "text-cyan-300";
-  if (tone === "yellow") return "text-yellow-300";
-  if (tone === "orange") return "text-orange-300";
-  if (tone === "red") return "text-red-300";
-  return "text-slate-500";
+function compactPlatformStatusClass(tone) {
+  if (tone === "emerald") return "border-emerald-500/40 bg-emerald-500/10 text-emerald-200";
+  if (tone === "cyan") return "border-cyan-500/40 bg-cyan-500/10 text-cyan-200";
+  if (tone === "yellow") return "border-yellow-500/40 bg-yellow-500/10 text-yellow-100";
+  if (tone === "red") return "border-red-500/40 bg-red-500/10 text-red-100";
+  return "border-slate-700/80 bg-slate-900/70 text-slate-300";
+}
+
+function compactPlatformDotClass(tone) {
+  if (tone === "emerald") return "bg-emerald-300";
+  if (tone === "cyan") return "bg-cyan-300";
+  if (tone === "yellow") return "bg-yellow-300";
+  if (tone === "red") return "bg-red-300";
+  return "bg-slate-500";
 }
 
 function snapshotStatusLabel(status) {
