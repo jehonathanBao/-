@@ -17,7 +17,57 @@ export default function CandidateExplanation({ signal, compact = false }) {
         <span className="text-xs text-slate-500">{signal.directionSource || "detector"}</span>
       </div>
       <div className="grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
-        <span>Risk {formatNumber(signal.finalRiskScore ?? signal.score)} / Quality {formatNumber(signal.dataQuality)}</span>
+        <span>
+          Toxic {formatNumber(signal.toxicScore ?? signal.finalRiskScore ?? signal.score)} / Quality{" "}
+          {formatNumber(signal.dataQuality)}
+        </span>
+        <span>
+          Main Force{" "}
+          {formatNumber(signal.mainForceScore ?? signal.riskSystems?.mainForceStructure?.mainForceScore)}
+        </span>
+        <span>
+          Bias {formatSignedNumber(signal.structureBias ?? signal.marketStructureScore?.structureBias)}
+        </span>
+        <span>
+          Confirmed {(signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed) ? "Yes" : "No"} ·{" "}
+          {formatNumber(
+            signal.mainForceConfirmationCount ?? signal.marketStructureScore?.mainForceConfirmationCount,
+          )}
+          /
+          {formatNumber(
+            signal.mainForceConfirmationTotal ?? signal.marketStructureScore?.mainForceConfirmationTotal,
+          )}
+        </span>
+        <span>
+          Structure {signal.marketStructureSeverity || signal.marketStructureScore?.severity || "N/A"} · Extreme{" "}
+          {formatNumber(signal.extremeImpactScore ?? signal.marketStructureScore?.extremeImpactScore)}
+        </span>
+        <span>
+          Conf {formatNumber(signal.marketStructureConfidence ?? signal.marketStructureScore?.confidence)} / Quality{" "}
+          {formatNumber(signal.marketStructureDataQuality ?? signal.marketStructureScore?.dataQuality)}
+        </span>
+        <span>
+          极端行情 {(signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed) ? "是" : "否"} ·{" "}
+          {regimeTypeLabel(signal.regimeType)}
+        </span>
+        <span>
+          Spot {formatNumber(signal.spotScore ?? signal.marketStructureScore?.spotScore)} / Contract{" "}
+          {formatNumber(signal.contractScore ?? signal.marketStructureScore?.contractScore)}
+        </span>
+        <span>
+          Spot CVD {formatNumber(signal.spotCvdScore ?? signal.marketStructureScore?.spotCvdScore)} / Vol{" "}
+          {formatNumber(signal.spotVolumeAnomaly ?? signal.marketStructureScore?.spotVolumeAnomaly)} / Abs{" "}
+          {formatNumber(signal.spotAbsorption ?? signal.marketStructureScore?.spotAbsorption)}
+        </span>
+        <span>
+          Floor {formatNumber(signal.spotContractFloor ?? signal.marketStructureScore?.spotContractFloor)} / Duration{" "}
+          {formatNumber(signal.durationScore ?? signal.marketStructureScore?.durationScore)}
+        </span>
+        <span>
+          CWM Flow {formatNumber(signal.cwmAggressiveFlow ?? signal.marketStructureScore?.cwmAggressiveFlow)} / OI{" "}
+          {formatNumber(signal.oiImpulse ?? signal.marketStructureScore?.oiImpulse)} / Liq{" "}
+          {formatNumber(signal.liquidationContext ?? signal.marketStructureScore?.liquidationContext)}
+        </span>
         <span>Severity {signal.level || signal.risk || "N/A"}</span>
         {signal.finalCandidateType ? <span>Final {signal.finalCandidateType}</span> : null}
         {signal.metricsDirection ? <span>Metrics {signal.metricsDirection}</span> : null}
@@ -45,4 +95,28 @@ export default function CandidateExplanation({ signal, compact = false }) {
 function formatNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(number) : "N/A";
+}
+
+function formatSignedNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "N/A";
+  }
+  return number > 0 ? `+${Math.round(number)}` : `${Math.round(number)}`;
+}
+
+function regimeTypeLabel(value) {
+  return {
+    main_force_long_build: "主力建多",
+    main_force_short_build: "主力建空",
+    contract_flow_shock: "合约冲击",
+    spot_accumulation: "现货吸筹",
+    spot_distribution: "现货派发",
+    contract_short_squeeze: "空头挤压",
+    long_liquidation_cascade: "多头踩踏",
+    downside_absorption: "下方吸收",
+    upside_resistance: "上方压制",
+    range_rotation: "高换手震荡",
+    unclear: "结构不清晰",
+  }[value] || value || "N/A";
 }

@@ -6,8 +6,7 @@ use btc_toxic_flow_monitor_rs::api::discord_notification_routes::{
     NormalizedDiscordDirection,
 };
 use btc_toxic_flow_monitor_rs::runtime::{
-    advanced_tof_metrics::AdvancedTofMetrics, perp_tof_metrics::PerpTofMetrics,
-    tof_metrics::TofDirection,
+    perp_tof_metrics::PerpTofMetrics, tof_metrics::TofDirection,
 };
 use std::{fs, path::Path};
 
@@ -78,10 +77,17 @@ fn auto_push_rejects_medium_low_score_quality_and_missing_webhook() {
     );
 
     let mut low_score = high_request();
-    low_score.score = Some(79);
+    low_score.score = Some(84);
     assert_eq!(
         evaluate_discord_alert_gate(&low_score, DiscordAlertMode::Auto).reason,
         "score_below_threshold"
+    );
+
+    let mut low_confidence = high_request();
+    low_confidence.confidence = Some(69.0);
+    assert_eq!(
+        evaluate_discord_alert_gate(&low_confidence, DiscordAlertMode::Auto).reason,
+        "confidence_below_threshold"
     );
 
     let mut low_quality = high_request();
@@ -91,7 +97,7 @@ fn auto_push_rejects_medium_low_score_quality_and_missing_webhook() {
         "data_quality_below_threshold"
     );
 
-    std::env::remove_var("DISCORD_WEBHOOK_URL");
+    std::env::remove_var("SHORT_TOXIC_DISCORD_WEBHOOK_URL");
     assert_eq!(
         evaluate_discord_alert_gate(&high_request(), DiscordAlertMode::Auto).reason,
         "webhook_missing"
@@ -113,11 +119,11 @@ fn auto_push_respects_duplicate_and_cooldown_limiters() {
 
     reset_discord_push_limits_for_tests();
     assert_eq!(
-        reserve_discord_push_for_tests_with_cooldown("sig_auto_001", "BTC:spoof:ask"),
+        reserve_discord_push_for_tests_with_cooldown("sig_auto_001", "BTC:spoof:ask", 60),
         None
     );
     assert_eq!(
-        reserve_discord_push_for_tests_with_cooldown("sig_auto_002", "BTC:spoof:ask"),
+        reserve_discord_push_for_tests_with_cooldown("sig_auto_002", "BTC:spoof:ask", 60),
         Some("COOLDOWN_SUPPRESSED")
     );
 
@@ -128,7 +134,7 @@ fn auto_push_respects_duplicate_and_cooldown_limiters() {
 fn manual_push_still_works_when_auto_push_is_disabled() {
     let _guard = ENV_LOCK.lock().expect("env lock");
     set_alert_env();
-    std::env::set_var("DISCORD_AUTO_PUSH_ENABLED", "false");
+    std::env::set_var("SHORT_TOXIC_DISCORD_AUTO_PUSH_ENABLED", "false");
 
     assert!(!evaluate_discord_alert_gate(&high_request(), DiscordAlertMode::Auto).allowed);
     assert!(evaluate_discord_alert_gate(&high_request(), DiscordAlertMode::Manual).allowed);
@@ -199,7 +205,10 @@ fn bullish_discord_payload_uses_green_embed_and_title_emoji() {
     );
     assert_eq!(embed.color, 5_763_719);
     assert!(embed.title.starts_with("🟢"));
-    assert!(text.contains("🟢 看涨 / Bid-Buy"));
+    assert!(text.contains("短线有毒订单"));
+    assert!(text.contains("虚假挂单 / 撤单诱导"));
+    assert!(text.contains("偏多"));
+    assert!(text.contains("不代表中长线趋势"));
 }
 
 #[test]
@@ -221,7 +230,10 @@ fn bearish_discord_payload_uses_red_embed_and_title_emoji() {
     );
     assert_eq!(embed.color, 15_548_997);
     assert!(embed.title.starts_with("🔴"));
-    assert!(text.contains("🔴 看跌 / Ask-Sell"));
+    assert!(text.contains("短线有毒订单"));
+    assert!(text.contains("虚假挂单 / 撤单诱导"));
+    assert!(text.contains("偏空"));
+    assert!(text.contains("不代表中长线趋势"));
 }
 
 #[test]
@@ -243,7 +255,10 @@ fn neutral_discord_payload_uses_gray_embed_and_title_emoji() {
     );
     assert_eq!(embed.color, 9_807_270);
     assert!(embed.title.starts_with("🟡"));
-    assert!(text.contains("🟡 中性 / 未知"));
+    assert!(text.contains("短线有毒订单"));
+    assert!(text.contains("虚假挂单 / 撤单诱导"));
+    assert!(text.contains("中性 / 不明确"));
+    assert!(text.contains("不代表中长线趋势"));
 }
 
 #[test]
@@ -258,7 +273,8 @@ fn direction_colored_payload_still_does_not_leak_sensitive_or_technical_fields()
     let payload = discord_payload_for_tests(&request);
     let text = serde_json::to_string(&payload).expect("payload json");
 
-    assert!(text.contains("🔴 看跌 / Ask-Sell"));
+    assert!(text.contains("短线有毒订单"));
+    assert!(text.contains("偏空"));
     for forbidden in [
         "rawPayload",
         "evidence",
@@ -277,7 +293,7 @@ fn direction_colored_payload_still_does_not_leak_sensitive_or_technical_fields()
 }
 
 #[test]
-fn discord_payload_includes_safe_perp_tof_metrics() {
+fn short_toxic_discord_payload_excludes_perp_and_advanced_context() {
     let mut request = high_request();
     request.final_candidate_type = Some("High Risk Bullish Candidate".to_string());
     request.perp_candidate_type = Some("OpenInterestCandidate".to_string());
@@ -304,56 +320,127 @@ fn discord_payload_includes_safe_perp_tof_metrics() {
     let payload = discord_payload_for_tests(&request);
     let text = serde_json::to_string(&payload).expect("payload json");
 
-    assert!(text.contains("合约 TOF 指标"));
-    assert!(text.contains("OpenInterestCandidate"));
-    assert!(text.contains("long_increase"));
-    assert!(text.contains("Funding"));
-    assert!(text.contains("Liq"));
-    for forbidden in ["rawPayload", "evidence", "markout", "webhook", "token"] {
+    assert!(text.contains("短线有毒订单"));
+    assert!(text.contains("不代表中长线趋势"));
+    for forbidden in [
+        "合约 TOF 指标",
+        "高级指标",
+        "最终候选",
+        "OpenInterestCandidate",
+        "MarketPressureHeatmapCandidate",
+        "rawPayload",
+        "evidence",
+        "markout",
+        "webhook",
+        "token",
+    ] {
         assert!(!text.contains(forbidden));
     }
 }
 
 #[test]
-fn discord_payload_includes_safe_advanced_metrics() {
+fn market_structure_main_force_gate_passes_with_separate_family() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    set_market_structure_env();
+
     let mut request = high_request();
-    request.advanced_candidate_type = Some("MarketPressureHeatmapCandidate".to_string());
-    request.advanced_score = Some(89);
-    request.advanced_tof_metrics = Some(AdvancedTofMetrics {
-        vpin_enhanced: 88.0,
-        large_order_flow_cluster: 76.0,
-        historical_funding_oi_trend: 84.0,
-        market_pressure_heatmap: 91.0,
-        spot_risk_score: 86,
-        spot_tof_score: 88.0,
-        perp_score: 87,
-        final_risk_score: 89,
-        data_quality: 86.0,
-        metrics_completeness: 95.0,
-        fresh_data_coverage: 92.0,
-        candidate_type: "MarketPressureHeatmapCandidate".to_string(),
-        final_candidate_type: "High Risk Bullish Advanced Candidate".to_string(),
-        metrics_direction: TofDirection::Bullish,
-        confidence: 90.0,
-        explain_tags: vec!["Market pressure heatmap".to_string()],
-    });
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("Major".to_string());
+    request.main_force_score = Some(84);
+    request.market_structure_confidence = Some(76.0);
+    request.market_structure_data_quality = Some(74.0);
+    request.extreme_impact_score = Some(58);
+
+    let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "passed");
+
+    clear_alert_env();
+}
+
+#[test]
+fn market_structure_extreme_gate_passes_without_main_force_confirmation() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    set_market_structure_env();
+
+    let mut request = high_request();
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("Extreme".to_string());
+    request.main_force_score = Some(54);
+    request.market_structure_confidence = Some(52.0);
+    request.market_structure_data_quality = Some(76.0);
+    request.extreme_impact_score = Some(91);
+
+    let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "passed");
+
+    clear_alert_env();
+}
+
+#[test]
+fn market_structure_discord_payload_uses_main_force_wording() {
+    let mut request = high_request();
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("Major".to_string());
+    request.main_force_score = Some(84);
+    request.market_structure_confidence = Some(76.0);
+    request.market_structure_data_quality = Some(74.0);
+    request.extreme_impact_score = Some(58);
+    request.structure_bias = Some(62);
+    request.market_structure_severity = Some("Major".to_string());
+    request.regime_type = Some("main_force_long_build".to_string());
+    request.spot_score = Some(71);
+    request.contract_score = Some(86);
+    request.cross_confirm_score = Some(74);
+    request.main_force_confirmed = Some(true);
+    request.oi_score = Some(82);
+    request.liquidation_score = Some(44);
 
     let payload = discord_payload_for_tests(&request);
     let text = serde_json::to_string(&payload).expect("payload json");
 
-    assert!(text.contains("高级指标"));
-    assert!(text.contains("MarketPressureHeatmapCandidate"));
-    assert!(text.contains("VPIN+"));
-    assert!(text.contains("FlowCluster"));
-    assert!(text.contains("FundingOI"));
-    assert!(text.contains("Heatmap"));
-    for forbidden in ["rawPayload", "evidence", "markout", "webhook", "token"] {
-        assert!(!text.contains(forbidden));
-    }
+    assert!(text.contains("主力结构异动"));
+    assert!(text.contains("主力建多"));
+    assert!(text.contains("主力评分"));
+    assert!(text.contains("结构方向"));
+    assert!(text.contains("现货评分"));
+    assert!(text.contains("合约评分"));
+    assert!(text.contains("现货合约确认"));
+    assert!(text.contains("高概率主力建多，不是单纯清算推动。"));
+}
+
+#[test]
+fn market_structure_discord_payload_uses_extreme_impact_wording() {
+    let mut request = high_request();
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("Extreme".to_string());
+    request.main_force_score = Some(54);
+    request.market_structure_confidence = Some(52.0);
+    request.market_structure_data_quality = Some(76.0);
+    request.extreme_impact_score = Some(91);
+    request.structure_bias = Some(-68);
+    request.market_structure_severity = Some("Extreme".to_string());
+    request.regime_type = Some("long_liquidation_cascade".to_string());
+    request.spot_score = Some(42);
+    request.contract_score = Some(89);
+    request.cross_confirm_score = Some(48);
+    request.main_force_confirmed = Some(false);
+    request.oi_score = Some(52);
+    request.liquidation_score = Some(91);
+
+    let payload = discord_payload_for_tests(&request);
+    let text = serde_json::to_string(&payload).expect("payload json");
+
+    assert!(text.contains("极端行情冲击"));
+    assert!(text.contains("多头清算瀑布"));
+    assert!(text.contains("极端冲击"));
+    assert!(text.contains("暂不确认是主力建空"));
 }
 
 fn high_request() -> DiscordNotificationRequest {
     DiscordNotificationRequest {
+        alert_family: Some("short_toxic_order".to_string()),
         signal_id: Some("manual-high-direction-color".to_string()),
         id: None,
         dedupe_key: Some("manual-high-direction-color".to_string()),
@@ -363,6 +450,7 @@ fn high_request() -> DiscordNotificationRequest {
         level: Some("critical".to_string()),
         side: Some("Ask/Sell".to_string()),
         score: Some(92),
+        confidence: Some(88.0),
         data_quality: Some(88.0),
         reason: Some("Manual smoke test High/Critical candidate Discord path".to_string()),
         impact: None,
@@ -392,6 +480,21 @@ fn high_request() -> DiscordNotificationRequest {
         advanced_tof_metrics: None,
         advanced_score: None,
         advanced_candidate_type: None,
+        main_force_score: None,
+        extreme_impact_score: None,
+        structure_bias: None,
+        market_structure_confidence: None,
+        market_structure_data_quality: None,
+        market_structure_severity: None,
+        regime_type: None,
+        spot_score: None,
+        contract_score: None,
+        cross_confirm_score: None,
+        main_force_confirmed: None,
+        signal_agreement: None,
+        source_coverage: None,
+        oi_score: None,
+        liquidation_score: None,
         test: None,
     }
 }
@@ -399,12 +502,30 @@ fn high_request() -> DiscordNotificationRequest {
 fn set_alert_env() {
     reset_discord_push_limits_for_tests();
     reset_discord_auto_push_for_tests();
-    std::env::set_var("ALERT_MIN_SCORE", "80");
-    std::env::set_var("ALERT_MIN_DATA_QUALITY", "70");
-    std::env::set_var("DISCORD_AUTO_PUSH_ENABLED", "true");
+    std::env::set_var("SHORT_TOXIC_ALERT_MIN_SCORE", "85");
+    std::env::set_var("SHORT_TOXIC_ALERT_MIN_CONFIDENCE", "70");
+    std::env::set_var("SHORT_TOXIC_ALERT_MIN_DATA_QUALITY", "70");
+    std::env::set_var("SHORT_TOXIC_DISCORD_AUTO_PUSH_ENABLED", "true");
+    std::env::set_var("SHORT_TOXIC_DISCORD_COOLDOWN_SECONDS", "60");
     std::env::set_var("DRY_RUN", "false");
     std::env::set_var(
-        "DISCORD_WEBHOOK_URL",
+        "SHORT_TOXIC_DISCORD_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/test-id/test-token",
+    );
+}
+
+fn set_market_structure_env() {
+    reset_discord_push_limits_for_tests();
+    reset_discord_auto_push_for_tests();
+    std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_SCORE", "80");
+    std::env::set_var("MARKET_STRUCTURE_EXTREME_MIN_SCORE", "85");
+    std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_CONFIDENCE", "70");
+    std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_DATA_QUALITY", "70");
+    std::env::set_var("MARKET_STRUCTURE_DISCORD_AUTO_PUSH_ENABLED", "true");
+    std::env::set_var("MARKET_STRUCTURE_DISCORD_COOLDOWN_SECONDS", "900");
+    std::env::set_var("DRY_RUN", "false");
+    std::env::set_var(
+        "MARKET_STRUCTURE_DISCORD_WEBHOOK_URL",
         "https://discord.com/api/webhooks/test-id/test-token",
     );
 }
@@ -413,7 +534,21 @@ fn clear_alert_env() {
     reset_discord_push_limits_for_tests();
     reset_discord_auto_push_for_tests();
     for key in [
+        "SHORT_TOXIC_ALERT_MIN_SCORE",
+        "SHORT_TOXIC_ALERT_MIN_CONFIDENCE",
+        "SHORT_TOXIC_ALERT_MIN_DATA_QUALITY",
+        "SHORT_TOXIC_DISCORD_AUTO_PUSH_ENABLED",
+        "SHORT_TOXIC_DISCORD_COOLDOWN_SECONDS",
+        "SHORT_TOXIC_DISCORD_WEBHOOK_URL",
+        "MARKET_STRUCTURE_ALERT_MIN_SCORE",
+        "MARKET_STRUCTURE_EXTREME_MIN_SCORE",
+        "MARKET_STRUCTURE_ALERT_MIN_CONFIDENCE",
+        "MARKET_STRUCTURE_ALERT_MIN_DATA_QUALITY",
+        "MARKET_STRUCTURE_DISCORD_AUTO_PUSH_ENABLED",
+        "MARKET_STRUCTURE_DISCORD_COOLDOWN_SECONDS",
+        "MARKET_STRUCTURE_DISCORD_WEBHOOK_URL",
         "ALERT_MIN_SCORE",
+        "ALERT_MIN_CONFIDENCE",
         "ALERT_MIN_DATA_QUALITY",
         "DISCORD_AUTO_PUSH_ENABLED",
         "DRY_RUN",

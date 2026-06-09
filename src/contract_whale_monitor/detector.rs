@@ -9,10 +9,6 @@ use super::{
     LOG_PREFIX, LOG_TARGET,
 };
 
-const HIGH_NOTIONAL_USD: f64 = 50_000_000.0;
-const CRITICAL_NOTIONAL_USD: f64 = 120_000_000.0;
-const S_NOTIONAL_USD: f64 = 250_000_000.0;
-
 pub fn detect_contract_whale_signal(
     stats: &ContractWhaleWindowStats,
 ) -> Option<ContractWhaleSignal> {
@@ -39,7 +35,7 @@ pub fn detect_contract_whale_signal_with_config(
         return None;
     }
     let score = score_contract_whale_signal_with_config(&scoring_stats, signal_type, config);
-    let multi_exchange_confirmed = multi_exchange_confirmed(&scoring_stats);
+    let multi_exchange_confirmed = multi_exchange_confirmed_with_config(&scoring_stats, config);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         severity,
@@ -75,6 +71,9 @@ pub fn detect_contract_whale_signal_with_config(
         price_move_pct: scoring_stats.price_move_pct.map(|value| round(value, 4)),
         main_exchange: scoring_stats.main_exchange.clone(),
         exchanges: scoring_stats.exchanges.clone(),
+        dominant_venue_net_contribution_share: scoring_stats
+            .dominant_venue_net_contribution_share
+            .map(|value| round(value, 4)),
         dynamic_multiple: scoring_stats.dynamic_multiple.map(|value| round(value, 3)),
         percentile_level: scoring_stats.percentile_level.map(|value| round(value, 1)),
         multi_exchange_confirmed,
@@ -163,16 +162,17 @@ fn classify_severity(
     }
     let dynamic_multiple = stats.dynamic_multiple.unwrap_or(0.0);
     let same_direction_price_move = same_direction_price_move(stats, signal_type);
+    let notional_thresholds = config.notional_thresholds_usd();
     let muted_absorption = matches!(
         signal_type,
         ContractWhaleSignalType::DownsideAbsorption | ContractWhaleSignalType::UpsideSuppression
     ) && (stats.price_move_pct.unwrap_or(0.0).abs() <= 0.05
         || stats.price_reversal_ratio.unwrap_or(0.0) >= 0.50);
-    let binance_or_okx = binance_or_okx_same_direction(stats);
-    let multi_exchange_confirmed = multi_exchange_confirmed(stats);
+    let primary_source_confirmed = active_primary_same_direction(stats, config);
+    let multi_exchange_confirmed = multi_exchange_confirmed_with_config(stats, config);
 
     if stats.total_volume_btc >= thresholds.s_btc
-        && stats.total_notional_usd >= S_NOTIONAL_USD
+        && stats.total_notional_usd >= notional_thresholds.s
         && dynamic_threshold_required(stats.dynamic_multiple, 10.0)
         && percentile_threshold_pass(stats.percentile_level, 99.9)
         && stats.dominance >= 0.65
@@ -185,20 +185,20 @@ fn classify_severity(
     }
 
     if stats.total_volume_btc >= thresholds.critical_btc
-        && stats.total_notional_usd >= CRITICAL_NOTIONAL_USD
+        && stats.total_notional_usd >= notional_thresholds.critical
         && dynamic_threshold_required(stats.dynamic_multiple, 7.0)
         && percentile_threshold_pass(stats.percentile_level, 99.5)
         && stats.dominance >= 0.60
         && stats.data_quality >= config.data_quality.min_critical_quality
         && !runtime_warmup(stats, config)
-        && (binance_or_okx && (!muted_absorption || multi_exchange_confirmed))
+        && (primary_source_confirmed && (!muted_absorption || multi_exchange_confirmed))
         && (same_direction_price_move >= 0.15 || muted_absorption)
     {
         return ContractWhaleSeverity::Critical;
     }
 
     if stats.total_volume_btc >= thresholds.high_btc
-        && stats.total_notional_usd >= HIGH_NOTIONAL_USD
+        && stats.total_notional_usd >= notional_thresholds.high
         && dynamic_threshold_pass(stats.dynamic_multiple, 5.0)
         && percentile_threshold_pass(stats.percentile_level, 99.0)
         && stats.dominance >= 0.55
@@ -265,7 +265,7 @@ fn effective_data_quality(
     config: &ContractWhaleRuntimeConfig,
 ) -> u8 {
     let mut quality = stats.data_quality;
-    if stats.exchange_count <= 1 {
+    if config.active_exchange_count() >= 2 && stats.exchange_count <= 1 {
         quality = quality.saturating_sub(config.data_quality.single_exchange_penalty);
     }
     if stats
@@ -316,31 +316,63 @@ fn same_direction_price_move(
     }
 }
 
-fn same_direction_exchange_count(stats: &ContractWhaleWindowStats) -> usize {
+fn same_direction_exchange_count(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> usize {
     let net_positive = stats.net_volume_btc > 0.0;
     stats
         .exchanges
         .iter()
+        .filter(|item| config.exchange_enabled(&item.exchange))
         .filter(|item| item.total_volume_btc > 0.0)
         .filter(|item| item.dominance >= 0.55)
         .filter(|item| (item.net_volume_btc > 0.0) == net_positive)
         .count()
 }
 
-fn binance_or_okx_same_direction(stats: &ContractWhaleWindowStats) -> bool {
+fn active_primary_same_direction(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> bool {
     let net_positive = stats.net_volume_btc > 0.0;
     stats.exchanges.iter().any(|item| {
-        matches!(item.exchange.as_str(), "binance" | "okx")
+        config.exchange_enabled(&item.exchange)
+            && matches!(item.exchange.as_str(), "binance" | "okx")
             && item.total_volume_btc > 0.0
             && item.dominance >= 0.55
             && (item.net_volume_btc > 0.0) == net_positive
     })
 }
 
-fn multi_exchange_confirmed(stats: &ContractWhaleWindowStats) -> bool {
-    stats.exchange_count >= 2
-        && same_direction_exchange_count(stats) >= 2
-        && binance_or_okx_same_direction(stats)
+fn multi_exchange_confirmed_with_config(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> bool {
+    if config.active_exchange_count() < 2 {
+        return false;
+    }
+    let min_confirmed_exchanges = 2;
+    stats.exchange_count >= min_confirmed_exchanges
+        && same_direction_exchange_count(stats, config) >= min_confirmed_exchanges
+        && active_primary_same_direction(stats, config)
+        && bitfinex_confirmation_ok(stats, config)
+}
+
+fn bitfinex_confirmation_ok(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> bool {
+    if config.threshold_profile_key() != "binance_bitfinex" || config.active_exchange_count() < 2 {
+        return true;
+    }
+    let net_positive = stats.net_volume_btc > 0.0;
+    stats.exchanges.iter().any(|item| {
+        item.exchange == "bitfinex"
+            && item.total_volume_btc >= 20.0
+            && item.net_contribution_share >= 0.05
+            && (item.net_volume_btc > 0.0) == net_positive
+    })
 }
 
 fn direction_for(signal_type: ContractWhaleSignalType) -> ContractWhaleDirection {

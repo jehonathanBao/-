@@ -47,9 +47,13 @@ pub fn score_contract_whale_signal_with_config(
         + price_score
         + exchange_score
         + data_quality_score
+        + dominant_venue_net_flow_adjustment(stats, thresholds.critical_btc)
         + oi_context_adjustment(stats);
 
-    if stats.exchange_count == 1 && stats.total_volume_btc >= thresholds.critical_btc {
+    if config.active_exchange_count() >= 2
+        && stats.exchange_count == 1
+        && stats.total_volume_btc >= thresholds.critical_btc
+    {
         score -= scoring.penalties.single_exchange_only;
     }
     if stats.liquidation_driven {
@@ -80,6 +84,25 @@ fn oi_context_adjustment(stats: &ContractWhaleWindowStats) -> f64 {
         Some(change_pct) if change_pct <= -0.20 => -6.0,
         _ => 0.0,
     }
+}
+
+fn dominant_venue_net_flow_adjustment(stats: &ContractWhaleWindowStats, critical_btc: f64) -> f64 {
+    let Some(share) = stats.dominant_venue_net_contribution_share else {
+        return 0.0;
+    };
+    if !share.is_finite() || stats.net_volume_btc.abs() < critical_btc * 0.5 {
+        return 0.0;
+    }
+    ((share - 0.70) / 0.30 * 5.0).clamp(0.0, 5.0)
+}
+
+pub fn dominant_venue_net_flow_score_for_display(stats: &ContractWhaleWindowStats) -> f64 {
+    dominant_venue_net_flow_adjustment(
+        stats,
+        contract_whale_runtime_config()
+            .thresholds_for_symbol_window(&stats.symbol, stats.window_sec)
+            .critical_btc,
+    )
 }
 
 pub fn discord_gate(

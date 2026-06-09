@@ -5,6 +5,7 @@ pub mod flow;
 pub mod liq_hunt;
 pub mod liquidation;
 pub mod liquidation_replay;
+pub mod main_force_event;
 pub mod market;
 pub mod markout;
 pub mod orderbook_delta;

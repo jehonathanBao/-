@@ -181,30 +181,199 @@ PERP_AGF_VOLUME_THRESHOLD=1000000
 ADVANCED_TOF_ENABLED=true
 ```
 
-High/Critical Discord delivery still uses the same alert gate: score `>= 80`,
-data quality `>= 70`, dedupe, and cooldown. Medium and Low contract candidates
-remain Dashboard-only.
+Short-term toxic-order Discord delivery uses a stricter alert gate:
+`toxicScore >= 85`, `confidence >= 70`, `dataQuality >= 70`, dedupe, and
+cooldown `>= 60s`. Medium and Low contract candidates remain Dashboard-only.
+Short-term toxic Discord copy must say "短线有毒订单" and must not imply
+main-force intervention.
 
-## Advanced TOF Fusion
+Recommended short-term toxic Discord env vars:
 
-The v0.6 advanced layer merges spot risk, spot TOF-lite, and perp TOF into a
-single read-only candidate summary:
-
-```text
-advancedTofMetrics, advancedScore, advancedCandidateType
+```env
+SHORT_TOXIC_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+SHORT_TOXIC_DISCORD_AUTO_PUSH_ENABLED=true
+SHORT_TOXIC_ALERT_MIN_SCORE=85
+SHORT_TOXIC_ALERT_MIN_CONFIDENCE=70
+SHORT_TOXIC_ALERT_MIN_DATA_QUALITY=70
+SHORT_TOXIC_DISCORD_COOLDOWN_SECONDS=60
 ```
 
-The fusion formula is:
+If these are unset, the backend can still fall back to the generic
+`DISCORD_WEBHOOK_URL`, `DISCORD_AUTO_PUSH_ENABLED`, and `ALERT_MIN_*` values.
+For production, prefer a family-specific short-term toxic webhook so short-line
+alerts do not mix with main-force or whale-flow channels.
 
-```text
-finalRiskScore = 0.4 * spotRisk + 0.3 * spotTofScore + 0.3 * perpScore
+Recommended market-structure Discord env vars:
+
+```env
+MARKET_STRUCTURE_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+MARKET_STRUCTURE_DISCORD_AUTO_PUSH_ENABLED=true
+MARKET_STRUCTURE_ALERT_MIN_SCORE=80
+MARKET_STRUCTURE_EXTREME_MIN_SCORE=85
+MARKET_STRUCTURE_ALERT_MIN_CONFIDENCE=70
+MARKET_STRUCTURE_ALERT_MIN_DATA_QUALITY=70
+MARKET_STRUCTURE_DISCORD_COOLDOWN_SECONDS=900
 ```
 
-Advanced indicators include VPIN Enhanced, large order-flow clusters,
-historical Funding / OI trend, and market pressure heatmap. Scan logs emit
-`advanced_metrics_computed` with aggregate scores only. Discord embeds may show
-these aggregate indicators and explain tags, but must still omit raw payloads,
-evidence, markout, tokens, and webhook values.
+This family is for medium/longer-term spot + perp structure alerts, not
+short-term toxic-order sweeps. Its Discord wording must distinguish:
+
+- `主力结构异动`: main-force / accumulation / distribution / absorption / resistance
+- `极端行情冲击`: violent liquidation or squeeze impact that is not yet confirmed as main-force behavior
+
+## Split Risk Systems
+
+The v0.6 dashboard exposes two read-only scoring systems instead of forcing
+spot, TOF, perp, and CWM into one final score:
+
+```text
+shortTermToxic: toxicScore, shortPressure, toxicType, ttlSec, expiresAt, halfLifeSec, decayedScore, reasons
+marketStructureScore/mainForceStructure:
+  mainForceScore, extremeImpactScore, structureBias, confidence, dataQuality,
+  severity, regimeType, spotScore, contractScore, crossConfirmScore, oiScore,
+  liquidationScore, fundingCrowdingScore, cwmScore, reasons
+```
+
+The short-term toxic score is used for ordinary toxic-order Discord gating:
+
+```text
+High/Critical/S && toxicScore >= 85 && confidence >= 70 && dataQuality >= 70 && cooldown >= 60s
+```
+
+Short-term severity bands are:
+
+```text
+0-39 Calm
+40-59 Watch
+60-74 High
+75-89 Critical
+90-100 S
+```
+
+Short-term scores decay quickly:
+
+```text
+decayedScore = previousScore * exp(-elapsedSec / halfLifeSec)
+```
+
+The half-life is 30-45 seconds and max TTL is 3-5 minutes depending on severity.
+
+The market-structure score is medium/longer-term context built from spot, perp,
+and cross-market confirmation. `contractScore` is the contract-side composite
+from perp TOF, OI, liquidation pressure, funding crowding, and CWM:
+
+```text
+spotScore =
+  0.30*SpotCvdScore
++ 0.25*SpotVolumeAnomaly
++ 0.20*SpotAbsorption
++ 0.15*SpotLiquidityShift
++ 0.10*SpotPriceResponse
+
+contractScore =
+  0.30*CwmAggressiveFlow
++ 0.20*OiImpulse
++ 0.15*LiquidationContext
++ 0.15*FundingCrowding
++ 0.10*BasisPremium
++ 0.10*ActiveExchangeConfirmation
+
+crossConfirmScore =
+  0.40*SpotContractDirectionConsistency
++ 0.25*MultiWindowConsistency
++ 0.20*PriceResponseConsistency
++ 0.15*SourceCoverage
+
+structureRaw =
+  0.40*spotScore
++ 0.40*contractScore
++ 0.20*crossConfirmScore
+
+mainForceScore =
+  0.65*structureRaw
++ 0.25*min(spotScore, contractScore)
++ 0.10*durationScore
+- liquidationPenalty
+- crowdingPenalty
+```
+
+Main-force severity bands are:
+
+```text
+0-39 Calm
+40-59 Watch
+60-74 Confirmed
+75-89 Major
+90-100 Extreme
+```
+
+`mainForceConfirmed=true` requires `mainForceScore>=75`, `confidence>=70`,
+`dataQuality>=70`, and at least 3 of 7 confirmation checks:
+`spotScore>=60`, `contractScore>=70`, `crossConfirmScore>=60`, OI aligned with
+direction, clear price-response or absorption/suppression structure,
+liquidation not primary-driven, and at least two consistent time windows.
+
+Treat `extremeImpactConfirmed` as a separate read-only flag:
+
+- `extremeImpactConfirmed=true` means violent market impact is present.
+- It does not automatically imply `mainForceConfirmed=true`.
+- Example: `regimeType=long_liquidation_cascade` can be extreme while still not
+  being confirmed as active main-force building.
+
+`mainForceScore` estimates whether behavior resembles real main-force
+activity. `extremeImpactScore` tracks violent market impact separately because
+a liquidation cascade can be extreme without being active main-force building.
+`structureBias` is the separate `-100..+100` direction score. It must not be
+treated as a synonym for `mainForceScore`.
+The `min(spotScore, contractScore)` term intentionally prevents contract-only
+volume spikes from becoming very high main-force scores without spot
+confirmation.
+`ActiveExchangeConfirmation` must be computed from enabled venues only. If OKX
+is disabled, it is not counted in total volume, exchange count, data-quality
+penalties, or multi-exchange confirmation.
+`SourceCoverage` uses `healthyEnabledSources / enabledSources`; disabled venues
+are not included in the denominator. With Binance and Bitfinex enabled and OKX
+disabled, two healthy sources means `2 / 2 = 100%`.
+In the current Binance + Bitfinex profile, Binance is the primary liquidity
+source and Bitfinex is a confirmation source. Binance-only extremes can support
+High/Critical contract evidence but are capped below S-like CWM component
+strength. Bitfinex-only extremes are capped as High-level evidence. S-grade
+contract structure requires Binance + Bitfinex same-direction confirmation.
+Funding crowding is a risk correction, not a simple bullish/bearish boost, and
+BasisPremium remains a low-weight leverage-context indicator.
+`confidence` must remain distinct from `dataQuality`:
+
+```text
+confidence =
+  0.35*dataQuality
++ 0.25*SourceCoverage
++ 0.20*MultiWindowConsistency
++ 0.20*SignalAgreement
+```
+
+High data quality only means the feeds are healthy enough. It does not imply
+the structure interpretation is reliable if spot, contract, OI, and price
+response disagree.
+
+Current `regimeType` values exposed to the Dashboard / WebSocket / inbox are:
+
+- `main_force_long_build`
+- `main_force_short_build`
+- `spot_accumulation`
+- `spot_distribution`
+- `contract_short_squeeze`
+- `long_liquidation_cascade`
+- `downside_absorption`
+- `upside_resistance`
+- `range_rotation`
+- `unclear`
+
+`finalRiskScore` may still appear as a compatibility field for older clients.
+For ordinary toxic-order candidates it mirrors `toxicScore`; do not treat it as
+a fused spot/perp/CWM score. CWM/spot-whale large-flow alerts keep independent
+Discord gates and cooldowns. Scan logs emit aggregate scores only. Discord
+embeds may show aggregate indicators and explain tags, but must still omit raw
+payloads, evidence, markout, tokens, and webhook values.
 
 ## Remote Access
 

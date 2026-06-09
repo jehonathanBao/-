@@ -25,7 +25,10 @@ describe("pushDiscordAlert", () => {
 
     const result = await pushDiscordAlert("sig_001");
 
-    expect(axios.post).toHaveBeenCalledWith("/api/discord/push", { signalId: "sig_001" });
+    expect(axios.post).toHaveBeenCalledWith("/api/discord/push", {
+      signalId: "sig_001",
+      alertFamily: "short_toxic_order",
+    });
     expect(result).toEqual({ ok: false, reason: "DISCORD_NOT_CONFIGURED" });
   });
 
@@ -50,6 +53,7 @@ describe("pushDiscordAlert", () => {
     });
 
     expect(axios.post).toHaveBeenCalledWith("/api/discord/push", {
+      alertFamily: "short_toxic_order",
       signalId: "sig_001",
       dedupeKey: "binance:BTCUSDT:spoofing",
       exchange: "Binance",
@@ -64,7 +68,7 @@ describe("pushDiscordAlert", () => {
     });
   });
 
-  it("passes TOF-lite summary fields without raw evidence", async () => {
+  it("passes only short-term toxic summary fields without raw evidence", async () => {
     axios.post.mockResolvedValueOnce({
       data: { ok: true, reason: "DISCORD_WEBHOOK_SENT" },
     });
@@ -82,8 +86,6 @@ describe("pushDiscordAlert", () => {
       candidateType: "spoofing_candidate",
       explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
       directionConfidence: 84.1,
-      advancedScore: 89,
-      advancedCandidateType: "MarketPressureHeatmapCandidate",
       tofMetrics: {
         tradeImbalance: -0.43,
         vpinProxy: 89,
@@ -103,19 +105,63 @@ describe("pushDiscordAlert", () => {
     expect(axios.post).toHaveBeenCalledWith(
       "/api/discord/push",
       expect.objectContaining({
+        alertFamily: "short_toxic_order",
         signalId: "sig_tof",
         tofScore: 88.4,
         candidateType: "spoofing_candidate",
         explainTags: ["high_vpin_proxy", "bid_depth_withdrawal"],
         directionConfidence: 84.1,
         tofMetrics: expect.objectContaining({ vpinProxy: 89 }),
-        advancedScore: 89,
-        advancedCandidateType: "MarketPressureHeatmapCandidate",
-        advancedTofMetrics: expect.objectContaining({ marketPressureHeatmap: 91 }),
       }),
     );
     expect(axios.post.mock.calls[0][1]).not.toHaveProperty("evidence");
     expect(axios.post.mock.calls[0][1]).not.toHaveProperty("markout");
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("perpTofMetrics");
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("advancedTofMetrics");
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("advancedScore");
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("advancedCandidateType");
+  });
+
+  it("switches to market-structure family for main-force alerts", async () => {
+    axios.post.mockResolvedValueOnce({
+      data: { ok: true, reason: "DISCORD_WEBHOOK_SENT" },
+    });
+
+    await pushDiscordAlert({
+      id: "sig_ms",
+      symbol: "BTC",
+      type: "market_structure",
+      level: "Major",
+      side: "Bid/Buy",
+      mainForceScore: 84,
+      marketStructureConfidence: 76,
+      marketStructureDataQuality: 74,
+      extremeImpactScore: 58,
+      structureBias: 62,
+      regimeType: "main_force_long_build",
+      marketStructureSeverity: "Major",
+      spotScore: 71,
+      contractScore: 86,
+      crossConfirmScore: 74,
+      reason: "高概率主力建多",
+    });
+
+    expect(axios.post).toHaveBeenCalledWith(
+      "/api/discord/push",
+      expect.objectContaining({
+        alertFamily: "market_structure",
+        mainForceScore: 84,
+        marketStructureConfidence: 76,
+        marketStructureDataQuality: 74,
+        extremeImpactScore: 58,
+        structureBias: 62,
+        regimeType: "main_force_long_build",
+        spotScore: 71,
+        contractScore: 86,
+        crossConfirmScore: 74,
+      }),
+    );
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty("perpTofMetrics");
   });
 
   it("sends isolated test messages without signal fields", async () => {

@@ -444,6 +444,7 @@ fn clear_operator_env() {
 
 fn discord_request() -> DiscordNotificationRequest {
     DiscordNotificationRequest {
+        alert_family: Some("short_toxic_order".to_string()),
         signal_id: Some("scan-log-high".to_string()),
         id: Some("scan-log-high".to_string()),
         dedupe_key: Some("scan-log-high".to_string()),
@@ -453,6 +454,7 @@ fn discord_request() -> DiscordNotificationRequest {
         level: Some("high".to_string()),
         side: Some("Ask/Sell".to_string()),
         score: Some(92),
+        confidence: Some(88.0),
         data_quality: Some(88.0),
         reason: Some("safe final result only".to_string()),
         impact: Some("rawPayload evidence markout webhook token".to_string()),
@@ -482,6 +484,21 @@ fn discord_request() -> DiscordNotificationRequest {
         advanced_tof_metrics: None,
         advanced_score: None,
         advanced_candidate_type: None,
+        main_force_score: None,
+        extreme_impact_score: None,
+        structure_bias: None,
+        market_structure_confidence: None,
+        market_structure_data_quality: None,
+        market_structure_severity: None,
+        regime_type: None,
+        spot_score: None,
+        contract_score: None,
+        cross_confirm_score: None,
+        main_force_confirmed: None,
+        signal_agreement: None,
+        source_coverage: None,
+        oi_score: None,
+        liquidation_score: None,
         test: None,
     }
 }

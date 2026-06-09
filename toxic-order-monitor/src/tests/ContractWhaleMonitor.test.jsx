@@ -5,6 +5,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import {
+  fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
@@ -17,6 +18,10 @@ vi.mock("../api/contractWhale.js", () => ({
         status: "strong",
         healthStatus: "healthy",
         healthReason: "primary_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        activeExchangeCount: 2,
+        enabledExchanges: ["binance", "bitfinex"],
+        disabledExchanges: ["okx"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "s",
@@ -38,7 +43,7 @@ vi.mock("../api/contractWhale.js", () => ({
         },
         exchanges: {
           binance: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 0 },
-          okx: { connected: true, lastTradeAt: 1_700_000_000_000, reconnectCount: 1 },
+          okx: { connected: false, status: "disabled", lastTradeAt: null, reconnectCount: 0 },
           bitfinex: { connected: false, lastTradeAt: null, reconnectCount: 3 },
         },
       },
@@ -51,6 +56,10 @@ vi.mock("../api/contractWhale.js", () => ({
         status: "strong",
         healthStatus: "healthy",
         healthReason: "primary_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        activeExchangeCount: 2,
+        enabledExchanges: ["binance", "bitfinex"],
+        disabledExchanges: ["okx"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "s",
@@ -72,7 +81,7 @@ vi.mock("../api/contractWhale.js", () => ({
         },
         exchanges: {
           binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120, reconnectCount: 0 },
-          okx: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 1000, reconnectCount: 1 },
+          okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
           bitfinex: { connected: false, status: "reconnecting", lastTradeAt: null, latencyMs: null, reconnectCount: 3 },
         },
       },
@@ -92,6 +101,7 @@ vi.mock("../api/contractWhale.js", () => ({
           dominance: 0.676,
           priceMovePct: 0.31,
           mainExchange: "binance",
+          dominantVenueNetContributionShare: 0.986,
           dynamicMultiple: 9.4,
           percentileLevel: 99.9,
           multiExchangeConfirmed: true,
@@ -115,16 +125,22 @@ vi.mock("../api/contractWhale.js", () => ({
               buyVolumeBtc: 2610,
               sellVolumeBtc: 200,
               totalVolumeBtc: 2810,
+              buyShare: 0.929,
+              sellShare: 0.071,
               netVolumeBtc: 2410,
               dominance: 0.858,
+              netContributionShare: 0.601,
             },
             {
               exchange: "okx",
               buyVolumeBtc: 1780,
               sellVolumeBtc: 180,
               totalVolumeBtc: 1960,
+              buyShare: 0.908,
+              sellShare: 0.092,
               netVolumeBtc: 1600,
               dominance: 0.816,
+              netContributionShare: 0.399,
             },
           ],
           finalResult: "多平台主动买入爆发，疑似主力合约拉盘",
@@ -139,6 +155,10 @@ vi.mock("../api/contractWhale.js", () => ({
         status: "active",
         healthStatus: "healthy",
         healthReason: "primary_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        activeExchangeCount: 2,
+        enabledExchanges: ["binance", "bitfinex"],
+        disabledExchanges: ["okx"],
         direction: "sell",
         latestDirection: "sell",
         latestSeverity: "critical",
@@ -162,6 +182,32 @@ vi.mock("../api/contractWhale.js", () => ({
       error: null,
     }),
   ),
+  fetchContractWhaleEvents: vi.fn(() =>
+    Promise.resolve({
+      items: [
+        {
+          id: 7,
+          symbol: "BTC",
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_900_000,
+          peakAt: 1_700_000_300_000,
+          regimeType: "main_force_long_build",
+          severity: "Major",
+          peakMainForceScore: 88,
+          peakExtremeImpactScore: 61,
+          peakStructureBias: 64,
+          confidence: 76,
+          mainForceConfirmed: true,
+          extremeImpactConfirmed: false,
+          liquidationDriven: false,
+          reasons: {
+            finalResult: "高概率主力建多，不是单纯清算推动。",
+          },
+        },
+      ],
+      error: null,
+    }),
+  ),
 }));
 
 describe("ContractWhaleMonitor", () => {
@@ -180,8 +226,11 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Dry-run")).toBeInTheDocument();
     expect(screen.getByText("Buy 62.0% / Sell 38.0%")).toBeInTheDocument();
     expect(screen.getByText("总量 10,000 BTC · dominance 24.0%")).toBeInTheDocument();
+    expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
+    expect(screen.getByText("当前统计数据源：Binance · Binance+Bitfinex")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("在线")).toHaveLength(2);
+    expect(screen.getAllByText("在线")).toHaveLength(1);
+    expect(screen.getByText("未启用")).toBeInTheDocument();
     expect(screen.getAllByText("Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getByText("重连中")).toBeInTheDocument();
     expect(screen.getByText("延迟 120ms")).toBeInTheDocument();
@@ -198,6 +247,13 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("+900 BTC / +1.20% OI上升")).toBeInTheDocument();
     expect(screen.getByText("+0.02% 偏多")).toBeInTheDocument();
     expect(screen.getByText("待推")).toBeInTheDocument();
+    expect(screen.getByText("主力结构事件历史")).toBeInTheDocument();
+    expect(screen.getByText("让你知道这里发生过什么主力行为")).toBeInTheDocument();
+    expect(screen.getByTestId("main-force-event-7")).toBeInTheDocument();
+    expect(screen.getByText("主力建多")).toBeInTheDocument();
+    expect(screen.getByText("峰值主力评分")).toBeInTheDocument();
+    expect(screen.getByText("非清算驱动")).toBeInTheDocument();
+    expect(screen.getByText("已结束")).toBeInTheDocument();
   });
 
   it("syncs filters to the history API", async () => {
@@ -216,6 +272,12 @@ describe("ContractWhaleMonitor", () => {
         }),
       ),
     );
+    expect(fetchContractWhaleEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: "BTC",
+        limit: 12,
+      }),
+    );
   });
 
   it("opens a read-only detail modal from the signal row", async () => {
@@ -233,8 +295,13 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("5s / 15s / 60s 窗口数据")).toBeInTheDocument();
     expect(screen.getByText("平台拆分")).toBeInTheDocument();
     expect(screen.getByText("主动买入：2,610 BTC")).toBeInTheDocument();
+    expect(screen.getByText("买/卖占比：92.9% / 7.1%")).toBeInTheDocument();
+    expect(screen.getByText("净流贡献：60.1%")).toBeInTheDocument();
+    expect(screen.getByText("Dominant Venue Net Flow")).toBeInTheDocument();
     expect(screen.getByText("Raw Scoring Breakdown")).toBeInTheDocument();
     expect(screen.getByText("Volume Strength")).toBeInTheDocument();
+    expect(screen.getByText("口径说明")).toBeInTheDocument();
+    expect(screen.getByText(/方向强度 = abs/)).toBeInTheDocument();
     expect(screen.getByText("contract-whale:BTC:5:1700000000000:buy")).toBeInTheDocument();
     expect(screen.queryByText(/rawPayload/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/webhook/i)).not.toBeInTheDocument();

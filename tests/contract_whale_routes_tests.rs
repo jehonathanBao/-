@@ -11,6 +11,7 @@ use btc_toxic_flow_monitor_rs::{
         config::reset_contract_whale_runtime_config,
         types::{
             ContractWhaleLiquidationContext, ContractWhaleMarketContext, ContractWhaleSeverity,
+            ContractWhaleTrend60s,
         },
     },
     types::flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
@@ -84,6 +85,13 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
     assert_eq!(response.summary.latest_direction, "buy");
     assert_eq!(response.summary.latest_signal_at, Some(1_700_000_015_000));
     assert_eq!(response.summary.health_status, "healthy");
+    assert_eq!(response.summary.threshold_profile, "binance_bitfinex");
+    assert_eq!(response.summary.active_exchange_count, 2);
+    assert_eq!(
+        response.summary.enabled_exchanges,
+        vec!["binance".to_string(), "bitfinex".to_string()]
+    );
+    assert_eq!(response.summary.disabled_exchanges, vec!["okx".to_string()]);
     assert_eq!(response.summary.trend_60s.buy_volume_btc, 0.0);
     assert_eq!(
         response
@@ -94,14 +102,9 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
             .last_trade_at,
         Some(1_700_000_015_000)
     );
-    assert!(
-        response
-            .summary
-            .exchanges
-            .get("okx")
-            .expect("okx status")
-            .connected
-    );
+    let okx_status = response.summary.exchanges.get("okx").expect("okx status");
+    assert!(!okx_status.connected);
+    assert_eq!(okx_status.status, "disabled");
     assert!(response.summary.enabled);
     assert!(response.summary.dry_run);
     assert!(!response.items[0].discord_sent);
@@ -131,12 +134,13 @@ fn contract_whale_summary_includes_60s_trend_and_health() {
     let response = build_contract_whale_response(&flow_state, "BTC", 50, None, true, true);
 
     assert_eq!(response.summary.health_status, "healthy");
-    assert_eq!(response.summary.trend_60s.buy_volume_btc, 6_200.0);
-    assert_eq!(response.summary.trend_60s.sell_volume_btc, 3_800.0);
-    assert_eq!(response.summary.trend_60s.total_volume_btc, 10_000.0);
-    assert_eq!(response.summary.trend_60s.net_volume_btc, 2_400.0);
-    assert!((response.summary.trend_60s.buy_ratio - 0.62).abs() < 0.0001);
-    assert!((response.summary.trend_60s.sell_ratio - 0.38).abs() < 0.0001);
+    assert_eq!(response.summary.threshold_profile, "binance_bitfinex");
+    assert_eq!(response.summary.trend_60s.buy_volume_btc, 4_200.0);
+    assert_eq!(response.summary.trend_60s.sell_volume_btc, 2_400.0);
+    assert_eq!(response.summary.trend_60s.total_volume_btc, 6_600.0);
+    assert_eq!(response.summary.trend_60s.net_volume_btc, 1_800.0);
+    assert!((response.summary.trend_60s.buy_ratio - (4_200.0 / 6_600.0)).abs() < 0.0001);
+    assert!((response.summary.trend_60s.sell_ratio - (2_400.0 / 6_600.0)).abs() < 0.0001);
 }
 
 #[test]
@@ -335,6 +339,7 @@ fn contract_whale_latest_response_clamps_limit_and_keeps_persisted_items() {
         true,
         true,
         BTreeMap::new(),
+        ContractWhaleTrend60s::default(),
     );
 
     assert_eq!(response.items.len(), 1);
@@ -416,6 +421,16 @@ fn contract_whale_metrics_text_is_prometheus_safe() {
         true,
         true,
         default_test_exchanges(),
+        ContractWhaleTrend60s {
+            buy_volume_btc: 10.0,
+            sell_volume_btc: 20.0,
+            total_volume_btc: 30.0,
+            net_volume_btc: -10.0,
+            dominance: 10.0 / 30.0,
+            buy_ratio: 10.0 / 30.0,
+            sell_ratio: 20.0 / 30.0,
+            updated_at_ms: Some(1_700_000_030_000),
+        },
     );
 
     let metrics = build_contract_whale_metrics_text(

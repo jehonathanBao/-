@@ -1,11 +1,21 @@
 use std::collections::BTreeMap;
 
-use super::types::{
-    ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-    ContractLiquidationOrder, ContractLiquidationSide, ContractOiSnapshot, ContractTrade,
-    ContractTradeSide, ContractWhaleLiquidationContext, ContractWhaleMarketContext,
-    ContractWhalePercentileThreshold, ContractWhaleWindowStats, ExchangeFlowContribution,
+use super::{
+    config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
+    types::{
+        ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
+        ContractLiquidationOrder, ContractLiquidationSide, ContractOiSnapshot, ContractTrade,
+        ContractTradeSide, ContractWhaleLiquidationContext, ContractWhaleMarketContext,
+        ContractWhalePercentileThreshold, ContractWhaleWindowStats, ExchangeFlowContribution,
+    },
 };
+
+pub struct RollingWindowStatsOptions<'a> {
+    pub price_move_pct: Option<f64>,
+    pub dynamic_multiple: Option<f64>,
+    pub data_quality: u8,
+    pub config: &'a ContractWhaleRuntimeConfig,
+}
 
 pub fn aggregate_1s_buckets(trades: &[ContractTrade]) -> Vec<ContractFlowBucket> {
     let mut buckets: BTreeMap<(i64, String, String), ContractFlowBucket> = BTreeMap::new();
@@ -83,11 +93,37 @@ pub fn rolling_window_stats(
     dynamic_multiple: Option<f64>,
     data_quality: u8,
 ) -> Option<ContractWhaleWindowStats> {
+    let config = contract_whale_runtime_config();
+    rolling_window_stats_with_config(
+        buckets,
+        symbol,
+        window_sec,
+        now_ts,
+        RollingWindowStatsOptions {
+            price_move_pct,
+            dynamic_multiple,
+            data_quality,
+            config: &config,
+        },
+    )
+}
+
+pub fn rolling_window_stats_with_config(
+    buckets: &[ContractFlowBucket],
+    symbol: &str,
+    window_sec: u64,
+    now_ts: i64,
+    options: RollingWindowStatsOptions<'_>,
+) -> Option<ContractWhaleWindowStats> {
+    let config = options.config;
     let window_ms = (window_sec as i64).saturating_mul(1000);
     let start_ts = now_ts.saturating_sub(window_ms);
     let mut by_exchange: BTreeMap<String, ExchangeFlowContribution> = BTreeMap::new();
     for bucket in buckets {
-        if !bucket.symbol.eq_ignore_ascii_case(symbol) || bucket.ts_bucket < start_ts {
+        if !bucket.symbol.eq_ignore_ascii_case(symbol)
+            || bucket.ts_bucket < start_ts
+            || !config.exchange_enabled(&bucket.exchange)
+        {
             continue;
         }
         let contribution = by_exchange
@@ -107,11 +143,24 @@ pub fn rolling_window_stats(
         return None;
     }
 
+    let buy_volume_btc = by_exchange
+        .values()
+        .map(|item| item.buy_volume_btc)
+        .sum::<f64>();
+    let sell_volume_btc = by_exchange
+        .values()
+        .map(|item| item.sell_volume_btc)
+        .sum::<f64>();
+    let net_volume_btc = buy_volume_btc - sell_volume_btc;
     let mut exchanges: Vec<ExchangeFlowContribution> = by_exchange
         .into_values()
         .map(|mut contribution| {
             contribution.total_volume_btc =
                 contribution.buy_volume_btc + contribution.sell_volume_btc;
+            contribution.buy_share =
+                share(contribution.buy_volume_btc, contribution.total_volume_btc);
+            contribution.sell_share =
+                share(contribution.sell_volume_btc, contribution.total_volume_btc);
             contribution.total_notional_usd =
                 contribution.buy_notional_usd + contribution.sell_notional_usd;
             contribution.net_volume_btc =
@@ -123,6 +172,7 @@ pub fn rolling_window_stats(
             contribution
         })
         .collect();
+    apply_net_contribution_shares(&mut exchanges, net_volume_btc);
     exchanges.sort_by(|left, right| {
         right
             .total_volume_btc
@@ -130,14 +180,6 @@ pub fn rolling_window_stats(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let buy_volume_btc = exchanges
-        .iter()
-        .map(|item| item.buy_volume_btc)
-        .sum::<f64>();
-    let sell_volume_btc = exchanges
-        .iter()
-        .map(|item| item.sell_volume_btc)
-        .sum::<f64>();
     let buy_notional_usd = exchanges
         .iter()
         .map(|item| item.buy_notional_usd)
@@ -147,12 +189,12 @@ pub fn rolling_window_stats(
         .map(|item| item.sell_notional_usd)
         .sum::<f64>();
     let total_volume_btc = buy_volume_btc + sell_volume_btc;
-    let net_volume_btc = buy_volume_btc - sell_volume_btc;
     let dominance = if total_volume_btc > 0.0 {
         net_volume_btc.abs() / total_volume_btc
     } else {
         0.0
     };
+    let dominant_venue_net_contribution_share = dominant_venue_net_contribution_share(&exchanges);
     let exchange_count = exchanges
         .iter()
         .filter(|item| item.total_volume_btc > 0.0)
@@ -171,17 +213,18 @@ pub fn rolling_window_stats(
         buy_notional_usd,
         sell_notional_usd,
         total_notional_usd: buy_notional_usd + sell_notional_usd,
-        price_move_pct,
+        price_move_pct: options.price_move_pct,
         exchange_count,
         main_exchange,
         exchanges,
-        dynamic_multiple,
+        dominant_venue_net_contribution_share,
+        dynamic_multiple: options.dynamic_multiple,
         percentile_level: None,
         multi_exchange_confirmed: false,
         liquidation_context: ContractWhaleLiquidationContext::default(),
         market_context: ContractWhaleMarketContext::default(),
         price_reversal_ratio: None,
-        data_quality,
+        data_quality: options.data_quality,
         ws_latency_ms: None,
         startup_age_ms: None,
         liquidation_driven: false,
@@ -196,11 +239,15 @@ pub fn liquidation_context_for_window(
     now_ts: i64,
     total_volume_btc: f64,
 ) -> ContractWhaleLiquidationContext {
+    let config = contract_whale_runtime_config();
     let window_ms = (window_sec as i64).saturating_mul(1000);
     let start_ts = now_ts.saturating_sub(window_ms);
     let mut context = ContractWhaleLiquidationContext::default();
     for bucket in buckets {
-        if !bucket.symbol.eq_ignore_ascii_case(symbol) || bucket.ts_bucket < start_ts {
+        if !bucket.symbol.eq_ignore_ascii_case(symbol)
+            || bucket.ts_bucket < start_ts
+            || !config.exchange_enabled(&bucket.exchange)
+        {
             continue;
         }
         context.long_liq_btc += bucket.long_liq_btc;
@@ -340,7 +387,10 @@ fn sum_latest_oi_before(
 ) -> Option<f64> {
     let mut latest_by_exchange: BTreeMap<String, &ContractOiSnapshot> = BTreeMap::new();
     for snapshot in snapshots {
-        if !snapshot.symbol.eq_ignore_ascii_case(symbol) || snapshot.ts > target_ts {
+        if !snapshot.symbol.eq_ignore_ascii_case(symbol)
+            || snapshot.ts > target_ts
+            || !contract_whale_runtime_config().exchange_enabled(snapshot.exchange.as_key())
+        {
             continue;
         }
         let key = snapshot.exchange.as_key().to_string();
@@ -366,7 +416,10 @@ fn average_latest_funding_before(
 ) -> Option<f64> {
     let mut latest_by_exchange: BTreeMap<String, &ContractFundingSnapshot> = BTreeMap::new();
     for snapshot in snapshots {
-        if !snapshot.symbol.eq_ignore_ascii_case(symbol) || snapshot.ts > target_ts {
+        if !snapshot.symbol.eq_ignore_ascii_case(symbol)
+            || snapshot.ts > target_ts
+            || !contract_whale_runtime_config().exchange_enabled(snapshot.exchange.as_key())
+        {
             continue;
         }
         let key = snapshot.exchange.as_key().to_string();
@@ -417,6 +470,7 @@ fn window_volume_samples(
 ) -> Vec<f64> {
     let window_ms = (window_sec as i64).saturating_mul(1000).max(1000);
     let exchange_filter = exchange.to_ascii_lowercase();
+    let config = contract_whale_runtime_config();
     let mut grouped: BTreeMap<i64, f64> = BTreeMap::new();
     for bucket in buckets {
         if !bucket.symbol.eq_ignore_ascii_case(symbol)
@@ -426,6 +480,9 @@ fn window_volume_samples(
             continue;
         }
         if exchange_filter != "all" && !bucket.exchange.eq_ignore_ascii_case(&exchange_filter) {
+            continue;
+        }
+        if !config.exchange_enabled(&bucket.exchange) {
             continue;
         }
         let window_key = bucket.ts_bucket / window_ms;
@@ -452,4 +509,43 @@ fn dominance(abs_net_volume: f64, total_volume: f64) -> f64 {
     } else {
         abs_net_volume / total_volume
     }
+}
+
+fn share(part: f64, total: f64) -> f64 {
+    if total <= f64::EPSILON {
+        0.0
+    } else {
+        part.max(0.0) / total
+    }
+}
+
+fn apply_net_contribution_shares(
+    exchanges: &mut [ExchangeFlowContribution],
+    total_net_volume_btc: f64,
+) {
+    let net_positive = total_net_volume_btc > 0.0;
+    let same_direction_net_sum = exchanges
+        .iter()
+        .filter(|item| item.net_volume_btc.abs() > f64::EPSILON)
+        .filter(|item| (item.net_volume_btc > 0.0) == net_positive)
+        .map(|item| item.net_volume_btc.abs())
+        .sum::<f64>();
+    for item in exchanges {
+        item.net_contribution_share = if same_direction_net_sum > f64::EPSILON
+            && item.net_volume_btc.abs() > f64::EPSILON
+            && (item.net_volume_btc > 0.0) == net_positive
+        {
+            item.net_volume_btc.abs() / same_direction_net_sum
+        } else {
+            0.0
+        };
+    }
+}
+
+fn dominant_venue_net_contribution_share(exchanges: &[ExchangeFlowContribution]) -> Option<f64> {
+    exchanges
+        .iter()
+        .map(|item| item.net_contribution_share)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .max_by(|left, right| left.total_cmp(right))
 }

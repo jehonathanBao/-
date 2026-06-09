@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
@@ -22,6 +23,7 @@ export default function ContractWhaleMonitor() {
     loading: true,
     summary: null,
     items: [],
+    events: [],
     error: null,
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
@@ -36,13 +38,14 @@ export default function ContractWhaleMonitor() {
       const request = shouldUseHistory(filters)
         ? fetchContractWhaleHistory({ ...filters, limit: 50 })
         : fetchContractWhaleLatest(50, filters.symbol);
-      request.then((payload) => {
+      Promise.all([request, fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 })]).then(([payload, eventsPayload]) => {
         if (cancelled) return;
         setState((previous) => ({
           loading: false,
           summary: payload.error ? previous.summary : payload.summary,
           items: payload.error ? previous.items : payload.items,
-          error: payload.error || null,
+          events: eventsPayload.error ? previous.events : eventsPayload.items,
+          error: payload.error || eventsPayload.error || null,
         }));
       });
     };
@@ -102,6 +105,10 @@ export default function ContractWhaleMonitor() {
     status: "calm",
     healthStatus: "disabled",
     healthReason: "contract_whale_monitor_disabled",
+    thresholdProfile: "binance_bitfinex",
+    activeExchangeCount: 0,
+    enabledExchanges: [],
+    disabledExchanges: ["binance", "okx", "bitfinex"],
     direction: "neutral",
     latestDirection: "neutral",
     latestSeverity: "calm",
@@ -122,11 +129,12 @@ export default function ContractWhaleMonitor() {
     },
     exchanges: {
       binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
-      okx: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+      okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
       bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     },
   };
   const exchangeStatuses = summary.exchanges || {};
+  const visibleExchanges = visibleContractExchanges(exchangeStatuses);
   const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
 
   return (
@@ -139,20 +147,21 @@ export default function ContractWhaleMonitor() {
             BTC / ETH 永续合约主动成交流异常，Critical / S 才进入外部告警判断。
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3 xl:grid-cols-7">
           <StatusPill label="当前状态" value={statusLabel(summary.status)} tone={statusTone(summary.status)} />
           <StatusPill label="健康状态" value={healthStatusLabel(summary.healthStatus)} tone={healthStatusTone(summary.healthStatus)} />
           <StatusPill label="当前方向" value={directionLabel(summary.latestDirection || summary.direction)} tone="cyan" />
           <StatusPill label="最新等级" value={severityLabel(summary.latestSeverity)} tone={severityTone(summary.latestSeverity)} />
+          <StatusPill label="阈值模式" value={thresholdProfileLabel(summary.thresholdProfile)} tone="cyan" />
           <StatusPill label="运行模式" value={modeLabel(summary)} tone={summary.enabled ? (summary.dryRun ? "yellow" : "cyan") : "slate"} />
           <StatusPill label="最近推送" value={summary.lastDiscordSentAt ? relativeAge(summary.lastDiscordSentAt) : "暂无"} tone="slate" />
         </div>
       </div>
 
-      <ContractWhaleTrendBar trend={summary.trend60s} />
+      <ContractWhaleTrendBar exchanges={exchangeStatuses} summary={summary} trend={summary.trend60s} />
 
       <div className="mt-4 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-        {["binance", "okx", "bitfinex"].map((exchange) => (
+        {visibleExchanges.map((exchange) => (
           <ExchangeStatus
             exchange={exchange}
             key={exchange}
@@ -184,7 +193,7 @@ export default function ContractWhaleMonitor() {
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             {summary.enabled ? "暂无主力合约异动" : "主力合约监控未启用"}
           </p>
-        ) : (
+      ) : (
           <table className="min-w-full table-fixed text-left text-xs">
             <thead className="text-slate-500">
               <tr>
@@ -271,8 +280,11 @@ export default function ContractWhaleMonitor() {
         )}
       </div>
 
+      <MainForceEventsSection events={state.events} symbol={filters.symbol} />
+
       {selectedSignal ? (
         <ContractWhaleDetailModal
+          summary={summary}
           signal={selectedSignal}
           relatedSignals={state.items}
           onClose={() => setSelectedSignalId(null)}
@@ -282,7 +294,65 @@ export default function ContractWhaleMonitor() {
   );
 }
 
-function ContractWhaleDetailModal({ signal, relatedSignals, onClose }) {
+function MainForceEventsSection({ events, symbol }) {
+  return (
+    <section className="mt-5">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Main Force Events</p>
+          <h4 className="mt-1 text-sm font-bold text-white">主力结构事件历史</h4>
+        </div>
+        <p className="text-xs text-slate-500">让你知道这里发生过什么主力行为</p>
+      </div>
+      {events.length === 0 ? (
+        <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+          暂无 {symbol} 主力结构事件
+        </p>
+      ) : (
+        <div className="grid gap-3 xl:grid-cols-2">
+          {events.map((event) => (
+            <article
+              className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"
+              data-testid={`main-force-event-${event.id}`}
+              key={event.id}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-slate-100">
+                    {regimeTypeLabel(event.regimeType)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {formatEventRange(event.startedAt, event.endedAt)}
+                  </p>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-bold ${marketSeverityBadgeClass(event.severity)}`}>
+                  {event.severity}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                <EventMetric label="峰值主力评分" value={`${Math.round(event.peakMainForceScore)}`} />
+                <EventMetric label="峰值极端冲击" value={`${Math.round(event.peakExtremeImpactScore)}`} />
+                <EventMetric label="峰值结构方向" value={`${biasText(event.peakStructureBias)}`} />
+                <EventMetric label="置信度" value={`${Math.round(event.confidence)}`} />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {event.mainForceConfirmed ? <EventTag label="主力确认" tone="emerald" /> : null}
+                {event.extremeImpactConfirmed ? <EventTag label="极端冲击" tone="amber" /> : null}
+                <EventTag label={event.liquidationDriven ? "清算驱动" : "非清算驱动"} tone={event.liquidationDriven ? "red" : "cyan"} />
+                {event.endedAt ? <EventTag label="已结束" tone="slate" /> : <EventTag label="进行中" tone="emerald" />}
+              </div>
+              <p className="mt-3 text-sm text-slate-300">
+                {event.reasons.finalResult || event.reasons.coreReason || "主力结构事件已记录，可用于后续复盘。"}
+              </p>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) {
   const windowRows = [5, 15, 60].map((windowSec) => {
     const match = relatedSignals.find(
       (item) =>
@@ -331,6 +401,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, onClose }) {
                 ["触发时间", formatTime(signal.ts)],
                 ["Risk Score", `${signal.score}/100`],
                 ["Data Quality", `${signal.dataQuality}/100`],
+                ["Threshold Profile", thresholdProfileLabel(summary?.thresholdProfile)],
               ]}
             />
           </DetailSection>
@@ -383,8 +454,10 @@ function ContractWhaleDetailModal({ signal, relatedSignals, onClose }) {
                     <p>主动买入：{formatBtc(exchange.buyVolumeBtc)}</p>
                     <p>主动卖出：{formatBtc(exchange.sellVolumeBtc)}</p>
                     <p>总量：{formatBtc(exchange.totalVolumeBtc)}</p>
+                    <p>买/卖占比：{formatPct(Number(exchange.buyShare || 0) * 100)} / {formatPct(Number(exchange.sellShare || 0) * 100)}</p>
                     <p>净方向：{netDirection(exchange.netVolumeBtc)}</p>
-                    <p>方向占比：{formatPct(exchange.dominance * 100)}</p>
+                    <p>方向强度：{formatPct(exchange.dominance * 100)}</p>
+                    <p>净流贡献：{formatPct(Number(exchange.netContributionShare || 0) * 100)}</p>
                   </div>
                 </div>
               ))
@@ -402,6 +475,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, onClose }) {
                 ["Percentile", formatPercentile(signal.percentileLevel)],
                 ["Price Move", formatSignedPct(signal.priceMovePct)],
                 ["Price Reversal", signal.priceReversalRatio === null || signal.priceReversalRatio === undefined ? "N/A" : formatPct(signal.priceReversalRatio * 100)],
+                ["Dominant Net Flow", formatPct(dominantNetFlowShare(signal) * 100)],
                 ["Liquidation", liquidationStatus(signal)],
                 ["OI", oiStatus(signal)],
                 ["Funding", fundingStatus(signal)],
@@ -413,6 +487,14 @@ function ContractWhaleDetailModal({ signal, relatedSignals, onClose }) {
             <DetailGrid rows={scoringRows} />
           </DetailSection>
         </div>
+
+        <DetailSection title="口径说明" className="mt-4">
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-6 text-cyan-50">
+            <p>方向强度 = abs(主动买入 - 主动卖出) / 总成交量，表示本轮信号整体方向是否集中。</p>
+            <p>买入/卖出占比 = 单个平台内部的主动买卖比例，只说明该平台自己的流向结构。</p>
+            <p>净流贡献 = 该平台对本轮信号同方向净流的贡献比例，用来判断主导平台。</p>
+          </div>
+        </DetailSection>
       </div>
     </div>
   );
@@ -440,12 +522,13 @@ function DetailGrid({ rows }) {
   );
 }
 
-function ContractWhaleTrendBar({ trend }) {
+function ContractWhaleTrendBar({ exchanges, summary, trend }) {
   const item = trend || {};
   const total = Number(item.totalVolumeBtc || 0);
   const buyRatio = total > 0 ? clampRatio(item.buyRatio) : 0;
   const sellRatio = total > 0 ? clampRatio(item.sellRatio || (1 - buyRatio)) : 0;
   const netDirectionLabel = netDirection(Number(item.netVolumeBtc || 0));
+  const sourceLabel = activeContractSourceLabel(exchanges, summary);
   return (
     <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -471,6 +554,9 @@ function ContractWhaleTrendBar({ trend }) {
         <span>主动买入 {formatBtc(item.buyVolumeBtc)}</span>
         <span>主动卖出 {formatBtc(item.sellVolumeBtc)}</span>
       </div>
+      <p className="mt-2 text-[11px] text-slate-500">
+        当前统计数据源：{sourceLabel} · {thresholdProfileLabel(summary?.thresholdProfile)}
+      </p>
     </div>
   );
 }
@@ -519,7 +605,6 @@ function ContractWhaleFilters({ filters, onChange }) {
       <FilterSelect label="交易所" value={filters.exchange} onChange={(value) => update("exchange", value)}>
         <option value="all">全部</option>
         <option value="binance">Binance</option>
-        <option value="okx">OKX</option>
         <option value="bitfinex">Bitfinex</option>
       </FilterSelect>
     </div>
@@ -548,6 +633,19 @@ function StatusPill({ label, value, tone }) {
       <p className={`mt-1 text-base font-bold ${toneClass(tone)}`}>{value}</p>
     </div>
   );
+}
+
+function EventMetric({ label, value }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function EventTag({ label, tone }) {
+  return <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${eventTagClass(tone)}`}>{label}</span>;
 }
 
 function ExchangeStatus({ exchange, status }) {
@@ -597,6 +695,22 @@ function signalTypeLabel(type) {
   return labels[type] || type || "未知";
 }
 
+function regimeTypeLabel(value) {
+  const labels = {
+    main_force_long_build: "主力建多",
+    main_force_short_build: "主力建空",
+    contract_flow_shock: "合约冲击",
+    spot_accumulation: "现货吸筹",
+    spot_distribution: "现货派发",
+    contract_short_squeeze: "空头挤压",
+    long_liquidation_cascade: "多头清算瀑布",
+    downside_absorption: "下方吸收",
+    upside_resistance: "上方压制",
+    range_rotation: "高换手震荡",
+  };
+  return labels[value] || value || "结构未明";
+}
+
 function signalTypeIcon(type) {
   const icons = {
     aggressive_buy: "▲",
@@ -642,6 +756,22 @@ function healthStatusTone(status) {
   return "slate";
 }
 
+function marketSeverityBadgeClass(severity) {
+  const value = String(severity || "").toLowerCase();
+  if (value === "extreme") return "border border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-200";
+  if (value === "major") return "border border-red-500/40 bg-red-500/15 text-red-200";
+  if (value === "confirmed") return "border border-amber-500/40 bg-amber-500/15 text-amber-200";
+  return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
+}
+
+function eventTagClass(tone) {
+  if (tone === "emerald") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (tone === "amber") return "border border-amber-500/40 bg-amber-500/15 text-amber-200";
+  if (tone === "red") return "border border-red-500/40 bg-red-500/15 text-red-200";
+  if (tone === "cyan") return "border border-cyan-500/40 bg-cyan-500/15 text-cyan-200";
+  return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
+}
+
 function directionLabel(direction) {
   const value = String(direction || "neutral").toLowerCase();
   if (value.includes("disabled")) return "未启用";
@@ -663,6 +793,13 @@ function modeLabel(summary) {
   return summary.dryRun ? "Dry-run" : "实时提醒";
 }
 
+function thresholdProfileLabel(profile) {
+  const value = String(profile || "").toLowerCase();
+  if (value === "binance_bitfinex") return "Binance+Bitfinex";
+  if (value === "three_exchange") return "三平台";
+  return "默认";
+}
+
 function exchangeLabel(exchange) {
   const labels = {
     binance: "Binance",
@@ -672,19 +809,47 @@ function exchangeLabel(exchange) {
   return labels[exchange] || exchange;
 }
 
+function visibleContractExchanges(exchanges) {
+  const source = exchanges && typeof exchanges === "object" ? exchanges : {};
+  const visible = ["binance", "okx", "bitfinex"].filter((exchange) => source[exchange]);
+  return visible.length ? visible : ["binance", "okx", "bitfinex"];
+}
+
 function exchangeStatusLabel(item) {
   const status = String(item.status || "").toLowerCase();
   if (status === "disabled") return "未启用";
   if (status === "reconnecting") return "重连中";
+  if (status === "stale") return "无近期成交";
+  if (status === "waiting_for_trades") return "等待成交";
   if (item.connected || status === "connected") return "在线";
   return "离线";
 }
 
 function exchangeStatusClass(item) {
   const status = String(item.status || "").toLowerCase();
-  if (item.connected || status === "connected") return "font-bold text-emerald-300";
-  if (status === "reconnecting") return "font-bold text-yellow-300";
+  if (item.connected && status === "connected") return "font-bold text-emerald-300";
+  if (status === "reconnecting" || status === "waiting_for_trades") return "font-bold text-yellow-300";
+  if (status === "stale") return "font-bold text-orange-300";
   return "font-bold text-slate-400";
+}
+
+function activeContractSourceLabel(exchanges, summary) {
+  const source = exchanges && typeof exchanges === "object" ? exchanges : {};
+  const configured = Array.isArray(summary?.enabledExchanges) && summary.enabledExchanges.length
+    ? summary.enabledExchanges
+    : ["binance", "bitfinex"];
+  const active = configured
+    .filter((exchange) => {
+      const item = source[exchange] || {};
+      return item.connected && String(item.status || "connected").toLowerCase() === "connected";
+    })
+    .map(exchangeLabel);
+  if (active.length) return active.join(" / ");
+  const stale = configured
+    .filter((exchange) => String(source[exchange]?.status || "").toLowerCase() === "stale")
+    .map(exchangeLabel);
+  if (stale.length) return `${stale.join(" / ")} 无近期成交`;
+  return "暂无在线交易所";
 }
 
 function netDirection(value) {
@@ -741,6 +906,21 @@ function formatTime(value) {
   });
 }
 
+function formatEventRange(startedAt, endedAt) {
+  const start = formatTime(startedAt);
+  if (!endedAt) {
+    return `${start} - 进行中`;
+  }
+  return `${start} - ${formatTime(endedAt)}`;
+}
+
+function biasText(value) {
+  const number = Number(value || 0);
+  if (number >= 15) return `偏多 +${Math.round(number)}`;
+  if (number <= -15) return `偏空 ${Math.round(number)}`;
+  return `中性 ${Math.round(number)}`;
+}
+
 function discordStatus(item) {
   if (item.discordSent) return "已推";
   if (item.discordEligible) return "待推";
@@ -782,6 +962,7 @@ function scoringBreakdown(item) {
     : Math.min(15, (Math.abs(Number(item.priceMovePct)) / 0.25) * 15);
   const exchangeScore = item.exchanges.length >= 3 ? 10 : item.exchanges.length === 2 ? 8 : item.exchanges.length === 1 ? 4 : 0;
   const dataQualityScore = Math.min(5, (Number(item.dataQuality || 0) / 100) * 5);
+  const dominantNetFlowScore = Math.max(0, Math.min(5, ((dominantNetFlowShare(item) - 0.7) / 0.3) * 5));
   return [
     ["Volume Strength", `${volumeScore.toFixed(1)} / 35`],
     ["Dynamic Multiple", `${dynamicScore.toFixed(1)} / 20`],
@@ -789,8 +970,18 @@ function scoringBreakdown(item) {
     ["Price Impact", `${priceScore.toFixed(1)} / 15`],
     ["Multi Exchange", `${exchangeScore.toFixed(1)} / 10`],
     ["Data Quality", `${dataQualityScore.toFixed(1)} / 5`],
+    ["Dominant Venue Net Flow", `${dominantNetFlowScore.toFixed(1)} / 5`],
     ["Penalty Notes", item.liquidationSuspected ? "liquidation_suspected" : "none"],
   ];
+}
+
+function dominantNetFlowShare(item) {
+  const explicit = Number(item?.dominantVenueNetContributionShare);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return Math.max(
+    0,
+    ...((item?.exchanges || []).map((exchange) => Number(exchange.netContributionShare || 0))),
+  );
 }
 
 function oiBiasLabel(value) {

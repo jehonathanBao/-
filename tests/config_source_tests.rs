@@ -5,6 +5,7 @@ use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::config::{
         contract_whale_runtime_config, reset_contract_whale_runtime_config,
     },
+    runtime::score_config::{reset_score_runtime_config, score_runtime_config},
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -163,6 +164,73 @@ enabled = false
         cwm.thresholds_for_symbol_window("BTC", 15).high_btc
     );
     reset_contract_whale_runtime_config();
+    clear_config_env();
+}
+
+#[test]
+fn toml_score_runtime_config_is_loaded_for_toxic_and_market_structure() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    reset_score_runtime_config();
+    let config_path = write_config(
+        "score-runtime-config",
+        r#"
+[scoring.toxic_short]
+half_life_sec = 55
+max_ttl_sec = 420
+windows_sec = [2, 10, 30]
+
+[scoring.toxic_short.weights]
+aggressive_sweep = 0.33
+
+[scoring.toxic_short.discord]
+min_score = 88
+cooldown_sec = 75
+
+[scoring.market_structure]
+windows_min = [10, 30, 120]
+event_end_hold_minutes = 21
+
+[scoring.market_structure.contract_weights]
+oi_impulse = 0.27
+
+[scoring.market_structure.confirmation]
+min_confirm_conditions = 4
+
+[scoring.market_structure.discord]
+min_main_force_score = 83
+cooldown_sec = 1500
+"#,
+    );
+
+    let _config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+    let score_config = score_runtime_config();
+
+    assert_eq!(score_config.toxic_short.half_life_sec, 55);
+    assert_eq!(score_config.toxic_short.max_ttl_sec, 420);
+    assert_eq!(score_config.toxic_short.windows_sec, vec![2, 10, 30]);
+    assert_eq!(score_config.toxic_short.weights.aggressive_sweep, 0.33);
+    assert_eq!(score_config.toxic_short.discord.min_score, 88);
+    assert_eq!(score_config.toxic_short.discord.cooldown_sec, 75);
+    assert_eq!(score_config.market_structure.windows_min, vec![10, 30, 120]);
+    assert_eq!(score_config.market_structure.event_end_hold_minutes, 21);
+    assert_eq!(
+        score_config.market_structure.contract_weights.oi_impulse,
+        0.27
+    );
+    assert_eq!(
+        score_config
+            .market_structure
+            .confirmation
+            .min_confirm_conditions,
+        4
+    );
+    assert_eq!(
+        score_config.market_structure.discord.min_main_force_score,
+        83
+    );
+    assert_eq!(score_config.market_structure.discord.cooldown_sec, 1500);
+    reset_score_runtime_config();
     clear_config_env();
 }
 

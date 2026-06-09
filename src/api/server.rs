@@ -8,21 +8,22 @@ use crate::{
         active_trade_toxicity_routes, calibration_routes, contract_whale_routes, dev_alert_routes,
         discord_notification_routes, durable_archive_dryrun_routes,
         durable_archive_write_audit_routes, durable_archive_write_routes,
-        liquidation_toxicity_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
-        manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
-        manual_evidence_freshness_routes, manual_governance_index_routes,
-        manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
-        orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
-        parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
-        scan_log_routes, security, spot_whale_routes, static_files, structural_toxicity_routes,
-        toxic_governance_ledger_routes, toxic_governance_proposal_routes,
-        toxic_governance_review_pack_routes, toxic_governance_signoff_pack_routes,
-        toxic_markout_routes, toxic_quality_scorecard_routes, toxic_replay_routes,
-        toxic_signal_alert_preview_routes, toxic_signal_detail_routes, toxic_signal_group_routes,
-        toxic_signal_health_routes, toxic_signal_history_routes, toxic_signal_inbox_routes,
-        toxic_signal_report_routes, toxic_signal_routes, toxic_signal_ws_routes,
-        toxic_weight_recommendation_routes, toxic_weight_review_routes, usage_guide_routes,
-        whale_flow_calibration_routes, whale_flow_candidate_history_routes, whale_flow_routes,
+        liquidation_toxicity_routes, main_force_event_routes, manual_apply_dryrun_routes,
+        manual_apply_evidence_pack_routes, manual_apply_governance_routes,
+        manual_apply_runbook_routes, manual_audit_story_routes, manual_evidence_freshness_routes,
+        manual_governance_index_routes, manual_parameter_export_routes, manual_signoff_routes,
+        manual_startup_routes, orderbook_wall_interpretation_routes,
+        orderbook_wall_lifecycle_routes, parameter_patch_diff_routes, parameter_review_routes,
+        routes, runtime_control_routes, scan_log_routes, score_routes, security, spot_whale_routes,
+        static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
+        toxic_governance_proposal_routes, toxic_governance_review_pack_routes,
+        toxic_governance_signoff_pack_routes, toxic_markout_routes, toxic_quality_scorecard_routes,
+        toxic_replay_routes, toxic_signal_alert_preview_routes, toxic_signal_detail_routes,
+        toxic_signal_group_routes, toxic_signal_health_routes, toxic_signal_history_routes,
+        toxic_signal_inbox_routes, toxic_signal_report_routes, toxic_signal_routes,
+        toxic_signal_ws_routes, toxic_weight_recommendation_routes, toxic_weight_review_routes,
+        usage_guide_routes, whale_flow_calibration_routes, whale_flow_candidate_history_routes,
+        whale_flow_routes,
     },
     app::AppState,
     config::AppConfig,
@@ -58,6 +59,38 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/contract-whale/history",
             get(contract_whale_routes::contract_whale_history_route),
+        )
+        .route(
+            "/api/contract-whale/events",
+            get(main_force_event_routes::main_force_events_route),
+        )
+        .route(
+            "/api/scores/toxic-short/summary",
+            get(score_routes::toxic_short_summary_route),
+        )
+        .route(
+            "/api/scores/toxic-short/latest",
+            get(score_routes::toxic_short_latest_route),
+        )
+        .route(
+            "/api/scores/toxic-short/history",
+            get(score_routes::toxic_short_history_route),
+        )
+        .route(
+            "/api/scores/market-structure/summary",
+            get(score_routes::market_structure_summary_route),
+        )
+        .route(
+            "/api/scores/market-structure/latest",
+            get(score_routes::market_structure_latest_route),
+        )
+        .route(
+            "/api/scores/market-structure/history",
+            get(score_routes::market_structure_history_route),
+        )
+        .route(
+            "/api/scores/market-structure/events",
+            get(score_routes::market_structure_events_route),
         )
         .route(
             "/api/contract-whale/metrics",

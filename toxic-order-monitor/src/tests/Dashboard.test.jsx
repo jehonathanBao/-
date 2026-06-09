@@ -58,6 +58,7 @@ vi.mock("../api/contractWhale.js", () => ({
     }),
   ),
   fetchContractWhaleHistory: vi.fn(() => Promise.resolve({ summary: null, items: [], error: null })),
+  fetchContractWhaleEvents: vi.fn(() => Promise.resolve({ items: [], error: null })),
 }));
 
 vi.mock("../api/usageGuide.js", () => ({
@@ -133,6 +134,8 @@ describe("Dashboard interactions", () => {
     renderDashboard();
 
     expect(await screen.findByText("主力合约监控")).toBeInTheDocument();
+    expect(screen.getByText("短线有毒订单评分")).toBeInTheDocument();
+    expect(screen.getByText("现货 + 合约主力结构评分")).toBeInTheDocument();
     expect(await screen.findByTestId("signal-card-sig_001")).toBeInTheDocument();
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Medium Risk Candidates/ })).toHaveAttribute(
@@ -228,7 +231,8 @@ describe("Dashboard interactions", () => {
     renderDashboard("/rules");
 
     expect(await screen.findByText("当前有毒订单判断逻辑")).toBeInTheDocument();
-    expect(screen.getByText(/finalRiskScore = 0.35 \* 现货风险/)).toBeInTheDocument();
+    expect(screen.getByText(/短线有毒订单评分 toxicScore/)).toBeInTheDocument();
+    expect(screen.getByText(/structureBias 单独表示方向/)).toBeInTheDocument();
     expect(screen.getByText(/CWM 大行情提醒保留独立 gate/)).toBeInTheDocument();
     expect(screen.getByText(/系统只做盘口\/成交异常提醒/)).toBeInTheDocument();
   });

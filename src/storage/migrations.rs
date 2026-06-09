@@ -207,6 +207,38 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_contract_whale_percentile_latest
       ON contract_whale_percentile_thresholds(symbol, exchange, window_sec, computed_at DESC);
+
+    CREATE TABLE IF NOT EXISTS main_force_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      peak_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      inactive_since INTEGER,
+      regime_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      peak_main_force_score REAL NOT NULL,
+      peak_extreme_impact_score REAL NOT NULL,
+      peak_structure_bias REAL NOT NULL,
+      confidence REAL NOT NULL,
+      spot_score REAL,
+      contract_score REAL,
+      cross_confirm_score REAL,
+      cwm_score REAL,
+      oi_score REAL,
+      liquidation_score REAL,
+      funding_crowding_score REAL,
+      main_force_confirmed INTEGER NOT NULL DEFAULT 0,
+      extreme_impact_confirmed INTEGER NOT NULL DEFAULT 0,
+      liquidation_driven INTEGER NOT NULL DEFAULT 0,
+      reasons_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+    CREATE INDEX IF NOT EXISTS idx_main_force_events_symbol_started
+      ON main_force_events(symbol, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_main_force_events_symbol_active
+      ON main_force_events(symbol, ended_at, started_at DESC);
     "#,
     r#"
     CREATE TABLE IF NOT EXISTS spot_whale_signals (

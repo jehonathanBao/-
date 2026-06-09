@@ -22,13 +22,46 @@ curl http://127.0.0.1:3000/api/contract-whale/summary
 
 Expected health states:
 
-- `healthy`: Binance or OKX data is recent, with primary sources online.
+- `healthy`: all enabled contract sources are recent, with Binance as the primary source.
 - `degraded`: at least one source is recent, but another source is disconnected or stale.
 - `unhealthy`: all sources are stale or unavailable.
 - `warming_up`: startup warmup is still collecting samples.
 - `disabled`: the module is configured off.
 
-If a source is connected but has no trades for 30 seconds on Binance/OKX, or 60 seconds on Bitfinex, treat it as stale.
+If a source is connected but has no trades for 30 seconds on Binance, or 60 seconds on Bitfinex, treat it as stale. Disabled sources are not health failures.
+
+## OKX Disabled Mode
+
+Current production mode intentionally disables OKX for CWM:
+
+```env
+ENABLE_OKX=false
+CONTRACT_WHALE_OKX_ENABLED=false
+```
+
+When OKX is disabled:
+
+- `/api/contract-whale/summary` should show `thresholdProfile=binance_bitfinex`.
+- `enabledExchanges` should be `["binance", "bitfinex"]`.
+- `disabledExchanges` should contain `okx`.
+- OKX must not contribute to total volume, exchange count, data quality, multi-exchange confirmation, main exchange, or net-flow contribution.
+- The frontend health card should show OKX as `未启用`, not as a red disconnected source.
+
+In this profile, Binance is the primary liquidity source and Bitfinex is a
+confirmation source. Binance-only extreme flow can support High/Critical CWM
+evidence but should stay capped below S-like component strength. Bitfinex-only
+flow is capped as High-level evidence. S-grade structure requires Binance and
+Bitfinex same-direction confirmation.
+
+The active two-source BTC thresholds are:
+
+| Window | High | Critical | S |
+| --- | ---: | ---: | ---: |
+| 5s | 650 BTC | 1200 BTC | 2000 BTC |
+| 15s | 1200 BTC | 2200 BTC | 3600 BTC |
+| 60s | 2800 BTC | 5200 BTC | 8000 BTC |
+
+USD notional thresholds are `High=$40M`, `Critical=$95M`, and `S=$200M`.
 
 ## Check WebSocket Data
 
@@ -130,8 +163,9 @@ The service prunes old 1s flow buckets and old signals on an hourly background t
 
 ## Common Issues
 
-- OKX `ctVal` missing: do not guess contract size. Keep data quality reduced until instrument metadata is restored.
-- Bitfinex disconnected: summary should degrade, not stop Binance/OKX monitoring.
+- OKX disabled: this is expected in current production mode and should not lower data quality.
+- OKX `ctVal` missing: only relevant when OKX is explicitly re-enabled; do not guess contract size.
+- Bitfinex disconnected: summary should degrade, not stop Binance monitoring.
 - Discord 429: keep cooldown enabled and review `cwm.discord.skipped` reasons.
 - Cargo cache corruption: follow `docs/dev/cargo-cache-recovery.md`.
 - No frontend updates: check `/api/contract-whale/summary`, `/api/contract-whale/latest`, and browser network errors before restarting the backend.

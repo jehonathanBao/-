@@ -1,6 +1,7 @@
 import axios from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
@@ -26,6 +27,10 @@ describe("contract whale api", () => {
           status: "strong",
           healthStatus: "healthy",
           healthReason: "primary_sources_recent",
+          thresholdProfile: "binance_bitfinex",
+          activeExchangeCount: 2,
+          enabledExchanges: ["binance", "bitfinex"],
+          disabledExchanges: ["okx"],
           direction: "buy",
           latestDirection: "buy",
           latestSeverity: "s",
@@ -62,6 +67,10 @@ describe("contract whale api", () => {
       status: "strong",
       healthStatus: "healthy",
       healthReason: "primary_sources_recent",
+      thresholdProfile: "binance_bitfinex",
+      activeExchangeCount: 2,
+      enabledExchanges: ["binance", "bitfinex"],
+      disabledExchanges: ["okx"],
       direction: "buy",
       latestDirection: "buy",
       latestSeverity: "s",
@@ -89,6 +98,7 @@ describe("contract whale api", () => {
       score: 94,
       totalVolumeBtc: 4820,
       totalNotionalUsd: 337_000_000,
+      dominantVenueNetContributionShare: 0.986,
       dynamicMultiple: 9.4,
       percentileLevel: 99.9,
       multiExchangeConfirmed: true,
@@ -113,6 +123,10 @@ describe("contract whale api", () => {
         status: "active",
         healthStatus: "degraded",
         healthReason: "partial_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        activeExchangeCount: 2,
+        enabledExchanges: ["binance", "bitfinex"],
+        disabledExchanges: ["okx"],
         direction: "buy",
         latestDirection: "buy",
         latestSeverity: "high",
@@ -136,6 +150,9 @@ describe("contract whale api", () => {
     });
     expect(payload.summary.exchanges.bitfinex.status).toBe("reconnecting");
     expect(payload.summary.healthStatus).toBe("degraded");
+    expect(payload.summary.thresholdProfile).toBe("binance_bitfinex");
+    expect(payload.summary.enabledExchanges).toEqual(["binance", "bitfinex"]);
+    expect(payload.summary.disabledExchanges).toEqual(["okx"]);
   });
 
   it("fetches history with server-side filters", async () => {
@@ -161,6 +178,56 @@ describe("contract whale api", () => {
       "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&discord_sent=true&window_sec=15&exchange=binance&limit=50",
     );
     expect(payload.items).toHaveLength(1);
+  });
+
+  it("fetches main-force event history for timeline markers", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          {
+            id: 7,
+            symbol: "BTC",
+            startedAt: 1_700_000_000_000,
+            endedAt: 1_700_000_900_000,
+            peakAt: 1_700_000_300_000,
+            regimeType: "main_force_long_build",
+            severity: "Major",
+            peakMainForceScore: 88,
+            peakExtremeImpactScore: 61,
+            peakStructureBias: 64,
+            confidence: 76,
+            spotScore: 71,
+            contractScore: 86,
+            crossConfirmScore: 74,
+            cwmScore: 89,
+            oiScore: 82,
+            liquidationScore: 31,
+            fundingCrowdingScore: 24,
+            mainForceConfirmed: true,
+            extremeImpactConfirmed: false,
+            liquidationDriven: false,
+            reasonsJson: {
+              finalResult: "高概率主力建多，不是单纯清算推动。",
+            },
+          },
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleEvents({ symbol: "BTC", limit: 12 });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/events?symbol=BTC&limit=12");
+    expect(payload.items[0]).toMatchObject({
+      id: 7,
+      symbol: "BTC",
+      regimeType: "main_force_long_build",
+      severity: "Major",
+      peakMainForceScore: 88,
+      mainForceConfirmed: true,
+      reasons: {
+        finalResult: "高概率主力建多，不是单纯清算推动。",
+      },
+    });
   });
 
   it("uses latest limit 50 by default", async () => {
@@ -222,6 +289,7 @@ function contractWhaleItem() {
     dominance: 0.676,
     priceMovePct: 0.31,
     mainExchange: "binance",
+    dominantVenueNetContributionShare: 0.986,
     dynamicMultiple: 9.4,
     percentileLevel: 99.9,
     multiExchangeConfirmed: true,
@@ -242,8 +310,11 @@ function contractWhaleItem() {
         buyVolumeBtc: 2610,
         sellVolumeBtc: 200,
         totalVolumeBtc: 2810,
+        buyShare: 0.929,
+        sellShare: 0.071,
         netVolumeBtc: 2410,
         dominance: 0.858,
+        netContributionShare: 0.986,
       },
     ],
     dataQuality: 91,

@@ -281,6 +281,7 @@ function SpotWhaleFilters({ filters, onChange }) {
 function SpotTrendBar({ symbol, trend }) {
   const buyPct = Math.round((trend?.buyRatio || 0) * 1000) / 10;
   const sellPct = Math.round((trend?.sellRatio || 0) * 1000) / 10;
+  const total = Number(trend?.totalVolumeBase || 0);
   return (
     <div className="mt-4 rounded-xl border border-slate-700/60 bg-slate-950/60 p-4">
       <p className="text-xs uppercase tracking-[0.25em] text-slate-500">60s Spot Flow</p>
@@ -293,25 +294,25 @@ function SpotTrendBar({ symbol, trend }) {
         <div className="bg-red-400" style={{ width: `${Math.max(0, Math.min(100, sellPct))}%` }} />
       </div>
       <p className="mt-2 text-xs text-slate-500">
-        净方向 {formatSignedBase(trend?.netVolumeBase || 0, symbol)}
+        60s 总成交 {formatBase(total, symbol)} · 净方向 {formatSignedBase(trend?.netVolumeBase || 0, symbol)}
       </p>
     </div>
   );
 }
 
 function ExchangeStatus({ exchange, status }) {
-  const connected = Boolean(status?.connected);
+  const item = status || {};
   return (
     <div className="rounded-xl border border-slate-700/60 bg-slate-950/60 p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-white">{exchangeLabel(exchange)}</span>
-        <span className={connected ? "text-emerald-300" : "text-yellow-300"}>
-          {exchangeStatusLabel(status?.status)}
+        <span className={exchangeStatusClass(item)}>
+          {exchangeStatusLabel(item.status)}
         </span>
       </div>
-      <p className="mt-1 text-slate-500">最近成交 {status?.lastTradeAt ? relativeAge(status.lastTradeAt) : "暂无"}</p>
-      {status?.latencyMs !== null && status?.latencyMs !== undefined ? (
-        <p className="mt-1 text-slate-500">延迟 {status.latencyMs}ms</p>
+      <p className="mt-1 text-slate-500">最近成交 {item.lastTradeAt ? relativeAge(item.lastTradeAt) : "暂无"}</p>
+      {item.latencyMs !== null && item.latencyMs !== undefined ? (
+        <p className="mt-1 text-slate-500">延迟 {formatLatency(item.latencyMs)}</p>
       ) : null}
     </div>
   );
@@ -486,7 +487,25 @@ function exchangeLabel(value) {
 }
 
 function exchangeStatusLabel(value) {
-  return { connected: "在线", connecting: "连接中", reconnecting: "重连中", disabled: "未启用", degraded: "降级" }[String(value || "").toLowerCase()] || "离线";
+  return {
+    connected: "在线",
+    connecting: "连接中",
+    reconnecting: "重连中",
+    disabled: "未启用",
+    degraded: "降级",
+    stale: "无近期成交",
+    waiting_for_trades: "等待成交",
+  }[String(value || "").toLowerCase()] || "离线";
+}
+
+function exchangeStatusClass(item) {
+  const status = String(item?.status || "").toLowerCase();
+  if (status === "connected" && item?.connected) return "font-bold text-emerald-300";
+  if (status === "reconnecting" || status === "connecting" || status === "waiting_for_trades") {
+    return "font-bold text-yellow-300";
+  }
+  if (status === "stale" || status === "degraded") return "font-bold text-orange-300";
+  return "font-bold text-slate-400";
 }
 
 function discordStatus(item) {
@@ -531,4 +550,11 @@ function relativeAge(ts) {
   if (diff < 60_000) return `${Math.round(diff / 1000)} 秒前`;
   if (diff < 3_600_000) return `${Math.round(diff / 60_000)} 分钟前`;
   return `${Math.round(diff / 3_600_000)} 小时前`;
+}
+
+function formatLatency(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) return "N/A";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${Math.round(ms / 1000)}s`;
 }

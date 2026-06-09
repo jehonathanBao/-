@@ -40,12 +40,36 @@ export default function RuleStatus({ discordConnected, lastPushedAt, onTestPush,
             value="OI、Funding、Liquidation pressure、Aggressive order flow 与现货候选按 symbol 合并。"
           />
           <RuleItem
-            label="风险评分"
-            value="finalRiskScore = 0.35 * 现货风险 + 0.25 * TOF-lite + 0.25 * 合约指标 + 0.15 * 主力合约异动；无 CWM 信号时保持原 advanced TOF 分数。"
+            label="双评分系统"
+            value="短线有毒订单评分 toxicScore 使用 1s/5s/15s/60s；现货 spotScore 按 CVD、成交量异常、吸收、盘口变化、价格响应五项计算；合约 contractScore 按 CWM 主动流、OI 冲击、清算环境、funding 拥挤、basis、enabled 交易所确认六项计算。"
+          />
+          <RuleItem
+            label="跨市场确认"
+            value="crossConfirmScore = 0.40*现货合约方向一致 + 0.25*多窗口一致 + 0.20*价格响应一致 + 0.15*数据源覆盖；SourceCoverage 只按 enabled source 算。"
+          />
+          <RuleItem
+            label="主力确认"
+            value="mainForceConfirmed 需要 mainForceScore>=75、confidence>=70、dataQuality>=70，且 7 个确认条件里至少命中 3 个；前端会显示已确认/待确认和命中数。"
+          />
+          <RuleItem
+            label="极端行情与结构分类"
+            value="extremeImpactConfirmed 只表示冲击很剧烈，不等于主力确认。regimeType 会把结构归类成主力建多、主力建空、现货吸筹、现货派发、空头挤压、多头踩踏、下方吸收、上方压制或高换手震荡。"
+          />
+          <RuleItem
+            label="方向与置信度"
+            value="structureBias 单独表示方向，范围 -100 到 +100；mainForceScore 表示主力结构强度。confidence 和 dataQuality 也分开：dataQuality 看数据健康，confidence 还要看 sourceCoverage、多窗口一致性和 signalAgreement。"
+          />
+          <RuleItem
+            label="交易所确认"
+            value="当前合约监控按 enabled 交易所计算；OKX 关闭时不参与总量、质量扣分或多平台确认。Binance 是主流动性源，Bitfinex 是确认源；只有 Binance + Bitfinex 同向确认时才给 S 级空间。"
+          />
+          <RuleItem
+            label="短线衰减"
+            value="短线 toxicScore 使用 Calm/Watch/High/Critical/S 等级，halfLifeSec 通常 30-45 秒，max TTL 约 3-5 分钟；没有持续异常时 decayedScore 会快速下降。"
           />
           <RuleItem
             label="推送边界"
-            value="普通毒单 Discord gate 仍按 High/Critical、score >= 80、dataQuality >= 70；CWM 大行情提醒保留独立 gate 和冷却。"
+            value="短线有毒订单 Discord gate 按 High/Critical/S、toxicScore >= 85、confidence >= 70、dataQuality >= 70、cooldown >= 60s；文案明确提示不代表中长线趋势。CWM 大行情提醒保留独立 gate、独立冷却和 dry-run 观察。"
           />
         </div>
       </div>

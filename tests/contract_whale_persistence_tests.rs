@@ -8,6 +8,7 @@ use btc_toxic_flow_monitor_rs::{
             historical_window_average_btc_with_min_samples, liquidation_context_for_window,
             market_context_from_snapshots, percentile_level_for_volume, rolling_window_stats,
         },
+        config::reset_contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         normalizer::{
             normalize_binance_agg_trade, normalize_binance_force_order,
@@ -23,8 +24,10 @@ use btc_toxic_flow_monitor_rs::{
     },
     storage::{
         contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+        main_force_events_repo::MainForceEventsRepo,
         SqliteStore,
     },
+    types::main_force_event::{MainForceEventObservation, MainForceEventQuery},
 };
 
 #[test]
@@ -101,7 +104,7 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
     store.upsert_contract_whale_signal(&signal).unwrap();
 
     let rows = store
-        .list_contract_whale_signals("BTC", Some(ContractWhaleSeverity::S), 10)
+        .list_contract_whale_signals("BTC", Some(signal.severity), 10)
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert!(rows[0].discord_eligible);
@@ -379,6 +382,7 @@ fn contract_liquidation_1s_upsert_and_window_context_are_available() {
 
 #[test]
 fn contract_oi_and_funding_snapshots_build_market_context() {
+    reset_contract_whale_runtime_config();
     let store = temp_store("contract-market-context");
     let now = 1_700_000_300_000;
     let oi_snapshots = vec![
@@ -466,13 +470,96 @@ fn contract_oi_and_funding_snapshots_build_market_context() {
     assert!(context.oi_available);
     assert!(context.funding_available);
     assert_eq!(context.oi_bias.as_deref(), Some("rising"));
-    assert_eq!(context.oi_change_5m_btc, Some(2_000.0));
+    assert_eq!(context.oi_change_5m_btc, Some(1_500.0));
     assert_eq!(context.funding_bias.as_deref(), Some("long"));
-    assert!((context.funding_rate.expect("funding rate") - 0.00015).abs() < 0.0000001);
+    assert!((context.funding_rate.expect("funding rate") - 0.00020).abs() < 0.0000001);
+}
+
+#[test]
+fn main_force_events_open_update_and_close_after_quiet_period() {
+    let store = temp_store("main-force-events");
+    let started_at = 1_700_000_000_000;
+    let observation = MainForceEventObservation {
+        symbol: "BTC".to_string(),
+        observed_at: started_at,
+        regime_type: "main_force_long_build".to_string(),
+        severity: "Major".to_string(),
+        main_force_score: 84.0,
+        extreme_impact_score: 58.0,
+        structure_bias: 62.0,
+        confidence: 76.0,
+        spot_score: Some(71.0),
+        contract_score: Some(86.0),
+        cross_confirm_score: Some(74.0),
+        cwm_score: Some(89.0),
+        oi_score: Some(82.0),
+        liquidation_score: Some(31.0),
+        funding_crowding_score: Some(24.0),
+        main_force_confirmed: true,
+        extreme_impact_confirmed: false,
+        liquidation_driven: false,
+        reasons_json: serde_json::json!({
+            "finalResult": "高概率主力建多，不是单纯清算推动。"
+        }),
+    };
+
+    let opened = store
+        .observe_main_force_event("BTC", Some(&observation), started_at)
+        .unwrap()
+        .expect("opened event");
+    assert_eq!(opened.started_at, started_at);
+    assert_eq!(opened.regime_type, "main_force_long_build");
+
+    let stronger = MainForceEventObservation {
+        observed_at: started_at + 300_000,
+        main_force_score: 88.0,
+        extreme_impact_score: 64.0,
+        confidence: 81.0,
+        ..observation.clone()
+    };
+    let updated = store
+        .observe_main_force_event("BTC", Some(&stronger), stronger.observed_at)
+        .unwrap()
+        .expect("updated event");
+    assert_eq!(updated.id, opened.id);
+    assert_eq!(updated.peak_main_force_score, 88.0);
+    assert_eq!(updated.peak_at, stronger.observed_at);
+
+    let cooling = MainForceEventObservation {
+        observed_at: stronger.observed_at + 60_000,
+        severity: "Watch".to_string(),
+        main_force_score: 42.0,
+        extreme_impact_score: 51.0,
+        confidence: 63.0,
+        ..stronger.clone()
+    };
+    let inactive = store
+        .observe_main_force_event("BTC", Some(&cooling), cooling.observed_at)
+        .unwrap()
+        .expect("inactive event");
+    assert_eq!(inactive.inactive_since, Some(cooling.observed_at));
+
+    let closed = store
+        .observe_main_force_event("BTC", None, cooling.observed_at + 15 * 60 * 1000 + 1_000)
+        .unwrap();
+    assert!(closed.is_none());
+
+    let events = store
+        .list_main_force_events(&MainForceEventQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 10,
+            ..MainForceEventQuery::default()
+        })
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].id, opened.id);
+    assert_eq!(events[0].ended_at, Some(cooling.observed_at));
+    assert_eq!(events[0].peak_main_force_score, 88.0);
 }
 
 fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal
 {
+    reset_contract_whale_runtime_config();
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_200.0, false).unwrap(),

@@ -162,6 +162,69 @@ describe("Signal inbox card display", () => {
     renderInbox([
       {
         ...mockSignals[0],
+        toxicHalfLifeSec: 45,
+        toxicMaxTtlSec: 300,
+        toxicDecayedScore: 91,
+        toxicDecayFormula: "decayedScore = previousScore * exp(-elapsedSec / halfLifeSec)",
+        toxicReasons: [
+          {
+            reasonType: "SpoofCancel",
+            score: 82,
+            weight: 0.15,
+            windowSec: 15,
+            direction: "bearish",
+            description: "fake wall and near-touch cancel count",
+          },
+        ],
+        marketStructureSeverity: "Major",
+        marketStructureDataQuality: 86,
+        mainForceConfirmed: true,
+        mainForceConfirmationCount: 6,
+        mainForceConfirmationTotal: 7,
+        mainForceConfirmationThreshold: 3,
+        extremeImpactConfirmed: true,
+        regimeType: "main_force_long_build",
+        marketStructureConfidence: 93,
+        marketStructureDataQuality: 91,
+        structureBias: 72,
+        structureRaw: 85,
+        spotContractFloor: 75,
+        durationScore: 100,
+        liquidationPenalty: 0,
+        crowdingPenalty: 0,
+        spotScore: 75,
+        spotCvdScore: 84,
+        spotVolumeAnomaly: 72,
+        spotAbsorption: 64,
+        spotLiquidityShift: 73,
+        spotPriceResponse: 85,
+        contractScore: 90,
+        cwmAggressiveFlow: 94,
+        oiImpulse: 88,
+        liquidationContext: 93,
+        fundingCrowding: 88,
+        basisPremium: 74,
+        activeExchangeConfirmation: 92,
+        crossConfirmScore: 92,
+        spotContractDirectionConsistency: 90,
+        multiWindowConsistency: 92,
+        priceResponseConsistency: 90,
+        sourceCoverage: 100,
+        signalAgreement: 95,
+        oiScore: 88,
+        liquidationScore: 93,
+        fundingCrowdingScore: 88,
+        cwmScore: 94,
+        marketStructureReasons: [
+          {
+            reasonType: "CrossConfirmScore",
+            score: 92,
+            weight: 0.2,
+            timeframe: "15m/1h",
+            direction: "bullish",
+            description: "weighted cross-confirm composite",
+          },
+        ],
         alertStatus: "skipped",
         alertReason: "cached_on_boot",
         discordAlert: {
@@ -173,6 +236,9 @@ describe("Signal inbox card display", () => {
       },
     ], { onMarkStatus });
 
+    expect(screen.getByText("主力确认 已确认 · 6/7")).toBeInTheDocument();
+    expect(screen.getAllByText(/极端行情 是/).length).toBeGreaterThan(0);
+    expect(screen.getByText("偏向 +72")).toBeInTheDocument();
     expect(screen.getByText("Discord：未推送，原因：历史缓存不自动推送")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /查看回放 sig_001/ })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
@@ -181,7 +247,50 @@ describe("Signal inbox card display", () => {
     expect(screen.getByText("Candidate Review")).toBeInTheDocument();
     expect(screen.getByText("Symbol")).toBeInTheDocument();
     expect(screen.getAllByText("BTCUSDT", { exact: false })).not.toHaveLength(0);
-    expect(screen.getByText("Risk Score")).toBeInTheDocument();
+    expect(screen.getByText("Toxic Score")).toBeInTheDocument();
+    expect(screen.getByText("Toxic Half-Life")).toBeInTheDocument();
+    expect(screen.getByText("Decayed Score")).toBeInTheDocument();
+    expect(screen.getByText("Decay Formula")).toBeInTheDocument();
+    expect(screen.getByText("Toxic Reasons")).toBeInTheDocument();
+    expect(screen.getByText("SpoofCancel 82")).toBeInTheDocument();
+    expect(screen.getByText("Main Force Score")).toBeInTheDocument();
+    expect(screen.getByText("Main Force Confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Main Force Confirmation Count")).toBeInTheDocument();
+    expect(screen.getByText("6/7 (min 3)")).toBeInTheDocument();
+    expect(screen.getByText("Extreme Market Impact")).toBeInTheDocument();
+    expect(screen.getByText("Regime Type")).toBeInTheDocument();
+    expect(screen.getByText("Market Structure Confidence")).toBeInTheDocument();
+    expect(screen.getByText("Signal Agreement")).toBeInTheDocument();
+    expect(screen.getByText("主力建多 · main_force_long_build")).toBeInTheDocument();
+    expect(screen.getByText("Market Structure Severity")).toBeInTheDocument();
+    expect(screen.getByText("Structure Raw")).toBeInTheDocument();
+    expect(screen.getByText("Spot/Contract Floor")).toBeInTheDocument();
+    expect(screen.getByText("Duration Score")).toBeInTheDocument();
+    expect(screen.getByText("Liquidation Penalty")).toBeInTheDocument();
+    expect(screen.getByText("Crowding Penalty")).toBeInTheDocument();
+    expect(screen.getByText("Spot Score")).toBeInTheDocument();
+    expect(screen.getByText("Spot CVD")).toBeInTheDocument();
+    expect(screen.getByText("Spot Volume Anomaly")).toBeInTheDocument();
+    expect(screen.getByText("Spot Absorption")).toBeInTheDocument();
+    expect(screen.getByText("Spot Liquidity Shift")).toBeInTheDocument();
+    expect(screen.getByText("Spot Price Response")).toBeInTheDocument();
+    expect(screen.getByText("Contract Score")).toBeInTheDocument();
+    expect(screen.getByText("CWM Aggressive Flow")).toBeInTheDocument();
+    expect(screen.getByText("OI Impulse")).toBeInTheDocument();
+    expect(screen.getByText("Liquidation Context")).toBeInTheDocument();
+    expect(screen.getAllByText("Funding Crowding").length).toBeGreaterThan(0);
+    expect(screen.getByText("Basis Premium")).toBeInTheDocument();
+    expect(screen.getByText("Active Exchange Confirmation")).toBeInTheDocument();
+    expect(screen.getByText("Cross Confirm")).toBeInTheDocument();
+    expect(screen.getByText("Spot/Contract Direction")).toBeInTheDocument();
+    expect(screen.getByText("Multi-Window Consistency")).toBeInTheDocument();
+    expect(screen.getByText("Price Response Consistency")).toBeInTheDocument();
+    expect(screen.getByText("Source Coverage")).toBeInTheDocument();
+    expect(screen.getByText("OI Score")).toBeInTheDocument();
+    expect(screen.getByText("Liquidation Score")).toBeInTheDocument();
+    expect(screen.getByText("Funding Crowding")).toBeInTheDocument();
+    expect(screen.getByText("Market Structure Reasons")).toBeInTheDocument();
+    expect(screen.getByText("CrossConfirmScore 92")).toBeInTheDocument();
     expect(screen.getByText("Data Quality")).toBeInTheDocument();
     expect(screen.getByText("TOF Score")).toBeInTheDocument();
     expect(screen.getByText("Discord Alert Status")).toBeInTheDocument();
@@ -198,8 +307,10 @@ describe("Signal inbox card display", () => {
         cwmContribution: {
           available: true,
           score: 94,
-          weightedContribution: 14.1,
+          weightedContribution: 23.5,
           windowSec: 15,
+          mainExchange: "binance",
+          exchangeCount: 2,
           discordGateIndependent: true,
         },
       },
@@ -209,7 +320,7 @@ describe("Signal inbox card display", () => {
     await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
 
     expect(screen.getByText("CWM Contribution")).toBeInTheDocument();
-    expect(screen.getByText(/Score 94 · contribution \+14.1 · 15s · CWM gate independent/)).toBeInTheDocument();
+    expect(screen.getByText(/Score 94 · main-force component \+23.5 · 15s · binance · active venues 2 · CWM gate independent/)).toBeInTheDocument();
   });
 
   it("opens redacted replay snapshot when replay data exists", async () => {

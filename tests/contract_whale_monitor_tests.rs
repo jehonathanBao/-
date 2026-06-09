@@ -1,5 +1,8 @@
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
-    aggregator::{aggregate_1s_buckets, rolling_window_stats},
+    aggregator::{
+        aggregate_1s_buckets, rolling_window_stats, rolling_window_stats_with_config,
+        RollingWindowStatsOptions,
+    },
     collector_binance::handle_force_order_message,
     collector_okx::handle_liquidation_order_message,
     config::ContractWhaleRuntimeConfig,
@@ -19,6 +22,12 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
         ContractWhaleSignalType,
     },
 };
+
+fn three_exchange_config() -> ContractWhaleRuntimeConfig {
+    let mut config = ContractWhaleRuntimeConfig::default();
+    config.exchanges.okx_enabled = true;
+    config
+}
 
 #[test]
 fn normalizers_unify_contract_trade_units_to_btc_and_usd() {
@@ -197,8 +206,20 @@ fn aggregator_builds_directional_multi_exchange_window_stats() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_200.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(9.4), 92)
-        .expect("window stats");
+    let config = three_exchange_config();
+    let stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: Some(9.4),
+            data_quality: 92,
+            config: &config,
+        },
+    )
+    .expect("window stats");
 
     assert_eq!(stats.exchange_count, 3);
     assert_eq!(stats.main_exchange.as_deref(), Some("binance"));
@@ -206,6 +227,66 @@ fn aggregator_builds_directional_multi_exchange_window_stats() {
     assert!(stats.net_volume_btc > 3_000.0);
     assert!(stats.dominance > 0.60);
     assert!(stats.exchanges.iter().all(|item| item.dominance > 0.0));
+}
+
+#[test]
+fn aggregator_separates_direction_strength_from_net_flow_contribution_share() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 466.0, 1.0, "buy").unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 1_625.0, 1.0, "sell").unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 16.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let config = three_exchange_config();
+    let stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(-0.12),
+            dynamic_multiple: Some(7.2),
+            data_quality: 90,
+            config: &config,
+        },
+    )
+    .expect("window stats");
+    let okx = stats
+        .exchanges
+        .iter()
+        .find(|item| item.exchange == "okx")
+        .expect("okx contribution");
+
+    assert!((okx.dominance - (1_159.0 / 2_091.0)).abs() < 0.0001);
+    assert!((okx.sell_share - (1_625.0 / 2_091.0)).abs() < 0.0001);
+    assert!((okx.net_contribution_share - (1_159.0 / 1_175.0)).abs() < 0.0001);
+    assert!(
+        (stats
+            .dominant_venue_net_contribution_share
+            .expect("dominant venue share")
+            - (1_159.0 / 1_175.0))
+            .abs()
+            < 0.0001
+    );
+}
+
+#[test]
+fn aggregator_ignores_okx_volume_when_okx_is_disabled() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 100.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 20.0).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 99_999.0, 1.0, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.05), Some(3.0), 90)
+        .expect("window stats");
+
+    assert_eq!(stats.exchange_count, 2);
+    assert_eq!(stats.total_volume_btc, 120.0);
+    assert!(stats.exchanges.iter().all(|item| item.exchange != "okx"));
+    assert_eq!(stats.main_exchange.as_deref(), Some("binance"));
 }
 
 #[test]
@@ -267,9 +348,20 @@ fn symbol_threshold_config_keeps_disabled_symbols_out_and_tunes_btc() {
         normalize_bitfinex_trade(now - 1_000, 70_000.0, 500.0).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.2), 94)
-        .expect("window stats");
-    let mut tuned = ContractWhaleRuntimeConfig::default();
+    let mut tuned = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: Some(10.2),
+            data_quality: 94,
+            config: &tuned,
+        },
+    )
+    .expect("window stats");
     let btc_thresholds = tuned
         .symbols
         .get_mut("BTC")
@@ -360,16 +452,29 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
         normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.5), 94)
-        .expect("window stats");
+    let config = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: Some(10.5),
+            data_quality: 94,
+            config: &config,
+        },
+    )
+    .expect("window stats");
     stats.percentile_level = Some(98.0);
-    let signal = detect_contract_whale_signal(&stats).expect("downgraded signal");
+    let signal =
+        detect_contract_whale_signal_with_config(&stats, &config).expect("downgraded signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::Medium);
     assert_eq!(signal.percentile_level, Some(98.0));
 
     stats.percentile_level = Some(99.9);
-    let signal = detect_contract_whale_signal(&stats).expect("s signal");
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("s signal");
     assert_eq!(signal.severity, ContractWhaleSeverity::S);
     assert!(signal.multi_exchange_confirmed);
 }
@@ -402,10 +507,22 @@ fn detector_triggers_15s_critical_threshold() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 200.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.18), Some(7.4), 90)
-        .expect("15s stats");
+    let config = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.18),
+            dynamic_multiple: Some(7.4),
+            data_quality: 90,
+            config: &config,
+        },
+    )
+    .expect("15s stats");
     stats.percentile_level = Some(99.5);
-    let signal = detect_contract_whale_signal(&stats).expect("15s signal");
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("15s signal");
 
     assert_eq!(signal.window_sec, 15);
     assert_eq!(signal.severity, ContractWhaleSeverity::Critical);
@@ -422,9 +539,21 @@ fn detector_triggers_60s_high_threshold() {
         normalize_bitfinex_trade(now - 1_000, 70_000.0, -200.0).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 60, now, Some(0.14), Some(5.3), 88)
-        .expect("60s stats");
-    let signal = detect_contract_whale_signal(&stats).expect("60s signal");
+    let config = three_exchange_config();
+    let stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        60,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.14),
+            dynamic_multiple: Some(5.3),
+            data_quality: 88,
+            config: &config,
+        },
+    )
+    .expect("60s stats");
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("60s signal");
 
     assert_eq!(signal.window_sec, 60);
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
@@ -439,10 +568,22 @@ fn detector_does_not_escalate_to_critical_when_dominance_is_weak() {
         normalize_okx_swap_trade(now - 1_000, 70_000.0, 260_000.0, 0.01, "sell").unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.20), Some(10.0), 92)
-        .expect("weak dominance stats");
+    let config = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.20),
+            dynamic_multiple: Some(10.0),
+            data_quality: 92,
+            config: &config,
+        },
+    )
+    .expect("weak dominance stats");
     stats.percentile_level = Some(99.9);
-    let signal = detect_contract_whale_signal(&stats).expect("display signal");
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("display signal");
 
     assert!(signal.dominance < 0.55);
     assert!(signal.severity < ContractWhaleSeverity::Critical);
@@ -461,36 +602,43 @@ fn scoring_rewards_multi_exchange_confirmation() {
         normalize_okx_swap_trade(now - 1_000, 70_000.0, 140_000.0, 0.01, "buy").unwrap(),
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 400.0, true).unwrap(),
     ];
-    let single_stats = rolling_window_stats(
+    let config = three_exchange_config();
+    let single_stats = rolling_window_stats_with_config(
         &aggregate_1s_buckets(&single_exchange_trades),
         "BTC",
         15,
         now,
-        Some(0.18),
-        Some(7.0),
-        90,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.18),
+            dynamic_multiple: Some(7.0),
+            data_quality: 90,
+            config: &config,
+        },
     )
     .expect("single stats");
-    let multi_stats = rolling_window_stats(
+    let multi_stats = rolling_window_stats_with_config(
         &aggregate_1s_buckets(&multi_exchange_trades),
         "BTC",
         15,
         now,
-        Some(0.18),
-        Some(7.0),
-        90,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.18),
+            dynamic_multiple: Some(7.0),
+            data_quality: 90,
+            config: &config,
+        },
     )
     .expect("multi stats");
 
     let single_score = score_contract_whale_signal_with_config(
         &single_stats,
         ContractWhaleSignalType::AggressiveBuy,
-        &ContractWhaleRuntimeConfig::default(),
+        &config,
     );
     let multi_score = score_contract_whale_signal_with_config(
         &multi_stats,
         ContractWhaleSignalType::AggressiveBuy,
-        &ContractWhaleRuntimeConfig::default(),
+        &config,
     );
 
     assert!(multi_stats.exchange_count > single_stats.exchange_count);

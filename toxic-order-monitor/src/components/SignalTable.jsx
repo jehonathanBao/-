@@ -137,7 +137,10 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
           <p className="mt-3 line-clamp-2 text-sm font-semibold leading-6 text-slate-100">{finalResult}</p>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-slate-300">
             <span className="rounded-full border border-slate-700 px-2 py-1">
-              Risk {formatMetric(signal.finalRiskScore ?? signal.score)}
+              短线毒性 {formatMetric(signal.toxicScore ?? signal.finalRiskScore ?? signal.score)}
+            </span>
+            <span className="rounded-full border border-slate-700 px-2 py-1">
+              压力 {formatSignedMetric(signal.shortPressure)}
             </span>
             <span className="rounded-full border border-slate-700 px-2 py-1">
               Quality {formatMetric(signal.dataQuality)}
@@ -152,8 +155,35 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
               Advanced {formatMetric(signal.advancedScore ?? signal.advancedTofMetrics?.finalRiskScore)}
             </span>
             <span className="rounded-full border border-emerald-800 px-2 py-1 text-emerald-200">
-              CWM {formatMetric(signal.cwmContribution?.score)}
-              {signal.cwmContribution?.available ? ` · +${formatContribution(signal.cwmContribution.weightedContribution)}` : " · N/A"}
+              主力结构 {formatMetric(signal.mainForceScore ?? signal.riskSystems?.mainForceStructure?.mainForceScore)}
+            </span>
+            <span className="rounded-full border border-slate-700 px-2 py-1">
+              偏向 {formatSignedMetric(signal.structureBias ?? signal.marketStructureScore?.structureBias)}
+            </span>
+            <span
+              className={[
+                "rounded-full border px-2 py-1",
+                signal.mainForceConfirmed
+                  ? "border-emerald-500/60 text-emerald-200"
+                  : "border-amber-500/60 text-amber-200",
+              ].join(" ")}
+            >
+              主力确认 {signal.mainForceConfirmed ? "已确认" : "待确认"} ·{" "}
+              {formatMetric(signal.mainForceConfirmationCount ?? signal.marketStructureScore?.mainForceConfirmationCount)}/
+              {formatMetric(signal.mainForceConfirmationTotal ?? signal.marketStructureScore?.mainForceConfirmationTotal)}
+            </span>
+            <span
+              className={[
+                "rounded-full border px-2 py-1",
+                signal.extremeImpactConfirmed
+                  ? "border-rose-500/60 text-rose-200"
+                  : "border-slate-700 text-slate-300",
+              ].join(" ")}
+            >
+              极端行情 {signal.extremeImpactConfirmed ? "是" : "否"}
+            </span>
+            <span className="rounded-full border border-emerald-800 px-2 py-1 text-emerald-200">
+              CWM {formatMetric(signal.cwmContribution?.score)} · 独立
             </span>
           </div>
           <CandidateExplanation compact signal={signal} />
@@ -202,7 +232,79 @@ function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
   const rows = [
     ["Symbol", signal.symbol],
     ["Direction", signal.directionLabel || signal.side],
-    ["Risk Score", formatMetric(signal.finalRiskScore ?? signal.score)],
+    ["Toxic Score", formatMetric(signal.toxicScore ?? signal.finalRiskScore ?? signal.score)],
+    ["Short Pressure", formatSignedMetric(signal.shortPressure)],
+    ["Toxic Severity", signal.toxicSeverity || signal.toxicShortScore?.severity],
+    ["Toxic Type", signal.toxicType || signal.toxicShortScore?.toxicType],
+    ["Toxic TTL", formatDuration(signal.toxicTtlSec ?? signal.toxicShortScore?.ttlSec)],
+    ["Toxic Expires", formatEpochMs(signal.toxicExpiresAt ?? signal.toxicShortScore?.expiresAt)],
+    ["Toxic Half-Life", formatDuration(signal.toxicHalfLifeSec ?? signal.toxicShortScore?.halfLifeSec)],
+    ["Decayed Score", formatMetric(signal.toxicDecayedScore ?? signal.toxicShortScore?.decayedScore)],
+    ["Decay Formula", signal.toxicDecayFormula || signal.toxicShortScore?.decayFormula],
+    ["Toxic Reasons", toxicReasonsText(signal.toxicReasons ?? signal.toxicShortScore?.reasons)],
+    ["Main Force Score", formatMetric(signal.mainForceScore ?? signal.riskSystems?.mainForceStructure?.mainForceScore)],
+    ["Main Force Confirmed", booleanText(signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed)],
+    [
+      "Main Force Confirmation Count",
+      `${formatMetric(signal.mainForceConfirmationCount ?? signal.marketStructureScore?.mainForceConfirmationCount)}/${formatMetric(
+        signal.mainForceConfirmationTotal ?? signal.marketStructureScore?.mainForceConfirmationTotal,
+      )} (min ${formatMetric(
+        signal.mainForceConfirmationThreshold ?? signal.marketStructureScore?.mainForceConfirmationThreshold,
+      )})`,
+    ],
+    ["Structure Bias", formatSignedMetric(signal.structureBias)],
+    ["Extreme Impact", formatMetric(signal.extremeImpactScore)],
+    ["Extreme Market Impact", booleanText(signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed)],
+    ["Market Structure Severity", signal.marketStructureSeverity || signal.marketStructureScore?.severity],
+    ["Market Structure Confidence", formatMetric(signal.marketStructureConfidence ?? signal.marketStructureScore?.confidence)],
+    ["Regime Type", regimeTypeText(signal.regimeType)],
+    ["Market Structure Quality", formatMetric(signal.marketStructureDataQuality ?? signal.marketStructureScore?.dataQuality)],
+    ["Structure Raw", formatDecimalMetric(signal.structureRaw ?? signal.marketStructureScore?.structureRaw)],
+    ["Spot/Contract Floor", formatMetric(signal.spotContractFloor ?? signal.marketStructureScore?.spotContractFloor)],
+    ["Duration Score", formatMetric(signal.durationScore ?? signal.marketStructureScore?.durationScore)],
+    ["Liquidation Penalty", formatDecimalMetric(signal.liquidationPenalty ?? signal.marketStructureScore?.liquidationPenalty)],
+    ["Crowding Penalty", formatDecimalMetric(signal.crowdingPenalty ?? signal.marketStructureScore?.crowdingPenalty)],
+    ["Spot Score", formatMetric(signal.spotScore ?? signal.marketStructureScore?.spotScore)],
+    ["Spot CVD", formatMetric(signal.spotCvdScore ?? signal.marketStructureScore?.spotCvdScore)],
+    ["Spot Volume Anomaly", formatMetric(signal.spotVolumeAnomaly ?? signal.marketStructureScore?.spotVolumeAnomaly)],
+    ["Spot Absorption", formatMetric(signal.spotAbsorption ?? signal.marketStructureScore?.spotAbsorption)],
+    ["Spot Liquidity Shift", formatMetric(signal.spotLiquidityShift ?? signal.marketStructureScore?.spotLiquidityShift)],
+    ["Spot Price Response", formatMetric(signal.spotPriceResponse ?? signal.marketStructureScore?.spotPriceResponse)],
+    ["Contract Score", formatMetric(signal.contractScore ?? signal.marketStructureScore?.contractScore)],
+    ["CWM Aggressive Flow", formatMetric(signal.cwmAggressiveFlow ?? signal.marketStructureScore?.cwmAggressiveFlow)],
+    ["OI Impulse", formatMetric(signal.oiImpulse ?? signal.marketStructureScore?.oiImpulse)],
+    ["Liquidation Context", formatMetric(signal.liquidationContext ?? signal.marketStructureScore?.liquidationContext)],
+    ["Funding Crowding", formatMetric(signal.fundingCrowding ?? signal.marketStructureScore?.fundingCrowding)],
+    ["Basis Premium", formatMetric(signal.basisPremium ?? signal.marketStructureScore?.basisPremium)],
+    [
+      "Active Exchange Confirmation",
+      formatMetric(signal.activeExchangeConfirmation ?? signal.marketStructureScore?.activeExchangeConfirmation),
+    ],
+    ["Cross Confirm", formatMetric(signal.crossConfirmScore ?? signal.marketStructureScore?.crossConfirmScore)],
+    [
+      "Spot/Contract Direction",
+      formatMetric(
+        signal.spotContractDirectionConsistency ?? signal.marketStructureScore?.spotContractDirectionConsistency,
+      ),
+    ],
+    [
+      "Multi-Window Consistency",
+      formatMetric(signal.multiWindowConsistency ?? signal.marketStructureScore?.multiWindowConsistency),
+    ],
+    [
+      "Price Response Consistency",
+      formatMetric(signal.priceResponseConsistency ?? signal.marketStructureScore?.priceResponseConsistency),
+    ],
+    ["Source Coverage", formatMetric(signal.sourceCoverage ?? signal.marketStructureScore?.sourceCoverage)],
+    ["Signal Agreement", formatMetric(signal.signalAgreement ?? signal.marketStructureScore?.signalAgreement)],
+    ["OI Score", formatMetric(signal.oiScore ?? signal.marketStructureScore?.oiScore)],
+    ["Liquidation Score", formatMetric(signal.liquidationScore ?? signal.marketStructureScore?.liquidationScore)],
+    ["Funding Crowding Score", formatMetric(signal.fundingCrowdingScore ?? signal.marketStructureScore?.fundingCrowdingScore)],
+    ["CWM Score", formatMetric(signal.cwmScore ?? signal.marketStructureScore?.cwmScore)],
+    [
+      "Market Structure Reasons",
+      structureReasonsText(signal.marketStructureReasons ?? signal.marketStructureScore?.reasons),
+    ],
     ["Data Quality", formatMetric(signal.dataQuality)],
     ["TOF Score", formatMetric(signal.tofScore ?? signal.tofMetrics?.tofScore)],
     ["Perp Score", formatMetric(signal.perpScore ?? signal.perpTofMetrics?.riskScore)],
@@ -358,7 +460,8 @@ function discordAlertText(signal) {
 function reasonLabel(reason) {
   const labels = {
     data_quality_below_threshold: "dataQuality 低于 70",
-    score_below_threshold: "score 低于 80",
+    score_below_threshold: "toxicScore 低于 85",
+    confidence_below_threshold: "confidence 低于 70",
     non_high_risk: "Medium/Low 只页面展示",
     auto_disabled: "auto push disabled",
     dry_run: "dry run",
@@ -446,9 +549,51 @@ function formatMetric(value) {
   return Number.isFinite(number) ? Math.round(number) : "N/A";
 }
 
+function formatDecimalMetric(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(2).replace(/\.00$/, "") : "N/A";
+}
+
 function formatContribution(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(1) : "0.0";
+}
+
+function formatSignedMetric(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  return `${number >= 0 ? "+" : ""}${Math.round(number)}`;
+}
+
+function formatDuration(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number)}s` : "N/A";
+}
+
+function formatEpochMs(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  return new Date(number).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function toxicReasonsText(reasons) {
+  if (!Array.isArray(reasons) || reasons.length === 0) {
+    return "N/A";
+  }
+  return reasons
+    .slice(0, 3)
+    .map((reason) => `${reason.reasonType || "reason"} ${formatMetric(reason.score)}`)
+    .join(" · ");
+}
+
+function structureReasonsText(reasons) {
+  if (!Array.isArray(reasons) || reasons.length === 0) {
+    return "N/A";
+  }
+  return reasons
+    .slice(0, 4)
+    .map((reason) => `${reason.reasonType || "reason"} ${formatMetric(reason.score)}`)
+    .join(" · ");
 }
 
 function cwmContributionText(contribution) {
@@ -458,7 +603,9 @@ function cwmContributionText(contribution) {
   const score = formatMetric(contribution.score);
   const weighted = formatContribution(contribution.weightedContribution);
   const window = contribution.windowSec ? `${contribution.windowSec}s` : "N/A";
-  return `Score ${score} · contribution +${weighted} · ${window} · CWM gate independent`;
+  const mainExchange = contribution.mainExchange || "unknown venue";
+  const exchangeCount = contribution.exchangeCount ?? "N/A";
+  return `Score ${score} · main-force component +${weighted} · ${window} · ${mainExchange} · active venues ${exchangeCount} · CWM gate independent`;
 }
 
 function discordButtonText(gate) {
@@ -468,7 +615,34 @@ function discordButtonText(gate) {
   if (gate.reason === "DISCORD_SUPPRESSED_NON_HIGH_RISK") {
     return "仅页面展示";
   }
+  if (gate.reason === "DISCORD_SUPPRESSED_LOW_CONFIDENCE") {
+    return "置信度不足";
+  }
   return "未达推送门槛";
+}
+
+function booleanText(value) {
+  return value ? "Yes" : "No";
+}
+
+function regimeTypeText(value) {
+  if (!value) {
+    return "N/A";
+  }
+  const label = {
+    main_force_long_build: "主力建多",
+    main_force_short_build: "主力建空",
+    contract_flow_shock: "合约冲击",
+    spot_accumulation: "现货吸筹",
+    spot_distribution: "现货派发",
+    contract_short_squeeze: "空头挤压",
+    long_liquidation_cascade: "多头踩踏",
+    downside_absorption: "下方吸收",
+    upside_resistance: "上方压制",
+    range_rotation: "高换手震荡",
+    unclear: "结构不清晰",
+  }[value];
+  return label ? `${label} · ${value}` : value;
 }
 
 function Counter({ label, value, accent = "text-slate-100", testId }) {

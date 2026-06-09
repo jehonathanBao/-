@@ -104,4 +104,40 @@ describe("SpotWhaleMonitor", () => {
       expect(fetchSpotWhaleLatest).toHaveBeenCalledWith(50, "ETH");
     });
   });
+
+  it("shows stale spot exchanges instead of reporting them as online", async () => {
+    const staleSummary = {
+      status: "calm",
+      healthStatus: "unhealthy",
+      latestDirection: "neutral",
+      latestSeverity: "calm",
+      signalCount: 0,
+      enabled: true,
+      dryRun: false,
+      symbol: "BTC",
+      trend60s: {
+        buyVolumeBase: 0,
+        sellVolumeBase: 0,
+        totalVolumeBase: 0,
+        netVolumeBase: 0,
+        dominance: 0,
+        buyRatio: 0,
+        sellRatio: 0,
+        updatedAtMs: null,
+      },
+      exchanges: {
+        binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 50 },
+        coinbase: { connected: false, status: "stale", lastTradeAt: 1_699_999_000_000, latencyMs: 1_000_000 },
+      },
+    };
+    fetchSpotWhaleSummary.mockResolvedValueOnce({ summary: staleSummary, error: null });
+    fetchSpotWhaleLatest.mockResolvedValueOnce({ summary: staleSummary, items: [], error: null });
+
+    render(<SpotWhaleMonitor />);
+
+    expect(await screen.findByText("无近期成交")).toBeInTheDocument();
+    expect(screen.getByText("健康状态")).toBeInTheDocument();
+    expect(screen.getByText("异常")).toBeInTheDocument();
+    expect(screen.getByText(/60s 总成交 0 BTC/)).toBeInTheDocument();
+  });
 });

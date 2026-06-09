@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{OnceLock, RwLock},
 };
 
@@ -28,6 +28,7 @@ static GLOBAL_CONFIG: OnceLock<RwLock<ContractWhaleRuntimeConfig>> = OnceLock::n
 
 #[derive(Debug, Clone)]
 pub struct ContractWhaleRuntimeConfig {
+    pub exchanges: ContractWhaleExchangeConfig,
     pub scoring: ContractWhaleScoringConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
@@ -40,6 +41,11 @@ impl ContractWhaleRuntimeConfig {
         symbol: &str,
         window_sec: u64,
     ) -> ContractWhaleThresholds {
+        if normalize_symbol(symbol) == "BTC"
+            && self.threshold_profile() == ContractWhaleThresholdProfile::BinanceBitfinex
+        {
+            return ContractWhaleThresholds::binance_bitfinex_for_window(window_sec);
+        }
         self.symbols
             .get(&normalize_symbol(symbol))
             .and_then(|symbol_config| symbol_config.thresholds_btc.get(&window_sec).copied())
@@ -51,6 +57,58 @@ impl ContractWhaleRuntimeConfig {
             .get(&normalize_symbol(symbol))
             .map(|config| config.enabled)
             .unwrap_or(false)
+    }
+
+    pub fn exchange_enabled(&self, exchange: &str) -> bool {
+        match exchange.to_ascii_lowercase().as_str() {
+            "binance" => self.exchanges.binance_enabled,
+            "okx" => self.exchanges.okx_enabled,
+            "bitfinex" => self.exchanges.bitfinex_enabled,
+            _ => false,
+        }
+    }
+
+    pub fn enabled_exchanges(&self) -> Vec<String> {
+        ["binance", "okx", "bitfinex"]
+            .into_iter()
+            .filter(|exchange| self.exchange_enabled(exchange))
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub fn active_exchange_count(&self) -> usize {
+        self.enabled_exchanges().len()
+    }
+
+    pub fn disabled_exchanges(&self) -> Vec<String> {
+        ["binance", "okx", "bitfinex"]
+            .into_iter()
+            .filter(|exchange| !self.exchange_enabled(exchange))
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    pub fn enabled_exchange_set(&self) -> BTreeSet<String> {
+        self.enabled_exchanges().into_iter().collect()
+    }
+
+    pub fn threshold_profile(&self) -> ContractWhaleThresholdProfile {
+        if self.exchanges.binance_enabled
+            && self.exchanges.bitfinex_enabled
+            && !self.exchanges.okx_enabled
+        {
+            ContractWhaleThresholdProfile::BinanceBitfinex
+        } else {
+            ContractWhaleThresholdProfile::ThreeExchange
+        }
+    }
+
+    pub fn threshold_profile_key(&self) -> &'static str {
+        self.threshold_profile().as_key()
+    }
+
+    pub fn notional_thresholds_usd(&self) -> ContractWhaleNotionalThresholds {
+        self.threshold_profile().notional_thresholds_usd()
     }
 }
 
@@ -70,10 +128,65 @@ impl Default for ContractWhaleRuntimeConfig {
             ContractWhaleSymbolConfig::sol_default(false),
         );
         Self {
+            exchanges: ContractWhaleExchangeConfig::default(),
             scoring: ContractWhaleScoringConfig::default(),
             symbols,
             data_quality: ContractWhaleDataQualityConfig::default(),
             retention: ContractWhaleRetentionConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractWhaleThresholdProfile {
+    ThreeExchange,
+    BinanceBitfinex,
+}
+
+impl ContractWhaleThresholdProfile {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::ThreeExchange => "three_exchange",
+            Self::BinanceBitfinex => "binance_bitfinex",
+        }
+    }
+
+    pub fn notional_thresholds_usd(self) -> ContractWhaleNotionalThresholds {
+        match self {
+            Self::ThreeExchange => ContractWhaleNotionalThresholds {
+                high: 50_000_000.0,
+                critical: 120_000_000.0,
+                s: 250_000_000.0,
+            },
+            Self::BinanceBitfinex => ContractWhaleNotionalThresholds {
+                high: 40_000_000.0,
+                critical: 95_000_000.0,
+                s: 200_000_000.0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContractWhaleNotionalThresholds {
+    pub high: f64,
+    pub critical: f64,
+    pub s: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleExchangeConfig {
+    pub binance_enabled: bool,
+    pub okx_enabled: bool,
+    pub bitfinex_enabled: bool,
+}
+
+impl Default for ContractWhaleExchangeConfig {
+    fn default() -> Self {
+        Self {
+            binance_enabled: true,
+            okx_enabled: false,
+            bitfinex_enabled: true,
         }
     }
 }
@@ -244,10 +357,34 @@ pub fn load_contract_whale_runtime_config_from_settings(
     settings: &::config::Config,
 ) -> ContractWhaleRuntimeConfig {
     ContractWhaleRuntimeConfig {
+        exchanges: load_exchange_config(settings),
         scoring: load_scoring_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
         retention: load_retention_config(settings),
+    }
+}
+
+fn load_exchange_config(settings: &::config::Config) -> ContractWhaleExchangeConfig {
+    ContractWhaleExchangeConfig {
+        binance_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_BINANCE_ENABLED",
+            "contract_whale_monitor.exchanges.binance.enabled",
+            bool_setting(settings, "ENABLE_BINANCE", "enable_binance", true),
+        ),
+        okx_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_OKX_ENABLED",
+            "contract_whale_monitor.exchanges.okx.enabled",
+            bool_setting(settings, "ENABLE_OKX", "enable_okx", false),
+        ),
+        bitfinex_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_BITFINEX_ENABLED",
+            "contract_whale_monitor.exchanges.bitfinex.enabled",
+            true,
+        ),
     }
 }
 
@@ -490,6 +627,14 @@ fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usi
         }
         Err(_) => default,
     }
+}
+
+fn bool_setting(settings: &::config::Config, env_key: &str, toml_key: &str, default: bool) -> bool {
+    std::env::var(env_key)
+        .ok()
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .or_else(|| settings.get_bool(toml_key).ok())
+        .unwrap_or(default)
 }
 
 fn warn_invalid<T: std::fmt::Display, D: std::fmt::Display>(path: &str, value: T, default: D) {

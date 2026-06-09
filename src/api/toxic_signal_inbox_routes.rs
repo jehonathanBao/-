@@ -8,8 +8,8 @@ use crate::{
     api::{
         contract_whale_routes::build_contract_whale_response_with_runtime,
         discord_notification_routes::{
-            discord_alert_status_for_key, evaluate_discord_alert_gate, DiscordAlertMode,
-            DiscordNotificationRequest,
+            discord_alert_status_for_key, evaluate_discord_alert_gate,
+            preferred_discord_alert_family, DiscordAlertMode, DiscordNotificationRequest,
         },
         toxic_quality_scorecard_routes::build_fusion_recent,
     },
@@ -17,7 +17,9 @@ use crate::{
     contract_whale_monitor::{config::contract_whale_runtime_config, types::ContractWhaleSignal},
     runtime::{
         advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput},
-        cwm_risk_fusion::{build_cwm_risk_contribution, fused_risk_score_with_cwm},
+        cwm_risk_fusion::{
+            build_cwm_risk_contribution, build_split_risk_systems, SplitRiskSystemsInput,
+        },
         perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput},
         tof_metrics::{enhance_signal_summary, TofSummaryInput},
     },
@@ -321,12 +323,25 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         .ok()
         .and_then(|value| value.as_str().map(str::to_string));
     let cwm_contribution = build_cwm_risk_contribution(&symbol, cwm_signal);
-    let final_risk_score = fused_risk_score_with_cwm(
-        existing_risk_score,
-        enhancement.tof_score,
+    let created_at_ms = object
+        .get("createdAtMs")
+        .and_then(|value| value.as_i64())
+        .unwrap_or_else(crate::normalizers::trade::now_ms);
+    let risk_systems = build_split_risk_systems(SplitRiskSystemsInput {
+        ts_ms: created_at_ms,
+        symbol: &symbol,
+        short_toxic_score: enhancement.final_risk_score,
+        short_tof_score: enhancement.tof_score,
+        short_direction: enhancement.direction,
+        toxic_type: &candidate_type,
+        data_quality: advanced_data_quality,
+        tof_metrics: &enhancement.tof_metrics,
+        advanced_score,
         perp_score,
-        cwm_contribution.score,
-    );
+        metrics_direction: advanced_metrics.metrics_direction,
+        cwm_contribution: cwm_contribution.clone(),
+    });
+    let toxic_score = risk_systems.short_term_toxic.toxic_score;
     object.insert(
         "tofMetrics".to_string(),
         serde_json::to_value(&enhancement.tof_metrics).unwrap_or(serde_json::Value::Null),
@@ -397,10 +412,247 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         serde_json::to_value(&cwm_contribution).unwrap_or(serde_json::Value::Null),
     );
     object.insert(
-        "finalRiskScore".to_string(),
-        serde_json::json!(final_risk_score),
+        "riskSystems".to_string(),
+        serde_json::to_value(&risk_systems).unwrap_or(serde_json::Value::Null),
     );
-    object.insert("riskScore".to_string(), serde_json::json!(final_risk_score));
+    object.insert(
+        "toxicShortScore".to_string(),
+        serde_json::to_value(&risk_systems.short_term_toxic).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert("toxicScore".to_string(), serde_json::json!(toxic_score));
+    object.insert(
+        "shortPressure".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.short_pressure),
+    );
+    object.insert(
+        "toxicSeverity".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.severity.clone()),
+    );
+    object.insert(
+        "toxicType".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.toxic_type.clone()),
+    );
+    object.insert(
+        "toxicTtlSec".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.ttl_sec),
+    );
+    object.insert(
+        "toxicExpiresAt".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.expires_at),
+    );
+    object.insert(
+        "toxicHalfLifeSec".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.half_life_sec),
+    );
+    object.insert(
+        "toxicMaxTtlSec".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.max_ttl_sec),
+    );
+    object.insert(
+        "toxicDecayedScore".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.decayed_score),
+    );
+    object.insert(
+        "toxicDecayFormula".to_string(),
+        serde_json::json!(risk_systems.short_term_toxic.decay_formula.clone()),
+    );
+    object.insert(
+        "toxicReasons".to_string(),
+        serde_json::to_value(&risk_systems.short_term_toxic.reasons)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "marketStructureScore".to_string(),
+        serde_json::to_value(&risk_systems.market_structure_score)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "mainForceScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.main_force_score),
+    );
+    object.insert(
+        "mainForceConfirmed".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.main_force_confirmed),
+    );
+    object.insert(
+        "mainForceConfirmationCount".to_string(),
+        serde_json::json!(
+            risk_systems
+                .main_force_structure
+                .main_force_confirmation_count
+        ),
+    );
+    object.insert(
+        "mainForceConfirmationTotal".to_string(),
+        serde_json::json!(
+            risk_systems
+                .main_force_structure
+                .main_force_confirmation_total
+        ),
+    );
+    object.insert(
+        "mainForceConfirmationThreshold".to_string(),
+        serde_json::json!(
+            risk_systems
+                .main_force_structure
+                .main_force_confirmation_threshold
+        ),
+    );
+    object.insert(
+        "structureBias".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.structure_bias),
+    );
+    object.insert(
+        "extremeImpactScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.extreme_impact_score),
+    );
+    object.insert(
+        "extremeImpactConfirmed".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.extreme_impact_confirmed),
+    );
+    object.insert(
+        "regimeType".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.regime_type),
+    );
+    object.insert(
+        "marketStructureSeverity".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.severity),
+    );
+    object.insert(
+        "marketStructureConfidence".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.confidence),
+    );
+    object.insert(
+        "marketStructureDataQuality".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.data_quality),
+    );
+    object.insert(
+        "structureRaw".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.structure_raw),
+    );
+    object.insert(
+        "spotContractFloor".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_contract_floor),
+    );
+    object.insert(
+        "durationScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.duration_score),
+    );
+    object.insert(
+        "liquidationPenalty".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.liquidation_penalty),
+    );
+    object.insert(
+        "crowdingPenalty".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.crowding_penalty),
+    );
+    object.insert(
+        "spotScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_score),
+    );
+    object.insert(
+        "spotCvdScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_cvd_score),
+    );
+    object.insert(
+        "spotVolumeAnomaly".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_volume_anomaly),
+    );
+    object.insert(
+        "spotAbsorption".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_absorption),
+    );
+    object.insert(
+        "spotLiquidityShift".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_liquidity_shift),
+    );
+    object.insert(
+        "spotPriceResponse".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.spot_price_response),
+    );
+    object.insert(
+        "contractScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.contract_score),
+    );
+    object.insert(
+        "cwmAggressiveFlow".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.cwm_aggressive_flow),
+    );
+    object.insert(
+        "oiImpulse".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.oi_impulse),
+    );
+    object.insert(
+        "liquidationContext".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.liquidation_context),
+    );
+    object.insert(
+        "fundingCrowding".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.funding_crowding),
+    );
+    object.insert(
+        "basisPremium".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.basis_premium),
+    );
+    object.insert(
+        "activeExchangeConfirmation".to_string(),
+        serde_json::json!(
+            risk_systems
+                .main_force_structure
+                .active_exchange_confirmation
+        ),
+    );
+    object.insert(
+        "crossConfirmScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.cross_confirm_score),
+    );
+    object.insert(
+        "spotContractDirectionConsistency".to_string(),
+        serde_json::json!(
+            risk_systems
+                .main_force_structure
+                .spot_contract_direction_consistency
+        ),
+    );
+    object.insert(
+        "multiWindowConsistency".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.multi_window_consistency),
+    );
+    object.insert(
+        "priceResponseConsistency".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.price_response_consistency),
+    );
+    object.insert(
+        "sourceCoverage".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.source_coverage),
+    );
+    object.insert(
+        "signalAgreement".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.signal_agreement),
+    );
+    object.insert(
+        "oiScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.oi_score),
+    );
+    object.insert(
+        "liquidationScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.liquidation_score),
+    );
+    object.insert(
+        "fundingCrowdingScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.funding_crowding_score),
+    );
+    object.insert(
+        "cwmScore".to_string(),
+        serde_json::json!(risk_systems.main_force_structure.cwm_score),
+    );
+    object.insert(
+        "marketStructureReasons".to_string(),
+        serde_json::to_value(&risk_systems.main_force_structure.reasons)
+            .unwrap_or(serde_json::Value::Null),
+    );
+    object.insert("finalRiskScore".to_string(), serde_json::json!(toxic_score));
+    object.insert("riskScore".to_string(), serde_json::json!(toxic_score));
     object.insert(
         "dataQuality".to_string(),
         serde_json::json!(advanced_data_quality),
@@ -409,7 +661,8 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         .get("signalId")
         .and_then(|value| value.as_str())
         .map(str::to_string);
-    let alert_request = DiscordNotificationRequest {
+    let mut alert_request = DiscordNotificationRequest {
+        alert_family: None,
         signal_id: signal_id.clone(),
         id: signal_id.clone(),
         dedupe_key: signal_id.clone(),
@@ -418,7 +671,8 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         signal_type: Some(signal_kind),
         level: Some(severity),
         side: Some(enhancement.direction_label.clone()),
-        score: Some(final_risk_score),
+        score: Some(toxic_score),
+        confidence: Some(risk_systems.short_term_toxic.confidence),
         data_quality: Some(advanced_data_quality),
         reason: Some(summary),
         impact: None,
@@ -448,8 +702,24 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         advanced_tof_metrics: Some(advanced_metrics),
         advanced_score: Some(advanced_score),
         advanced_candidate_type: Some(advanced_candidate_type),
+        main_force_score: Some(risk_systems.main_force_structure.main_force_score),
+        extreme_impact_score: Some(risk_systems.main_force_structure.extreme_impact_score),
+        structure_bias: Some(risk_systems.main_force_structure.structure_bias),
+        market_structure_confidence: Some(risk_systems.main_force_structure.confidence),
+        market_structure_data_quality: Some(risk_systems.main_force_structure.data_quality),
+        market_structure_severity: Some(risk_systems.main_force_structure.severity.clone()),
+        regime_type: Some(risk_systems.main_force_structure.regime_type.clone()),
+        spot_score: Some(risk_systems.main_force_structure.spot_score),
+        contract_score: Some(risk_systems.main_force_structure.contract_score),
+        cross_confirm_score: Some(risk_systems.main_force_structure.cross_confirm_score),
+        main_force_confirmed: Some(risk_systems.main_force_structure.main_force_confirmed),
+        signal_agreement: Some(risk_systems.main_force_structure.signal_agreement),
+        source_coverage: Some(risk_systems.main_force_structure.source_coverage),
+        oi_score: Some(risk_systems.main_force_structure.oi_score),
+        liquidation_score: Some(risk_systems.main_force_structure.liquidation_score),
         test: None,
     };
+    alert_request.alert_family = Some(preferred_discord_alert_family(&alert_request).to_string());
     let alert_decision = evaluate_discord_alert_gate(&alert_request, DiscordAlertMode::Auto);
     let stored_alert = signal_id.as_deref().and_then(discord_alert_status_for_key);
     let alert_status = stored_alert
@@ -491,7 +761,10 @@ fn alert_status_from_reason(allowed: bool, reason: &str) -> &'static str {
         "eligible"
     } else if matches!(
         reason,
-        "score_below_threshold" | "data_quality_below_threshold" | "non_high_risk"
+        "score_below_threshold"
+            | "confidence_below_threshold"
+            | "data_quality_below_threshold"
+            | "non_high_risk"
     ) {
         "rejected"
     } else {

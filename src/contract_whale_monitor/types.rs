@@ -167,12 +167,18 @@ pub struct ExchangeFlowContribution {
     pub buy_volume_btc: f64,
     pub sell_volume_btc: f64,
     pub total_volume_btc: f64,
+    #[serde(default)]
+    pub buy_share: f64,
+    #[serde(default)]
+    pub sell_share: f64,
     pub buy_notional_usd: f64,
     pub sell_notional_usd: f64,
     pub total_notional_usd: f64,
     pub net_volume_btc: f64,
     #[serde(default)]
     pub dominance: f64,
+    #[serde(default)]
+    pub net_contribution_share: f64,
     pub trade_count: u64,
 }
 
@@ -194,6 +200,8 @@ pub struct ContractWhaleWindowStats {
     pub exchange_count: usize,
     pub main_exchange: Option<String>,
     pub exchanges: Vec<ExchangeFlowContribution>,
+    #[serde(default)]
+    pub dominant_venue_net_contribution_share: Option<f64>,
     pub dynamic_multiple: Option<f64>,
     pub percentile_level: Option<f64>,
     pub multi_exchange_confirmed: bool,
@@ -271,6 +279,8 @@ pub struct ContractWhaleSignal {
     pub price_move_pct: Option<f64>,
     pub main_exchange: Option<String>,
     pub exchanges: Vec<ExchangeFlowContribution>,
+    #[serde(default)]
+    pub dominant_venue_net_contribution_share: Option<f64>,
     pub dynamic_multiple: Option<f64>,
     #[serde(default)]
     pub percentile_level: Option<f64>,
@@ -320,6 +330,14 @@ pub struct ContractWhaleSummary {
     pub status: String,
     pub health_status: String,
     pub health_reason: String,
+    #[serde(default)]
+    pub threshold_profile: String,
+    #[serde(default)]
+    pub active_exchange_count: usize,
+    #[serde(default)]
+    pub enabled_exchanges: Vec<String>,
+    #[serde(default)]
+    pub disabled_exchanges: Vec<String>,
     pub direction: String,
     pub latest_direction: String,
     pub latest_severity: ContractWhaleSeverity,
@@ -406,6 +424,31 @@ impl ContractWhaleThresholds {
                 high_btc: 3500.0,
                 critical_btc: 6500.0,
                 s_btc: 10000.0,
+            },
+            _ => Self {
+                high_btc: f64::INFINITY,
+                critical_btc: f64::INFINITY,
+                s_btc: f64::INFINITY,
+            },
+        }
+    }
+
+    pub fn binance_bitfinex_for_window(window_sec: u64) -> Self {
+        match window_sec {
+            5 => Self {
+                high_btc: 650.0,
+                critical_btc: 1200.0,
+                s_btc: 2000.0,
+            },
+            15 => Self {
+                high_btc: 1200.0,
+                critical_btc: 2200.0,
+                s_btc: 3600.0,
+            },
+            60 => Self {
+                high_btc: 2800.0,
+                critical_btc: 5200.0,
+                s_btc: 8000.0,
             },
             _ => Self {
                 high_btc: f64::INFINITY,

@@ -186,3 +186,79 @@ enabled = true
 5 = 40000000
 15 = 80000000
 60 = 160000000
+
+[scoring.toxic_short]
+enabled = true
+windows_sec = [1, 5, 15, 60]
+half_life_sec = 45
+max_ttl_sec = 300
+
+[scoring.toxic_short.weights]
+toxic_order_cluster = 0.25
+aggressive_sweep = 0.20
+orderbook_deformation = 0.15
+spoof_cancel = 0.15
+adverse_move = 0.10
+liquidity_gap = 0.10
+micro_volatility_shock = 0.05
+
+[scoring.toxic_short.discord]
+enabled = true
+min_score = 85
+min_confidence = 70
+min_data_quality = 70
+cooldown_sec = 60
+
+[scoring.market_structure]
+enabled = true
+windows_min = [5, 15, 60, 240]
+event_start_main_force_score = 75
+event_start_extreme_impact_score = 85
+event_end_main_force_score = 55
+event_end_extreme_impact_score = 60
+event_end_hold_minutes = 15
+
+[scoring.market_structure.structure_weights]
+spot_score = 0.40
+contract_score = 0.40
+cross_confirm_score = 0.20
+
+[scoring.market_structure.main_force_weights]
+structure_raw = 0.65
+spot_contract_min = 0.25
+duration_score = 0.10
+
+[scoring.market_structure.spot_weights]
+spot_cvd = 0.30
+spot_volume_anomaly = 0.25
+spot_absorption = 0.20
+spot_liquidity_shift = 0.15
+spot_price_response = 0.10
+
+[scoring.market_structure.contract_weights]
+cwm_aggressive_flow = 0.30
+oi_impulse = 0.20
+liquidation_context = 0.15
+funding_crowding = 0.15
+basis_premium = 0.10
+active_exchange_confirmation = 0.10
+
+[scoring.market_structure.cross_confirm_weights]
+spot_contract_direction_consistency = 0.40
+multi_window_consistency = 0.25
+price_response_consistency = 0.20
+source_coverage = 0.15
+
+[scoring.market_structure.confirmation]
+min_main_force_score = 75
+min_confidence = 70
+min_data_quality = 70
+min_confirm_conditions = 3
+
+[scoring.market_structure.discord]
+enabled = true
+min_main_force_score = 80
+min_extreme_impact_score = 85
+min_confidence = 70
+min_data_quality = 70
+cooldown_sec = 1200

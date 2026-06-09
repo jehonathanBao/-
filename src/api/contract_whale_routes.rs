@@ -146,6 +146,11 @@ pub async fn contract_whale_latest_route(
             ..ContractWhaleSignalQuery::default()
         }) {
             Ok(items) if !items.is_empty() => {
+                let now = if flow_state.updated_at > 0 {
+                    flow_state.updated_at
+                } else {
+                    now_ms()
+                };
                 return Ok(Json(serde_json::json!(
                     build_contract_whale_items_response(
                         items,
@@ -157,8 +162,9 @@ pub async fn contract_whale_latest_route(
                             &flow_state,
                             Some(&venue_health),
                             config.enabled,
-                            now_ms()
+                            now
                         ),
+                        trend_60s_from_flow_state(&flow_state, &symbol, now),
                     )
                 )));
             }
@@ -566,6 +572,7 @@ pub fn build_contract_whale_items_response(
     enabled: bool,
     dry_run: bool,
     exchanges: BTreeMap<String, ContractWhaleExchangeStatus>,
+    trend_60s: ContractWhaleTrend60s,
 ) -> ContractWhaleLatestResponse {
     let now = now_ms();
     let filter = response_filter(symbol, enabled, dry_run);
@@ -592,7 +599,7 @@ pub fn build_contract_whale_items_response(
         dry_run,
         exchanges,
         warmup_state(now, enabled, None),
-        ContractWhaleTrend60s::default(),
+        trend_60s,
     );
     ContractWhaleLatestResponse {
         summary,
@@ -626,16 +633,32 @@ fn stats_from_flow_window(
     if exchanges.is_empty() {
         return None;
     }
+    let buy_volume_btc = exchanges
+        .iter()
+        .map(|item| item.buy_volume_btc)
+        .sum::<f64>();
+    let sell_volume_btc = exchanges
+        .iter()
+        .map(|item| item.sell_volume_btc)
+        .sum::<f64>();
+    let buy_notional_usd = exchanges
+        .iter()
+        .map(|item| item.buy_notional_usd)
+        .sum::<f64>();
+    let sell_notional_usd = exchanges
+        .iter()
+        .map(|item| item.sell_notional_usd)
+        .sum::<f64>();
     let exchange_count = exchanges
         .iter()
         .filter(|item| item.total_volume_btc > 0.0)
         .count();
     let main_exchange = exchanges.first().map(|item| item.exchange.clone());
-    let total_volume_btc = window.aggressive_buy_btc + window.aggressive_sell_btc;
+    let total_volume_btc = buy_volume_btc + sell_volume_btc;
     if total_volume_btc <= 0.0 {
         return None;
     }
-    let net_volume_btc = window.aggressive_buy_btc - window.aggressive_sell_btc;
+    let net_volume_btc = buy_volume_btc - sell_volume_btc;
     let data_quality = market_context_quality_score(data_quality_score(window), market_context);
     let window_sec = window.window_ms / 1000;
     let baseline = baselines.get(&window_sec);
@@ -647,17 +670,18 @@ fn stats_from_flow_window(
         symbol: symbol.to_string(),
         window_sec,
         ts: now,
-        buy_volume_btc: window.aggressive_buy_btc,
-        sell_volume_btc: window.aggressive_sell_btc,
+        buy_volume_btc,
+        sell_volume_btc,
         total_volume_btc,
         net_volume_btc,
         dominance: net_volume_btc.abs() / total_volume_btc,
-        buy_notional_usd: window.aggressive_buy_usd,
-        sell_notional_usd: window.aggressive_sell_usd,
-        total_notional_usd: window.aggressive_buy_usd + window.aggressive_sell_usd,
+        buy_notional_usd,
+        sell_notional_usd,
+        total_notional_usd: buy_notional_usd + sell_notional_usd,
         price_move_pct: window.price_move_bps.map(|bps| bps / 100.0),
         exchange_count,
         main_exchange,
+        dominant_venue_net_contribution_share: dominant_venue_net_contribution_share(&exchanges),
         exchanges,
         dynamic_multiple: baseline.and_then(|item| item.dynamic_multiple),
         percentile_level: baseline.and_then(|item| item.percentile_level),
@@ -676,9 +700,15 @@ fn stats_from_flow_window(
 fn exchange_contributions(
     breakdown: &BTreeMap<String, VenueFlowBreakdown>,
 ) -> Vec<ExchangeFlowContribution> {
+    let runtime_config = contract_whale_runtime_config();
+    let total_net_volume_btc = breakdown
+        .iter()
+        .filter(|(exchange, _)| runtime_config.exchange_enabled(exchange))
+        .map(|(_, item)| item.aggressive_buy_btc - item.aggressive_sell_btc)
+        .sum::<f64>();
     let mut contributions: Vec<ExchangeFlowContribution> = breakdown
         .iter()
-        .filter(|(exchange, _)| matches!(exchange.as_str(), "binance" | "okx" | "bitfinex"))
+        .filter(|(exchange, _)| runtime_config.exchange_enabled(exchange))
         .map(|(exchange, item)| {
             let total_volume_btc = item.aggressive_buy_btc + item.aggressive_sell_btc;
             let net_volume_btc = item.aggressive_buy_btc - item.aggressive_sell_btc;
@@ -687,16 +717,20 @@ fn exchange_contributions(
                 buy_volume_btc: item.aggressive_buy_btc,
                 sell_volume_btc: item.aggressive_sell_btc,
                 total_volume_btc,
+                buy_share: share(item.aggressive_buy_btc, total_volume_btc),
+                sell_share: share(item.aggressive_sell_btc, total_volume_btc),
                 buy_notional_usd: item.aggressive_buy_usd,
                 sell_notional_usd: item.aggressive_sell_usd,
                 total_notional_usd: item.aggressive_buy_usd + item.aggressive_sell_usd,
                 net_volume_btc,
                 dominance: dominance(net_volume_btc.abs(), total_volume_btc),
+                net_contribution_share: 0.0,
                 trade_count: item.trade_count,
             }
         })
         .filter(|item| item.total_volume_btc > 0.0)
         .collect();
+    apply_net_contribution_shares(&mut contributions, total_net_volume_btc);
     contributions.sort_by(|left, right| {
         right
             .total_volume_btc
@@ -899,15 +933,19 @@ pub(crate) fn load_market_context(
 }
 
 fn data_quality_score(window: &FlowWindow) -> u8 {
+    let runtime_config = contract_whale_runtime_config();
     let active_exchange_count = window
-        .data_quality
-        .active_venues
+        .venue_breakdown
         .iter()
-        .filter(|venue| matches!(venue.as_str(), "binance" | "okx" | "bitfinex"))
+        .filter(|(exchange, breakdown)| {
+            runtime_config.exchange_enabled(exchange)
+                && breakdown.aggressive_buy_btc + breakdown.aggressive_sell_btc > 0.0
+        })
         .count();
-    if window.data_quality.has_trades && active_exchange_count >= 2 {
+    let has_active_trades = active_exchange_count > 0;
+    if has_active_trades && active_exchange_count >= 2 {
         85
-    } else if window.data_quality.has_trades {
+    } else if has_active_trades {
         70
     } else {
         40
@@ -936,6 +974,47 @@ fn dominance(abs_net_volume: f64, total_volume: f64) -> f64 {
     }
 }
 
+fn share(part: f64, total: f64) -> f64 {
+    if total <= f64::EPSILON {
+        0.0
+    } else {
+        part.max(0.0) / total
+    }
+}
+
+fn apply_net_contribution_shares(
+    contributions: &mut [ExchangeFlowContribution],
+    total_net_volume_btc: f64,
+) {
+    let net_positive = total_net_volume_btc > 0.0;
+    let same_direction_net_sum = contributions
+        .iter()
+        .filter(|item| item.net_volume_btc.abs() > f64::EPSILON)
+        .filter(|item| (item.net_volume_btc > 0.0) == net_positive)
+        .map(|item| item.net_volume_btc.abs())
+        .sum::<f64>();
+    for item in contributions {
+        item.net_contribution_share = if same_direction_net_sum > f64::EPSILON
+            && item.net_volume_btc.abs() > f64::EPSILON
+            && (item.net_volume_btc > 0.0) == net_positive
+        {
+            item.net_volume_btc.abs() / same_direction_net_sum
+        } else {
+            0.0
+        };
+    }
+}
+
+fn dominant_venue_net_contribution_share(
+    contributions: &[ExchangeFlowContribution],
+) -> Option<f64> {
+    contributions
+        .iter()
+        .map(|item| item.net_contribution_share)
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .max_by(|left, right| left.total_cmp(right))
+}
+
 fn trend_60s_from_flow_state(
     flow_state: &FlowState,
     symbol: &str,
@@ -947,8 +1026,20 @@ fn trend_60s_from_flow_state(
     if !symbol_matches_window(&window.symbol, symbol) {
         return ContractWhaleTrend60s::default();
     }
-    let buy_volume_btc = window.aggressive_buy_btc.max(0.0);
-    let sell_volume_btc = window.aggressive_sell_btc.max(0.0);
+    let contributions = exchange_contributions(&window.venue_breakdown);
+    if contributions.is_empty() {
+        return ContractWhaleTrend60s::default();
+    }
+    let buy_volume_btc = contributions
+        .iter()
+        .map(|item| item.buy_volume_btc)
+        .sum::<f64>()
+        .max(0.0);
+    let sell_volume_btc = contributions
+        .iter()
+        .map(|item| item.sell_volume_btc)
+        .sum::<f64>()
+        .max(0.0);
     let total_volume_btc = buy_volume_btc + sell_volume_btc;
     let net_volume_btc = buy_volume_btc - sell_volume_btc;
     let dominance = dominance(net_volume_btc.abs(), total_volume_btc);
@@ -997,24 +1088,47 @@ fn contract_whale_health_status(
         return ("warming_up".to_string(), "warmup_collect_only".to_string());
     }
 
-    let binance_recent = exchange_recent(exchanges.get("binance"), now, 30_000);
-    let okx_recent = exchange_recent(exchanges.get("okx"), now, 30_000);
-    let bitfinex_recent = exchange_recent(exchanges.get("bitfinex"), now, 60_000);
-    let primary_recent_count = [binance_recent, okx_recent]
-        .into_iter()
-        .filter(|recent| *recent)
+    let runtime_config = contract_whale_runtime_config();
+    let enabled_exchanges = runtime_config.enabled_exchanges();
+    if enabled_exchanges.is_empty() {
+        return (
+            "unhealthy".to_string(),
+            "no_enabled_contract_exchanges".to_string(),
+        );
+    }
+    let recent_exchange_count = enabled_exchanges
+        .iter()
+        .filter(|exchange| {
+            let silence_ms = if exchange.as_str() == "bitfinex" {
+                60_000
+            } else {
+                30_000
+            };
+            exchange_recent(exchanges.get(exchange.as_str()), now, silence_ms)
+        })
         .count();
-    let all_sources_stale = ["binance", "okx", "bitfinex"].into_iter().all(|exchange| {
+    let primary_recent = ["binance", "okx"].into_iter().any(|exchange| {
+        runtime_config.exchange_enabled(exchange)
+            && exchange_recent(exchanges.get(exchange), now, 30_000)
+    });
+    let all_sources_stale = enabled_exchanges.iter().all(|exchange| {
         exchanges
-            .get(exchange)
+            .get(exchange.as_str())
             .and_then(|status| status.last_trade_at)
             .is_none_or(|last_trade_at| now.saturating_sub(last_trade_at) > 60_000)
     });
 
-    if primary_recent_count >= 2 {
-        ("healthy".to_string(), "primary_sources_recent".to_string())
-    } else if primary_recent_count == 1 || bitfinex_recent {
-        ("degraded".to_string(), "partial_sources_recent".to_string())
+    if recent_exchange_count == enabled_exchanges.len() && primary_recent {
+        ("healthy".to_string(), "enabled_sources_recent".to_string())
+    } else if recent_exchange_count > 0 {
+        (
+            "degraded".to_string(),
+            if primary_recent {
+                "partial_sources_recent".to_string()
+            } else {
+                "primary_source_missing".to_string()
+            },
+        )
     } else if all_sources_stale {
         (
             "unhealthy".to_string(),
@@ -1044,10 +1158,15 @@ fn disabled_summary(
     exchanges: BTreeMap<String, ContractWhaleExchangeStatus>,
     trend_60s: ContractWhaleTrend60s,
 ) -> ContractWhaleSummary {
+    let runtime_config = contract_whale_runtime_config();
     ContractWhaleSummary {
         status: "disabled".to_string(),
         health_status: "disabled".to_string(),
         health_reason: "contract_whale_monitor_disabled".to_string(),
+        threshold_profile: runtime_config.threshold_profile_key().to_string(),
+        active_exchange_count: runtime_config.active_exchange_count(),
+        enabled_exchanges: runtime_config.enabled_exchanges(),
+        disabled_exchanges: runtime_config.disabled_exchanges(),
         direction: "disabled".to_string(),
         latest_direction: "disabled".to_string(),
         latest_severity: ContractWhaleSeverity::Calm,
@@ -1095,6 +1214,7 @@ fn build_summary(
         "{} health evaluated",
         CWM_LOG_PREFIX
     );
+    let runtime_config = contract_whale_runtime_config();
     ContractWhaleSummary {
         status: if warmup.active {
             "warmup".to_string()
@@ -1106,6 +1226,10 @@ fn build_summary(
         },
         health_status,
         health_reason,
+        threshold_profile: runtime_config.threshold_profile_key().to_string(),
+        active_exchange_count: runtime_config.active_exchange_count(),
+        enabled_exchanges: runtime_config.enabled_exchanges(),
+        disabled_exchanges: runtime_config.disabled_exchanges(),
         direction: latest_direction.clone(),
         latest_direction,
         latest_severity: latest
@@ -1155,8 +1279,10 @@ fn contract_exchange_statuses(
 ) -> BTreeMap<String, ContractWhaleExchangeStatus> {
     let mut statuses = default_exchange_statuses();
     let flow_last_trades = flow_last_trades(flow_state);
+    let runtime_config = contract_whale_runtime_config();
     for exchange in ["binance", "okx", "bitfinex"] {
-        let last_trade_at = if enabled {
+        let exchange_enabled = enabled && runtime_config.exchange_enabled(exchange);
+        let last_trade_at = if exchange_enabled {
             max_option(
                 flow_last_trades.get(exchange).copied().flatten(),
                 health_for_exchange(venue_health, exchange).and_then(health_last_trade_at),
@@ -1171,14 +1297,14 @@ fn contract_exchange_statuses(
             .map(health_connected)
             .unwrap_or(false);
         let flow_connected = last_trade_at.is_some_and(|ts| now.saturating_sub(ts) <= 30_000);
-        let connected = enabled && (health_connected || flow_connected);
+        let connected = exchange_enabled && (health_connected || flow_connected);
         let status = exchange_status_label(
-            enabled,
+            exchange_enabled,
             connected,
             health_for_exchange(venue_health, exchange),
         );
         let latency_ms = last_trade_at
-            .map(|ts| now.saturating_sub(ts))
+            .map(|ts| now.saturating_sub(ts).max(0))
             .filter(|latency| *latency <= 24 * 60 * 60 * 1000);
         statuses.insert(
             exchange.to_string(),

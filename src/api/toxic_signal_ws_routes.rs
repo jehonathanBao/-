@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::{
     api::discord_notification_routes::{
-        discord_alert_status_for_key, evaluate_discord_alert_gate, DiscordAlertMode,
-        DiscordNotificationRequest,
+        discord_alert_status_for_key, evaluate_discord_alert_gate, preferred_discord_alert_family,
+        DiscordAlertMode, DiscordNotificationRequest,
     },
     api::toxic_signal_inbox_routes::{
         build_recent, latest_cwm_signal_for_state, normalize_symbol_query,
@@ -23,7 +23,9 @@ use crate::{
     runtime::{
         advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput, AdvancedTofMetrics},
         cwm_risk_fusion::{
-            build_cwm_risk_contribution, fused_risk_score_with_cwm, CwmRiskContribution,
+            build_cwm_risk_contribution, build_split_risk_systems, CwmRiskContribution,
+            MainForceStructureRisk, ShortTermToxicRisk, SplitRiskSystems, SplitRiskSystemsInput,
+            ToxicReason,
         },
         perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput, PerpTofMetrics},
         tof_metrics::{enhance_signal_summary, TofMetrics, TofSummaryInput},
@@ -76,6 +78,60 @@ pub struct ToxicSignalWsItem {
     pub advanced_score: u8,
     pub advanced_candidate_type: String,
     pub cwm_contribution: CwmRiskContribution,
+    pub risk_systems: SplitRiskSystems,
+    pub toxic_short_score: ShortTermToxicRisk,
+    pub market_structure_score: MainForceStructureRisk,
+    pub toxic_score: u8,
+    pub short_pressure: i16,
+    pub toxic_severity: String,
+    pub toxic_type: String,
+    pub toxic_ttl_sec: u64,
+    pub toxic_expires_at: i64,
+    pub toxic_half_life_sec: u64,
+    pub toxic_max_ttl_sec: u64,
+    pub toxic_decayed_score: f64,
+    pub toxic_decay_formula: String,
+    pub toxic_reasons: Vec<ToxicReason>,
+    pub main_force_score: u8,
+    pub main_force_confirmed: bool,
+    pub main_force_confirmation_count: u8,
+    pub main_force_confirmation_total: u8,
+    pub main_force_confirmation_threshold: u8,
+    pub structure_bias: i16,
+    pub extreme_impact_score: u8,
+    pub extreme_impact_confirmed: bool,
+    pub regime_type: String,
+    pub market_structure_severity: String,
+    pub market_structure_confidence: f64,
+    pub market_structure_data_quality: f64,
+    pub structure_raw: f64,
+    pub spot_contract_floor: u8,
+    pub duration_score: u8,
+    pub liquidation_penalty: f64,
+    pub crowding_penalty: f64,
+    pub spot_score: u8,
+    pub spot_cvd_score: u8,
+    pub spot_volume_anomaly: u8,
+    pub spot_absorption: u8,
+    pub spot_liquidity_shift: u8,
+    pub spot_price_response: u8,
+    pub contract_score: u8,
+    pub cwm_aggressive_flow: u8,
+    pub oi_impulse: u8,
+    pub liquidation_context: u8,
+    pub funding_crowding: u8,
+    pub basis_premium: u8,
+    pub active_exchange_confirmation: u8,
+    pub cross_confirm_score: u8,
+    pub spot_contract_direction_consistency: u8,
+    pub multi_window_consistency: u8,
+    pub price_response_consistency: u8,
+    pub source_coverage: u8,
+    pub signal_agreement: u8,
+    pub oi_score: u8,
+    pub liquidation_score: u8,
+    pub funding_crowding_score: u8,
+    pub cwm_score: u8,
     pub final_risk_score: u8,
     pub candidate_type: String,
     pub explain_tags: Vec<String>,
@@ -203,13 +259,14 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
                                 "info",
                                 "advanced_metrics_computed",
                                 format!(
-                                    "{} advanced metrics computed: vpinEnhanced={:.0} flowCluster={:.0} fundingOiTrend={:.0} heatmap={:.0} finalScore={}",
+                                    "{} advanced metrics computed: vpinEnhanced={:.0} flowCluster={:.0} fundingOiTrend={:.0} heatmap={:.0} toxicScore={} mainForceScore={}",
                                     signal.symbol,
                                     signal.advanced_tof_metrics.vpin_enhanced,
                                     signal.advanced_tof_metrics.large_order_flow_cluster,
                                     signal.advanced_tof_metrics.historical_funding_oi_trend,
                                     signal.advanced_tof_metrics.market_pressure_heatmap,
-                                    signal.final_risk_score
+                                    signal.toxic_score,
+                                    signal.main_force_score
                                 ),
                                 Some(signal.symbol.clone()),
                                 Some(signal.id.clone()),
@@ -289,14 +346,83 @@ fn redact_signal_item(
         summary: &item.fusion.summary,
     });
     let cwm_contribution = build_cwm_risk_contribution(&item.symbol, cwm_signal);
-    let final_risk_score = fused_risk_score_with_cwm(
-        existing_risk_score,
-        enhancement.tof_score,
-        perp_metrics.risk_score,
-        cwm_contribution.score,
-    );
+    let risk_systems = build_split_risk_systems(SplitRiskSystemsInput {
+        ts_ms: item.created_at_ms as i64,
+        symbol: &item.symbol,
+        short_toxic_score: enhancement.final_risk_score,
+        short_tof_score: enhancement.tof_score,
+        short_direction: enhancement.direction,
+        toxic_type: &enhancement.candidate_type,
+        data_quality: advanced_metrics.data_quality,
+        tof_metrics: &enhancement.tof_metrics,
+        advanced_score: advanced_metrics.final_risk_score,
+        perp_score: perp_metrics.risk_score,
+        metrics_direction: advanced_metrics.metrics_direction,
+        cwm_contribution: cwm_contribution.clone(),
+    });
+    let toxic_score = risk_systems.short_term_toxic.toxic_score;
+    let toxic_short_score = risk_systems.short_term_toxic.clone();
+    let toxic_severity = toxic_short_score.severity.clone();
+    let toxic_type = toxic_short_score.toxic_type.clone();
+    let toxic_ttl_sec = toxic_short_score.ttl_sec;
+    let toxic_expires_at = toxic_short_score.expires_at;
+    let toxic_half_life_sec = toxic_short_score.half_life_sec;
+    let toxic_max_ttl_sec = toxic_short_score.max_ttl_sec;
+    let toxic_decayed_score = toxic_short_score.decayed_score;
+    let toxic_decay_formula = toxic_short_score.decay_formula.clone();
+    let toxic_reasons = toxic_short_score.reasons.clone();
+    let short_pressure = toxic_short_score.short_pressure;
+    let main_force_score = risk_systems.main_force_structure.main_force_score;
+    let main_force_confirmed = risk_systems.main_force_structure.main_force_confirmed;
+    let main_force_confirmation_count = risk_systems
+        .main_force_structure
+        .main_force_confirmation_count;
+    let main_force_confirmation_total = risk_systems
+        .main_force_structure
+        .main_force_confirmation_total;
+    let main_force_confirmation_threshold = risk_systems
+        .main_force_structure
+        .main_force_confirmation_threshold;
+    let structure_bias = risk_systems.main_force_structure.structure_bias;
+    let extreme_impact_score = risk_systems.main_force_structure.extreme_impact_score;
+    let extreme_impact_confirmed = risk_systems.main_force_structure.extreme_impact_confirmed;
+    let regime_type = risk_systems.main_force_structure.regime_type.clone();
+    let market_structure_score = risk_systems.market_structure_score.clone();
+    let market_structure_severity = market_structure_score.severity.clone();
+    let market_structure_confidence = market_structure_score.confidence;
+    let market_structure_data_quality = market_structure_score.data_quality;
+    let structure_raw = market_structure_score.structure_raw;
+    let spot_contract_floor = market_structure_score.spot_contract_floor;
+    let duration_score = market_structure_score.duration_score;
+    let liquidation_penalty = market_structure_score.liquidation_penalty;
+    let crowding_penalty = market_structure_score.crowding_penalty;
+    let spot_score = market_structure_score.spot_score;
+    let spot_cvd_score = market_structure_score.spot_cvd_score;
+    let spot_volume_anomaly = market_structure_score.spot_volume_anomaly;
+    let spot_absorption = market_structure_score.spot_absorption;
+    let spot_liquidity_shift = market_structure_score.spot_liquidity_shift;
+    let spot_price_response = market_structure_score.spot_price_response;
+    let contract_score = market_structure_score.contract_score;
+    let cwm_aggressive_flow = market_structure_score.cwm_aggressive_flow;
+    let oi_impulse = market_structure_score.oi_impulse;
+    let liquidation_context = market_structure_score.liquidation_context;
+    let funding_crowding = market_structure_score.funding_crowding;
+    let basis_premium = market_structure_score.basis_premium;
+    let active_exchange_confirmation = market_structure_score.active_exchange_confirmation;
+    let cross_confirm_score = market_structure_score.cross_confirm_score;
+    let spot_contract_direction_consistency =
+        market_structure_score.spot_contract_direction_consistency;
+    let multi_window_consistency = market_structure_score.multi_window_consistency;
+    let price_response_consistency = market_structure_score.price_response_consistency;
+    let source_coverage = market_structure_score.source_coverage;
+    let signal_agreement = market_structure_score.signal_agreement;
+    let oi_score = market_structure_score.oi_score;
+    let liquidation_score = market_structure_score.liquidation_score;
+    let funding_crowding_score = market_structure_score.funding_crowding_score;
+    let cwm_score = market_structure_score.cwm_score;
     let final_data_quality = advanced_metrics.data_quality;
-    let alert_request = DiscordNotificationRequest {
+    let mut alert_request = DiscordNotificationRequest {
+        alert_family: None,
         signal_id: Some(item.signal_id.clone()),
         id: Some(item.signal_id.clone()),
         dedupe_key: Some(item.signal_id.clone()),
@@ -305,7 +431,8 @@ fn redact_signal_item(
         signal_type: Some(item.signal_kind.clone()),
         level: Some(item.severity.clone()),
         side: Some(enhancement.direction_label.clone()),
-        score: Some(final_risk_score),
+        score: Some(toxic_score),
+        confidence: Some(toxic_short_score.confidence),
         data_quality: Some(final_data_quality),
         reason: Some(item.fusion.summary.clone()),
         impact: None,
@@ -337,8 +464,24 @@ fn redact_signal_item(
         advanced_tof_metrics: Some(advanced_metrics.clone()),
         advanced_score: Some(advanced_metrics.final_risk_score),
         advanced_candidate_type: Some(advanced_metrics.candidate_type.clone()),
+        main_force_score: Some(main_force_score),
+        extreme_impact_score: Some(extreme_impact_score),
+        structure_bias: Some(structure_bias),
+        market_structure_confidence: Some(market_structure_confidence),
+        market_structure_data_quality: Some(market_structure_data_quality),
+        market_structure_severity: Some(market_structure_severity.clone()),
+        regime_type: Some(regime_type.clone()),
+        spot_score: Some(spot_score),
+        contract_score: Some(contract_score),
+        cross_confirm_score: Some(cross_confirm_score),
+        main_force_confirmed: Some(main_force_confirmed),
+        signal_agreement: Some(signal_agreement),
+        source_coverage: Some(source_coverage),
+        oi_score: Some(oi_score),
+        liquidation_score: Some(liquidation_score),
         test: None,
     };
+    alert_request.alert_family = Some(preferred_discord_alert_family(&alert_request).to_string());
     let alert_decision = evaluate_discord_alert_gate(&alert_request, DiscordAlertMode::Auto);
     let stored_alert = discord_alert_status_for_key(&item.signal_id);
     let alert_status = stored_alert
@@ -385,7 +528,7 @@ fn redact_signal_item(
             item.fusion.summary
         ),
         core_reason: item.fusion.summary.clone(),
-        risk_score: final_risk_score,
+        risk_score: toxic_score,
         data_quality: final_data_quality,
         tof_metrics: enhancement.tof_metrics,
         tof_score: enhancement.tof_score,
@@ -399,7 +542,61 @@ fn redact_signal_item(
         advanced_score: advanced_metrics.final_risk_score,
         advanced_candidate_type: advanced_metrics.candidate_type.clone(),
         cwm_contribution,
-        final_risk_score,
+        toxic_short_score,
+        market_structure_score,
+        toxic_score,
+        short_pressure,
+        toxic_severity,
+        toxic_type,
+        toxic_ttl_sec,
+        toxic_expires_at,
+        toxic_half_life_sec,
+        toxic_max_ttl_sec,
+        toxic_decayed_score,
+        toxic_decay_formula,
+        toxic_reasons,
+        main_force_score,
+        main_force_confirmed,
+        main_force_confirmation_count,
+        main_force_confirmation_total,
+        main_force_confirmation_threshold,
+        structure_bias,
+        extreme_impact_score,
+        extreme_impact_confirmed,
+        regime_type,
+        market_structure_severity,
+        market_structure_confidence,
+        market_structure_data_quality,
+        structure_raw,
+        spot_contract_floor,
+        duration_score,
+        liquidation_penalty,
+        crowding_penalty,
+        spot_score,
+        spot_cvd_score,
+        spot_volume_anomaly,
+        spot_absorption,
+        spot_liquidity_shift,
+        spot_price_response,
+        contract_score,
+        cwm_aggressive_flow,
+        oi_impulse,
+        liquidation_context,
+        funding_crowding,
+        basis_premium,
+        active_exchange_confirmation,
+        cross_confirm_score,
+        spot_contract_direction_consistency,
+        multi_window_consistency,
+        price_response_consistency,
+        source_coverage,
+        signal_agreement,
+        oi_score,
+        liquidation_score,
+        funding_crowding_score,
+        cwm_score,
+        risk_systems,
+        final_risk_score: toxic_score,
         candidate_type: advanced_metrics.candidate_type,
         explain_tags: advanced_metrics.explain_tags,
         direction_label: enhancement.direction_label,
@@ -420,7 +617,10 @@ fn alert_status_from_reason(allowed: bool, reason: &str) -> &'static str {
         "eligible"
     } else if matches!(
         reason,
-        "score_below_threshold" | "data_quality_below_threshold" | "non_high_risk"
+        "score_below_threshold"
+            | "confidence_below_threshold"
+            | "data_quality_below_threshold"
+            | "non_high_risk"
     ) {
         "rejected"
     } else {

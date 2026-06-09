@@ -4,6 +4,7 @@ use std::{
 };
 
 use btc_toxic_flow_monitor_rs::{
+    normalizers::trade::now_ms,
     spot_whale_monitor::{
         config::SpotWhaleRuntimeConfig,
         detector::{detect_spot_whale_signal_with_config, discord_gate},
@@ -13,7 +14,7 @@ use btc_toxic_flow_monitor_rs::{
         },
         service::SpotWhaleService,
         types::{
-            SpotExchange, SpotExchangeContribution, SpotTradeSide, SpotWhaleSeverity,
+            SpotExchange, SpotExchangeContribution, SpotTrade, SpotTradeSide, SpotWhaleSeverity,
             SpotWhaleSignalType, SpotWhaleWindowStats,
         },
     },
@@ -164,6 +165,33 @@ fn spot_whale_service_restores_persisted_history_on_startup() {
     assert_eq!(latest.items[0].id, signal.id);
     assert_eq!(latest.summary.signal_count, 1);
     assert_eq!(latest.summary.latest_signal_at, Some(signal.ts));
+}
+
+#[test]
+fn spot_whale_summary_marks_stale_exchange_unhealthy() {
+    let old_trade_ts = now_ms().saturating_sub(120_000);
+    let service = SpotWhaleService::new(true, true, old_trade_ts.saturating_sub(60_000), None);
+
+    service.ingest_trade(SpotTrade {
+        ts: old_trade_ts,
+        exchange: SpotExchange::Coinbase,
+        symbol: "BTC".to_string(),
+        market: "spot".to_string(),
+        price: 70_000.0,
+        qty_base: 0.2,
+        notional_usd: 14_000.0,
+        side: SpotTradeSide::Buy,
+        trade_id: Some("coinbase-stale".to_string()),
+    });
+    service.mark_connected(SpotExchange::Coinbase);
+
+    let summary = service.summary("BTC");
+    let coinbase = summary.exchanges.get("coinbase").expect("coinbase status");
+
+    assert_eq!(coinbase.status, "stale");
+    assert!(!coinbase.connected);
+    assert_eq!(summary.health_status, "unhealthy");
+    assert_eq!(summary.health_reason, "spot_sources_stale_or_disconnected");
 }
 
 fn high_conviction_stats() -> SpotWhaleWindowStats {

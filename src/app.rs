@@ -15,7 +15,9 @@ use crate::{
             build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
             load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
         },
-        discord_notification_routes::{maybe_auto_push_discord, DiscordNotificationRequest},
+        discord_notification_routes::{
+            maybe_auto_push_discord, preferred_discord_alert_family, DiscordNotificationRequest,
+        },
         toxic_signal_inbox_routes::build_recent,
         toxic_signal_ws_routes::{build_ws_snapshot, ToxicSignalWsItem},
     },
@@ -31,9 +33,13 @@ use crate::{
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
+    runtime::main_force_events::best_main_force_event_observation,
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
-    storage::{snapshot_service::StorageState, SnapshotService, SqliteStore},
+    storage::{
+        main_force_events_repo::MainForceEventsRepo, snapshot_service::StorageState,
+        SnapshotService, SqliteStore,
+    },
     toxicity::{
         liq_hunt_service::LiqHuntService, liquidation_service::LiquidationService,
         markout_service::MarkoutService,
@@ -635,14 +641,55 @@ impl AppState {
     }
 
     async fn evaluate_discord_auto_push_once(&self) {
-        let recent = build_recent(self, &self.config().symbol);
-        if recent.items.is_empty() {
-            return;
+        let symbols = market_structure_event_symbols(self);
+        for symbol in symbols {
+            let recent = build_recent(self, &symbol);
+            let snapshot = build_ws_snapshot(&recent);
+            self.observe_main_force_events(&symbol, &snapshot.signals)
+                .await;
+
+            if !symbol.eq_ignore_ascii_case(&self.config().symbol) || recent.items.is_empty() {
+                continue;
+            }
+
+            for (item, signal) in recent.items.iter().zip(snapshot.signals.iter()) {
+                let request = discord_request_from_signal(signal);
+                let _ = maybe_auto_push_discord(self, request, item.created_at_ms).await;
+            }
         }
-        let snapshot = build_ws_snapshot(&recent);
-        for (item, signal) in recent.items.iter().zip(snapshot.signals.iter()) {
-            let request = discord_request_from_signal(signal);
-            let _ = maybe_auto_push_discord(self, request, item.created_at_ms).await;
+    }
+
+    async fn observe_main_force_events(&self, symbol: &str, signals: &[ToxicSignalWsItem]) {
+        let observation = best_main_force_event_observation(signals, symbol);
+        let Some(store) = self.contract_whale_store() else {
+            return;
+        };
+        let symbol = symbol.to_ascii_uppercase();
+        let now = crate::normalizers::trade::now_ms();
+        let result = tokio::task::spawn_blocking(move || {
+            store.observe_main_force_event(&symbol, observation.as_ref(), now)
+        })
+        .await;
+        match result {
+            Ok(Ok(Some(event))) => {
+                self.record_scan_log(
+                    "debug",
+                    "main_force_event_observed",
+                    format!(
+                        "main force event tracked for {}: {} / {}",
+                        event.symbol, event.regime_type, event.severity
+                    ),
+                    Some(event.symbol.clone()),
+                    None,
+                );
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "main force event observation failed");
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "main force event observation task failed");
+            }
         }
     }
 
@@ -839,6 +886,19 @@ impl AppState {
     }
 }
 
+fn market_structure_event_symbols(state: &AppState) -> Vec<String> {
+    let mut symbols = vec![state.config().symbol.trim().to_ascii_uppercase()];
+    for (symbol, symbol_config) in &contract_whale_runtime_config().symbols {
+        if symbol_config.enabled {
+            let normalized = symbol.trim().to_ascii_uppercase();
+            if !symbols.iter().any(|existing| existing == &normalized) {
+                symbols.push(normalized);
+            }
+        }
+    }
+    symbols
+}
+
 fn discord_auto_push_interval() -> std::time::Duration {
     let ms = std::env::var("DISCORD_AUTO_PUSH_INTERVAL_MS")
         .ok()
@@ -858,7 +918,8 @@ fn contract_whale_auto_push_interval() -> std::time::Duration {
 }
 
 fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificationRequest {
-    DiscordNotificationRequest {
+    let mut request = DiscordNotificationRequest {
+        alert_family: None,
         signal_id: Some(signal.id.clone()),
         id: Some(signal.id.clone()),
         dedupe_key: Some(signal.id.clone()),
@@ -868,6 +929,7 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         level: Some(signal.severity.clone()),
         side: Some(signal.direction_label.clone()),
         score: Some(signal.final_risk_score),
+        confidence: Some(signal.toxic_short_score.confidence),
         data_quality: Some(signal.data_quality),
         reason: Some(signal.final_result.clone()),
         impact: None,
@@ -899,6 +961,23 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         advanced_tof_metrics: Some(signal.advanced_tof_metrics.clone()),
         advanced_score: Some(signal.advanced_score),
         advanced_candidate_type: Some(signal.advanced_candidate_type.clone()),
+        main_force_score: Some(signal.main_force_score),
+        extreme_impact_score: Some(signal.extreme_impact_score),
+        structure_bias: Some(signal.structure_bias),
+        market_structure_confidence: Some(signal.market_structure_confidence),
+        market_structure_data_quality: Some(signal.market_structure_data_quality),
+        market_structure_severity: Some(signal.market_structure_severity.clone()),
+        regime_type: Some(signal.regime_type.clone()),
+        spot_score: Some(signal.spot_score),
+        contract_score: Some(signal.contract_score),
+        cross_confirm_score: Some(signal.cross_confirm_score),
+        main_force_confirmed: Some(signal.main_force_confirmed),
+        signal_agreement: Some(signal.signal_agreement),
+        source_coverage: Some(signal.source_coverage),
+        oi_score: Some(signal.oi_score),
+        liquidation_score: Some(signal.liquidation_score),
         test: None,
-    }
+    };
+    request.alert_family = Some(preferred_discord_alert_family(&request).to_string());
+    request
 }

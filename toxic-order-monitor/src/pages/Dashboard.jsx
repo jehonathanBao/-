@@ -8,6 +8,7 @@ import Header from "../components/Header.jsx";
 import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
 import RiskCharts from "../components/RiskCharts.jsx";
+import RiskSystemSummaryCards from "../components/RiskSystemSummaryCards.jsx";
 import RuleStatus from "../components/RuleStatus.jsx";
 import ScanLogPanel from "../components/ScanLogPanel.jsx";
 import Sidebar from "../components/Sidebar.jsx";
@@ -159,6 +160,7 @@ export default function Dashboard() {
   const highUnhandledCount = rawInboxSignals.filter(
     (signal) => signal.risk === "high" && signal.status === "unhandled",
   ).length;
+  const focusedScoreSignal = selectedSignal ?? highRiskSignals[0] ?? rawInboxSignals[0] ?? null;
   const effectivePushStatus = useMemo(
     () => buildPushStatus(pushStatus, pendingPushIds),
     [pendingPushIds, pushStatus],
@@ -193,6 +195,8 @@ export default function Dashboard() {
         message:
           gate.reason === "DISCORD_SUPPRESSED_NON_HIGH_RISK"
             ? "Medium 风险候选仅在折叠列表展示，不触发 Discord 推送。"
+            : gate.reason === "DISCORD_SUPPRESSED_LOW_CONFIDENCE"
+              ? "该短线有毒订单置信度低于 70，仅在 Dashboard 展示。"
             : "该候选信号未达到 Discord 推送门槛，仅在 Dashboard 展示。",
       });
       return;
@@ -301,6 +305,7 @@ export default function Dashboard() {
             ) : null}
 
             {viewMode === "dashboard" ? <ContractWhaleMonitor /> : null}
+            {viewMode === "dashboard" ? <RiskSystemSummaryCards signal={focusedScoreSignal} /> : null}
 
             <section className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <RiskCard active={activeRiskFilter === "high"} count={stats.high} onClick={() => setRiskFilter("high")} percentage={ratio(stats.high, stats.all)} risk="high" />

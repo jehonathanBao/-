@@ -175,6 +175,16 @@ impl SpotWhaleService {
         self.set_exchange_status(exchange, "connected", true, None);
     }
 
+    pub fn exchange_trade_stale(&self, exchange: SpotExchange, stale_ms: i64) -> bool {
+        let stale_ms = stale_ms.max(1);
+        self.state
+            .read()
+            .exchanges
+            .get(exchange.as_key())
+            .and_then(|status| status.last_trade_at)
+            .is_some_and(|last_trade_at| now_ms().saturating_sub(last_trade_at) > stale_ms)
+    }
+
     pub fn mark_reconnecting(&self, exchange: SpotExchange, error: Option<String>) {
         let mut state = self.state.write();
         let entry = state
@@ -207,19 +217,28 @@ impl SpotWhaleService {
     pub fn summary(&self, symbol: &str) -> SpotWhaleSummary {
         let symbol = normalize_symbol(symbol);
         let state = self.state.read();
+        let now = now_ms();
+        let runtime_config = spot_whale_runtime_config();
+        let summary_enabled = self.enabled && runtime_config.symbol_enabled(&symbol);
         let latest = state
             .signals
             .iter()
             .rev()
             .find(|signal| signal.symbol == symbol);
-        let trend60s = trend_for_symbol(&state.trades, &symbol, now_ms());
-        let health_status = health_status(self.enabled, &state.exchanges);
+        let trend60s = trend_for_symbol(&state.trades, &symbol, now);
+        let exchanges = summarized_exchange_statuses(
+            summary_enabled,
+            &state.exchanges,
+            now,
+            runtime_config.data_quality.heartbeat_stale_ms,
+        );
+        let health_status = health_status(summary_enabled, &exchanges);
         SpotWhaleSummary {
             status: latest
                 .map(|signal| status_from_severity(signal.severity).to_string())
                 .unwrap_or_else(|| "calm".to_string()),
             health_status: health_status.clone(),
-            health_reason: health_reason(self.enabled, &health_status).to_string(),
+            health_reason: health_reason(summary_enabled, &health_status).to_string(),
             direction: latest
                 .map(|signal| format!("{:?}", signal.direction).to_ascii_lowercase())
                 .unwrap_or_else(|| "neutral".to_string()),
@@ -239,11 +258,11 @@ impl SpotWhaleService {
                 .count()
                 .max(self.persisted_signal_count(&symbol)),
             read_only: true,
-            enabled: self.enabled && spot_whale_runtime_config().symbol_enabled(&symbol),
+            enabled: summary_enabled,
             dry_run: self.dry_run,
             symbol,
             trend60s,
-            exchanges: state.exchanges.clone(),
+            exchanges,
         }
     }
 
@@ -756,10 +775,60 @@ fn health_reason(enabled: bool, health_status: &str) -> &'static str {
         match health_status {
             "healthy" => "binance_coinbase_recent",
             "degraded" => "single_spot_source_recent",
-            "unhealthy" => "spot_sources_disconnected",
+            "unhealthy" => "spot_sources_stale_or_disconnected",
             _ => "spot_whale_status_unknown",
         }
     }
+}
+
+fn summarized_exchange_statuses(
+    enabled: bool,
+    exchanges: &BTreeMap<String, SpotExchangeStatus>,
+    now: i64,
+    stale_ms: i64,
+) -> BTreeMap<String, SpotExchangeStatus> {
+    exchanges
+        .iter()
+        .map(|(exchange, status)| {
+            (
+                exchange.clone(),
+                summarized_exchange_status(enabled, status, now, stale_ms),
+            )
+        })
+        .collect()
+}
+
+fn summarized_exchange_status(
+    enabled: bool,
+    status: &SpotExchangeStatus,
+    now: i64,
+    stale_ms: i64,
+) -> SpotExchangeStatus {
+    let mut item = status.clone();
+    if !enabled || item.status == "disabled" {
+        return item;
+    }
+    let stale_ms = stale_ms.max(1);
+    match item.last_trade_at {
+        Some(last_trade_at) => {
+            let age_ms = now.saturating_sub(last_trade_at);
+            item.latency_ms = Some(age_ms.max(0));
+            if age_ms > stale_ms {
+                item.connected = false;
+                item.status = "stale".to_string();
+            } else {
+                item.connected = true;
+                item.status = "connected".to_string();
+            }
+        }
+        None if item.connected || item.status == "connected" => {
+            item.connected = false;
+            item.status = "waiting_for_trades".to_string();
+            item.latency_ms = None;
+        }
+        None => {}
+    }
+    item
 }
 
 fn redact_error(error: String) -> String {

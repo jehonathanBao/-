@@ -25,6 +25,7 @@ vi.mock("../api/scanLogs.js", async () => {
 });
 
 vi.mock("../api/contractWhale.js", () => ({
+  fetchContractWhaleEvents: vi.fn(() => Promise.resolve({ items: [], error: null })),
   fetchContractWhaleLatest: vi.fn(() =>
     Promise.resolve({
       summary: {

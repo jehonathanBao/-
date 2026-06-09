@@ -4,6 +4,10 @@ const calmSummary = {
   status: "calm",
   healthStatus: "disabled",
   healthReason: "contract_whale_monitor_disabled",
+  thresholdProfile: "binance_bitfinex",
+  activeExchangeCount: 0,
+  enabledExchanges: [],
+  disabledExchanges: ["binance", "okx", "bitfinex"],
   direction: "neutral",
   latestSeverity: "calm",
   latestPushedAtMs: null,
@@ -27,7 +31,7 @@ const calmSummary = {
   },
   exchanges: {
     binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
-    okx: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+    okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
   },
 };
@@ -78,6 +82,21 @@ export async function fetchContractWhaleHistory(filters = {}) {
   }
 }
 
+export async function fetchContractWhaleEvents(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 20 });
+    const response = await axios.get(`${baseURL}/api/contract-whale/events?${query}`);
+    const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    return {
+      items: items.map(normalizeMainForceEvent),
+      error: null,
+    };
+  } catch {
+    return { items: [], error: "events_unavailable" };
+  }
+}
+
 export function normalizeContractWhaleSignal(item) {
   return {
     id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
@@ -94,6 +113,7 @@ export function normalizeContractWhaleSignal(item) {
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
     mainExchange: item.mainExchange || "Multi",
+    dominantVenueNetContributionShare: numberOrNull(item.dominantVenueNetContributionShare),
     dynamicMultiple: numberOrNull(item.dynamicMultiple),
     percentileLevel: numberOrNull(item.percentileLevel),
     multiExchangeConfirmed: Boolean(item.multiExchangeConfirmed),
@@ -120,6 +140,33 @@ export function normalizeContractWhaleSignal(item) {
   };
 }
 
+export function normalizeMainForceEvent(item) {
+  return {
+    id: numberOrNull(item.id) || 0,
+    symbol: item.symbol || "BTC",
+    startedAt: numberOrNull(item.startedAt),
+    endedAt: numberOrNull(item.endedAt),
+    peakAt: numberOrNull(item.peakAt),
+    regimeType: item.regimeType || "unclear",
+    severity: item.severity || "Watch",
+    peakMainForceScore: numberOrNull(item.peakMainForceScore) || 0,
+    peakExtremeImpactScore: numberOrNull(item.peakExtremeImpactScore) || 0,
+    peakStructureBias: numberOrNull(item.peakStructureBias) || 0,
+    confidence: numberOrNull(item.confidence) || 0,
+    spotScore: numberOrNull(item.spotScore),
+    contractScore: numberOrNull(item.contractScore),
+    crossConfirmScore: numberOrNull(item.crossConfirmScore),
+    cwmScore: numberOrNull(item.cwmScore),
+    oiScore: numberOrNull(item.oiScore),
+    liquidationScore: numberOrNull(item.liquidationScore),
+    fundingCrowdingScore: numberOrNull(item.fundingCrowdingScore),
+    mainForceConfirmed: Boolean(item.mainForceConfirmed),
+    extremeImpactConfirmed: Boolean(item.extremeImpactConfirmed),
+    liquidationDriven: Boolean(item.liquidationDriven),
+    reasons: normalizeEventReasons(item.reasonsJson),
+  };
+}
+
 function normalizeSignalExchanges(exchanges) {
   if (!Array.isArray(exchanges)) return [];
   return exchanges.map((item) => ({
@@ -127,8 +174,11 @@ function normalizeSignalExchanges(exchanges) {
     buyVolumeBtc: numberOrNull(item.buyVolumeBtc) || 0,
     sellVolumeBtc: numberOrNull(item.sellVolumeBtc) || 0,
     totalVolumeBtc: numberOrNull(item.totalVolumeBtc) || 0,
+    buyShare: numberOrNull(item.buyShare) || 0,
+    sellShare: numberOrNull(item.sellShare) || 0,
     netVolumeBtc: numberOrNull(item.netVolumeBtc) || 0,
     dominance: numberOrNull(item.dominance) || 0,
+    netContributionShare: numberOrNull(item.netContributionShare) || 0,
   }));
 }
 
@@ -140,6 +190,10 @@ function normalizeSummary(summary) {
     status: summary.status || calmSummary.status,
     healthStatus: summary.healthStatus || calmSummary.healthStatus,
     healthReason: summary.healthReason || calmSummary.healthReason,
+    thresholdProfile: summary.thresholdProfile || calmSummary.thresholdProfile,
+    activeExchangeCount: numberOrNull(summary.activeExchangeCount) || 0,
+    enabledExchanges: normalizeStringArray(summary.enabledExchanges),
+    disabledExchanges: normalizeStringArray(summary.disabledExchanges),
     direction: summary.direction || calmSummary.direction,
     latestDirection: summary.latestDirection || summary.direction || calmSummary.latestDirection,
     latestSeverity: summary.latestSeverity || calmSummary.latestSeverity,
@@ -154,6 +208,11 @@ function normalizeSummary(summary) {
     trend60s: normalizeTrend60s(summary.trend60s),
     exchanges: normalizeExchanges(summary.exchanges),
   };
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").toLowerCase()).filter(Boolean);
 }
 
 function buildContractWhaleQuery(filters) {
@@ -199,5 +258,15 @@ function normalizeTrend60s(trend) {
     buyRatio: numberOrNull(source.buyRatio) || 0,
     sellRatio: numberOrNull(source.sellRatio) || 0,
     updatedAtMs: numberOrNull(source.updatedAtMs),
+  };
+}
+
+function normalizeEventReasons(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    coreReason: typeof source.coreReason === "string" ? source.coreReason : "",
+    finalResult: typeof source.finalResult === "string" ? source.finalResult : "",
+    explainTags: Array.isArray(source.explainTags) ? source.explainTags.filter(Boolean).map(String) : [],
+    regimeType: typeof source.regimeType === "string" ? source.regimeType : "",
   };
 }
