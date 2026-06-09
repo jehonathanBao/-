@@ -14,6 +14,7 @@ const calmSummary = {
   enabledExchanges: [],
   disabledExchanges: ["binance", "okx", "bitfinex"],
   activeContractExchanges: [],
+  activeContractSources: [],
   direction: "neutral",
   latestSeverity: "calm",
   latestPushedAtMs: null,
@@ -51,6 +52,115 @@ const calmSummary = {
     okx: { platformEnabled: false, status: "disabled", markets: {} },
   },
 };
+
+export function normalizePlatformStatus(platform) {
+  const item = platform && typeof platform === "object" ? platform : {};
+  const status = String(item.status || "disabled").toLowerCase();
+  const enabled = Boolean(item.platformEnabled ?? item.enabled);
+
+  if (!enabled || status === "disabled") {
+    return {
+      key: "disabled",
+      label: "未启用",
+      description: "当前平台未启用，不参与合约监控、现货确认或 Discord gate。",
+      tone: "slate",
+    };
+  }
+  if (status === "spot_only") {
+    return {
+      key: "spot_only",
+      label: "现货专用",
+      description: "当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。",
+      tone: "cyan",
+    };
+  }
+  if (status === "degraded" || status === "auth_missing") {
+    return {
+      key: status,
+      label: status === "auth_missing" ? "缺少凭证" : "降级",
+      description: "平台已配置，但部分只读 market data 能力不可用。",
+      tone: "yellow",
+    };
+  }
+  if (status === "reconnecting") {
+    return {
+      key: "reconnecting",
+      label: "重连中",
+      description: "平台已启用，正在等待连接恢复或新成交数据。",
+      tone: "yellow",
+    };
+  }
+  return {
+    key: "active",
+    label: "运行中",
+    description: "平台能力已配置，按启用 market role 参与对应统计。",
+    tone: "emerald",
+  };
+}
+
+export function normalizeMarketStatus(market, marketType = "") {
+  const item = market && typeof market === "object" ? market : {};
+  const status = String(item.status || (item.enabled ? "enabled" : "disabled")).toLowerCase();
+  const role = String(item.role || "").toLowerCase();
+  const enabled = Boolean(item.enabled);
+  const type = String(marketType || "").toLowerCase();
+  const hasRecentTrade = Number.isFinite(Number(item.lastTradeAt)) && Number(item.lastTradeAt) > 0;
+
+  if (!enabled || status === "disabled") {
+    return {
+      key: "disabled",
+      label: "未启用",
+      detail: type === "perp" ? "不参与当前合约监控" : "不参与当前数据源",
+      tone: "slate",
+    };
+  }
+  if (status === "spot_only" || role === "spot_confirmation") {
+    return {
+      key: "spot_only",
+      label: type === "spot" ? "现货确认源" : "现货专用",
+      detail: "只用于现货确认，不进入合约成交量统计。",
+      tone: "cyan",
+    };
+  }
+  if (status === "auth_missing") {
+    return {
+      key: "auth_missing",
+      label: "缺少凭证",
+      detail: "缺少只读 market data 配置。",
+      tone: "yellow",
+    };
+  }
+  if (status === "reconnecting") {
+    return {
+      key: "reconnecting",
+      label: "重连中",
+      detail: "等待连接恢复。",
+      tone: "yellow",
+    };
+  }
+  if (status === "stale") {
+    return {
+      key: "stale",
+      label: "数据延迟",
+      detail: "连接存在，但近期没有新成交。",
+      tone: "orange",
+    };
+  }
+  if ((status === "active" || status === "connected" || status === "online") && (hasRecentTrade || type !== "perp")) {
+    return {
+      key: "active",
+      label: "运行中",
+      detail: "该 market 已参与对应统计。",
+      tone: "emerald",
+    };
+  }
+  return {
+    key: "waiting_for_data",
+    label: "已启用 / 等待数据",
+    detail: "配置已启用，等待 collector 或下一笔成交更新。",
+    tone: "cyan",
+  };
+}
 
 export async function fetchContractWhaleSummary(symbol = "BTC") {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
@@ -277,6 +387,9 @@ function normalizeSummary(summary) {
     enabledExchanges: normalizeStringArray(summary.enabledExchanges),
     disabledExchanges: normalizeStringArray(summary.disabledExchanges),
     activeContractExchanges: normalizeStringArray(summary.activeContractExchanges),
+    activeContractSources: normalizeStringArray(summary.activeContractSources).length
+      ? normalizeStringArray(summary.activeContractSources)
+      : normalizeStringArray(summary.activeContractExchanges),
     direction: summary.direction || calmSummary.direction,
     latestDirection: summary.latestDirection || summary.direction || calmSummary.latestDirection,
     latestSeverity: summary.latestSeverity || calmSummary.latestSeverity,
@@ -339,7 +452,7 @@ function normalizeExchanges(exchanges) {
       lastTradeAt: numberOrNull(item.lastTradeAt),
       latencyMs: numberOrNull(item.latencyMs),
       reconnectCount: numberOrNull(item.reconnectCount) || 0,
-      platformEnabled: Boolean(item.platformEnabled),
+      platformEnabled: Boolean(item.platformEnabled ?? item.enabled),
       contractEnabled: Boolean(item.contractEnabled),
       enabledMarkets: normalizeStringArray(item.enabledMarkets),
       marketRoles: normalizeStringMap(item.marketRoles),
@@ -353,7 +466,7 @@ function normalizePlatforms(platforms) {
   return ["binance", "okx", "bitfinex", "coinbase"].reduce((acc, key) => {
     const item = source[key] && typeof source[key] === "object" ? source[key] : {};
     acc[key] = {
-      platformEnabled: Boolean(item.platformEnabled),
+      platformEnabled: Boolean(item.platformEnabled ?? item.enabled),
       status: item.status || "disabled",
       markets: normalizePlatformMarkets(item.markets),
     };
@@ -371,6 +484,9 @@ function normalizePlatformMarkets(markets) {
       role: item.role || "disabled",
       product: item.product ? String(item.product) : null,
       source: item.source ? String(item.source) : null,
+      lastTradeAt: numberOrNull(item.lastTradeAt),
+      latencyMs: numberOrNull(item.latencyMs),
+      reconnectCount: numberOrNull(item.reconnectCount) || 0,
       requiresAuth: Boolean(item.requiresAuth),
       marketDataOnly: item.marketDataOnly !== false,
       authConfigured: Boolean(item.authConfigured),

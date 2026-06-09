@@ -6,6 +6,8 @@ import {
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
   normalizeContractWhaleSignal,
+  normalizeMarketStatus,
+  normalizePlatformStatus,
 } from "../api/contractWhale.js";
 
 vi.mock("axios", () => ({
@@ -349,6 +351,29 @@ describe("contract whale api", () => {
     expect(signal.rawPayload).toBeUndefined();
     expect(signal.webhook).toBeUndefined();
     expect(signal.token).toBeUndefined();
+  });
+
+  it("normalizes platform and market statuses without using flow volume as health", () => {
+    expect(normalizePlatformStatus({ platformEnabled: false, status: "disabled" })).toMatchObject({
+      key: "disabled",
+      label: "未启用",
+    });
+    expect(normalizePlatformStatus({ platformEnabled: true, status: "spot_only" })).toMatchObject({
+      key: "spot_only",
+      label: "现货专用",
+    });
+    expect(normalizeMarketStatus({ enabled: true, status: "active", role: "confirmation" }, "perp")).toMatchObject({
+      key: "waiting_for_data",
+      label: "已启用 / 等待数据",
+    });
+    expect(normalizeMarketStatus({ enabled: true, status: "active", role: "primary", lastTradeAt: 1 }, "perp")).toMatchObject({
+      key: "active",
+      label: "运行中",
+    });
+    expect(normalizeMarketStatus({ enabled: true, status: "enabled", role: "spot_confirmation" }, "spot")).toMatchObject({
+      key: "spot_only",
+      label: "现货确认源",
+    });
   });
 });
 

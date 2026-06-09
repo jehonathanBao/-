@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -322,6 +322,53 @@ vi.mock("../api/contractWhale.js", () => ({
       error: null,
     }),
   ),
+  normalizePlatformStatus: vi.fn((platform) => {
+    const status = String(platform?.status || "disabled").toLowerCase();
+    const enabled = Boolean(platform?.platformEnabled ?? platform?.enabled);
+    if (!enabled || status === "disabled") {
+      return {
+        key: "disabled",
+        label: "未启用",
+        description: "当前平台未启用，不参与合约监控、现货确认或 Discord gate。",
+        tone: "slate",
+      };
+    }
+    if (status === "spot_only") {
+      return {
+        key: "spot_only",
+        label: "现货专用",
+        description: "当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。",
+        tone: "cyan",
+      };
+    }
+    return {
+      key: "active",
+      label: "运行中",
+      description: "平台能力已配置，按启用 market role 参与对应统计。",
+      tone: "emerald",
+    };
+  }),
+  normalizeMarketStatus: vi.fn((market, marketType) => {
+    const status = String(market?.status || (market?.enabled ? "enabled" : "disabled")).toLowerCase();
+    const role = String(market?.role || "").toLowerCase();
+    const enabled = Boolean(market?.enabled);
+    const hasRecentTrade = Number.isFinite(Number(market?.lastTradeAt)) && Number(market?.lastTradeAt) > 0;
+    if (!enabled || status === "disabled") {
+      return { key: "disabled", label: "未启用", detail: "不参与当前合约监控", tone: "slate" };
+    }
+    if (status === "spot_only" || role === "spot_confirmation") {
+      return {
+        key: "spot_only",
+        label: marketType === "spot" ? "现货确认源" : "现货专用",
+        detail: "只用于现货确认，不进入合约成交量统计。",
+        tone: "cyan",
+      };
+    }
+    if ((status === "active" || status === "connected") && hasRecentTrade) {
+      return { key: "active", label: "运行中", detail: "该 market 已参与对应统计。", tone: "emerald" };
+    }
+    return { key: "waiting_for_data", label: "已启用 / 等待数据", detail: "配置已启用，等待 collector 或下一笔成交更新。", tone: "cyan" };
+  }),
 }));
 
 describe("ContractWhaleMonitor", () => {
@@ -341,21 +388,30 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Buy 62.0% / Sell 38.0%")).toBeInTheDocument();
     expect(screen.getByText("总量 10,000 BTC · dominance 24.0%")).toBeInTheDocument();
     expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
-    expect(screen.getByText("当前统计数据源：Binance · Binance+Bitfinex")).toBeInTheDocument();
+    expect(screen.getByText("最近 60 秒主动成交流只表示 flow，不用于判断平台在线 / 离线状态。")).toBeInTheDocument();
     expect(screen.getByText("合约数据质量 95/100 · 现货数据质量 78/100 · 总体 88/100 · active_contract_sources=binance,bitfinex")).toBeInTheDocument();
+    expect(screen.getByText("平台数据源")).toBeInTheDocument();
+    expect(screen.getByText("状态来自 summary.platforms / activeSources，不从 60s 成交量反推。")).toBeInTheDocument();
+    expect(screen.getByText("Binance Perp, Bitfinex Perp")).toBeInTheDocument();
+    expect(screen.getByText("Coinbase Spot, Binance Spot, Bitfinex Spot")).toBeInTheDocument();
+    expect(screen.getByText("Coinbase 当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("在线")).toHaveLength(1);
+    expect(screen.getAllByText("运行中").length).toBeGreaterThan(0);
     expect(screen.getAllByText("未启用").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Bitfinex").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Coinbase").length).toBeGreaterThan(0);
-    expect(screen.getByText("重连中")).toBeInTheDocument();
+    expect(screen.getAllByText("已启用 / 等待数据").length).toBeGreaterThan(0);
     expect(screen.getByText("现货专用")).toBeInTheDocument();
     expect(screen.getByText("延迟 120ms")).toBeInTheDocument();
     expect(screen.getByText("重连 3")).toBeInTheDocument();
-    expect(screen.getByText("平台能力")).toBeInTheDocument();
     expect(screen.getByTestId("platform-capability-coinbase")).toBeInTheDocument();
-    expect(screen.getByText("当前仅启用现货，用于现货确认和中长线结构评分。")).toBeInTheDocument();
-    expect(screen.getByText("现货确认源")).toBeInTheDocument();
+    expect(screen.getAllByText("现货确认源").length).toBeGreaterThan(0);
+    const okxCard = within(screen.getByTestId("platform-capability-okx"));
+    expect(okxCard.getAllByText("未启用").length).toBeGreaterThan(0);
+    expect(okxCard.getByText("不参与当前合约监控。")).toBeInTheDocument();
+    expect(okxCard.queryByText("暂无成交")).not.toBeInTheDocument();
+    expect(okxCard.queryByText("延迟 N/A")).not.toBeInTheDocument();
+    expect(okxCard.queryByText("重连 0")).not.toBeInTheDocument();
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(screen.getByText("4,820 BTC")).toBeInTheDocument();
     expect(screen.getByText("$337M")).toBeInTheDocument();

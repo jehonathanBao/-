@@ -4,6 +4,8 @@ import {
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
+  normalizeMarketStatus,
+  normalizePlatformStatus,
 } from "../api/contractWhale.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
@@ -150,8 +152,6 @@ export default function ContractWhaleMonitor() {
       okx: { platformEnabled: false, status: "disabled", markets: {} },
     },
   };
-  const exchangeStatuses = summary.exchanges || {};
-  const visibleExchanges = visibleContractExchanges(exchangeStatuses);
   const platformCapabilities = summary.platforms || {};
   const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
 
@@ -176,23 +176,17 @@ export default function ContractWhaleMonitor() {
         </div>
       </div>
 
-      <ContractWhaleTrendBar exchanges={exchangeStatuses} summary={summary} trend={summary.trend60s} />
+      <ContractWhaleTrendBar trend={summary.trend60s} />
 
       <p className="mt-3 text-xs text-slate-500">
         合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
       </p>
 
-      <div className="mt-4 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
-        {visibleExchanges.map((exchange) => (
-          <ExchangeStatus
-            exchange={exchange}
-            key={exchange}
-            status={exchangeStatuses[exchange]}
-          />
-        ))}
-      </div>
-
-      <PlatformCapabilitySection platforms={platformCapabilities} />
+      <PlatformCapabilitySection
+        exchanges={summary.exchanges || {}}
+        platforms={platformCapabilities}
+        summary={summary}
+      />
 
       {state.error ? (
         <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
@@ -568,13 +562,12 @@ function DetailGrid({ rows }) {
   );
 }
 
-function ContractWhaleTrendBar({ exchanges, summary, trend }) {
+function ContractWhaleTrendBar({ trend }) {
   const item = trend || {};
   const total = Number(item.totalVolumeBtc || 0);
   const buyRatio = total > 0 ? clampRatio(item.buyRatio) : 0;
   const sellRatio = total > 0 ? clampRatio(item.sellRatio || (1 - buyRatio)) : 0;
   const netDirectionLabel = netDirection(Number(item.netVolumeBtc || 0));
-  const sourceLabel = activeContractSourceLabel(exchanges, summary);
   return (
     <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -601,7 +594,7 @@ function ContractWhaleTrendBar({ exchanges, summary, trend }) {
         <span>主动卖出 {formatBtc(item.sellVolumeBtc)}</span>
       </div>
       <p className="mt-2 text-[11px] text-slate-500">
-        当前统计数据源：{sourceLabel} · {thresholdProfileLabel(summary?.thresholdProfile)}
+        最近 60 秒主动成交流只表示 flow，不用于判断平台在线 / 离线状态。
       </p>
     </div>
   );
@@ -695,87 +688,111 @@ function EventTag({ label, tone }) {
   return <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${eventTagClass(tone)}`}>{label}</span>;
 }
 
-function ExchangeStatus({ exchange, status }) {
-  const item = status || {
-    connected: false,
-    status: "disconnected",
-    lastTradeAt: null,
-    latencyMs: null,
-    reconnectCount: 0,
-  };
-  return (
-    <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
-      <div>
-        <p className="font-semibold text-slate-200">{exchangeLabel(exchange)}</p>
-        <p className="mt-1 text-slate-500">
-          {item.lastTradeAt ? `最近成交 ${relativeAge(item.lastTradeAt)}` : "暂无成交"}
-        </p>
-        <p className="mt-1 text-slate-500">
-          {item.latencyMs !== null && item.latencyMs !== undefined ? `延迟 ${formatLatency(item.latencyMs)}` : "延迟 N/A"}
-        </p>
-      </div>
-      <div className="text-right">
-        <p className={exchangeStatusClass(item)}>
-          {exchangeStatusLabel(item)}
-        </p>
-        <p className="mt-1 text-slate-500">重连 {Number(item.reconnectCount || 0)}</p>
-      </div>
-    </div>
-  );
-}
-
-function PlatformCapabilitySection({ platforms }) {
+function PlatformCapabilitySection({ exchanges, platforms, summary }) {
   const visible = visiblePlatformCapabilities(platforms);
+  const contractSources = contractSourceLabels(summary);
+  const spotSources = spotSourceLabels(platforms);
   return (
     <section className="mt-5">
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Platform Capability</p>
-          <h4 className="mt-1 text-sm font-bold text-white">平台能力</h4>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Platform Sources</p>
+          <h4 className="mt-1 text-sm font-bold text-white">平台数据源</h4>
         </div>
-        <p className="text-xs text-slate-500">Coinbase spot_only 只用于现货确认，不进入合约成交量统计。</p>
+        <p className="text-xs text-slate-500">状态来自 summary.platforms / activeSources，不从 60s 成交量反推。</p>
       </div>
+      <div className="grid gap-2 text-xs md:grid-cols-2 xl:grid-cols-4">
+        <SourceSummaryTile label="当前合约源" value={contractSources.length ? contractSources.join(", ") : "无"} />
+        <SourceSummaryTile label="当前现货确认源" value={spotSources.length ? spotSources.join(", ") : "无"} />
+        <SourceSummaryTile label="阈值配置" value={thresholdProfileLabel(summary?.thresholdProfile)} />
+        <SourceSummaryTile label="Profile Reason" value={summary?.thresholdProfileReason || "N/A"} />
+      </div>
+      <p className="mt-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+        Coinbase 当前仅启用现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。
+      </p>
       <div className="grid gap-3 xl:grid-cols-2">
         {visible.map(([exchange, platform]) => (
-          <article
-            className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
-            data-testid={`platform-capability-${exchange}`}
-            key={exchange}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="font-semibold text-slate-100">{exchangeLabel(exchange)}</p>
-                <p className="mt-1 text-xs text-slate-500">{platformStatusDescription(platform.status)}</p>
-              </div>
-              <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${platformStatusClass(platform.status)}`}>
-                {platformStatusLabel(platform.status)}
-              </span>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {visibleMarketEntries(platform.markets).map(([market, capability]) => (
-                <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2" key={`${exchange}-${market}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{marketLabel(market)}</p>
-                    <span className={`text-[11px] font-semibold ${platformMarketStatusClass(capability.status)}`}>
-                      {platformMarketStatusLabel(capability.status)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-300">{sourceRoleLabel(capability.role)}</p>
-                  {capability.source ? (
-                    <p className="mt-1 text-[11px] text-slate-500">{capability.source}</p>
-                  ) : null}
-                  {capability.requiresAuth ? (
-                    <p className="mt-1 text-[11px] text-cyan-200">
-                      {capability.marketDataOnly ? "只读 market data" : "需要凭证"} · {capability.authConfigured ? "凭证已配置" : "缺少凭证"}
-                    </p>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </article>
+          <PlatformSourceCard exchange={exchange} exchangeStatus={exchanges?.[exchange]} key={exchange} platform={platform} />
         ))}
       </div>
     </section>
+  );
+}
+
+function SourceSummaryTile({ label, value }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
+      <p className="text-[11px] text-slate-500">{label}</p>
+      <p className="mt-1 break-words font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function PlatformSourceCard({ exchange, exchangeStatus, platform }) {
+  const platformView = normalizePlatformStatus(platform);
+  const runtime = exchangeStatus || {};
+  const disabled = platformView.key === "disabled";
+  return (
+    <article
+      className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
+      data-testid={`platform-capability-${exchange}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold text-slate-100">{exchangeLabel(exchange)}</p>
+          <p className="mt-1 text-xs text-slate-500">{platformView.description}</p>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${statusBadgeClass(platformView.tone)}`}>
+          {platformView.label}
+        </span>
+      </div>
+      {disabled ? (
+        <p className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-500">
+          不参与当前合约监控。
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+          {runtime.lastTradeAt ? <span>最近成交 {relativeAge(runtime.lastTradeAt)}</span> : <span>等待成交更新</span>}
+          {runtime.latencyMs !== null && runtime.latencyMs !== undefined ? <span>延迟 {formatLatency(runtime.latencyMs)}</span> : null}
+          {Number(runtime.reconnectCount || 0) > 0 ? <span>重连 {Number(runtime.reconnectCount || 0)}</span> : null}
+        </div>
+      )}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {visibleMarketEntries(platform.markets).map(([market, capability]) => {
+          const view = normalizeMarketStatus(
+            {
+              ...capability,
+              lastTradeAt: capability.lastTradeAt ?? runtime.lastTradeAt,
+              latencyMs: capability.latencyMs ?? runtime.latencyMs,
+              reconnectCount: capability.reconnectCount ?? runtime.reconnectCount,
+            },
+            market,
+          );
+          return (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2" key={`${exchange}-${market}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{marketLabel(market)}</p>
+                  <p className="mt-1 text-xs text-slate-300">{sourceRoleLabel(capability.role)}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">{view.detail}</p>
+                </div>
+                <span className={`text-right text-[11px] font-semibold ${statusTextClass(view.tone)}`}>
+                  {view.label}
+                </span>
+              </div>
+              {capability.source ? (
+                <p className="mt-1 text-[11px] text-slate-500">{capability.source}</p>
+              ) : null}
+              {capability.requiresAuth ? (
+                <p className="mt-1 text-[11px] text-cyan-200">
+                  {capability.marketDataOnly ? "只读 market data" : "需要凭证"} · {capability.authConfigured ? "凭证已配置" : "缺少凭证"}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </article>
   );
 }
 
@@ -947,32 +964,6 @@ function exchangeLabel(exchange) {
   return labels[exchange] || exchange;
 }
 
-function visibleContractExchanges(exchanges) {
-  const source = exchanges && typeof exchanges === "object" ? exchanges : {};
-  const visible = ["binance", "okx", "bitfinex", "coinbase"].filter((exchange) => source[exchange]);
-  return visible.length ? visible : ["binance", "okx", "bitfinex", "coinbase"];
-}
-
-function exchangeStatusLabel(item) {
-  const status = String(item.status || "").toLowerCase();
-  if (status === "disabled") return "未启用";
-  if (status === "spot_only") return "现货专用";
-  if (status === "reconnecting") return "重连中";
-  if (status === "stale") return "无近期成交";
-  if (status === "waiting_for_trades") return "等待成交";
-  if (item.connected || status === "connected") return "在线";
-  return "离线";
-}
-
-function exchangeStatusClass(item) {
-  const status = String(item.status || "").toLowerCase();
-  if (item.connected && status === "connected") return "font-bold text-emerald-300";
-  if (status === "spot_only") return "font-bold text-cyan-300";
-  if (status === "reconnecting" || status === "waiting_for_trades") return "font-bold text-yellow-300";
-  if (status === "stale") return "font-bold text-orange-300";
-  return "font-bold text-slate-400";
-}
-
 function visiblePlatformCapabilities(platforms) {
   const source = platforms && typeof platforms === "object" ? platforms : {};
   const entries = ["binance", "bitfinex", "coinbase", "okx"].map((exchange) => [
@@ -982,6 +973,27 @@ function visiblePlatformCapabilities(platforms) {
   return entries;
 }
 
+function contractSourceLabels(summary) {
+  const sources = Array.isArray(summary?.activeContractSources) && summary.activeContractSources.length
+    ? summary.activeContractSources
+    : Array.isArray(summary?.activeContractExchanges) && summary.activeContractExchanges.length
+      ? summary.activeContractExchanges
+      : Array.isArray(summary?.eligibleContractSources)
+        ? summary.eligibleContractSources
+        : [];
+  return sources.map((exchange) => `${exchangeLabel(exchange)} Perp`);
+}
+
+function spotSourceLabels(platforms) {
+  const source = platforms && typeof platforms === "object" ? platforms : {};
+  return ["coinbase", "binance", "bitfinex", "okx"]
+    .filter((exchange) => {
+      const spot = source[exchange]?.markets?.spot;
+      return Boolean(spot?.enabled);
+    })
+    .map((exchange) => `${exchangeLabel(exchange)} Spot`);
+}
+
 function visibleMarketEntries(markets) {
   const source = markets && typeof markets === "object" ? markets : {};
   return ["spot", "perp", "funding", "oi", "liquidation", "level2"]
@@ -989,45 +1001,21 @@ function visibleMarketEntries(markets) {
     .map((market) => [market, source[market]]);
 }
 
-function platformStatusLabel(status) {
-  const value = String(status || "disabled").toLowerCase();
-  if (value === "active") return "合约运行中";
-  if (value === "degraded") return "待配置";
-  if (value === "spot_only") return "spot_only";
-  return "disabled";
-}
-
-function platformStatusDescription(status) {
-  const value = String(status || "disabled").toLowerCase();
-  if (value === "active") return "现货与合约能力已配置，合约源可参与 CWM。";
-  if (value === "degraded") return "合约源已启用但缺少只读 market data 配置，不参与 CWM。";
-  if (value === "spot_only") return "当前仅启用现货，用于现货确认和中长线结构评分。";
-  return "当前未启用，不参与现货或合约监控。";
-}
-
-function platformStatusClass(status) {
-  const value = String(status || "disabled").toLowerCase();
-  if (value === "active") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
-  if (value === "degraded") return "border border-yellow-500/40 bg-yellow-500/15 text-yellow-100";
-  if (value === "spot_only") return "border border-cyan-500/40 bg-cyan-500/15 text-cyan-200";
+function statusBadgeClass(tone) {
+  if (tone === "emerald") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (tone === "cyan") return "border border-cyan-500/40 bg-cyan-500/15 text-cyan-200";
+  if (tone === "yellow") return "border border-yellow-500/40 bg-yellow-500/15 text-yellow-100";
+  if (tone === "orange") return "border border-orange-500/40 bg-orange-500/15 text-orange-100";
+  if (tone === "red") return "border border-red-500/40 bg-red-500/15 text-red-100";
   return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
 }
 
-function platformMarketStatusLabel(status) {
-  const value = String(status || "disabled").toLowerCase();
-  if (value === "active") return "运行中";
-  if (value === "enabled") return "启用";
-  if (value === "auth_missing") return "缺少凭证";
-  if (value === "ready") return "就绪";
-  return "未启用";
-}
-
-function platformMarketStatusClass(status) {
-  const value = String(status || "disabled").toLowerCase();
-  if (value === "active") return "text-emerald-300";
-  if (value === "enabled") return "text-cyan-300";
-  if (value === "ready") return "text-cyan-300";
-  if (value === "auth_missing") return "text-yellow-300";
+function statusTextClass(tone) {
+  if (tone === "emerald") return "text-emerald-300";
+  if (tone === "cyan") return "text-cyan-300";
+  if (tone === "yellow") return "text-yellow-300";
+  if (tone === "orange") return "text-orange-300";
+  if (tone === "red") return "text-red-300";
   return "text-slate-500";
 }
 
@@ -1072,25 +1060,6 @@ function marketLabel(value) {
 function sourceListLabel(value) {
   if (!Array.isArray(value) || value.length === 0) return "无";
   return value.map(exchangeLabel).join(", ");
-}
-
-function activeContractSourceLabel(exchanges, summary) {
-  const source = exchanges && typeof exchanges === "object" ? exchanges : {};
-  const configured = Array.isArray(summary?.enabledExchanges) && summary.enabledExchanges.length
-    ? summary.enabledExchanges
-    : ["binance", "bitfinex"];
-  const active = configured
-    .filter((exchange) => {
-      const item = source[exchange] || {};
-      return item.connected && String(item.status || "connected").toLowerCase() === "connected";
-    })
-    .map(exchangeLabel);
-  if (active.length) return active.join(" / ");
-  const stale = configured
-    .filter((exchange) => String(source[exchange]?.status || "").toLowerCase() === "stale")
-    .map(exchangeLabel);
-  if (stale.length) return `${stale.join(" / ")} 无近期成交`;
-  return "暂无在线交易所";
 }
 
 function netDirection(value) {
