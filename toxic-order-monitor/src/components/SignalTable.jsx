@@ -94,6 +94,7 @@ export default function SignalTable({
 
 function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pushStatus }) {
   const finalResult = finalResultDescription(signal);
+  const titlePrice = signalTitlePrice(signal);
   const gate = evaluateDiscordAlertGate(signal);
   const status = pushStatus?.[signal.id];
   const pending = status?.status === "pending";
@@ -120,7 +121,7 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
         >
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="truncate text-base font-bold text-white">
-              {signal.symbol} · {signal.type} · {shortTime(signal.time)}
+              {signal.symbol}{titlePrice ? ` · ${titlePrice}` : ""} · {signal.type} · {shortTime(signal.time)}
             </h4>
             <span className={`rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${levelColors[signal.level]}`}>
               {signal.level}
@@ -232,6 +233,7 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
 
 function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
   const finalResult = finalResultDescription(signal);
+  const titlePrice = signalTitlePrice(signal);
   const rows = [
     ["Symbol", signal.symbol],
     ["Trigger Price", formatPrice(signalTriggerPrice(signal))],
@@ -335,7 +337,9 @@ function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
         <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
           <div>
             <p className="text-xs uppercase tracking-[0.26em] text-cyan-300">Candidate Review</p>
-            <h3 className="mt-2 text-lg font-bold text-white">{signal.symbol} · {signal.type}</h3>
+            <h3 className="mt-2 text-lg font-bold text-white">
+              {signal.symbol}{titlePrice ? ` · ${titlePrice}` : ""} · {signal.type}
+            </h3>
           </div>
           <button
             aria-label="关闭 Review"
@@ -537,6 +541,11 @@ function signalTriggerPrice(signal) {
     return explicit;
   }
   return priceFromRange(signal?.priceRange ?? signal?.price_range);
+}
+
+function signalTitlePrice(signal) {
+  const formatted = formatPrice(signalTriggerPrice(signal));
+  return formatted === "N/A" ? "" : formatted;
 }
 
 function priceFromRange(value) {

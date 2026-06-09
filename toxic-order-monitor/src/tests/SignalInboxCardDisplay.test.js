@@ -154,9 +154,19 @@ describe("Signal inbox card display", () => {
     const user = userEvent.setup();
     renderInbox([{ ...mockSignals[0], triggerPriceUsd: 102_888.42 }]);
 
+    expect(
+      screen.getByText((_, element) =>
+        element?.tagName === "H4" && element.textContent.includes("BTCUSDT · $102,888"),
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("价格 $102,888")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
 
+    expect(
+      screen.getByText((_, element) =>
+        element?.tagName === "H3" && element.textContent.includes("BTCUSDT · $102,888"),
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("Trigger Price")).toBeInTheDocument();
     expect(screen.getAllByText("$102,888").length).toBeGreaterThan(0);
   });
