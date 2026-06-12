@@ -6,9 +6,10 @@ use super::{
         AltContractScoreResult,
     },
     types::{
-        AltContractContext, AltContractDirection, AltContractScoreBreakdown, AltContractSeverity,
-        AltContractSignal, AltContractSignalType, AltContractSourceSnapshot, AltContractSymbolTier,
-        AltContractWindowConfirmation, AltContractWindowStats,
+        AltContractContext, AltContractDirection, AltContractGradeCondition,
+        AltContractScoreBreakdown, AltContractSeverity, AltContractSignal, AltContractSignalType,
+        AltContractSourceSnapshot, AltContractSymbolTier, AltContractWindowConfirmation,
+        AltContractWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -55,12 +56,13 @@ pub fn detect_alt_contract_signal_with_context(
     );
     let main_force_confidence =
         main_force_confidence(stats, context, &score, &evidence, &market_context);
+    let s_grade = s_grade_evaluation(stats, context, &score, config);
     let max_score = score.abnormal_score.max(score.build_score);
     if matches!(stats.tier, AltContractSymbolTier::D) && max_score < config.tier_d_min_signal_score
     {
         return None;
     }
-    let mut severity = severity_for(stats, max_score, config);
+    let mut severity = severity_for(stats, max_score, config, s_grade.eligible);
     if tier_d_build_guard(stats, context, &score, config)
         && severity.rank()
             > config
@@ -112,6 +114,10 @@ pub fn detect_alt_contract_signal_with_context(
         severity,
         abnormal_score: score.abnormal_score,
         build_score: score.build_score,
+        s_grade_eligible: s_grade.eligible,
+        s_grade_conditions: s_grade.conditions,
+        s_grade_notional_threshold_usd: round(s_grade.notional_threshold_usd, 2),
+        s_grade_volume_threshold_base: round(s_grade.volume_threshold_base, 4),
         main_force_confidence: round(main_force_confidence, 2),
         evidence_count: evidence.tags.len().min(u8::MAX as usize) as u8,
         evidence_tags: evidence.tags,
@@ -236,13 +242,14 @@ fn severity_for(
     stats: &AltContractWindowStats,
     max_score: u8,
     config: &BinanceAltContractRuntimeConfig,
+    s_grade_eligible: bool,
 ) -> AltContractSeverity {
     let thresholds = config.thresholds_for_tier(stats.tier);
     let dynamic = stats.dynamic_multiple.unwrap_or(0.0);
-    if (max_score >= 90
-        || stats.total_notional_usd >= thresholds.s_notional_usd
-        || dynamic >= config.dynamic.s_multiple)
-        && stats.data_quality >= 70
+    if s_grade_eligible
+        && (max_score >= 90
+            || stats.total_notional_usd >= thresholds.s_notional_usd
+            || dynamic >= config.dynamic.s_multiple)
     {
         AltContractSeverity::S
     } else if max_score >= 75
@@ -259,6 +266,145 @@ fn severity_for(
         AltContractSeverity::Medium
     } else {
         AltContractSeverity::Calm
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SGradeEvaluation {
+    eligible: bool,
+    notional_threshold_usd: f64,
+    volume_threshold_base: f64,
+    conditions: Vec<AltContractGradeCondition>,
+}
+
+fn s_grade_evaluation(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+    score: &AltContractScoreResult,
+    config: &BinanceAltContractRuntimeConfig,
+) -> SGradeEvaluation {
+    let thresholds = config.thresholds_for_tier(stats.tier);
+    let notional_threshold_usd = thresholds.s_notional_usd.max(5_000.0);
+    let volume_threshold_base = stats
+        .trigger_price_usd
+        .filter(|price| *price > 0.0)
+        .map(|price| notional_threshold_usd / price)
+        .unwrap_or(f64::INFINITY);
+    let dynamic = stats.dynamic_multiple.unwrap_or(0.0);
+    let oi_change_pct = context.oi_change_pct.unwrap_or_default();
+    let price_available = stats.trigger_price_usd.is_some_and(|price| price > 0.0);
+    let mut conditions = vec![
+        grade_condition(
+            "notional_threshold",
+            "成交额达到 S 门槛",
+            stats.total_notional_usd >= notional_threshold_usd,
+            format_usd_plain(stats.total_notional_usd),
+            format_usd_plain(notional_threshold_usd),
+        ),
+        grade_condition(
+            "volume_threshold",
+            "成交量达到 Tier 门槛",
+            price_available && stats.total_volume_base >= volume_threshold_base,
+            format_base_plain(stats.total_volume_base, &stats.symbol),
+            if volume_threshold_base.is_finite() {
+                format_base_plain(volume_threshold_base, &stats.symbol)
+            } else {
+                "需要有效价格".to_string()
+            },
+        ),
+        grade_condition(
+            "directional_share",
+            "单向占比 >= 60%",
+            stats.dominance >= 0.60,
+            format!("{:.1}%", stats.dominance * 100.0),
+            ">= 60.0%".to_string(),
+        ),
+        grade_condition(
+            "oi_expansion",
+            "OI 增幅 > 1%",
+            oi_change_pct > 1.0,
+            format!("{oi_change_pct:.2}%"),
+            "> 1.00%".to_string(),
+        ),
+        grade_condition(
+            "dynamic_multiple",
+            "异常倍数 >= 6x",
+            dynamic >= 6.0,
+            format!("{dynamic:.2}x"),
+            ">= 6.00x".to_string(),
+        ),
+        grade_condition(
+            "abnormal_score",
+            "异常分 >= 40",
+            score.abnormal_score >= 40,
+            format!("{}/100", score.abnormal_score),
+            ">= 40/100".to_string(),
+        ),
+        grade_condition(
+            "non_liquidation",
+            "非清算主导",
+            !context.liquidation_suspected,
+            if context.liquidation_suspected {
+                "疑似清算".to_string()
+            } else {
+                "正常".to_string()
+            },
+            "非清算".to_string(),
+        ),
+        grade_condition(
+            "data_quality",
+            "数据质量 >= 70",
+            stats.data_quality >= 70,
+            format!("{}/100", stats.data_quality),
+            ">= 70/100".to_string(),
+        ),
+    ];
+
+    let eligible = conditions.iter().all(|condition| condition.passed);
+    if matches!(
+        stats.tier,
+        AltContractSymbolTier::C | AltContractSymbolTier::D | AltContractSymbolTier::E
+    ) && stats.total_notional_usd < notional_threshold_usd
+    {
+        conditions.push(grade_condition(
+            "low_liquidity_extra_guard",
+            "低流动性 Tier 额外保护",
+            false,
+            format_usd_plain(stats.total_notional_usd),
+            format!(
+                "低流动性 S 门槛 {}",
+                format_usd_plain(notional_threshold_usd)
+            ),
+        ));
+        return SGradeEvaluation {
+            eligible: false,
+            notional_threshold_usd,
+            volume_threshold_base,
+            conditions,
+        };
+    }
+
+    SGradeEvaluation {
+        eligible,
+        notional_threshold_usd,
+        volume_threshold_base,
+        conditions,
+    }
+}
+
+fn grade_condition(
+    key: &str,
+    label: &str,
+    passed: bool,
+    actual: String,
+    threshold: String,
+) -> AltContractGradeCondition {
+    AltContractGradeCondition {
+        key: key.to_string(),
+        label: label.to_string(),
+        passed,
+        actual,
+        threshold,
     }
 }
 
@@ -735,4 +881,22 @@ fn final_result_text(
 fn round(value: f64, places: i32) -> f64 {
     let factor = 10_f64.powi(places);
     (value * factor).round() / factor
+}
+
+fn format_usd_plain(value: f64) -> String {
+    if value.abs() >= 1_000_000.0 {
+        format!("${:.1}M", value / 1_000_000.0)
+    } else if value.abs() >= 1_000.0 {
+        format!("${:.0}K", value / 1_000.0)
+    } else {
+        format!("${value:.0}")
+    }
+}
+
+fn format_base_plain(value: f64, symbol: &str) -> String {
+    if value.is_finite() {
+        format!("{value:.2} {symbol}")
+    } else {
+        "N/A".to_string()
+    }
 }

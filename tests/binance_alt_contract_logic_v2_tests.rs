@@ -9,8 +9,8 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::BinanceAltContractService,
     types::{
         AltContractContext, AltContractDirection, AltContractExchange,
-        AltContractExchangeContribution, AltContractSignalType, AltContractSymbolTier,
-        AltContractTrade, AltContractTradeSide, AltContractWindowStats,
+        AltContractExchangeContribution, AltContractSeverity, AltContractSignalType,
+        AltContractSymbolTier, AltContractTrade, AltContractTradeSide, AltContractWindowStats,
     },
 };
 
@@ -63,12 +63,136 @@ fn true_long_build_requires_evidence_chain() {
     );
     assert!(signal.main_force_confidence >= 75.0);
     assert!(signal.evidence_count >= 4);
+    assert!(signal.s_grade_eligible);
+    assert_eq!(signal.severity, AltContractSeverity::S);
+    assert!(signal
+        .s_grade_conditions
+        .iter()
+        .all(|condition| condition.passed));
+    assert!(signal.s_grade_notional_threshold_usd >= 5_000.0);
+    assert!(signal.s_grade_volume_threshold_base > 0.0);
     assert!(signal.evidence_tags.iter().any(|tag| tag == "oi_expanding"));
     assert!(signal
         .evidence_tags
         .iter()
         .any(|tag| tag == "multi_window_confirmed"));
     assert_eq!(signal.oi_quality, "fresh");
+}
+
+#[test]
+fn low_notional_spike_cannot_upgrade_to_s() {
+    let config = config();
+    let stats = stats(
+        "ALT",
+        AltContractDirection::Buy,
+        8_000_000.0,
+        0.92,
+        2.8,
+        12.0,
+        AltContractSymbolTier::B,
+    );
+    let context = AltContractContext {
+        oi_change_1m_base: Some(100_000.0),
+        oi_change_pct: Some(2.4),
+        oi_updated_at: Some(stats.ts - 10_000),
+        funding_rate: Some(0.0),
+        persistence_windows: 3,
+        ..AltContractContext::default()
+    };
+
+    let signal = detect_alt_contract_signal_with_context(
+        &stats,
+        &context,
+        &config,
+        vec![window_confirmation_for(&stats, &config)],
+        MarketImpulseContext::default(),
+    )
+    .expect("low notional spike signal");
+
+    assert_ne!(signal.severity, AltContractSeverity::S);
+    assert!(!signal.s_grade_eligible);
+    assert!(signal
+        .s_grade_conditions
+        .iter()
+        .any(|condition| condition.key == "notional_threshold" && !condition.passed));
+}
+
+#[test]
+fn s_grade_requires_oi_expansion_above_one_percent() {
+    let config = config();
+    let stats = stats(
+        "SOL",
+        AltContractDirection::Buy,
+        70_000_000.0,
+        0.82,
+        1.2,
+        7.0,
+        AltContractSymbolTier::B,
+    );
+    let context = AltContractContext {
+        oi_change_1m_base: Some(30_000.0),
+        oi_change_pct: Some(0.8),
+        oi_updated_at: Some(stats.ts - 10_000),
+        funding_rate: Some(0.0),
+        persistence_windows: 3,
+        ..AltContractContext::default()
+    };
+
+    let signal = detect_alt_contract_signal_with_context(
+        &stats,
+        &context,
+        &config,
+        vec![window_confirmation_for(&stats, &config)],
+        MarketImpulseContext::default(),
+    )
+    .expect("oi weak signal");
+
+    assert_ne!(signal.severity, AltContractSeverity::S);
+    assert!(!signal.s_grade_eligible);
+    assert!(signal
+        .s_grade_conditions
+        .iter()
+        .any(|condition| condition.key == "oi_expansion" && !condition.passed));
+}
+
+#[test]
+fn liquidation_context_blocks_s_grade_upgrade() {
+    let config = config();
+    let stats = stats(
+        "WIF",
+        AltContractDirection::Sell,
+        80_000_000.0,
+        0.90,
+        -2.0,
+        8.0,
+        AltContractSymbolTier::B,
+    );
+    let context = AltContractContext {
+        oi_change_1m_base: Some(180_000.0),
+        oi_change_pct: Some(2.0),
+        oi_updated_at: Some(stats.ts - 10_000),
+        liquidation_notional_usd: Some(9_000_000.0),
+        liquidation_suspected: true,
+        force_order_snapshot: true,
+        persistence_windows: 3,
+        ..AltContractContext::default()
+    };
+
+    let signal = detect_alt_contract_signal_with_context(
+        &stats,
+        &context,
+        &config,
+        vec![window_confirmation_for(&stats, &config)],
+        MarketImpulseContext::default(),
+    )
+    .expect("liquidation signal");
+
+    assert_ne!(signal.severity, AltContractSeverity::S);
+    assert!(!signal.s_grade_eligible);
+    assert!(signal
+        .s_grade_conditions
+        .iter()
+        .any(|condition| condition.key == "non_liquidation" && !condition.passed));
 }
 
 #[test]

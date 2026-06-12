@@ -117,17 +117,7 @@ export default function BinanceAltContractMonitor() {
       <RuntimeSummary summary={summary} />
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
-        <div className="console-panel-muted p-3 text-xs text-slate-400">
-          <p className="font-semibold text-white">监控范围</p>
-          <p className="mt-1">
-            {universeModeLabel(summary.symbolUniverse?.mode)} · 仅 USDT / PERPETUAL / TRADING · 排除{" "}
-            {(summary.symbolUniverse?.excludedSymbols || []).join(", ") || "无"}
-          </p>
-          <p className="mt-2 text-slate-500">
-            监控数量 {summary.symbolUniverse?.monitoredCount || summary.monitoredSymbols.length || 0} · Tier{" "}
-            {formatTierCounts(summary.symbolUniverse?.tierCounts)} · Candidate only · 只读提醒 · 不下单 · dry-run 默认开启
-          </p>
-        </div>
+        <CollapsedUniverseSummary summary={summary} />
         <ExchangeStatus status={summary.exchanges?.binance} />
       </div>
       <DryRunAndUniverse summary={summary} />
@@ -169,6 +159,7 @@ export default function BinanceAltContractMonitor() {
                 <HeaderCell>建仓分</HeaderCell>
                 <HeaderCell>方向</HeaderCell>
                 <HeaderCell>1m 名义额</HeaderCell>
+                <HeaderCell>成交额门槛</HeaderCell>
                 <HeaderCell>异常倍数</HeaderCell>
                 <HeaderCell>OI</HeaderCell>
                 <HeaderCell>价格变化</HeaderCell>
@@ -205,6 +196,7 @@ export default function BinanceAltContractMonitor() {
                   <Cell>{item.buildScore}/100</Cell>
                   <Cell>{directionLabel(item.direction)} {signedNumber(item.directionBias)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
+                  <Cell>{formatUsd(item.sGradeNotionalThresholdUsd)}</Cell>
                   <Cell>{item.dynamicMultiple ? `${item.dynamicMultiple.toFixed(1)}x` : "N/A"}</Cell>
                   <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
                   <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
@@ -359,6 +351,41 @@ function RuntimeSummary({ summary }) {
   );
 }
 
+function CollapsedUniverseSummary({ summary }) {
+  const universe = summary.symbolUniverse || {};
+  const monitoredSymbols = summary.monitoredSymbols || [];
+  const excludedSymbols = universe.excludedSymbols || [];
+  const monitoredCount = universe.monitoredCount || monitoredSymbols.length || 0;
+
+  return (
+    <details className="group console-panel-muted p-3 text-xs text-slate-400">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+        <span>
+          <span className="font-semibold text-white">监控范围</span>
+          <span className="ml-2 text-slate-500">
+            已折叠 · {universeModeLabel(universe.mode)} · {monitoredCount} 个合约 · Tier {formatTierCounts(universe.tierCounts)}
+          </span>
+        </span>
+        <span className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 group-open:hidden">
+          展开
+        </span>
+        <span className="hidden rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1 text-[11px] font-semibold text-slate-300 group-open:inline">
+          收起
+        </span>
+      </summary>
+      <div className="mt-3 max-h-36 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/50 p-3 leading-5">
+        <p>
+          仅 USDT / PERPETUAL / TRADING · 排除 {excludedSymbols.join(", ") || "无"} · Candidate only · 只读提醒 · 不下单 ·
+          dry-run 默认开启
+        </p>
+        {monitoredSymbols.length ? (
+          <p className="mt-2 text-slate-500">合约列表：{monitoredSymbols.join(", ")}</p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function DryRunAndUniverse({ summary }) {
   const stats = summary.dryRunStats || {};
   const universe = summary.symbolUniverse || {};
@@ -383,18 +410,24 @@ function DryRunAndUniverse({ summary }) {
           skipped: low_score {stats.skippedLowScore24h || 0}, cooldown {stats.skippedCooldown24h || 0}, data_quality {stats.skippedDataQuality24h || 0}, liquidation {stats.liquidationDriven24h || 0}
         </p>
       </div>
-      <div className="console-panel-muted p-3 lg:col-span-2">
-        <p className="font-semibold text-white">Symbol Universe</p>
-        <p className="mt-2 text-slate-400">
-          {universeModeLabel(universe.mode)} · 监控 {universe.monitoredCount || 0} · limit {universe.limit || 0} · min 24h {formatUsd(universe.min24hQuoteVolumeUsd || 0)}
-        </p>
-        <p className="mt-1 text-slate-500">
-          Tier {formatTierCounts(universe.tierCounts)} · whitelist {(universe.whitelist || []).slice(0, 8).join(", ") || "none"} · blacklist {(universe.blacklist || []).join(", ") || "none"} · excluded {(universe.excludedSymbols || []).join(", ") || "none"}
-        </p>
-        <p className="mt-1 text-slate-500">
-          Candidate {(context.candidateSymbols || []).slice(0, 8).join(", ") || "none"} · Hot OI {(context.hotOiSymbols || []).slice(0, 8).join(", ") || "none"}
-        </p>
-      </div>
+      <details className="console-panel-muted p-3 lg:col-span-2">
+        <summary className="cursor-pointer list-none text-xs font-semibold text-white">
+          Symbol Universe · 已折叠 · 监控 {universe.monitoredCount || 0} · Tier {formatTierCounts(universe.tierCounts)}
+        </summary>
+        <div className="mt-3 max-h-28 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs leading-5 text-slate-500">
+          <p>
+            {universeModeLabel(universe.mode)} · limit {universe.limit || 0} · min 24h {formatUsd(universe.min24hQuoteVolumeUsd || 0)}
+          </p>
+          <p className="mt-1">
+            whitelist {(universe.whitelist || []).slice(0, 8).join(", ") || "none"} · blacklist{" "}
+            {(universe.blacklist || []).join(", ") || "none"} · excluded {(universe.excludedSymbols || []).join(", ") || "none"}
+          </p>
+          <p className="mt-1">
+            Candidate {(context.candidateSymbols || []).slice(0, 8).join(", ") || "none"} · Hot OI{" "}
+            {(context.hotOiSymbols || []).slice(0, 8).join(", ") || "none"}
+          </p>
+        </div>
+      </details>
     </div>
   );
 }
@@ -436,6 +469,9 @@ function AltSignalDetail({ signal, onClose }) {
           <Detail label="Data Quality" value={`${signal.dataQuality}/100`} />
           <Detail label="触发价格" value={formatPrice(signal.triggerPriceUsd)} />
           <Detail label="动态倍数" value={signal.dynamicMultiple ? `${signal.dynamicMultiple.toFixed(2)}x` : "N/A"} />
+          <Detail label="S 成交额门槛" value={formatUsd(signal.sGradeNotionalThresholdUsd)} />
+          <Detail label="S 成交量门槛" value={formatBase(signal.sGradeVolumeThresholdBase, signal.symbol)} />
+          <Detail label="S 条件" value={signal.sGradeEligible ? "全部满足" : "未全部满足"} />
           <Detail label="OI 变化" value={formatSignedBase(signal.oiChange1mBase ?? signal.oiChange5mBase, signal.symbol)} />
           <Detail label="OI 质量" value={`${oiQualityLabel(signal.oiQuality)}${signal.oiFreshnessSec == null ? "" : ` · ${signal.oiFreshnessSec}s`}`} />
           <Detail label="Funding" value={signal.fundingRate == null ? "N/A" : `${(signal.fundingRate * 100).toFixed(4)}%`} />
@@ -472,6 +508,7 @@ function AltSignalDetail({ signal, onClose }) {
               ))}
             </div>
           </div>
+          <SGradeConditions conditions={signal.sGradeConditions || []} />
         </div>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           <ExplanationCard title="异常判断" text={signal.abnormalExplanation} />
@@ -498,6 +535,31 @@ function AltSignalDetail({ signal, onClose }) {
             ))}
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SGradeConditions({ conditions }) {
+  return (
+    <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4 md:col-span-2">
+      <p className="text-xs uppercase tracking-[0.22em] text-slate-500">S Grade Conditions</p>
+      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+        {conditions.length === 0 ? (
+          <p className="text-slate-400">暂无 S 级条件快照</p>
+        ) : conditions.map((condition) => (
+          <div
+            className={`rounded-lg border px-3 py-2 ${
+              condition.passed
+                ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                : "border-yellow-400/20 bg-yellow-400/10 text-yellow-100"
+            }`}
+            key={condition.key}
+          >
+            <p className="font-semibold">{condition.passed ? "通过" : "未通过"} · {condition.label}</p>
+            <p className="mt-1 text-slate-400">当前 {condition.actual} · 门槛 {condition.threshold}</p>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -818,6 +880,13 @@ function formatSignedBase(value, symbol) {
   if (value === null || value === undefined) return "N/A";
   const number = Number(value || 0);
   return `${number >= 0 ? "+" : ""}${number.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${symbol}`;
+}
+
+function formatBase(value, symbol) {
+  if (value === null || value === undefined) return "N/A";
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  return `${number.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${symbol}`;
 }
 
 function formatSignedNumber(value) {

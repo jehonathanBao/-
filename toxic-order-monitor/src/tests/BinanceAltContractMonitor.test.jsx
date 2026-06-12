@@ -118,6 +118,8 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText("主力置信度")).toBeInTheDocument();
     expect(screen.getByText("证据数量")).toBeInTheDocument();
     expect(screen.getByText("Window Confirmations")).toBeInTheDocument();
+    expect(screen.getByText("S Grade Conditions")).toBeInTheDocument();
+    expect(screen.getByText(/成交额达到 S 门槛/)).toBeInTheDocument();
     expect(screen.getByText("主动买入占优")).toBeInTheDocument();
     expect(screen.getByText("多窗口确认")).toBeInTheDocument();
     expect(screen.getByText("Score Breakdown")).toBeInTheDocument();
@@ -226,6 +228,25 @@ function altSignal() {
     severity: "s",
     abnormalScore: 91,
     buildScore: 87,
+    sGradeEligible: true,
+    sGradeNotionalThresholdUsd: 60_000_000,
+    sGradeVolumeThresholdBase: 341_880.34,
+    sGradeConditions: [
+      {
+        key: "notional_threshold",
+        label: "成交额达到 S 门槛",
+        passed: true,
+        actual: "$143.9M",
+        threshold: "$60.0M",
+      },
+      {
+        key: "oi_expansion",
+        label: "OI 增幅 > 1%",
+        passed: true,
+        actual: "1.80%",
+        threshold: "> 1.00%",
+      },
+    ],
     mainForceConfidence: 84,
     evidenceCount: 5,
     evidenceTags: [

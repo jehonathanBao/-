@@ -233,6 +233,16 @@ pub struct AltContractWindowConfirmation {
     pub confirmed: bool,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractGradeCondition {
+    pub key: String,
+    pub label: String,
+    pub passed: bool,
+    pub actual: String,
+    pub threshold: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractSourceSnapshot {
@@ -257,6 +267,14 @@ pub struct AltContractSignal {
     pub severity: AltContractSeverity,
     pub abnormal_score: u8,
     pub build_score: u8,
+    #[serde(default)]
+    pub s_grade_eligible: bool,
+    #[serde(default)]
+    pub s_grade_conditions: Vec<AltContractGradeCondition>,
+    #[serde(default)]
+    pub s_grade_notional_threshold_usd: f64,
+    #[serde(default)]
+    pub s_grade_volume_threshold_base: f64,
     #[serde(default)]
     pub main_force_confidence: f64,
     #[serde(default)]
