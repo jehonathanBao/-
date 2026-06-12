@@ -21,6 +21,10 @@ use crate::{
         toxic_signal_inbox_routes::build_recent,
         toxic_signal_ws_routes::{build_ws_snapshot, ToxicSignalWsItem},
     },
+    binance_alt_contract_monitor::{
+        config as bacm_config, service::BinanceAltContractService, LOG_PREFIX as BACM_LOG_PREFIX,
+        LOG_TARGET as BACM_LOG_TARGET,
+    },
     config::AppConfig,
     connectors::manager::ConnectorManager,
     contract_whale_monitor::{
@@ -94,6 +98,7 @@ struct AppStateInner {
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
+    binance_alt_contract_service: BinanceAltContractService,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +213,12 @@ impl AppState {
             booted_at_ms,
             contract_whale_store.clone(),
         );
+        let bacm_runtime_config = bacm_config::binance_alt_contract_runtime_config();
+        let binance_alt_contract_service = BinanceAltContractService::new(
+            bacm_runtime_config.enabled,
+            bacm_runtime_config.dry_run,
+            booted_at_ms,
+        );
         let scan_log = ScanLogStore::new_from_env();
         scan_log.push(
             "info",
@@ -215,6 +226,30 @@ impl AppState {
             "Runtime initialized in monitoring-only real-data capable mode",
             Some(config.symbol.clone()),
             None,
+        );
+        tracing::info!(
+            target: BACM_LOG_TARGET,
+            enabled = bacm_runtime_config.enabled,
+            dry_run = bacm_runtime_config.dry_run,
+            "{} config loaded",
+            BACM_LOG_PREFIX
+        );
+        scan_log.push(
+            "info",
+            "bacm.config.loaded",
+            format!(
+                "{} config loaded: enabled={}, dry_run={}",
+                BACM_LOG_PREFIX, bacm_runtime_config.enabled, bacm_runtime_config.dry_run
+            ),
+            Some(config.symbol.clone()),
+            None,
+        );
+        tracing::info!(
+            target: BACM_LOG_TARGET,
+            enabled_symbols = ?bacm_runtime_config.enabled_symbols(),
+            "{} runtime {}",
+            BACM_LOG_PREFIX,
+            if bacm_runtime_config.enabled { "enabled" } else { "disabled" }
         );
         tracing::info!(
             target: CWM_LOG_TARGET,
@@ -293,6 +328,7 @@ impl AppState {
                 signal_history_service,
                 whale_flow_candidate_history_service,
                 spot_whale_service,
+                binance_alt_contract_service,
             }),
         }
     }
@@ -366,6 +402,7 @@ impl AppState {
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
         self.inner.spot_whale_service.start();
+        self.inner.binance_alt_contract_service.start();
         self.start_discord_auto_push_loop();
         self.start_contract_whale_auto_push_loop();
         self.record_scan_log(
@@ -439,6 +476,7 @@ impl AppState {
 
         self.inner.runtime_started.store(false, Ordering::SeqCst);
         self.inner.connector_manager.stop_all().await;
+        self.inner.binance_alt_contract_service.stop();
         self.inner.spot_whale_service.stop();
         self.inner.snapshot_service.stop();
         self.stop_contract_whale_auto_push_loop();
@@ -707,6 +745,10 @@ impl AppState {
 
     pub fn spot_whale_service(&self) -> SpotWhaleService {
         self.inner.spot_whale_service.clone()
+    }
+
+    pub fn binance_alt_contract_service(&self) -> BinanceAltContractService {
+        self.inner.binance_alt_contract_service.clone()
     }
 
     pub fn market_data_quality(&self) -> crate::market_data::quality::MarketDataQualityTracker {

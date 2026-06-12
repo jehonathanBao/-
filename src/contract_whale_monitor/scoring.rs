@@ -2,7 +2,10 @@ use super::{
     config::{
         contract_whale_runtime_config, ContractWhaleRuntimeConfig, ContractWhaleThresholdProfile,
     },
-    types::{ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleWindowStats},
+    types::{
+        ContractWhaleScoreBreakdown, ContractWhaleSeverity, ContractWhaleSignalType,
+        ContractWhaleWindowStats,
+    },
 };
 
 pub fn score_contract_whale_signal(
@@ -26,12 +29,31 @@ pub fn score_contract_whale_signal_with_profile(
     config: &ContractWhaleRuntimeConfig,
     profile: ContractWhaleThresholdProfile,
 ) -> u8 {
+    score_contract_whale_breakdown_with_profile(stats, signal_type, config, profile)
+        .final_score
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+pub fn score_contract_whale_breakdown_with_profile(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+    profile: ContractWhaleThresholdProfile,
+) -> ContractWhaleScoreBreakdown {
     let thresholds =
         config.thresholds_for_symbol_window_with_profile(&stats.symbol, stats.window_sec, profile);
+    let notional_thresholds = config.notional_thresholds_usd_for_profile(profile);
     let scoring = &config.scoring;
+    let volume_cap = scoring.volume_strength_weight * 0.70;
+    let notional_cap = (scoring.volume_strength_weight - volume_cap).max(0.0);
     let volume_score = if thresholds.s_btc.is_finite() {
-        (stats.total_volume_btc / thresholds.s_btc * scoring.volume_strength_weight)
-            .clamp(0.0, scoring.volume_strength_weight)
+        (stats.total_volume_btc / thresholds.s_btc * volume_cap).clamp(0.0, volume_cap)
+    } else {
+        0.0
+    };
+    let notional_score = if notional_thresholds.s.is_finite() && notional_thresholds.s > 0.0 {
+        (stats.total_notional_usd / notional_thresholds.s * notional_cap).clamp(0.0, notional_cap)
     } else {
         0.0
     };
@@ -53,41 +75,59 @@ pub fn score_contract_whale_signal_with_profile(
     };
     let data_quality_score = (stats.data_quality as f64 / 100.0 * scoring.data_quality_weight)
         .clamp(0.0, scoring.data_quality_weight);
-    let mut score = volume_score
-        + dynamic_score
-        + dominance_score
-        + price_score
-        + exchange_score
-        + data_quality_score
-        + dominant_venue_net_flow_adjustment(stats, thresholds.critical_btc)
-        + oi_context_adjustment(stats);
+    let dominant_venue_score = dominant_venue_net_flow_adjustment(stats, thresholds.critical_btc);
+    let oi_context_score = oi_context_adjustment(stats);
+    let mut penalty_score = 0.0;
 
     if config.active_exchange_count() >= 2
         && stats.exchange_count == 1
         && stats.total_volume_btc >= thresholds.critical_btc
     {
-        score -= scoring.penalties.single_exchange_only;
+        penalty_score += scoring.penalties.single_exchange_only;
     }
     if stats.liquidation_driven {
-        score -= scoring.penalties.liquidation_suspected;
+        penalty_score += scoring.penalties.liquidation_suspected;
     }
     if stats
         .ws_latency_ms
         .is_some_and(|latency| latency > config.data_quality.high_latency_ms)
     {
-        score -= scoring.penalties.websocket_latency_high;
+        penalty_score += scoring.penalties.websocket_latency_high;
     }
     if stats
         .startup_age_ms
         .is_some_and(|age| age < config.data_quality.warmup_ms)
     {
-        score -= scoring.penalties.warmup_period;
+        penalty_score += scoring.penalties.warmup_period;
     }
     if stats.price_jump_anomaly {
-        score -= scoring.penalties.price_jump_anomaly;
+        penalty_score += scoring.penalties.price_jump_anomaly;
     }
 
-    score.round().clamp(0.0, 100.0) as u8
+    let score = volume_score
+        + notional_score
+        + dynamic_score
+        + dominance_score
+        + price_score
+        + exchange_score
+        + data_quality_score
+        + dominant_venue_score
+        + oi_context_score
+        - penalty_score;
+
+    ContractWhaleScoreBreakdown {
+        volume_score: round_score(volume_score),
+        notional_score: round_score(notional_score),
+        dynamic_anomaly_score: round_score(dynamic_score),
+        directional_strength_score: round_score(dominance_score),
+        price_response_score: round_score(price_score),
+        multi_source_score: round_score(exchange_score),
+        data_quality_score: round_score(data_quality_score),
+        dominant_venue_score: round_score(dominant_venue_score),
+        oi_context_score: round_score(oi_context_score),
+        penalty_score: round_score(-penalty_score),
+        final_score: round_score(score.clamp(0.0, 100.0)),
+    }
 }
 
 fn oi_context_adjustment(stats: &ContractWhaleWindowStats) -> f64 {
@@ -161,4 +201,8 @@ fn price_impact_score(
             }
         }
     }
+}
+
+fn round_score(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
 }

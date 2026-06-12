@@ -104,6 +104,11 @@ impl AppConfig {
                 &settings,
             ),
         );
+        crate::binance_alt_contract_monitor::config::set_binance_alt_contract_runtime_config(
+            crate::binance_alt_contract_monitor::config::load_binance_alt_contract_runtime_config_from_settings(
+                &settings,
+            ),
+        );
         crate::runtime::score_config::set_score_runtime_config(
             crate::runtime::score_config::load_score_runtime_config_from_settings(&settings),
         );

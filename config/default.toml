@@ -373,6 +373,74 @@ enabled = true
 15 = 80000000
 60 = 160000000
 
+[binance_alt_contract_monitor]
+enabled = false
+dry_run = true
+symbol_limit = 80
+persistence_path = ".runtime/binance-alt-contract-signals.jsonl"
+exclude_symbols = ["BTCUSDT", "ETHUSDT"]
+whitelist = ["SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "SUIUSDT", "LTCUSDT", "TRXUSDT", "DOTUSDT", "BCHUSDT"]
+blacklist = []
+tier_d_min_signal_score = 88
+
+[binance_alt_contract_monitor.exchanges.binance]
+enabled = true
+
+[binance_alt_contract_monitor.symbol_filter]
+quote_asset = "USDT"
+contract_type = "PERPETUAL"
+status = "TRADING"
+min_24h_quote_volume_usd = 20000000
+
+[binance_alt_contract_monitor.windows]
+trade_windows_sec = [15, 60, 300]
+
+[binance_alt_contract_monitor.dynamic_threshold]
+enabled = true
+lookback_minutes = 60
+min_samples = 20
+high_multiple = 4.0
+critical_multiple = 6.0
+s_multiple = 9.0
+
+[binance_alt_contract_monitor.data_quality]
+min_discord_quality = 70
+warmup_ms = 60000
+heartbeat_stale_ms = 45000
+
+[binance_alt_contract_monitor.discord]
+enabled = true
+dry_run = true
+cooldown_sec = 900
+min_abnormal_score = 85
+min_build_score = 80
+
+[binance_alt_contract_monitor.tier_rules.tier_d]
+discord_min_abnormal_score = 85
+discord_min_build_score = 85
+require_non_liquidation = true
+max_severity_without_build_confirmation = "high"
+
+[binance_alt_contract_monitor.thresholds.a]
+high_notional_usd = 20000000
+critical_notional_usd = 50000000
+s_notional_usd = 120000000
+
+[binance_alt_contract_monitor.thresholds.b]
+high_notional_usd = 10000000
+critical_notional_usd = 25000000
+s_notional_usd = 60000000
+
+[binance_alt_contract_monitor.thresholds.c]
+high_notional_usd = 5000000
+critical_notional_usd = 15000000
+s_notional_usd = 35000000
+
+[binance_alt_contract_monitor.thresholds.d]
+high_notional_usd = 2000000
+critical_notional_usd = 6000000
+s_notional_usd = 15000000
+
 [scoring.toxic_short]
 enabled = true
 windows_sec = [1, 5, 15, 60]

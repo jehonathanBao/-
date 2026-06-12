@@ -272,6 +272,8 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
         15,
         ContractWhaleQualityBaseline {
             dynamic_multiple: Some(10.4),
+            dynamic_baseline_btc: Some(300.0),
+            dynamic_threshold_level: "s".to_string(),
             percentile_level: Some(99.9),
         },
     )]);
@@ -317,6 +319,8 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].severity, ContractWhaleSeverity::S);
     assert_eq!(response.items[0].dynamic_multiple, Some(10.4));
+    assert_eq!(response.items[0].dynamic_baseline_btc, Some(300.0));
+    assert_eq!(response.items[0].dynamic_threshold_level, "s");
     assert_eq!(response.items[0].percentile_level, Some(99.9));
     assert!(response.items[0].multi_exchange_confirmed);
     assert_eq!(response.items[0].liquidation_long_btc, 1_200.0);
@@ -379,6 +383,8 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
             5,
             ContractWhaleQualityBaseline {
                 dynamic_multiple: Some(7.2),
+                dynamic_baseline_btc: Some(200.0),
+                dynamic_threshold_level: "critical".to_string(),
                 percentile_level: Some(99.5),
             },
         ),
@@ -386,6 +392,8 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
             15,
             ContractWhaleQualityBaseline {
                 dynamic_multiple: Some(10.4),
+                dynamic_baseline_btc: Some(300.0),
+                dynamic_threshold_level: "s".to_string(),
                 percentile_level: Some(99.9),
             },
         ),

@@ -5,17 +5,18 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, calibration_routes, contract_whale_routes, dev_alert_routes,
-        discord_notification_routes, durable_archive_dryrun_routes,
-        durable_archive_write_audit_routes, durable_archive_write_routes,
-        liquidation_toxicity_routes, main_force_event_routes, manual_apply_dryrun_routes,
-        manual_apply_evidence_pack_routes, manual_apply_governance_routes,
-        manual_apply_runbook_routes, manual_audit_story_routes, manual_evidence_freshness_routes,
-        manual_governance_index_routes, manual_parameter_export_routes, manual_signoff_routes,
-        manual_startup_routes, orderbook_wall_interpretation_routes,
-        orderbook_wall_lifecycle_routes, parameter_patch_diff_routes, parameter_review_routes,
-        routes, runtime_control_routes, scan_log_routes, score_routes, security, spot_whale_routes,
-        static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
+        active_trade_toxicity_routes, binance_alt_contract_routes, calibration_routes,
+        contract_whale_routes, dev_alert_routes, discord_notification_routes,
+        durable_archive_dryrun_routes, durable_archive_write_audit_routes,
+        durable_archive_write_routes, liquidation_toxicity_routes, main_force_event_routes,
+        manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
+        manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
+        manual_evidence_freshness_routes, manual_governance_index_routes,
+        manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
+        orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
+        parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
+        scan_log_routes, score_routes, security, spot_whale_routes, static_files,
+        structural_toxicity_routes, toxic_governance_ledger_routes,
         toxic_governance_proposal_routes, toxic_governance_review_pack_routes,
         toxic_governance_signoff_pack_routes, toxic_markout_routes, toxic_quality_scorecard_routes,
         toxic_replay_routes, toxic_signal_alert_preview_routes, toxic_signal_detail_routes,
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
         .route("/dashboard", get(static_files::spa))
+        .route("/alt-contract-monitor", get(static_files::spa))
         .route("/contract-whale", get(static_files::spa))
         .route("/spot-monitor", get(static_files::spa))
         .route("/spot-whale", get(static_files::spa))
@@ -104,6 +106,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/contract-whale/metrics",
             get(contract_whale_routes::contract_whale_metrics_route),
+        )
+        .route(
+            "/api/binance-alt-contract/summary",
+            get(binance_alt_contract_routes::binance_alt_contract_summary_route),
+        )
+        .route(
+            "/api/binance-alt-contract/latest",
+            get(binance_alt_contract_routes::binance_alt_contract_latest_route),
+        )
+        .route(
+            "/api/binance-alt-contract/history",
+            get(binance_alt_contract_routes::binance_alt_contract_history_route),
         )
         .route(
             "/api/spot-whale/summary",

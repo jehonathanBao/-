@@ -21,16 +21,21 @@ use crate::{
         log_events,
         merge::merge_contract_whale_signals,
         types::{
-            ContractWhaleDirection, ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
-            ContractWhaleLiquidationContext, ContractWhaleMarketCapability,
-            ContractWhaleMarketContext, ContractWhaleMarketType, ContractWhalePercentileThreshold,
-            ContractWhalePlatformCapability, ContractWhaleResponseMeta, ContractWhaleSeverity,
-            ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSummary,
+            ContractWhaleDirection, ContractWhaleDiscordDryRunStats, ContractWhaleExchangeStatus,
+            ContractWhaleLatestResponse, ContractWhaleLiquidationContext,
+            ContractWhaleMarketCapability, ContractWhaleMarketContext,
+            ContractWhaleMarketStructureLite, ContractWhaleMarketType,
+            ContractWhalePercentileThreshold, ContractWhalePlatformCapability,
+            ContractWhaleResponseMeta, ContractWhaleSeverity, ContractWhaleSignal,
+            ContractWhaleSignalType, ContractWhaleSpotConfirmationContext, ContractWhaleSummary,
             ContractWhaleTrend60s, ContractWhaleWindowStats, ExchangeFlowContribution,
         },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
     normalizers::trade::now_ms,
+    spot_whale_monitor::types::{
+        SpotWhaleDirection, SpotWhaleSeverity, SpotWhaleSignal, SpotWhaleSignalType,
+    },
     storage::contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
     types::{
         flow::{FlowState, FlowWindow, VenueFlowBreakdown},
@@ -59,6 +64,8 @@ type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_jso
 #[derive(Debug, Clone, Default)]
 pub struct ContractWhaleQualityBaseline {
     pub dynamic_multiple: Option<f64>,
+    pub dynamic_baseline_btc: Option<f64>,
+    pub dynamic_threshold_level: String,
     pub percentile_level: Option<f64>,
 }
 
@@ -102,7 +109,7 @@ pub async fn contract_whale_summary_route(
         .contract_whale_store()
         .map(|store| load_market_context(&store, &flow_state, &symbol))
         .unwrap_or_default();
-    let response = build_contract_whale_response_with_runtime_and_baselines(
+    let mut response = build_contract_whale_response_with_runtime_and_baselines(
         &flow_state,
         &symbol,
         50,
@@ -117,6 +124,7 @@ pub async fn contract_whale_summary_route(
             booted_at_ms: Some(state.booted_at_ms()),
         },
     );
+    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
     let mut summary = response.summary;
     summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
     Ok(Json(serde_json::json!(summary)))
@@ -157,30 +165,30 @@ pub async fn contract_whale_latest_route(
     if let Some(meta) =
         contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
     {
-        return Ok(Json(serde_json::json!(
-            build_contract_whale_history_response(
-                Vec::new(),
-                &symbol,
-                limit,
-                None,
-                config.enabled,
-                config.dry_run,
-                Some(meta),
-            )
-        )));
+        let mut response = build_contract_whale_history_response(
+            Vec::new(),
+            &symbol,
+            limit,
+            None,
+            config.enabled,
+            config.dry_run,
+            Some(meta),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        return Ok(Json(serde_json::json!(response)));
     }
     if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
-        return Ok(Json(serde_json::json!(
-            build_contract_whale_response_with_runtime(
-                &flow_state,
-                &symbol,
-                limit,
-                None,
-                false,
-                config.dry_run,
-                Some(&venue_health),
-            )
-        )));
+        let mut response = build_contract_whale_response_with_runtime(
+            &flow_state,
+            &symbol,
+            limit,
+            None,
+            false,
+            config.dry_run,
+            Some(&venue_health),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        return Ok(Json(serde_json::json!(response)));
     }
     if let Some(store) = store.as_ref() {
         match store.query_contract_whale_signals(&ContractWhaleSignalQuery {
@@ -195,7 +203,7 @@ pub async fn contract_whale_latest_route(
                 } else {
                     now_ms()
                 };
-                return Ok(Json(serde_json::json!(filter_latest_response_by_exchange(
+                let mut response = filter_latest_response_by_exchange(
                     build_contract_whale_items_response(
                         items,
                         &symbol,
@@ -206,12 +214,14 @@ pub async fn contract_whale_latest_route(
                             &flow_state,
                             Some(&venue_health),
                             config.enabled,
-                            now
+                            now,
                         ),
                         trend_60s_from_flow_state(&flow_state, &symbol, now),
                     ),
                     exchange_filter.as_deref(),
-                ))));
+                );
+                enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+                return Ok(Json(serde_json::json!(response)));
             }
             Ok(_) => {}
             Err(error) => {
@@ -236,7 +246,7 @@ pub async fn contract_whale_latest_route(
         .as_ref()
         .map(|store| load_market_context(store, &flow_state, &symbol))
         .unwrap_or_default();
-    Ok(Json(serde_json::json!(filter_latest_response_by_exchange(
+    let mut response = filter_latest_response_by_exchange(
         build_contract_whale_response_with_runtime_and_baselines(
             &flow_state,
             &symbol,
@@ -253,7 +263,9 @@ pub async fn contract_whale_latest_route(
             },
         ),
         exchange_filter.as_deref(),
-    ))))
+    );
+    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+    Ok(Json(serde_json::json!(response)))
 }
 
 pub fn build_contract_whale_response(
@@ -280,45 +292,49 @@ pub async fn contract_whale_history_route(
     if let Some(meta) =
         contract_market_mismatch_meta(&runtime_config, history_query.exchange.as_deref())
     {
-        return Ok(Json(serde_json::json!(
-            build_contract_whale_history_response(
-                Vec::new(),
-                &symbol_for_filter,
-                history_query.limit,
-                None,
-                config.enabled,
-                config.dry_run,
-                Some(meta),
-            )
-        )));
+        let mut response = build_contract_whale_history_response(
+            Vec::new(),
+            &symbol_for_filter,
+            history_query.limit,
+            None,
+            config.enabled,
+            config.dry_run,
+            Some(meta),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol_for_filter);
+        return Ok(Json(serde_json::json!(response)));
     }
     if !config.enabled {
-        return Ok(Json(serde_json::json!(
-            build_contract_whale_history_response(
-                Vec::new(),
-                &symbol_for_filter,
-                history_query.limit,
-                None,
-                false,
-                config.dry_run,
-                None,
-            )
-        )));
+        let mut response = build_contract_whale_history_response(
+            Vec::new(),
+            &symbol_for_filter,
+            history_query.limit,
+            None,
+            false,
+            config.dry_run,
+            None,
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol_for_filter);
+        return Ok(Json(serde_json::json!(response)));
     }
     if let Some(store) = state.contract_whale_store() {
         match store.query_contract_whale_signals(&history_query) {
             Ok(items) => {
-                return Ok(Json(serde_json::json!(
-                    build_contract_whale_history_response(
-                        items,
-                        &symbol_for_filter,
-                        history_query.limit,
-                        None,
-                        config.enabled,
-                        config.dry_run,
-                        None,
-                    )
-                )));
+                let mut response = build_contract_whale_history_response(
+                    items,
+                    &symbol_for_filter,
+                    history_query.limit,
+                    None,
+                    config.enabled,
+                    config.dry_run,
+                    None,
+                );
+                enrich_contract_whale_response_with_state(
+                    &mut response,
+                    &state,
+                    &symbol_for_filter,
+                );
+                return Ok(Json(serde_json::json!(response)));
             }
             Err(error) => {
                 tracing::warn!(
@@ -330,17 +346,344 @@ pub async fn contract_whale_history_route(
             }
         }
     }
-    Ok(Json(serde_json::json!(
-        build_contract_whale_history_response(
-            Vec::new(),
-            &symbol_for_filter,
-            history_query.limit,
-            None,
-            config.enabled,
-            config.dry_run,
-            None,
-        )
-    )))
+    let mut response = build_contract_whale_history_response(
+        Vec::new(),
+        &symbol_for_filter,
+        history_query.limit,
+        None,
+        config.enabled,
+        config.dry_run,
+        None,
+    );
+    enrich_contract_whale_response_with_state(&mut response, &state, &symbol_for_filter);
+    Ok(Json(serde_json::json!(response)))
+}
+
+fn enrich_contract_whale_response_with_state(
+    response: &mut ContractWhaleLatestResponse,
+    state: &AppState,
+    symbol: &str,
+) {
+    let spot_context = spot_confirmation_context_from_state(state, symbol);
+    enrich_contract_whale_response(response, &spot_context);
+}
+
+fn enrich_contract_whale_response(
+    response: &mut ContractWhaleLatestResponse,
+    spot_context: &ContractWhaleSpotConfirmationContext,
+) {
+    for signal in &mut response.items {
+        signal.spot_confirmation = spot_confirmation_for_signal(signal, spot_context);
+    }
+    response.summary.discord_dry_run_stats =
+        discord_dry_run_stats(&response.items, response.summary.updated_at_ms);
+    response.summary.market_structure_lite = market_structure_lite_from_items(
+        &response.items,
+        spot_context,
+        response.summary.overall_data_quality,
+    );
+}
+
+fn spot_confirmation_context_from_state(
+    state: &AppState,
+    symbol: &str,
+) -> ContractWhaleSpotConfirmationContext {
+    let response = state.spot_whale_service().latest(symbol, 1);
+    if !response.summary.enabled {
+        return ContractWhaleSpotConfirmationContext {
+            status: "disabled".to_string(),
+            confirmation_type: "spot_monitor_disabled".to_string(),
+            direction: "neutral".to_string(),
+            ..Default::default()
+        };
+    }
+    let Some(signal) = response.items.first() else {
+        return ContractWhaleSpotConfirmationContext {
+            status: "no_spot_sample".to_string(),
+            confirmation_type: "unavailable".to_string(),
+            direction: "neutral".to_string(),
+            ..Default::default()
+        };
+    };
+    spot_confirmation_context_from_signal(signal)
+}
+
+fn spot_confirmation_context_from_signal(
+    signal: &SpotWhaleSignal,
+) -> ContractWhaleSpotConfirmationContext {
+    ContractWhaleSpotConfirmationContext {
+        status: "available".to_string(),
+        confirmation_type: "spot_context_only".to_string(),
+        direction: spot_direction_key(signal.direction).to_string(),
+        score: signal.score,
+        latest_signal_id: Some(signal.id.clone()),
+        latest_signal_at: Some(signal.ts),
+        signal_type: Some(spot_signal_type_key(signal.signal_type).to_string()),
+        severity: Some(spot_severity_key(signal.severity).to_string()),
+        total_volume_btc: Some(round_for_route(signal.total_volume_base, 3)),
+        net_volume_btc: Some(round_for_route(signal.net_volume_base, 3)),
+        dominance: Some(round_for_route(signal.dominance, 4)),
+        coinbase_premium_pct: signal
+            .coinbase_premium_pct
+            .map(|value| round_for_route(value, 4)),
+        final_result: Some(signal.final_result.clone()),
+    }
+}
+
+fn spot_confirmation_for_signal(
+    signal: &ContractWhaleSignal,
+    base: &ContractWhaleSpotConfirmationContext,
+) -> ContractWhaleSpotConfirmationContext {
+    if base.status != "available" {
+        return base.clone();
+    }
+    let contract_direction = direction_key(signal.direction);
+    let spot_direction = base.direction.as_str();
+    let confirmation_type = match (contract_direction, spot_direction) {
+        ("buy", "buy") | ("sell", "sell") => "confirms_contract_direction",
+        ("sell", "absorption") => "spot_absorption_against_contract_sell",
+        ("buy", "suppression") => "spot_resistance_against_contract_buy",
+        ("buy", "sell") | ("sell", "buy") => "spot_divergence",
+        _ => "spot_context_only",
+    };
+    let status = match confirmation_type {
+        "confirms_contract_direction"
+        | "spot_absorption_against_contract_sell"
+        | "spot_resistance_against_contract_buy" => "confirmed",
+        "spot_divergence" => "divergent",
+        _ => "context",
+    };
+    let mut context = base.clone();
+    context.status = status.to_string();
+    context.confirmation_type = confirmation_type.to_string();
+    context
+}
+
+fn market_structure_lite_from_items(
+    items: &[ContractWhaleSignal],
+    spot_context: &ContractWhaleSpotConfirmationContext,
+    data_quality: u8,
+) -> ContractWhaleMarketStructureLite {
+    let Some(signal) = items.iter().max_by_key(|signal| signal.score) else {
+        return ContractWhaleMarketStructureLite {
+            status: "calm".to_string(),
+            regime_type: "unclear".to_string(),
+            data_quality,
+            reason: "暂无 CWM 主力合约信号，结构评分保持观察。".to_string(),
+            ..Default::default()
+        };
+    };
+    let contract_score = signal.score;
+    let spot_score = if spot_context.status == "disabled" || spot_context.status == "no_spot_sample"
+    {
+        0
+    } else {
+        spot_context.score
+    };
+    let cross_confirm_score = cross_confirm_score(&spot_context.confirmation_type);
+    let structure_raw =
+        0.4 * spot_score as f64 + 0.4 * contract_score as f64 + 0.2 * cross_confirm_score as f64;
+    let main_force_score = structure_raw.round().clamp(0.0, 100.0) as u8;
+    let extreme_impact_score = extreme_impact_score(signal);
+    let structure_bias = structure_bias(signal, &spot_context.confirmation_type);
+    let main_force_confirmed =
+        main_force_score >= 75 && data_quality >= 70 && cross_confirm_score >= 60;
+    let extreme_impact_confirmed = extreme_impact_score >= 85 && data_quality >= 70;
+    let regime_type = market_regime_type(signal, &spot_context.confirmation_type);
+    let status = if main_force_confirmed || extreme_impact_confirmed {
+        "confirmed"
+    } else if main_force_score >= 55 || extreme_impact_score >= 65 {
+        "watch"
+    } else {
+        "calm"
+    };
+    ContractWhaleMarketStructureLite {
+        status: status.to_string(),
+        regime_type: regime_type.to_string(),
+        main_force_score,
+        extreme_impact_score,
+        structure_bias,
+        confidence: market_structure_confidence(data_quality, cross_confirm_score, signal),
+        data_quality,
+        spot_score,
+        contract_score,
+        cross_confirm_score,
+        main_force_confirmed,
+        extreme_impact_confirmed,
+        reason: market_structure_reason(regime_type, &spot_context.confirmation_type),
+    }
+}
+
+fn discord_dry_run_stats(
+    items: &[ContractWhaleSignal],
+    now: i64,
+) -> ContractWhaleDiscordDryRunStats {
+    let from = now.saturating_sub(60 * 60 * 1000);
+    let mut stats = ContractWhaleDiscordDryRunStats::default();
+    for signal in items.iter().filter(|signal| signal.ts >= from) {
+        stats.signals_1h += 1;
+        match signal.severity {
+            ContractWhaleSeverity::High => stats.high_1h += 1,
+            ContractWhaleSeverity::Critical => stats.critical_1h += 1,
+            ContractWhaleSeverity::S => stats.s_1h += 1,
+            ContractWhaleSeverity::Calm | ContractWhaleSeverity::Medium => {}
+        }
+        if signal.discord_would_send || signal.discord_eligible {
+            stats.would_send_1h += 1;
+            continue;
+        }
+        let reason = signal.discord_reason.to_ascii_lowercase();
+        if reason.contains("cooldown") || reason.contains("duplicate") {
+            stats.skipped_cooldown_1h += 1;
+        } else if reason.contains("data_quality") {
+            stats.skipped_data_quality_1h += 1;
+        } else if reason.contains("warmup") {
+            stats.skipped_warmup_1h += 1;
+        } else if reason.contains("medium") || reason.contains("display") {
+            stats.skipped_display_only_1h += 1;
+        } else {
+            stats.skipped_low_score_1h += 1;
+        }
+    }
+    stats
+}
+
+fn cross_confirm_score(confirmation_type: &str) -> u8 {
+    match confirmation_type {
+        "confirms_contract_direction" => 75,
+        "spot_absorption_against_contract_sell" | "spot_resistance_against_contract_buy" => 65,
+        "spot_divergence" => 25,
+        "spot_context_only" => 45,
+        _ => 0,
+    }
+}
+
+fn extreme_impact_score(signal: &ContractWhaleSignal) -> u8 {
+    let base = match signal.severity {
+        ContractWhaleSeverity::S => signal.score,
+        ContractWhaleSeverity::Critical => signal.score.saturating_sub(5),
+        ContractWhaleSeverity::High => signal.score.saturating_sub(15),
+        ContractWhaleSeverity::Medium => signal.score.saturating_sub(25),
+        ContractWhaleSeverity::Calm => 0,
+    };
+    if signal.liquidation_suspected {
+        base.saturating_add(8).min(100)
+    } else {
+        base
+    }
+}
+
+fn structure_bias(signal: &ContractWhaleSignal, confirmation_type: &str) -> i16 {
+    let base = match signal.direction {
+        ContractWhaleDirection::Buy => signal.score as i16,
+        ContractWhaleDirection::Sell => -(signal.score as i16),
+        ContractWhaleDirection::Absorption => 25,
+        ContractWhaleDirection::Suppression => -25,
+    };
+    let adjusted = match confirmation_type {
+        "confirms_contract_direction" => base,
+        "spot_absorption_against_contract_sell" => 20,
+        "spot_resistance_against_contract_buy" => -20,
+        "spot_divergence" => base / 2,
+        _ => base * 2 / 3,
+    };
+    adjusted.clamp(-100, 100)
+}
+
+fn market_regime_type(signal: &ContractWhaleSignal, confirmation_type: &str) -> &'static str {
+    if signal.liquidation_suspected {
+        return match signal.direction {
+            ContractWhaleDirection::Sell => "long_liquidation_cascade",
+            ContractWhaleDirection::Buy => "contract_short_squeeze",
+            _ => "extreme_contract_flow",
+        };
+    }
+    match confirmation_type {
+        "spot_absorption_against_contract_sell" => "downside_absorption",
+        "spot_resistance_against_contract_buy" => "upside_resistance",
+        "confirms_contract_direction" => match signal.direction {
+            ContractWhaleDirection::Buy => "main_force_long_build",
+            ContractWhaleDirection::Sell => "main_force_short_build",
+            _ => "range_rotation",
+        },
+        "spot_divergence" => "range_rotation",
+        _ => match signal.signal_type {
+            ContractWhaleSignalType::DownsideAbsorption => "downside_absorption",
+            ContractWhaleSignalType::UpsideSuppression => "upside_resistance",
+            ContractWhaleSignalType::AggressiveBuy | ContractWhaleSignalType::AggressiveSell => {
+                "contract_flow_shock"
+            }
+        },
+    }
+}
+
+fn market_structure_confidence(
+    data_quality: u8,
+    cross_confirm_score: u8,
+    signal: &ContractWhaleSignal,
+) -> u8 {
+    let multi_source = if signal.multi_exchange_confirmed {
+        80
+    } else {
+        45
+    };
+    (0.35 * data_quality as f64
+        + 0.30 * cross_confirm_score as f64
+        + 0.20 * multi_source as f64
+        + 0.15 * signal.score as f64)
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+fn market_structure_reason(regime_type: &str, confirmation_type: &str) -> String {
+    match regime_type {
+        "main_force_long_build" => "合约主动买入与现货方向确认，主力建多概率提高。".to_string(),
+        "main_force_short_build" => "合约主动卖出与现货方向确认，主力建空概率提高。".to_string(),
+        "downside_absorption" => "合约卖压出现时现货呈承接/吸收，暂按下方吸收观察。".to_string(),
+        "upside_resistance" => "合约买盘出现时现货呈压制/派发，暂按上方压制观察。".to_string(),
+        "long_liquidation_cascade" | "contract_short_squeeze" => {
+            "疑似清算驱动，极端冲击升高，但不直接确认主力建仓。".to_string()
+        }
+        _ if confirmation_type == "spot_divergence" => {
+            "现货与合约方向分歧，主力结构确认度降低。".to_string()
+        }
+        _ => "当前主要是合约成交流冲击，现货确认不足，保持观察。".to_string(),
+    }
+}
+
+fn spot_direction_key(direction: SpotWhaleDirection) -> &'static str {
+    match direction {
+        SpotWhaleDirection::Buy => "buy",
+        SpotWhaleDirection::Sell => "sell",
+        SpotWhaleDirection::Absorption => "absorption",
+        SpotWhaleDirection::Suppression => "suppression",
+        SpotWhaleDirection::Dislocation => "dislocation",
+    }
+}
+
+fn spot_signal_type_key(signal_type: SpotWhaleSignalType) -> &'static str {
+    match signal_type {
+        SpotWhaleSignalType::SpotAggressiveBuy => "spot_aggressive_buy",
+        SpotWhaleSignalType::SpotAggressiveSell => "spot_aggressive_sell",
+        SpotWhaleSignalType::SpotDownsideAbsorption => "spot_downside_absorption",
+        SpotWhaleSignalType::SpotUpsideSuppression => "spot_upside_suppression",
+        SpotWhaleSignalType::SpotExchangeDislocation => "spot_exchange_dislocation",
+    }
+}
+
+fn spot_severity_key(severity: SpotWhaleSeverity) -> &'static str {
+    match severity {
+        SpotWhaleSeverity::Calm => "calm",
+        SpotWhaleSeverity::Medium => "medium",
+        SpotWhaleSeverity::High => "high",
+        SpotWhaleSeverity::Critical => "critical",
+        SpotWhaleSeverity::S => "s",
+    }
+}
+
+fn round_for_route(value: f64, decimals: u32) -> f64 {
+    let factor = 10_f64.powi(decimals as i32);
+    (value * factor).round() / factor
 }
 
 pub async fn contract_whale_metrics_route(State(state): State<AppState>) -> impl IntoResponse {
@@ -790,6 +1133,10 @@ fn stats_from_flow_window(
         dominant_venue_net_contribution_share: dominant_venue_net_contribution_share(&exchanges),
         exchanges,
         dynamic_multiple: baseline.and_then(|item| item.dynamic_multiple),
+        dynamic_baseline_btc: baseline.and_then(|item| item.dynamic_baseline_btc),
+        dynamic_threshold_level: baseline
+            .map(|item| item.dynamic_threshold_level.clone())
+            .unwrap_or_default(),
         percentile_level: baseline.and_then(|item| item.percentile_level),
         multi_exchange_confirmed: false,
         liquidation_context,
@@ -867,18 +1214,15 @@ pub(crate) fn load_quality_baselines(
             let window_ms = (window_sec as i64).saturating_mul(1000);
             let dynamic_to = now.saturating_sub(window_ms);
             let dynamic_from = dynamic_to.saturating_sub(60 * 60 * 1000);
-            let dynamic_multiple =
+            let dynamic_baseline_btc =
                 match store.list_contract_flow_buckets_between(symbol, dynamic_from, dynamic_to) {
-                    Ok(buckets) => dynamic_multiple_for_volume(
-                        current_total,
-                        historical_window_average_btc_with_min_samples(
-                            &buckets,
-                            symbol,
-                            window_sec,
-                            dynamic_from,
-                            dynamic_to,
-                            min_dynamic_samples,
-                        ),
+                    Ok(buckets) => historical_window_average_btc_with_min_samples(
+                        &buckets,
+                        symbol,
+                        window_sec,
+                        dynamic_from,
+                        dynamic_to,
+                        min_dynamic_samples,
                     ),
                     Err(error) => {
                         tracing::warn!(
@@ -891,12 +1235,17 @@ pub(crate) fn load_quality_baselines(
                         None
                     }
                 };
+            let dynamic_multiple = dynamic_multiple_for_volume(current_total, dynamic_baseline_btc);
             let percentile_level =
                 latest_percentile_level(store, symbol, window_sec, current_total, now);
+            let dynamic_threshold_level =
+                dynamic_threshold_level(dynamic_multiple, percentile_level);
             Some((
                 window_sec,
                 ContractWhaleQualityBaseline {
                     dynamic_multiple,
+                    dynamic_baseline_btc,
+                    dynamic_threshold_level,
                     percentile_level,
                 },
             ))
@@ -928,6 +1277,26 @@ fn latest_percentile_level(
         }
     };
     percentile_level_for_volume(current_total, threshold.as_ref())
+}
+
+fn dynamic_threshold_level(dynamic_multiple: Option<f64>, percentile_level: Option<f64>) -> String {
+    if dynamic_multiple.is_some_and(|value| value >= 10.0)
+        || percentile_level.is_some_and(|value| value >= 99.9)
+    {
+        "s".to_string()
+    } else if dynamic_multiple.is_some_and(|value| value >= 7.0)
+        || percentile_level.is_some_and(|value| value >= 99.5)
+    {
+        "critical".to_string()
+    } else if dynamic_multiple.is_some_and(|value| value >= 5.0)
+        || percentile_level.is_some_and(|value| value >= 99.0)
+    {
+        "high".to_string()
+    } else if dynamic_multiple.is_some_and(|value| value >= 4.0) {
+        "watch".to_string()
+    } else {
+        "normal".to_string()
+    }
 }
 
 fn refresh_percentile_threshold(
@@ -1298,6 +1667,14 @@ fn disabled_summary(
         warmup_until_ms: None,
         warmup_remaining_ms: None,
         trend_60s,
+        discord_dry_run_stats: ContractWhaleDiscordDryRunStats::default(),
+        market_structure_lite: ContractWhaleMarketStructureLite {
+            status: "disabled".to_string(),
+            regime_type: "unclear".to_string(),
+            data_quality: 0,
+            reason: "CWM 未启用，Market Structure Lite 不计算。".to_string(),
+            ..Default::default()
+        },
         exchanges,
         platforms: build_platform_capabilities(&runtime_config),
     }
@@ -1382,6 +1759,12 @@ fn build_summary(
         warmup_until_ms: warmup.until_ms,
         warmup_remaining_ms: warmup.remaining_ms,
         trend_60s,
+        discord_dry_run_stats: discord_dry_run_stats(items, now),
+        market_structure_lite: market_structure_lite_from_items(
+            items,
+            &ContractWhaleSpotConfirmationContext::default(),
+            overall_data_quality,
+        ),
         exchanges,
         platforms: build_platform_capabilities(&runtime_config),
     }

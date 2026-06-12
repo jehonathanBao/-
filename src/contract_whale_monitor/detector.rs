@@ -3,11 +3,11 @@ use super::{
         contract_whale_runtime_config, ContractWhaleRuntimeConfig, ThresholdProfileResolution,
     },
     log_events,
-    scoring::{discord_gate, score_contract_whale_signal_with_profile},
+    scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
     types::{
         ContractWhaleActiveSourceEntry, ContractWhaleActiveSources, ContractWhaleDirection,
-        ContractWhaleMarketType, ContractWhaleSeverity, ContractWhaleSignal,
-        ContractWhaleSignalType, ContractWhaleWindowStats,
+        ContractWhaleMarketType, ContractWhalePriceResponseType, ContractWhaleSeverity,
+        ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -36,19 +36,21 @@ pub fn detect_contract_whale_signal_with_config(
     if scoring_stats.total_volume_btc <= 0.0 || scoring_stats.data_quality < 50 {
         return None;
     }
-    let signal_type = classify_signal_type(&scoring_stats)?;
+    let price_response_type = classify_price_response(&scoring_stats);
+    let signal_type = classify_signal_type(&scoring_stats, price_response_type)?;
     let liquidation_suspected = liquidation_suspected(&scoring_stats, config);
     scoring_stats.liquidation_driven = liquidation_suspected;
     let severity = classify_severity(&scoring_stats, signal_type, config, &resolution);
     if severity == ContractWhaleSeverity::Calm {
         return None;
     }
-    let score = score_contract_whale_signal_with_profile(
+    let score_breakdown = score_contract_whale_breakdown_with_profile(
         &scoring_stats,
         signal_type,
         config,
         resolution.profile,
     );
+    let score = score_breakdown.final_score.round().clamp(0.0, 100.0) as u8;
     let multi_exchange_confirmed =
         multi_exchange_confirmed_with_config(&scoring_stats, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
@@ -85,6 +87,10 @@ pub fn detect_contract_whale_signal_with_config(
         total_notional_usd: round(stats.total_notional_usd, 2),
         dominance: round(stats.dominance, 4),
         price_move_pct: scoring_stats.price_move_pct.map(|value| round(value, 4)),
+        price_move_5s_pct: price_move_for_window(&scoring_stats, 5),
+        price_move_15s_pct: price_move_for_window(&scoring_stats, 15),
+        price_move_30s_pct: price_move_for_window(&scoring_stats, 30),
+        price_response_type,
         main_exchange: scoring_stats.main_exchange.clone(),
         market_type: ContractWhaleMarketType::Perp,
         source_role: signal_source_role(&scoring_stats, config),
@@ -93,6 +99,10 @@ pub fn detect_contract_whale_signal_with_config(
             .dominant_venue_net_contribution_share
             .map(|value| round(value, 4)),
         dynamic_multiple: scoring_stats.dynamic_multiple.map(|value| round(value, 3)),
+        dynamic_baseline_btc: scoring_stats
+            .dynamic_baseline_btc
+            .map(|value| round(value, 3)),
+        dynamic_threshold_level: scoring_stats.dynamic_threshold_level.clone(),
         percentile_level: scoring_stats.percentile_level.map(|value| round(value, 1)),
         multi_exchange_confirmed,
         liquidation_suspected,
@@ -125,16 +135,19 @@ pub fn detect_contract_whale_signal_with_config(
             .map(|value| round(value, 8)),
         funding_bias: scoring_stats.market_context.funding_bias.clone(),
         data_quality: scoring_stats.data_quality,
+        score_breakdown,
         threshold_profile: resolution.profile_name.clone(),
         threshold_profile_reason: resolution.reason.clone(),
         configured_contract_sources: resolution.configured_keys(),
         eligible_contract_sources: resolution.eligible_keys(),
         active_contract_sources: resolution.active_keys(),
         active_sources,
+        spot_confirmation: Default::default(),
         discord_eligible,
         discord_sent: false,
         discord_sent_at: None,
         discord_reason,
+        discord_would_send: discord_eligible,
         final_result: final_result_text(signal_type, liquidation_suspected),
         read_only: true,
         analysis_only: true,
@@ -148,6 +161,13 @@ pub fn detect_contract_whale_signal_with_config(
         window_sec = signal.window_sec,
         severity = ?signal.severity,
         score = signal.score,
+        volume_score = signal.score_breakdown.volume_score,
+        dynamic_baseline_btc = signal.dynamic_baseline_btc,
+        dynamic_threshold_level = signal.dynamic_threshold_level.as_str(),
+        dynamic_anomaly_score = signal.score_breakdown.dynamic_anomaly_score,
+        directional_strength_score = signal.score_breakdown.directional_strength_score,
+        price_response_score = signal.score_breakdown.price_response_score,
+        penalty_score = signal.score_breakdown.penalty_score,
         discord_eligible = signal.discord_eligible,
         "{} signal generated",
         LOG_PREFIX
@@ -155,23 +175,53 @@ pub fn detect_contract_whale_signal_with_config(
     Some(signal)
 }
 
-fn classify_signal_type(stats: &ContractWhaleWindowStats) -> Option<ContractWhaleSignalType> {
-    let price_move_pct = stats.price_move_pct.unwrap_or(0.0);
-    let reversal = stats.price_reversal_ratio.unwrap_or(0.0);
+fn classify_signal_type(
+    stats: &ContractWhaleWindowStats,
+    price_response_type: ContractWhalePriceResponseType,
+) -> Option<ContractWhaleSignalType> {
+    match price_response_type {
+        ContractWhalePriceResponseType::DownsideAbsorption => {
+            return Some(ContractWhaleSignalType::DownsideAbsorption);
+        }
+        ContractWhalePriceResponseType::UpsideResistance => {
+            return Some(ContractWhaleSignalType::UpsideSuppression);
+        }
+        ContractWhalePriceResponseType::TrendFollowUp
+        | ContractWhalePriceResponseType::TrendFollowDown
+        | ContractWhalePriceResponseType::NoClearResponse => {}
+    }
     if stats.net_volume_btc > 0.0 {
-        if stats.dominance >= 0.60 && (price_move_pct < 0.05 || reversal >= 0.50) {
-            Some(ContractWhaleSignalType::UpsideSuppression)
-        } else {
-            Some(ContractWhaleSignalType::AggressiveBuy)
-        }
+        Some(ContractWhaleSignalType::AggressiveBuy)
     } else if stats.net_volume_btc < 0.0 {
-        if stats.dominance >= 0.60 && (price_move_pct > -0.05 || reversal >= 0.50) {
-            Some(ContractWhaleSignalType::DownsideAbsorption)
-        } else {
-            Some(ContractWhaleSignalType::AggressiveSell)
-        }
+        Some(ContractWhaleSignalType::AggressiveSell)
     } else {
         None
+    }
+}
+
+fn classify_price_response(stats: &ContractWhaleWindowStats) -> ContractWhalePriceResponseType {
+    let Some(price_move_pct) = stats.price_move_pct else {
+        return ContractWhalePriceResponseType::NoClearResponse;
+    };
+    let reversal = stats.price_reversal_ratio.unwrap_or(0.0);
+    if stats.net_volume_btc > 0.0 {
+        if stats.dominance >= 0.60 && price_move_pct >= 0.12 {
+            ContractWhalePriceResponseType::TrendFollowUp
+        } else if stats.dominance >= 0.60 && (price_move_pct < 0.05 || reversal >= 0.50) {
+            ContractWhalePriceResponseType::UpsideResistance
+        } else {
+            ContractWhalePriceResponseType::NoClearResponse
+        }
+    } else if stats.net_volume_btc < 0.0 {
+        if stats.dominance >= 0.60 && price_move_pct <= -0.12 {
+            ContractWhalePriceResponseType::TrendFollowDown
+        } else if stats.dominance >= 0.60 && (price_move_pct > -0.05 || reversal >= 0.50) {
+            ContractWhalePriceResponseType::DownsideAbsorption
+        } else {
+            ContractWhalePriceResponseType::NoClearResponse
+        }
+    } else {
+        ContractWhalePriceResponseType::NoClearResponse
     }
 }
 
@@ -576,6 +626,14 @@ fn snapshot_market_status(
     } else {
         "disabled".to_string()
     }
+}
+
+fn price_move_for_window(stats: &ContractWhaleWindowStats, window_sec: u64) -> Option<f64> {
+    let price_move_pct = stats.price_move_pct?;
+    let matches_window = stats.window_sec == window_sec
+        || (window_sec == 30 && (30..60).contains(&stats.window_sec))
+        || (window_sec == 30 && stats.window_sec >= 60);
+    matches_window.then(|| round(price_move_pct, 4))
 }
 
 fn round(value: f64, places: i32) -> f64 {

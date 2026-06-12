@@ -127,6 +127,33 @@ export default function ContractWhaleMonitor() {
         contractDataQuality: 0,
         spotDataQuality: 0,
         overallDataQuality: 0,
+        discordDryRunStats: {
+          signals1h: 0,
+          high1h: 0,
+          critical1h: 0,
+          s1h: 0,
+          wouldSend1h: 0,
+          skippedLowScore1h: 0,
+          skippedCooldown1h: 0,
+          skippedDataQuality1h: 0,
+          skippedWarmup1h: 0,
+          skippedDisplayOnly1h: 0,
+        },
+        marketStructureLite: {
+          status: "calm",
+          regimeType: "unclear",
+          mainForceScore: 0,
+          extremeImpactScore: 0,
+          structureBias: 0,
+          confidence: 0,
+          dataQuality: 0,
+          spotScore: 0,
+          contractScore: 0,
+          crossConfirmScore: 0,
+          mainForceConfirmed: false,
+          extremeImpactConfirmed: false,
+          reason: "",
+        },
         trend60s: {
       buyVolumeBtc: 0,
       sellVolumeBtc: 0,
@@ -154,16 +181,16 @@ export default function ContractWhaleMonitor() {
   const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
 
   return (
-    <section className="mb-5 rounded-2xl border border-slate-700/60 bg-slate-900/80 p-5 shadow-glow">
+    <section className="console-panel mb-5 p-4 md:p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Contract Whale Flow</p>
+        <div className="max-w-3xl">
+          <p className="console-label text-cyan-300">Contract Whale Flow</p>
           <h3 className="mt-2 text-lg font-bold text-white">主力合约监控</h3>
-          <p className="mt-1 text-sm text-slate-400">
+          <p className="mt-1 text-sm leading-6 text-slate-400">
             BTC / ETH 永续合约主动成交流异常，Critical / S 才进入外部告警判断。
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3 xl:grid-cols-7">
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-7">
           <StatusPill label="当前状态" value={statusLabel(summary.status)} tone={statusTone(summary.status)} />
           <StatusPill label="健康状态" value={healthStatusLabel(summary.healthStatus)} tone={healthStatusTone(summary.healthStatus)} />
           <StatusPill label="当前方向" value={directionLabel(summary.latestDirection || summary.direction)} tone="cyan" />
@@ -176,9 +203,11 @@ export default function ContractWhaleMonitor() {
 
       <ContractWhaleTrendBar trend={summary.trend60s} />
 
-      <p className="mt-3 text-xs text-slate-500">
+      <p className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2 text-xs leading-5 text-slate-400">
         合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
       </p>
+
+      <MarketStructureLitePanel summary={summary} />
 
       <PlatformCapabilitySection
         exchanges={summary.exchanges || {}}
@@ -205,7 +234,7 @@ export default function ContractWhaleMonitor() {
         }}
       />
 
-      <div className="mt-4 overflow-x-auto">
+      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/30">
         {state.loading ? (
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             主力合约监控载入中...
@@ -216,7 +245,7 @@ export default function ContractWhaleMonitor() {
           </p>
       ) : (
           <table className="min-w-full table-fixed text-left text-xs">
-            <thead className="text-slate-500">
+            <thead className="bg-slate-950/80 text-slate-400">
               <tr>
                 <HeaderCell>时间</HeaderCell>
                 <HeaderCell>币种 / 价格</HeaderCell>
@@ -242,7 +271,7 @@ export default function ContractWhaleMonitor() {
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {state.items.map((item) => (
                 <tr
-                  className="cursor-pointer align-top transition hover:bg-slate-800/30"
+                  className="console-row"
                   data-testid={`contract-whale-row-${item.id}`}
                   key={item.id}
                   onClick={() => setSelectedSignalId(item.id)}
@@ -288,7 +317,7 @@ export default function ContractWhaleMonitor() {
                   <Cell>
                     <button
                       aria-label={`查看主力合约信号详情 ${item.id}`}
-                      className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-500/10"
+                      className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
                       onClick={(event) => {
                         event.stopPropagation();
                         setSelectedSignalId(item.id);
@@ -421,6 +450,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Symbol", signal.symbol],
                 ["类型", signalTypeLabel(signal.signalType)],
                 ["方向", directionLabel(signal.direction)],
+                ["价格响应", priceResponseLabel(signal.priceResponseType)],
                 ["等级", severityLabel(signal.severity)],
                 ["窗口", `${signal.windowSec}s`],
                 ["触发时间", formatTime(signal.ts)],
@@ -442,6 +472,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <DetailGrid
               rows={[
                 ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
+                ["Would Send", signal.discordWouldSend ? "dry-run 会推送" : "不会推送"],
                 ["Discord Sent", signal.discordSent ? "已推送" : "未推送"],
                 ["Skip Reason", signal.discordSent ? "sent" : signal.discordReason],
                 ["多平台确认", signal.multiExchangeConfirmed ? "是" : "否"],
@@ -451,6 +482,30 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             />
           </DetailSection>
         </div>
+
+        <DetailSection title="核心判断" className="mt-4">
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm leading-6 text-cyan-50">
+            <p className="font-semibold text-slate-100">{signal.finalResult}</p>
+            <p className="mt-1 text-xs text-cyan-100">{priceResponseNarrative(signal)}</p>
+          </div>
+        </DetailSection>
+
+        <DetailSection title="现货确认" className="mt-4">
+          <DetailGrid
+            rows={[
+              ["状态", spotConfirmationStatusLabel(signal.spotConfirmation?.status)],
+              ["确认类型", spotConfirmationTypeLabel(signal.spotConfirmation?.confirmationType)],
+              ["现货方向", directionLabel(signal.spotConfirmation?.direction)],
+              ["现货评分", `${Number(signal.spotConfirmation?.score || 0)}/100`],
+              ["现货类型", signal.spotConfirmation?.signalType ? spotSignalTypeLabel(signal.spotConfirmation.signalType) : "N/A"],
+              ["现货等级", signal.spotConfirmation?.severity ? severityLabel(signal.spotConfirmation.severity) : "N/A"],
+              ["现货成交量", signal.spotConfirmation?.totalVolumeBtc === null || signal.spotConfirmation?.totalVolumeBtc === undefined ? "N/A" : formatBtc(signal.spotConfirmation.totalVolumeBtc)],
+              ["现货净方向", signal.spotConfirmation?.netVolumeBtc === null || signal.spotConfirmation?.netVolumeBtc === undefined ? "N/A" : netDirection(signal.spotConfirmation.netVolumeBtc)],
+              ["Coinbase 溢价", signal.spotConfirmation?.coinbasePremiumPct === null || signal.spotConfirmation?.coinbasePremiumPct === undefined ? "N/A" : formatSignedPct(signal.spotConfirmation.coinbasePremiumPct)],
+              ["现货结论", signal.spotConfirmation?.finalResult || "N/A"],
+            ]}
+          />
+        </DetailSection>
 
         <DetailSection title="Active Source Snapshot" className="mt-4">
           <div className="grid gap-4 lg:grid-cols-2">
@@ -512,8 +567,14 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <DetailGrid
               rows={[
                 ["Dynamic Multiple", formatMultiple(signal.dynamicMultiple)],
+                ["Dynamic Baseline", signal.dynamicBaselineBtc === null || signal.dynamicBaselineBtc === undefined ? "N/A" : formatBtc(signal.dynamicBaselineBtc)],
+                ["Dynamic Level", dynamicThresholdLevelLabel(signal.dynamicThresholdLevel)],
                 ["Percentile", formatPercentile(signal.percentileLevel)],
                 ["Price Move", formatSignedPct(signal.priceMovePct)],
+                ["5s Price Move", formatSignedPct(signal.priceMove5sPct)],
+                ["15s Price Move", formatSignedPct(signal.priceMove15sPct)],
+                ["30s Price Move", formatSignedPct(signal.priceMove30sPct)],
+                ["Price Response", priceResponseLabel(signal.priceResponseType)],
                 ["Price Reversal", signal.priceReversalRatio === null || signal.priceReversalRatio === undefined ? "N/A" : formatPct(signal.priceReversalRatio * 100)],
                 ["Dominant Net Flow", formatPct(dominantNetFlowShare(signal) * 100)],
                 ["Liquidation", liquidationStatus(signal)],
@@ -523,7 +584,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             />
           </DetailSection>
 
-          <DetailSection title="Raw Scoring Breakdown">
+          <DetailSection title="Score Breakdown">
             <DetailGrid rows={scoringRows} />
           </DetailSection>
         </div>
@@ -569,10 +630,10 @@ function ContractWhaleTrendBar({ trend }) {
   const sellRatio = total > 0 ? clampRatio(item.sellRatio || (1 - buyRatio)) : 0;
   const netDirectionLabel = netDirection(Number(item.netVolumeBtc || 0));
   return (
-    <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+    <div className="console-panel-muted mt-4 px-4 py-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">60s Contract Flow</p>
+          <p className="console-label">60s Contract Flow</p>
           <p className="mt-1 text-sm font-semibold text-slate-100">
             Buy {formatPct(buyRatio * 100)} / Sell {formatPct(sellRatio * 100)}
           </p>
@@ -589,13 +650,52 @@ function ContractWhaleTrendBar({ trend }) {
           style={{ width: total > 0 ? `${Math.max(3, buyRatio * 100)}%` : "0%" }}
         />
       </div>
-      <div className="mt-2 flex justify-between text-[11px] text-slate-500">
+      <div className="mt-2 flex justify-between text-[11px] text-slate-400">
         <span>主动买入 {formatBtc(item.buyVolumeBtc)}</span>
         <span>主动卖出 {formatBtc(item.sellVolumeBtc)}</span>
       </div>
       <p className="mt-2 text-[11px] text-slate-500">
         最近 60 秒主动成交流只表示 flow，不用于判断平台在线 / 离线状态。
       </p>
+    </div>
+  );
+}
+
+function MarketStructureLitePanel({ summary }) {
+  const lite = summary.marketStructureLite || {};
+  const stats = summary.discordDryRunStats || {};
+  return (
+    <div className="mt-3 grid gap-2 text-xs md:grid-cols-2 xl:grid-cols-4">
+      <MiniInfoCard
+        label="结构判断"
+        value={`${regimeTypeLabel(lite.regimeType || "unclear")} · ${marketStructureStatusLabel(lite.status)}`}
+        detail={lite.reason || "等待现货与合约确认"}
+      />
+      <MiniInfoCard
+        label="主力评分"
+        value={`${Math.round(Number(lite.mainForceScore || 0))}/100`}
+        detail={`方向 ${biasText(lite.structureBias || 0)} · 置信 ${Math.round(Number(lite.confidence || 0))}`}
+      />
+      <MiniInfoCard
+        label="现货确认"
+        value={`Spot ${Math.round(Number(lite.spotScore || 0))} / Contract ${Math.round(Number(lite.contractScore || 0))}`}
+        detail={`Cross ${Math.round(Number(lite.crossConfirmScore || 0))} · ${lite.mainForceConfirmed ? "已确认" : "待确认"}`}
+      />
+      <MiniInfoCard
+        label="Dry-run 1h"
+        value={`would-send ${Number(stats.wouldSend1h || 0)}`}
+        detail={`signals ${Number(stats.signals1h || 0)} · C/S ${Number(stats.critical1h || 0)}/${Number(stats.s1h || 0)}`}
+      />
+    </div>
+  );
+}
+
+function MiniInfoCard({ label, value, detail }) {
+  return (
+    <div className="console-panel-muted px-3 py-2">
+      <p className="console-label">{label}</p>
+      <p className="mt-1 font-bold text-slate-100">{value}</p>
+      <p className="mt-1 truncate text-slate-400" title={detail}>{detail}</p>
     </div>
   );
 }
@@ -653,10 +753,10 @@ function ContractWhaleFilters({ filters, onChange }) {
 
 function FilterSelect({ label, value, onChange, children }) {
   return (
-    <label className="block rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2">
-      <span className="block text-[11px] text-slate-500">{label}</span>
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-medium text-slate-400">{label}</span>
       <select
-        className="mt-1 w-full bg-transparent font-semibold text-slate-100 outline-none"
+        className="console-field font-semibold"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -668,8 +768,8 @@ function FilterSelect({ label, value, onChange, children }) {
 
 function StatusPill({ label, value, tone }) {
   return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 px-3 py-2">
-      <p className="text-[11px] text-slate-500">{label}</p>
+    <div className="rounded-xl border border-slate-700/70 bg-slate-950/45 px-3 py-2">
+      <p className="text-[11px] text-slate-400">{label}</p>
       <p className={`mt-1 text-base font-bold ${toneClass(tone)}`}>{value}</p>
     </div>
   );
@@ -695,10 +795,10 @@ function PlatformCapabilitySection({ exchanges, platforms, summary }) {
   return (
     <section className="mt-4 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-3" data-testid="platform-status-strip">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">Platform Status</p>
+        <div className="min-w-0">
+          <p className="console-label">Platform Status</p>
           <h4 className="mt-1 text-sm font-bold text-white">平台状态</h4>
-          <p className="mt-1 text-xs text-slate-400">
+          <p className="mt-1 truncate text-xs text-slate-400" title={`合约源 ${contractSources.length ? contractSources.join(", ") : "无"} · 现货确认 ${spotSources.length ? spotSources.join(", ") : "无"} · 阈值 ${thresholdProfileLabel(summary?.thresholdProfile)}`}>
             合约源 {contractSources.length ? contractSources.join(", ") : "无"} · 现货确认 {spotSources.length ? spotSources.join(", ") : "无"} · 阈值 {thresholdProfileLabel(summary?.thresholdProfile)}
           </p>
         </div>
@@ -708,10 +808,15 @@ function PlatformCapabilitySection({ exchanges, platforms, summary }) {
           ))}
         </div>
       </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-        <span>profile: {summary?.thresholdProfileReason || "N/A"}</span>
-        <span>Coinbase 仅现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。</span>
-      </div>
+      <details className="mt-2 text-[11px] text-slate-400">
+        <summary className="cursor-pointer select-none text-slate-300 outline-none transition hover:text-cyan-200 focus-visible:ring-2 focus-visible:ring-cyan-500/35">
+          平台口径
+        </summary>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-slate-500">
+          <span>profile: {summary?.thresholdProfileReason || "N/A"}</span>
+          <span>Coinbase 仅现货确认，不参与 CWM 合约成交量、阈值和 Discord gate。</span>
+        </div>
+      </details>
     </section>
   );
 }
@@ -764,7 +869,7 @@ function SourceSnapshotCard({ entries, title }) {
 }
 
 function HeaderCell({ children }) {
-  return <th className="whitespace-nowrap px-3 py-2 font-semibold">{children}</th>;
+  return <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-[0.08em]">{children}</th>;
 }
 
 function Cell({ children }) {
@@ -790,6 +895,34 @@ function signalTypeLabel(type) {
   return labels[type] || type || "未知";
 }
 
+function priceResponseLabel(type) {
+  const labels = {
+    trend_follow_up: "买盘推动上涨",
+    trend_follow_down: "卖盘推动下跌",
+    downside_absorption: "卖出被承接",
+    upside_resistance: "买入被压制",
+    no_clear_response: "价格响应不明确",
+  };
+  return labels[String(type || "no_clear_response").toLowerCase()] || "价格响应不明确";
+}
+
+function priceResponseNarrative(signal) {
+  const move = formatSignedPct(signal.priceMovePct);
+  const response = priceResponseLabel(signal.priceResponseType);
+  const base = `价格响应：${response}，当前窗口价格变化 ${move}。`;
+  const value = String(signal.priceResponseType || "").toLowerCase();
+  if (value === "downside_absorption") {
+    return `${base} 主动卖出放大但没有有效打穿价格，优先按下方承接观察。`;
+  }
+  if (value === "upside_resistance") {
+    return `${base} 主动买入放大但没有有效推升价格，优先按上方压制观察。`;
+  }
+  if (value === "trend_follow_up" || value === "trend_follow_down") {
+    return `${base} 成交流和价格方向一致，说明短线冲击更直接。`;
+  }
+  return `${base} 缺少明确价格配合时，只作为成交流异常观察，不单独确认趋势。`;
+}
+
 function regimeTypeLabel(value) {
   const labels = {
     main_force_long_build: "主力建多",
@@ -804,6 +937,57 @@ function regimeTypeLabel(value) {
     range_rotation: "高换手震荡",
   };
   return labels[value] || value || "结构未明";
+}
+
+function marketStructureStatusLabel(value) {
+  const status = String(value || "calm").toLowerCase();
+  if (status === "confirmed") return "已确认";
+  if (status === "watch") return "观察";
+  return "平静";
+}
+
+function dynamicThresholdLevelLabel(value) {
+  const level = String(value || "normal").toLowerCase();
+  if (level === "s") return "S 级动态异常";
+  if (level === "critical") return "Critical 动态异常";
+  if (level === "high") return "High 动态异常";
+  if (level === "watch") return "Watch 动态异常";
+  return "正常";
+}
+
+function spotConfirmationStatusLabel(value) {
+  const status = String(value || "unavailable").toLowerCase();
+  if (status === "confirmed") return "现货确认";
+  if (status === "divergent") return "现货分歧";
+  if (status === "context") return "仅作上下文";
+  if (status === "disabled") return "现货监控未启用";
+  if (status === "no_spot_sample") return "暂无现货样本";
+  return "不可用";
+}
+
+function spotConfirmationTypeLabel(value) {
+  const type = String(value || "unavailable").toLowerCase();
+  const labels = {
+    confirms_contract_direction: "现货与合约同向",
+    spot_absorption_against_contract_sell: "合约卖压被现货承接",
+    spot_resistance_against_contract_buy: "合约买盘遇现货压制",
+    spot_divergence: "现货与合约分歧",
+    spot_context_only: "现货上下文",
+    spot_monitor_disabled: "现货监控未启用",
+    unavailable: "不可用",
+  };
+  return labels[type] || labels.unavailable;
+}
+
+function spotSignalTypeLabel(type) {
+  const labels = {
+    spot_aggressive_buy: "现货主动买入",
+    spot_aggressive_sell: "现货主动卖出",
+    spot_downside_absorption: "现货下方吸收",
+    spot_upside_suppression: "现货上方压制",
+    spot_exchange_dislocation: "现货跨所错位",
+  };
+  return labels[String(type || "").toLowerCase()] || type || "N/A";
 }
 
 function signalTypeIcon(type) {
@@ -1157,6 +1341,24 @@ function fundingStatus(item) {
 }
 
 function scoringBreakdown(item) {
+  const breakdown = item?.scoreBreakdown || {};
+  const hasBackendBreakdown = Number(breakdown.finalScore || 0) > 0
+    || ["volumeScore", "notionalScore", "dynamicAnomalyScore", "directionalStrengthScore", "priceResponseScore"].some((key) => Number(breakdown[key] || 0) !== 0);
+  if (hasBackendBreakdown) {
+    return [
+      ["Volume Strength", scorePart(breakdown.volumeScore)],
+      ["Notional Size", scorePart(breakdown.notionalScore)],
+      ["Dynamic Anomaly", scorePart(breakdown.dynamicAnomalyScore)],
+      ["Directional Strength", scorePart(breakdown.directionalStrengthScore)],
+      ["Price Response", scorePart(breakdown.priceResponseScore)],
+      ["Multi Source", scorePart(breakdown.multiSourceScore)],
+      ["Data Quality", scorePart(breakdown.dataQualityScore)],
+      ["Dominant Venue", scorePart(breakdown.dominantVenueScore)],
+      ["OI Context", scorePart(breakdown.oiContextScore)],
+      ["Penalty", scorePart(breakdown.penaltyScore)],
+      ["Final Score", `${Number(breakdown.finalScore || item.score || 0).toFixed(1)} / 100`],
+    ];
+  }
   const volumeScore = Math.min(35, (Number(item.totalVolumeBtc || 0) / 4_500) * 35);
   const dynamicScore = item.dynamicMultiple === null || item.dynamicMultiple === undefined
     ? 0
@@ -1178,6 +1380,12 @@ function scoringBreakdown(item) {
     ["Dominant Venue Net Flow", `${dominantNetFlowScore.toFixed(1)} / 5`],
     ["Penalty Notes", item.liquidationSuspected ? "liquidation_suspected" : "none"],
   ];
+}
+
+function scorePart(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "0.0";
+  return number.toFixed(1);
 }
 
 function dominantNetFlowShare(item) {

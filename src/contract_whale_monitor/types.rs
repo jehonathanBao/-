@@ -284,6 +284,93 @@ pub struct ContractWhaleActiveSources {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleSpotConfirmationContext {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub confirmation_type: String,
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub latest_signal_id: Option<String>,
+    #[serde(default)]
+    pub latest_signal_at: Option<i64>,
+    #[serde(default)]
+    pub signal_type: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub total_volume_btc: Option<f64>,
+    #[serde(default)]
+    pub net_volume_btc: Option<f64>,
+    #[serde(default)]
+    pub dominance: Option<f64>,
+    #[serde(default)]
+    pub coinbase_premium_pct: Option<f64>,
+    #[serde(default)]
+    pub final_result: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleDiscordDryRunStats {
+    #[serde(default)]
+    pub signals_1h: usize,
+    #[serde(default)]
+    pub high_1h: usize,
+    #[serde(default)]
+    pub critical_1h: usize,
+    #[serde(default)]
+    pub s_1h: usize,
+    #[serde(default)]
+    pub would_send_1h: usize,
+    #[serde(default)]
+    pub skipped_low_score_1h: usize,
+    #[serde(default)]
+    pub skipped_cooldown_1h: usize,
+    #[serde(default)]
+    pub skipped_data_quality_1h: usize,
+    #[serde(default)]
+    pub skipped_warmup_1h: usize,
+    #[serde(default)]
+    pub skipped_display_only_1h: usize,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleMarketStructureLite {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub regime_type: String,
+    #[serde(default)]
+    pub main_force_score: u8,
+    #[serde(default)]
+    pub extreme_impact_score: u8,
+    #[serde(default)]
+    pub structure_bias: i16,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub data_quality: u8,
+    #[serde(default)]
+    pub spot_score: u8,
+    #[serde(default)]
+    pub contract_score: u8,
+    #[serde(default)]
+    pub cross_confirm_score: u8,
+    #[serde(default)]
+    pub main_force_confirmed: bool,
+    #[serde(default)]
+    pub extreme_impact_confirmed: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExchangeFlowContribution {
     pub exchange: String,
     pub buy_volume_btc: f64,
@@ -325,6 +412,10 @@ pub struct ContractWhaleWindowStats {
     #[serde(default)]
     pub dominant_venue_net_contribution_share: Option<f64>,
     pub dynamic_multiple: Option<f64>,
+    #[serde(default)]
+    pub dynamic_baseline_btc: Option<f64>,
+    #[serde(default)]
+    pub dynamic_threshold_level: String,
     pub percentile_level: Option<f64>,
     pub multi_exchange_confirmed: bool,
     pub liquidation_context: ContractWhaleLiquidationContext,
@@ -372,6 +463,17 @@ pub enum ContractWhaleSignalType {
     UpsideSuppression,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractWhalePriceResponseType {
+    TrendFollowUp,
+    TrendFollowDown,
+    DownsideAbsorption,
+    UpsideResistance,
+    #[default]
+    NoClearResponse,
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -381,6 +483,22 @@ pub enum ContractWhaleDirection {
     Sell,
     Absorption,
     Suppression,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleScoreBreakdown {
+    pub volume_score: f64,
+    pub notional_score: f64,
+    pub dynamic_anomaly_score: f64,
+    pub directional_strength_score: f64,
+    pub price_response_score: f64,
+    pub multi_source_score: f64,
+    pub data_quality_score: f64,
+    pub dominant_venue_score: f64,
+    pub oi_context_score: f64,
+    pub penalty_score: f64,
+    pub final_score: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -399,6 +517,14 @@ pub struct ContractWhaleSignal {
     pub total_notional_usd: f64,
     pub dominance: f64,
     pub price_move_pct: Option<f64>,
+    #[serde(default)]
+    pub price_move_5s_pct: Option<f64>,
+    #[serde(default)]
+    pub price_move_15s_pct: Option<f64>,
+    #[serde(default)]
+    pub price_move_30s_pct: Option<f64>,
+    #[serde(default)]
+    pub price_response_type: ContractWhalePriceResponseType,
     pub main_exchange: Option<String>,
     #[serde(default)]
     pub market_type: ContractWhaleMarketType,
@@ -408,6 +534,10 @@ pub struct ContractWhaleSignal {
     #[serde(default)]
     pub dominant_venue_net_contribution_share: Option<f64>,
     pub dynamic_multiple: Option<f64>,
+    #[serde(default)]
+    pub dynamic_baseline_btc: Option<f64>,
+    #[serde(default)]
+    pub dynamic_threshold_level: String,
     #[serde(default)]
     pub percentile_level: Option<f64>,
     #[serde(default)]
@@ -437,6 +567,8 @@ pub struct ContractWhaleSignal {
     #[serde(default)]
     pub funding_bias: Option<String>,
     pub data_quality: u8,
+    #[serde(default)]
+    pub score_breakdown: ContractWhaleScoreBreakdown,
     #[serde(default = "default_threshold_profile")]
     pub threshold_profile: String,
     #[serde(default)]
@@ -449,11 +581,15 @@ pub struct ContractWhaleSignal {
     pub active_contract_sources: Vec<String>,
     #[serde(default)]
     pub active_sources: ContractWhaleActiveSources,
+    #[serde(default)]
+    pub spot_confirmation: ContractWhaleSpotConfirmationContext,
     pub discord_eligible: bool,
     pub discord_sent: bool,
     #[serde(default)]
     pub discord_sent_at: Option<i64>,
     pub discord_reason: String,
+    #[serde(default)]
+    pub discord_would_send: bool,
     pub final_result: String,
     pub read_only: bool,
     pub analysis_only: bool,
@@ -513,6 +649,10 @@ pub struct ContractWhaleSummary {
     pub warmup_until_ms: Option<i64>,
     pub warmup_remaining_ms: Option<i64>,
     pub trend_60s: ContractWhaleTrend60s,
+    #[serde(default)]
+    pub discord_dry_run_stats: ContractWhaleDiscordDryRunStats,
+    #[serde(default)]
+    pub market_structure_lite: ContractWhaleMarketStructureLite,
     pub exchanges: BTreeMap<String, ContractWhaleExchangeStatus>,
     #[serde(default)]
     pub platforms: BTreeMap<String, ContractWhalePlatformCapability>,

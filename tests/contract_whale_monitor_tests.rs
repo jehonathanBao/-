@@ -18,8 +18,8 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     scoring::score_contract_whale_signal_with_config,
     types::{
         ContractExchange, ContractLiquidationSide, ContractTradeSide, ContractWhaleDirection,
-        ContractWhaleLiquidationContext, ContractWhaleMarketContext, ContractWhaleSeverity,
-        ContractWhaleSignalType,
+        ContractWhaleLiquidationContext, ContractWhaleMarketContext,
+        ContractWhalePriceResponseType, ContractWhaleSeverity, ContractWhaleSignalType,
     },
 };
 
@@ -219,6 +219,8 @@ fn aggregator_builds_directional_multi_exchange_window_stats() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.31),
             dynamic_multiple: Some(9.4),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 92,
             config: &config,
         },
@@ -251,6 +253,8 @@ fn aggregator_separates_direction_strength_from_net_flow_contribution_share() {
         RollingWindowStatsOptions {
             price_move_pct: Some(-0.12),
             dynamic_multiple: Some(7.2),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 90,
             config: &config,
         },
@@ -316,6 +320,53 @@ fn detector_upgrades_multi_exchange_aggressive_buy_to_s_and_discord_eligible() {
 }
 
 #[test]
+fn detector_exposes_score_breakdown_and_price_response_type() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 2_400.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 320.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 200.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.18), Some(7.4), 90)
+        .expect("window stats");
+    stats.percentile_level = Some(99.5);
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
+    assert_eq!(
+        signal.price_response_type,
+        ContractWhalePriceResponseType::TrendFollowUp
+    );
+    assert_eq!(signal.price_move_15s_pct, Some(0.18));
+    assert!(signal.score_breakdown.volume_score > 0.0);
+    assert!(signal.score_breakdown.notional_score > 0.0);
+    assert!(signal.score_breakdown.directional_strength_score > 0.0);
+    assert!(signal.score_breakdown.price_response_score > 0.0);
+    assert_eq!(
+        signal.score,
+        signal.score_breakdown.final_score.round().clamp(0.0, 100.0) as u8
+    );
+}
+
+#[test]
+fn detector_does_not_mark_missing_price_data_as_absorption_or_suppression() {
+    let now = 1_700_000_015_000;
+    let trades = vec![normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_600.0, false).unwrap()];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats =
+        rolling_window_stats(&buckets, "BTC", 15, now, None, Some(5.4), 86).expect("window stats");
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
+    assert_eq!(
+        signal.price_response_type,
+        ContractWhalePriceResponseType::NoClearResponse
+    );
+    assert_eq!(signal.price_move_pct, None);
+}
+
+#[test]
 fn scoring_weights_can_be_adjusted_without_changing_detector_code() {
     let now = 1_700_000_015_000;
     let trades = vec![
@@ -361,6 +412,8 @@ fn symbol_threshold_config_keeps_disabled_symbols_out_and_tunes_btc() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.31),
             dynamic_multiple: Some(10.2),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 94,
             config: &tuned,
         },
@@ -465,6 +518,8 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.31),
             dynamic_multiple: Some(10.5),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 94,
             config: &config,
         },
@@ -520,6 +575,8 @@ fn detector_triggers_15s_critical_threshold() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.18),
             dynamic_multiple: Some(7.4),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 90,
             config: &config,
         },
@@ -552,6 +609,8 @@ fn detector_triggers_60s_high_threshold() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.14),
             dynamic_multiple: Some(5.3),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 88,
             config: &config,
         },
@@ -581,6 +640,8 @@ fn detector_does_not_escalate_to_critical_when_dominance_is_weak() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.20),
             dynamic_multiple: Some(10.0),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 92,
             config: &config,
         },
@@ -615,6 +676,8 @@ fn scoring_rewards_multi_exchange_confirmation() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.18),
             dynamic_multiple: Some(7.0),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 90,
             config: &config,
         },
@@ -628,6 +691,8 @@ fn scoring_rewards_multi_exchange_confirmation() {
         RollingWindowStatsOptions {
             price_move_pct: Some(0.18),
             dynamic_multiple: Some(7.0),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality: 90,
             config: &config,
         },
@@ -666,6 +731,10 @@ fn detector_marks_absorption_as_high_when_sellers_fail_to_move_price() {
         signal.signal_type,
         ContractWhaleSignalType::DownsideAbsorption
     );
+    assert_eq!(
+        signal.price_response_type,
+        ContractWhalePriceResponseType::DownsideAbsorption
+    );
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
     assert!(signal.final_result.contains("承接吸收"));
 }
@@ -686,6 +755,10 @@ fn detector_marks_suppression_as_high_when_buyers_fail_to_move_price() {
     assert_eq!(
         signal.signal_type,
         ContractWhaleSignalType::UpsideSuppression
+    );
+    assert_eq!(
+        signal.price_response_type,
+        ContractWhalePriceResponseType::UpsideResistance
     );
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
     assert!(signal.final_result.contains("卖盘压制"));

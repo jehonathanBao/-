@@ -14,6 +14,8 @@ use super::{
 pub struct RollingWindowStatsOptions<'a> {
     pub price_move_pct: Option<f64>,
     pub dynamic_multiple: Option<f64>,
+    pub dynamic_baseline_btc: Option<f64>,
+    pub dynamic_threshold_level: String,
     pub data_quality: u8,
     pub config: &'a ContractWhaleRuntimeConfig,
 }
@@ -109,6 +111,8 @@ pub fn rolling_window_stats(
         RollingWindowStatsOptions {
             price_move_pct,
             dynamic_multiple,
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
             data_quality,
             config: &config,
         },
@@ -226,6 +230,8 @@ pub fn rolling_window_stats_with_config(
         exchanges,
         dominant_venue_net_contribution_share,
         dynamic_multiple: options.dynamic_multiple,
+        dynamic_baseline_btc: options.dynamic_baseline_btc,
+        dynamic_threshold_level: options.dynamic_threshold_level,
         percentile_level: None,
         multi_exchange_confirmed: false,
         liquidation_context: ContractWhaleLiquidationContext::default(),

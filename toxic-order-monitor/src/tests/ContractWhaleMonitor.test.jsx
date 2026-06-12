@@ -42,6 +42,29 @@ vi.mock("../api/contractWhale.js", () => ({
         contractDataQuality: 95,
         spotDataQuality: 78,
         overallDataQuality: 88,
+        discordDryRunStats: {
+          signals1h: 4,
+          high1h: 1,
+          critical1h: 2,
+          s1h: 1,
+          wouldSend1h: 3,
+          skippedLowScore1h: 1,
+        },
+        marketStructureLite: {
+          status: "confirmed",
+          regimeType: "main_force_long_build",
+          mainForceScore: 84,
+          extremeImpactScore: 62,
+          structureBias: 64,
+          confidence: 76,
+          dataQuality: 88,
+          spotScore: 71,
+          contractScore: 94,
+          crossConfirmScore: 75,
+          mainForceConfirmed: true,
+          extremeImpactConfirmed: false,
+          reason: "合约主动买入与现货方向确认，主力建多概率提高。",
+        },
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -124,6 +147,29 @@ vi.mock("../api/contractWhale.js", () => ({
         contractDataQuality: 95,
         spotDataQuality: 78,
         overallDataQuality: 88,
+        discordDryRunStats: {
+          signals1h: 4,
+          high1h: 1,
+          critical1h: 2,
+          s1h: 1,
+          wouldSend1h: 3,
+          skippedLowScore1h: 1,
+        },
+        marketStructureLite: {
+          status: "confirmed",
+          regimeType: "main_force_long_build",
+          mainForceScore: 84,
+          extremeImpactScore: 62,
+          structureBias: 64,
+          confidence: 76,
+          dataQuality: 88,
+          spotScore: 71,
+          contractScore: 94,
+          crossConfirmScore: 75,
+          mainForceConfirmed: true,
+          extremeImpactConfirmed: false,
+          reason: "合约主动买入与现货方向确认，主力建多概率提高。",
+        },
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -192,9 +238,13 @@ vi.mock("../api/contractWhale.js", () => ({
           totalNotionalUsd: 337_000_000,
           dominance: 0.676,
           priceMovePct: 0.31,
+          priceMove15sPct: 0.31,
+          priceResponseType: "trend_follow_up",
           mainExchange: "binance",
           dominantVenueNetContributionShare: 0.986,
           dynamicMultiple: 9.4,
+          dynamicBaselineBtc: 512,
+          dynamicThresholdLevel: "critical",
           percentileLevel: 99.9,
           multiExchangeConfirmed: true,
           liquidationSuspected: true,
@@ -223,10 +273,39 @@ vi.mock("../api/contractWhale.js", () => ({
               { exchange: "coinbase", marketType: "spot", sourceRole: "spot_confirmation", enabled: true, status: "spot_only" },
             ],
           },
+          spotConfirmation: {
+            status: "confirmed",
+            confirmationType: "confirms_contract_direction",
+            direction: "buy",
+            score: 81,
+            latestSignalId: "spot-whale:BTC:15:1700000000000:buy",
+            latestSignalAt: 1_700_000_000_000,
+            signalType: "spot_aggressive_buy",
+            severity: "high",
+            totalVolumeBtc: 820,
+            netVolumeBtc: 610,
+            dominance: 0.744,
+            coinbasePremiumPct: 0.018,
+            finalResult: "现货主动买入跟随合约方向",
+          },
           dataQuality: 91,
+          scoreBreakdown: {
+            volumeScore: 23.6,
+            notionalScore: 10.5,
+            dynamicAnomalyScore: 18.8,
+            directionalStrengthScore: 10.6,
+            priceResponseScore: 15,
+            multiSourceScore: 8,
+            dataQualityScore: 4.6,
+            dominantVenueScore: 4.8,
+            oiContextScore: 4,
+            penaltyScore: -10,
+            finalScore: 89.9,
+          },
           discordEligible: true,
           discordSent: false,
           discordReason: "critical_or_s_gate",
+          discordWouldSend: true,
           mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
           exchanges: [
             {
@@ -428,6 +507,11 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("待推")).toBeInTheDocument();
     expect(screen.getByText("主力结构事件历史")).toBeInTheDocument();
     expect(screen.getByText("让你知道这里发生过什么主力行为")).toBeInTheDocument();
+    expect(screen.getByText("结构判断")).toBeInTheDocument();
+    expect(screen.getByText("主力评分")).toBeInTheDocument();
+    expect(screen.getByText("现货确认")).toBeInTheDocument();
+    expect(screen.getByText("Dry-run 1h")).toBeInTheDocument();
+    expect(screen.getByText("would-send 3")).toBeInTheDocument();
     expect(screen.getByTestId("main-force-event-7")).toBeInTheDocument();
     expect(screen.getByText("主力建多")).toBeInTheDocument();
     expect(screen.getByText("峰值主力评分")).toBeInTheDocument();
@@ -533,6 +617,10 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Discord Gate")).toBeInTheDocument();
     expect(screen.getByText("可进入推送判断")).toBeInTheDocument();
     expect(screen.getByText("critical_or_s_gate")).toBeInTheDocument();
+    expect(screen.getByText("dry-run 会推送")).toBeInTheDocument();
+    expect(screen.getAllByText("现货确认").length).toBeGreaterThan(0);
+    expect(screen.getByText("现货与合约同向")).toBeInTheDocument();
+    expect(screen.getByText("现货主动买入跟随合约方向")).toBeInTheDocument();
     expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
     expect(screen.getByText("合约源")).toBeInTheDocument();
     expect(screen.getByText("现货源")).toBeInTheDocument();
@@ -547,9 +635,15 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主动买入：2,610 BTC")).toBeInTheDocument();
     expect(screen.getByText("买/卖占比：92.9% / 7.1%")).toBeInTheDocument();
     expect(screen.getByText("净流贡献：60.1%")).toBeInTheDocument();
-    expect(screen.getByText("Dominant Venue Net Flow")).toBeInTheDocument();
-    expect(screen.getByText("Raw Scoring Breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Dominant Venue")).toBeInTheDocument();
+    expect(screen.getByText("Score Breakdown")).toBeInTheDocument();
     expect(screen.getByText("Volume Strength")).toBeInTheDocument();
+    expect(screen.getByText("Dynamic Baseline")).toBeInTheDocument();
+    expect(screen.getByText("512 BTC")).toBeInTheDocument();
+    expect(screen.getByText("Critical 动态异常")).toBeInTheDocument();
+    expect(screen.getByText("价格响应")).toBeInTheDocument();
+    expect(screen.getAllByText("买盘推动上涨").length).toBeGreaterThan(0);
+    expect(screen.getByText(/成交流和价格方向一致/)).toBeInTheDocument();
     expect(screen.getByText("口径说明")).toBeInTheDocument();
     expect(screen.getByText(/方向强度 = abs/)).toBeInTheDocument();
     expect(screen.getByText("contract-whale:BTC:5:1700000000000:buy")).toBeInTheDocument();

@@ -328,6 +328,8 @@ fn whale_stats(exchanges: Vec<ExchangeFlowContribution>) -> ContractWhaleWindowS
         exchanges,
         dominant_venue_net_contribution_share: Some(0.80),
         dynamic_multiple: Some(12.0),
+        dynamic_baseline_btc: None,
+        dynamic_threshold_level: "s".to_string(),
         percentile_level: Some(99.95),
         multi_exchange_confirmed: true,
         liquidation_context: ContractWhaleLiquidationContext::default(),

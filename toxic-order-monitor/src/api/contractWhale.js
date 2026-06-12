@@ -29,6 +29,33 @@ const calmSummary = {
   contractDataQuality: 0,
   spotDataQuality: 0,
   overallDataQuality: 0,
+  discordDryRunStats: {
+    signals1h: 0,
+    high1h: 0,
+    critical1h: 0,
+    s1h: 0,
+    wouldSend1h: 0,
+    skippedLowScore1h: 0,
+    skippedCooldown1h: 0,
+    skippedDataQuality1h: 0,
+    skippedWarmup1h: 0,
+    skippedDisplayOnly1h: 0,
+  },
+  marketStructureLite: {
+    status: "calm",
+    regimeType: "unclear",
+    mainForceScore: 0,
+    extremeImpactScore: 0,
+    structureBias: 0,
+    confidence: 0,
+    dataQuality: 0,
+    spotScore: 0,
+    contractScore: 0,
+    crossConfirmScore: 0,
+    mainForceConfirmed: false,
+    extremeImpactConfirmed: false,
+    reason: "",
+  },
   trend60s: {
     buyVolumeBtc: 0,
     sellVolumeBtc: 0,
@@ -244,12 +271,18 @@ export function normalizeContractWhaleSignal(item) {
     totalNotionalUsd,
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
+    priceMove5sPct: numberOrNull(item.priceMove5sPct),
+    priceMove15sPct: numberOrNull(item.priceMove15sPct),
+    priceMove30sPct: numberOrNull(item.priceMove30sPct),
+    priceResponseType: item.priceResponseType ? String(item.priceResponseType).toLowerCase() : "no_clear_response",
     triggerPriceUsd: normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd),
     mainExchange: item.mainExchange || "Multi",
     marketType: item.marketType ? String(item.marketType).toLowerCase() : "perp",
     sourceRole: item.sourceRole ? String(item.sourceRole).toLowerCase() : "optional",
     dominantVenueNetContributionShare: numberOrNull(item.dominantVenueNetContributionShare),
     dynamicMultiple: numberOrNull(item.dynamicMultiple),
+    dynamicBaselineBtc: numberOrNull(item.dynamicBaselineBtc),
+    dynamicThresholdLevel: item.dynamicThresholdLevel ? String(item.dynamicThresholdLevel).toLowerCase() : "normal",
     percentileLevel: numberOrNull(item.percentileLevel),
     multiExchangeConfirmed: Boolean(item.multiExchangeConfirmed),
     liquidationSuspected: Boolean(item.liquidationSuspected),
@@ -266,6 +299,7 @@ export function normalizeContractWhaleSignal(item) {
     fundingBias: item.fundingBias || "unknown",
     exchanges: normalizeSignalExchanges(item.exchanges),
     dataQuality: numberOrNull(item.dataQuality) || 0,
+    scoreBreakdown: normalizeScoreBreakdown(item.scoreBreakdown),
     thresholdProfile: item.thresholdProfile ? String(item.thresholdProfile).toLowerCase() : activeSources.thresholdProfile,
     thresholdProfileReason: item.thresholdProfileReason ? String(item.thresholdProfileReason) : activeSources.thresholdProfileReason,
     configuredContractSources: normalizeStringArray(item.configuredContractSources).length
@@ -278,12 +312,50 @@ export function normalizeContractWhaleSignal(item) {
       ? normalizeStringArray(item.activeContractSources)
       : activeSources.activeContractSources,
     activeSources,
+    spotConfirmation: normalizeSpotConfirmation(item.spotConfirmation),
     discordEligible: Boolean(item.discordEligible),
     discordSent: Boolean(item.discordSent),
     discordSentAt: numberOrNull(item.discordSentAt),
     discordReason: item.discordReason || "not_sent",
+    discordWouldSend: Boolean(item.discordWouldSend),
     finalResult: item.finalResult || "contract whale flow candidate",
     mergedFrom: Array.isArray(item.mergedFrom) ? item.mergedFrom.filter(Boolean).map(String) : [],
+  };
+}
+
+function normalizeSpotConfirmation(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    status: source.status ? String(source.status).toLowerCase() : "unavailable",
+    confirmationType: source.confirmationType ? String(source.confirmationType).toLowerCase() : "unavailable",
+    direction: source.direction ? String(source.direction).toLowerCase() : "neutral",
+    score: numberOrNull(source.score) || 0,
+    latestSignalId: source.latestSignalId ? String(source.latestSignalId) : null,
+    latestSignalAt: numberOrNull(source.latestSignalAt),
+    signalType: source.signalType ? String(source.signalType).toLowerCase() : null,
+    severity: source.severity ? String(source.severity).toLowerCase() : null,
+    totalVolumeBtc: numberOrNull(source.totalVolumeBtc),
+    netVolumeBtc: numberOrNull(source.netVolumeBtc),
+    dominance: numberOrNull(source.dominance),
+    coinbasePremiumPct: numberOrNull(source.coinbasePremiumPct),
+    finalResult: source.finalResult ? String(source.finalResult) : "",
+  };
+}
+
+function normalizeScoreBreakdown(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    volumeScore: numberOrNull(source.volumeScore) || 0,
+    notionalScore: numberOrNull(source.notionalScore) || 0,
+    dynamicAnomalyScore: numberOrNull(source.dynamicAnomalyScore) || 0,
+    directionalStrengthScore: numberOrNull(source.directionalStrengthScore) || 0,
+    priceResponseScore: numberOrNull(source.priceResponseScore) || 0,
+    multiSourceScore: numberOrNull(source.multiSourceScore) || 0,
+    dataQualityScore: numberOrNull(source.dataQualityScore) || 0,
+    dominantVenueScore: numberOrNull(source.dominantVenueScore) || 0,
+    oiContextScore: numberOrNull(source.oiContextScore) || 0,
+    penaltyScore: numberOrNull(source.penaltyScore) || 0,
+    finalScore: numberOrNull(source.finalScore) || 0,
   };
 }
 
@@ -404,9 +476,46 @@ function normalizeSummary(summary) {
     contractDataQuality: numberOrNull(summary.contractDataQuality) || 0,
     spotDataQuality: numberOrNull(summary.spotDataQuality) || 0,
     overallDataQuality: numberOrNull(summary.overallDataQuality) || 0,
+    discordDryRunStats: normalizeDiscordDryRunStats(summary.discordDryRunStats),
+    marketStructureLite: normalizeMarketStructureLite(summary.marketStructureLite),
     trend60s: normalizeTrend60s(summary.trend60s),
     exchanges: normalizeExchanges(summary.exchanges),
     platforms: normalizePlatforms(summary.platforms),
+  };
+}
+
+function normalizeDiscordDryRunStats(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    signals1h: numberOrNull(source.signals1h) || 0,
+    high1h: numberOrNull(source.high1h) || 0,
+    critical1h: numberOrNull(source.critical1h) || 0,
+    s1h: numberOrNull(source.s1h) || 0,
+    wouldSend1h: numberOrNull(source.wouldSend1h) || 0,
+    skippedLowScore1h: numberOrNull(source.skippedLowScore1h) || 0,
+    skippedCooldown1h: numberOrNull(source.skippedCooldown1h) || 0,
+    skippedDataQuality1h: numberOrNull(source.skippedDataQuality1h) || 0,
+    skippedWarmup1h: numberOrNull(source.skippedWarmup1h) || 0,
+    skippedDisplayOnly1h: numberOrNull(source.skippedDisplayOnly1h) || 0,
+  };
+}
+
+function normalizeMarketStructureLite(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    status: source.status ? String(source.status).toLowerCase() : "calm",
+    regimeType: source.regimeType ? String(source.regimeType).toLowerCase() : "unclear",
+    mainForceScore: numberOrNull(source.mainForceScore) || 0,
+    extremeImpactScore: numberOrNull(source.extremeImpactScore) || 0,
+    structureBias: numberOrNull(source.structureBias) || 0,
+    confidence: numberOrNull(source.confidence) || 0,
+    dataQuality: numberOrNull(source.dataQuality) || 0,
+    spotScore: numberOrNull(source.spotScore) || 0,
+    contractScore: numberOrNull(source.contractScore) || 0,
+    crossConfirmScore: numberOrNull(source.crossConfirmScore) || 0,
+    mainForceConfirmed: Boolean(source.mainForceConfirmed),
+    extremeImpactConfirmed: Boolean(source.extremeImpactConfirmed),
+    reason: source.reason ? String(source.reason) : "",
   };
 }
 

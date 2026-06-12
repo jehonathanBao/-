@@ -1,0 +1,628 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::{OnceLock, RwLock},
+};
+
+use super::types::{AltContractSeverity, AltContractSymbolTier, AltContractTierThresholds};
+
+static GLOBAL_CONFIG: OnceLock<RwLock<BinanceAltContractRuntimeConfig>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltContractRuntimeConfig {
+    pub enabled: bool,
+    pub dry_run: bool,
+    pub exchange: BinanceAltExchangeConfig,
+    pub symbol_universe: BinanceAltSymbolUniverseConfig,
+    pub windows_sec: Vec<u64>,
+    pub dynamic: BinanceAltDynamicConfig,
+    pub data_quality: BinanceAltDataQualityConfig,
+    pub discord: BinanceAltDiscordConfig,
+    pub tier_d_rules: BinanceAltTierDRulesConfig,
+    pub persistence_path: PathBuf,
+    pub thresholds: BTreeMap<AltContractSymbolTier, AltContractTierThresholds>,
+    pub tier_d_min_signal_score: u8,
+}
+
+impl BinanceAltContractRuntimeConfig {
+    pub fn enabled_symbols(&self) -> Vec<String> {
+        let mut symbols = if self.symbol_universe.whitelist.is_empty() {
+            default_alt_symbols()
+        } else {
+            self.symbol_universe.whitelist.clone()
+        };
+        let excludes = self
+            .symbol_universe
+            .exclude_symbols
+            .iter()
+            .map(|symbol| normalize_product_id(symbol))
+            .collect::<BTreeSet<_>>();
+        let blacklist = self
+            .symbol_universe
+            .blacklist
+            .iter()
+            .map(|symbol| normalize_product_id(symbol))
+            .collect::<BTreeSet<_>>();
+        symbols = symbols
+            .into_iter()
+            .map(|symbol| normalize_product_id(&symbol))
+            .filter(|symbol| !excludes.contains(symbol) && !blacklist.contains(symbol))
+            .take(self.symbol_universe.symbol_limit)
+            .collect();
+        symbols.sort();
+        symbols.dedup();
+        symbols
+    }
+
+    pub fn symbol_enabled(&self, product_id: &str) -> bool {
+        self.enabled_symbols()
+            .iter()
+            .any(|symbol| symbol == &normalize_product_id(product_id))
+    }
+
+    pub fn thresholds_for_tier(&self, tier: AltContractSymbolTier) -> AltContractTierThresholds {
+        self.thresholds
+            .get(&tier)
+            .copied()
+            .unwrap_or_else(|| default_thresholds()[&AltContractSymbolTier::B])
+    }
+}
+
+impl Default for BinanceAltContractRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dry_run: true,
+            exchange: BinanceAltExchangeConfig::default(),
+            symbol_universe: BinanceAltSymbolUniverseConfig::default(),
+            windows_sec: vec![15, 60, 300],
+            dynamic: BinanceAltDynamicConfig::default(),
+            data_quality: BinanceAltDataQualityConfig::default(),
+            discord: BinanceAltDiscordConfig::default(),
+            tier_d_rules: BinanceAltTierDRulesConfig::default(),
+            persistence_path: PathBuf::from(".runtime/binance-alt-contract-signals.jsonl"),
+            thresholds: default_thresholds(),
+            tier_d_min_signal_score: 88,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltExchangeConfig {
+    pub binance_enabled: bool,
+}
+
+impl Default for BinanceAltExchangeConfig {
+    fn default() -> Self {
+        Self {
+            binance_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltSymbolUniverseConfig {
+    pub quote_asset: String,
+    pub contract_type: String,
+    pub status: String,
+    pub symbol_limit: usize,
+    pub min_24h_quote_volume_usd: f64,
+    pub whitelist: Vec<String>,
+    pub blacklist: Vec<String>,
+    pub exclude_symbols: Vec<String>,
+}
+
+impl Default for BinanceAltSymbolUniverseConfig {
+    fn default() -> Self {
+        Self {
+            quote_asset: "USDT".to_string(),
+            contract_type: "PERPETUAL".to_string(),
+            status: "TRADING".to_string(),
+            symbol_limit: 80,
+            min_24h_quote_volume_usd: 20_000_000.0,
+            whitelist: default_alt_symbols(),
+            blacklist: Vec::new(),
+            exclude_symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltDynamicConfig {
+    pub enabled: bool,
+    pub lookback_minutes: u64,
+    pub min_samples: usize,
+    pub high_multiple: f64,
+    pub critical_multiple: f64,
+    pub s_multiple: f64,
+}
+
+impl Default for BinanceAltDynamicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            lookback_minutes: 60,
+            min_samples: 20,
+            high_multiple: 4.0,
+            critical_multiple: 6.0,
+            s_multiple: 9.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltDataQualityConfig {
+    pub min_discord_quality: u8,
+    pub warmup_ms: i64,
+    pub heartbeat_stale_ms: i64,
+}
+
+impl Default for BinanceAltDataQualityConfig {
+    fn default() -> Self {
+        Self {
+            min_discord_quality: 70,
+            warmup_ms: 60_000,
+            heartbeat_stale_ms: 45_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltDiscordConfig {
+    pub enabled: bool,
+    pub dry_run: bool,
+    pub cooldown_sec: i64,
+    pub min_abnormal_score: u8,
+    pub min_build_score: u8,
+}
+
+impl Default for BinanceAltDiscordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dry_run: true,
+            cooldown_sec: 900,
+            min_abnormal_score: 85,
+            min_build_score: 80,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltTierDRulesConfig {
+    pub discord_min_abnormal_score: u8,
+    pub discord_min_build_score: u8,
+    pub require_non_liquidation: bool,
+    pub max_severity_without_build_confirmation: AltContractSeverity,
+}
+
+impl Default for BinanceAltTierDRulesConfig {
+    fn default() -> Self {
+        Self {
+            discord_min_abnormal_score: 85,
+            discord_min_build_score: 85,
+            require_non_liquidation: true,
+            max_severity_without_build_confirmation: AltContractSeverity::High,
+        }
+    }
+}
+
+pub fn binance_alt_contract_runtime_config() -> BinanceAltContractRuntimeConfig {
+    global_config()
+        .read()
+        .expect("binance alt contract config lock poisoned")
+        .clone()
+}
+
+pub fn set_binance_alt_contract_runtime_config(config: BinanceAltContractRuntimeConfig) {
+    *global_config()
+        .write()
+        .expect("binance alt contract config lock poisoned") = config;
+}
+
+pub fn reset_binance_alt_contract_runtime_config() {
+    set_binance_alt_contract_runtime_config(BinanceAltContractRuntimeConfig::default());
+}
+
+pub fn load_binance_alt_contract_runtime_config_from_settings(
+    settings: &::config::Config,
+) -> BinanceAltContractRuntimeConfig {
+    let fallback = BinanceAltContractRuntimeConfig::default();
+    let dry_run = bool_setting(
+        settings,
+        "BINANCE_ALT_CONTRACT_DRY_RUN",
+        "binance_alt_contract_monitor.dry_run",
+        fallback.dry_run,
+    );
+    BinanceAltContractRuntimeConfig {
+        enabled: bool_setting(
+            settings,
+            "BINANCE_ALT_CONTRACT_ENABLED",
+            "binance_alt_contract_monitor.enabled",
+            fallback.enabled,
+        ),
+        dry_run,
+        exchange: BinanceAltExchangeConfig {
+            binance_enabled: bool_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_BINANCE_ENABLED",
+                "binance_alt_contract_monitor.exchanges.binance.enabled",
+                fallback.exchange.binance_enabled,
+            ),
+        },
+        symbol_universe: BinanceAltSymbolUniverseConfig {
+            quote_asset: string_setting(
+                settings,
+                "binance_alt_contract_monitor.symbol_filter.quote_asset",
+                &fallback.symbol_universe.quote_asset,
+            ),
+            contract_type: string_setting(
+                settings,
+                "binance_alt_contract_monitor.symbol_filter.contract_type",
+                &fallback.symbol_universe.contract_type,
+            ),
+            status: string_setting(
+                settings,
+                "binance_alt_contract_monitor.symbol_filter.status",
+                &fallback.symbol_universe.status,
+            ),
+            symbol_limit: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.symbol_limit",
+                fallback.symbol_universe.symbol_limit,
+            ),
+            min_24h_quote_volume_usd: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.symbol_filter.min_24h_quote_volume_usd",
+                fallback.symbol_universe.min_24h_quote_volume_usd,
+            ),
+            whitelist: string_vec_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_WHITELIST",
+                "binance_alt_contract_monitor.whitelist",
+                fallback.symbol_universe.whitelist.clone(),
+            ),
+            blacklist: string_vec_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_BLACKLIST",
+                "binance_alt_contract_monitor.blacklist",
+                fallback.symbol_universe.blacklist.clone(),
+            ),
+            exclude_symbols: string_vec_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_EXCLUDE_SYMBOLS",
+                "binance_alt_contract_monitor.exclude_symbols",
+                fallback.symbol_universe.exclude_symbols.clone(),
+            ),
+        },
+        windows_sec: u64_vec_setting(
+            settings,
+            "binance_alt_contract_monitor.windows.trade_windows_sec",
+            fallback.windows_sec.clone(),
+        ),
+        dynamic: BinanceAltDynamicConfig {
+            enabled: settings
+                .get_bool("binance_alt_contract_monitor.dynamic_threshold.enabled")
+                .unwrap_or(fallback.dynamic.enabled),
+            lookback_minutes: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.dynamic_threshold.lookback_minutes",
+                fallback.dynamic.lookback_minutes,
+            ),
+            min_samples: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.dynamic_threshold.min_samples",
+                fallback.dynamic.min_samples,
+            ),
+            high_multiple: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.dynamic_threshold.high_multiple",
+                fallback.dynamic.high_multiple,
+            ),
+            critical_multiple: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.dynamic_threshold.critical_multiple",
+                fallback.dynamic.critical_multiple,
+            ),
+            s_multiple: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.dynamic_threshold.s_multiple",
+                fallback.dynamic.s_multiple,
+            ),
+        },
+        data_quality: BinanceAltDataQualityConfig {
+            min_discord_quality: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.data_quality.min_discord_quality",
+                fallback.data_quality.min_discord_quality,
+            ),
+            warmup_ms: i64_setting(
+                settings,
+                "binance_alt_contract_monitor.data_quality.warmup_ms",
+                fallback.data_quality.warmup_ms,
+            ),
+            heartbeat_stale_ms: i64_setting(
+                settings,
+                "binance_alt_contract_monitor.data_quality.heartbeat_stale_ms",
+                fallback.data_quality.heartbeat_stale_ms,
+            ),
+        },
+        discord: BinanceAltDiscordConfig {
+            enabled: settings
+                .get_bool("binance_alt_contract_monitor.discord.enabled")
+                .unwrap_or(fallback.discord.enabled),
+            dry_run: settings
+                .get_bool("binance_alt_contract_monitor.discord.dry_run")
+                .unwrap_or(dry_run),
+            cooldown_sec: i64_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.cooldown_sec",
+                fallback.discord.cooldown_sec,
+            ),
+            min_abnormal_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.min_abnormal_score",
+                fallback.discord.min_abnormal_score,
+            ),
+            min_build_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.min_build_score",
+                fallback.discord.min_build_score,
+            ),
+        },
+        tier_d_rules: BinanceAltTierDRulesConfig {
+            discord_min_abnormal_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_d.discord_min_abnormal_score",
+                fallback.tier_d_rules.discord_min_abnormal_score,
+            ),
+            discord_min_build_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_d.discord_min_build_score",
+                fallback.tier_d_rules.discord_min_build_score,
+            ),
+            require_non_liquidation: settings
+                .get_bool("binance_alt_contract_monitor.tier_rules.tier_d.require_non_liquidation")
+                .unwrap_or(fallback.tier_d_rules.require_non_liquidation),
+            max_severity_without_build_confirmation: severity_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_d.max_severity_without_build_confirmation",
+                fallback
+                    .tier_d_rules
+                    .max_severity_without_build_confirmation,
+            ),
+        },
+        persistence_path: PathBuf::from(string_setting(
+            settings,
+            "binance_alt_contract_monitor.persistence_path",
+            fallback.persistence_path.to_string_lossy().as_ref(),
+        )),
+        thresholds: load_thresholds(settings, &fallback.thresholds),
+        tier_d_min_signal_score: u8_setting(
+            settings,
+            "binance_alt_contract_monitor.tier_d_min_signal_score",
+            fallback.tier_d_min_signal_score,
+        ),
+    }
+}
+
+fn global_config() -> &'static RwLock<BinanceAltContractRuntimeConfig> {
+    GLOBAL_CONFIG.get_or_init(|| RwLock::new(BinanceAltContractRuntimeConfig::default()))
+}
+
+fn default_thresholds() -> BTreeMap<AltContractSymbolTier, AltContractTierThresholds> {
+    BTreeMap::from([
+        (
+            AltContractSymbolTier::A,
+            AltContractTierThresholds {
+                high_notional_usd: 20_000_000.0,
+                critical_notional_usd: 50_000_000.0,
+                s_notional_usd: 120_000_000.0,
+            },
+        ),
+        (
+            AltContractSymbolTier::B,
+            AltContractTierThresholds {
+                high_notional_usd: 10_000_000.0,
+                critical_notional_usd: 25_000_000.0,
+                s_notional_usd: 60_000_000.0,
+            },
+        ),
+        (
+            AltContractSymbolTier::C,
+            AltContractTierThresholds {
+                high_notional_usd: 5_000_000.0,
+                critical_notional_usd: 15_000_000.0,
+                s_notional_usd: 35_000_000.0,
+            },
+        ),
+        (
+            AltContractSymbolTier::D,
+            AltContractTierThresholds {
+                high_notional_usd: 2_000_000.0,
+                critical_notional_usd: 6_000_000.0,
+                s_notional_usd: 15_000_000.0,
+            },
+        ),
+    ])
+}
+
+fn load_thresholds(
+    settings: &::config::Config,
+    fallback: &BTreeMap<AltContractSymbolTier, AltContractTierThresholds>,
+) -> BTreeMap<AltContractSymbolTier, AltContractTierThresholds> {
+    [
+        AltContractSymbolTier::A,
+        AltContractSymbolTier::B,
+        AltContractSymbolTier::C,
+        AltContractSymbolTier::D,
+    ]
+    .into_iter()
+    .map(|tier| {
+        let key = match tier {
+            AltContractSymbolTier::A => "a",
+            AltContractSymbolTier::B => "b",
+            AltContractSymbolTier::C => "c",
+            AltContractSymbolTier::D => "d",
+        };
+        let default = fallback[&tier];
+        (
+            tier,
+            AltContractTierThresholds {
+                high_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.thresholds.{key}.high_notional_usd"),
+                    default.high_notional_usd,
+                ),
+                critical_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.thresholds.{key}.critical_notional_usd"),
+                    default.critical_notional_usd,
+                ),
+                s_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.thresholds.{key}.s_notional_usd"),
+                    default.s_notional_usd,
+                ),
+            },
+        )
+    })
+    .collect()
+}
+
+fn default_alt_symbols() -> Vec<String> {
+    [
+        "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "SUIUSDT",
+        "LTCUSDT", "TRXUSDT", "DOTUSDT", "BCHUSDT",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn normalize_product_id(value: &str) -> String {
+    value.trim().to_ascii_uppercase()
+}
+
+fn bool_setting(settings: &::config::Config, env_key: &str, toml_key: &str, default: bool) -> bool {
+    std::env::var(env_key)
+        .ok()
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .or_else(|| settings.get_bool(toml_key).ok())
+        .unwrap_or(default)
+}
+
+fn string_setting(settings: &::config::Config, path: &str, default: &str) -> String {
+    settings
+        .get_string(path)
+        .unwrap_or_else(|_| default.to_string())
+}
+
+fn string_vec_setting(
+    settings: &::config::Config,
+    env_key: &str,
+    path: &str,
+    default: Vec<String>,
+) -> Vec<String> {
+    if let Ok(value) = std::env::var(env_key) {
+        let values = value
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if !values.is_empty() {
+            return values;
+        }
+    }
+    settings
+        .get_array(path)
+        .ok()
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|value| value.into_string().ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or(default)
+}
+
+fn u64_vec_setting(settings: &::config::Config, path: &str, default: Vec<u64>) -> Vec<u64> {
+    settings
+        .get_array(path)
+        .ok()
+        .map(|values| {
+            values
+                .into_iter()
+                .filter_map(|value| value.into_int().ok())
+                .filter_map(|value| u64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or(default)
+}
+
+fn f64_setting(settings: &::config::Config, path: &str, default: f64) -> f64 {
+    settings
+        .get_float(path)
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
+}
+
+fn i64_setting(settings: &::config::Config, path: &str, default: i64) -> i64 {
+    settings
+        .get_int(path)
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn u64_setting(settings: &::config::Config, path: &str, default: u64) -> u64 {
+    settings
+        .get_int(path)
+        .ok()
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usize {
+    settings
+        .get_int(path)
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn u8_setting(settings: &::config::Config, path: &str, default: u8) -> u8 {
+    settings
+        .get_int(path)
+        .ok()
+        .and_then(|value| u8::try_from(value).ok())
+        .filter(|value| *value <= 100)
+        .unwrap_or(default)
+}
+
+fn severity_setting(
+    settings: &::config::Config,
+    path: &str,
+    default: AltContractSeverity,
+) -> AltContractSeverity {
+    match settings
+        .get_string(path)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "s" => AltContractSeverity::S,
+        "critical" => AltContractSeverity::Critical,
+        "high" => AltContractSeverity::High,
+        "medium" => AltContractSeverity::Medium,
+        "calm" => AltContractSeverity::Calm,
+        _ => default,
+    }
+}

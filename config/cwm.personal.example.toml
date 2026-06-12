@@ -69,3 +69,24 @@ enabled = true
 
 [spot_whale_monitor.exchanges.coinbase]
 enabled = true
+
+[binance_alt_contract_monitor]
+enabled = true
+dry_run = true
+symbol_limit = 40
+exclude_symbols = ["BTCUSDT", "ETHUSDT"]
+whitelist = ["SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "SUIUSDT"]
+
+[binance_alt_contract_monitor.exchanges.binance]
+enabled = true
+
+[binance_alt_contract_monitor.discord]
+enabled = true
+dry_run = true
+cooldown_sec = 900
+
+[binance_alt_contract_monitor.tier_rules.tier_d]
+discord_min_abnormal_score = 85
+discord_min_build_score = 85
+require_non_liquidation = true
+max_severity_without_build_confirmation = "high"
