@@ -135,5 +135,6 @@ fn replay_symbol_for_venue(venue: Venue) -> &'static str {
         Venue::Binance => "BTCUSDT",
         Venue::Bybit => "BTCUSDT",
         Venue::Okx => "BTC-USDT-SWAP",
+        Venue::Bitfinex => "tBTCF0:USTF0",
     }
 }

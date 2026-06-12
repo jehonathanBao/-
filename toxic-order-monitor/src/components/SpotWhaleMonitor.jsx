@@ -101,7 +101,7 @@ export default function SpotWhaleMonitor() {
           <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Spot Whale Flow</p>
           <h3 className="mt-2 text-lg font-bold text-white">BTC / ETH 现货监控</h3>
           <p className="mt-1 text-sm text-slate-400">
-            聚合 Binance 与 Coinbase 现货主动成交流，Critical / S 才进入 Discord gate。
+            聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，Critical / S 才进入 Discord gate。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3 xl:grid-cols-6">
@@ -117,7 +117,7 @@ export default function SpotWhaleMonitor() {
       <SpotTrendBar symbol={filters.symbol} trend={summary.trend60s} />
 
       <div className="mt-4 grid grid-cols-1 gap-2 text-xs md:grid-cols-2">
-        {["binance", "coinbase"].map((exchange) => (
+        {["binance", "coinbase", "bitfinex"].map((exchange) => (
           <ExchangeStatus exchange={exchange} key={exchange} status={exchanges[exchange]} />
         ))}
       </div>
@@ -532,7 +532,9 @@ function directionLabel(value) {
 }
 
 function exchangeLabel(value) {
-  return { binance: "Binance", coinbase: "Coinbase", multi: "Multi" }[String(value || "").toLowerCase()] || value || "Multi";
+  return { binance: "Binance", coinbase: "Coinbase", bitfinex: "Bitfinex", multi: "Multi" }[
+    String(value || "").toLowerCase()
+  ] || value || "Multi";
 }
 
 function exchangeStatusLabel(value) {

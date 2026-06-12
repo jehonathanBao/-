@@ -28,6 +28,7 @@ const calmSummary = {
   exchanges: {
     binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     coinbase: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+    bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
   },
 };
 
@@ -160,7 +161,7 @@ function normalizeSignalExchanges(exchanges) {
 
 function normalizeExchanges(exchanges) {
   const source = exchanges && typeof exchanges === "object" ? exchanges : {};
-  return ["binance", "coinbase"].reduce((acc, key) => {
+  return ["binance", "coinbase", "bitfinex"].reduce((acc, key) => {
     const item = source[key] && typeof source[key] === "object" ? source[key] : {};
     acc[key] = {
       connected: Boolean(item.connected),

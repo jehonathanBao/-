@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use super::{binance, bybit, okx};
+use super::{binance, bitfinex, bybit, okx};
 
 #[derive(Clone)]
 pub struct ConnectorManager {
@@ -77,6 +77,9 @@ impl ConnectorManager {
                 }),
                 Venue::Okx => tokio::spawn(async move {
                     okx::run(bus, health).await;
+                }),
+                Venue::Bitfinex => tokio::spawn(async move {
+                    bitfinex::run(bus, health).await;
                 }),
             };
             self.tasks.write().push(handle);

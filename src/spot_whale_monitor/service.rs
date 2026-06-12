@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    collector_binance, collector_coinbase,
+    collector_binance, collector_bitfinex, collector_coinbase,
     config::{spot_whale_runtime_config, SpotWhaleRuntimeConfig},
     detector::detect_spot_whale_signal_with_config,
     discord_notifier::{notify_spot_whale_discord, SpotWhaleDiscordSettings},
@@ -77,6 +77,14 @@ impl SpotWhaleService {
                 SpotExchangeStatus::disabled()
             },
         );
+        exchanges.insert(
+            "bitfinex".to_string(),
+            if runtime_config.exchanges.bitfinex_enabled && enabled {
+                SpotExchangeStatus::disconnected()
+            } else {
+                SpotExchangeStatus::disabled()
+            },
+        );
         let restored = load_persisted_signals(store.as_ref(), MAX_SIGNALS);
         Self {
             enabled,
@@ -118,6 +126,12 @@ impl SpotWhaleService {
                 collector_coinbase::run(service).await;
             }));
         }
+        if config.exchanges.bitfinex_enabled {
+            let service = self.clone();
+            self.tasks.write().push(tokio::spawn(async move {
+                collector_bitfinex::run(service).await;
+            }));
+        }
     }
 
     pub fn stop(&self) {
@@ -127,6 +141,7 @@ impl SpotWhaleService {
         }
         self.set_exchange_status(SpotExchange::Binance, "disconnected", false, None);
         self.set_exchange_status(SpotExchange::Coinbase, "disconnected", false, None);
+        self.set_exchange_status(SpotExchange::Bitfinex, "disconnected", false, None);
     }
 
     pub fn ingest_live_trade(&self, trade: SpotTrade) {
@@ -773,7 +788,7 @@ fn health_reason(enabled: bool, health_status: &str) -> &'static str {
         "spot_whale_monitor_disabled"
     } else {
         match health_status {
-            "healthy" => "binance_coinbase_recent",
+            "healthy" => "multiple_spot_sources_recent",
             "degraded" => "single_spot_source_recent",
             "unhealthy" => "spot_sources_stale_or_disconnected",
             _ => "spot_whale_status_unknown",

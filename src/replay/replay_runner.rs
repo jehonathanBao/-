@@ -489,5 +489,6 @@ fn replay_symbol_for_venue(venue: crate::types::market::Venue) -> &'static str {
         crate::types::market::Venue::Binance => "BTCUSDT",
         crate::types::market::Venue::Bybit => "BTCUSDT",
         crate::types::market::Venue::Okx => "BTC-USDT-SWAP",
+        crate::types::market::Venue::Bitfinex => "tBTCF0:USTF0",
     }
 }

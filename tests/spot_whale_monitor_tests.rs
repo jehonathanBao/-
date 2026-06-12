@@ -9,8 +9,8 @@ use btc_toxic_flow_monitor_rs::{
         config::SpotWhaleRuntimeConfig,
         detector::{detect_spot_whale_signal_with_config, discord_gate},
         normalizer::{
-            normalize_binance_spot_trade, normalize_coinbase_market_trades_json,
-            BinanceSpotAggTrade,
+            normalize_binance_spot_trade, normalize_bitfinex_trade_value,
+            normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
         },
         service::SpotWhaleService,
         types::{
@@ -74,6 +74,16 @@ fn spot_normalizers_map_taker_direction_and_units() {
     assert_eq!(trades[0].side, SpotTradeSide::Sell);
     assert_eq!(trades[1].symbol, "ETH");
     assert_eq!(trades[1].side, SpotTradeSide::Buy);
+
+    let bitfinex_sell = normalize_bitfinex_trade_value(
+        "tBTCUSD",
+        &serde_json::json!([88, 1_700_000_000_002_i64, -0.75, 70_000.0]),
+    )
+    .expect("bitfinex spot trade");
+    assert_eq!(bitfinex_sell.exchange, SpotExchange::Bitfinex);
+    assert_eq!(bitfinex_sell.symbol, "BTC");
+    assert_eq!(bitfinex_sell.side, SpotTradeSide::Sell);
+    assert_eq!(bitfinex_sell.notional_usd, 52_500.0);
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::types::{
     flow::{empty_venue_breakdown, DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
-    market::{AggressorSide, NormalizedTrade, Venue},
+    market::{AggressorSide, NormalizedTrade},
 };
 
 use super::{book_state::BookState, price_index::PriceIndex, trade_ring_buffer::TradeRingBuffer};
@@ -108,11 +108,9 @@ impl<'a> RollingWindows<'a> {
             }
         }
 
-        for venue in Venue::ALL {
-            if let Some(stats) = venue_breakdown.get_mut(venue.as_key()) {
-                stats.net_aggressive_btc = stats.aggressive_buy_btc - stats.aggressive_sell_btc;
-                stats.abs_aggressive_btc = stats.aggressive_buy_btc + stats.aggressive_sell_btc;
-            }
+        for stats in venue_breakdown.values_mut() {
+            stats.net_aggressive_btc = stats.aggressive_buy_btc - stats.aggressive_sell_btc;
+            stats.abs_aggressive_btc = stats.aggressive_buy_btc + stats.aggressive_sell_btc;
         }
 
         let abs_aggressive_btc = aggressive_buy_btc + aggressive_sell_btc;

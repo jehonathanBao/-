@@ -8,6 +8,8 @@
 #
 # This overlay keeps the system read-only and Discord in dry-run mode.
 
+enable_bitfinex = true
+
 [toxicOrder]
 max_price_deviation_pct = 5.0
 enable_spot_score = true
@@ -73,6 +75,9 @@ dry_run = true
 enabled = true
 
 [spot_whale_monitor.exchanges.coinbase]
+enabled = true
+
+[spot_whale_monitor.exchanges.bitfinex]
 enabled = true
 
 [binance_alt_contract_monitor]

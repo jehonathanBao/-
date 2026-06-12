@@ -34,6 +34,7 @@ vi.mock("../api/spotWhale.js", () => ({
         exchanges: {
           binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 50 },
           coinbase: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 80 },
+          bitfinex: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 120 },
         },
       },
       error: null,
@@ -66,8 +67,9 @@ vi.mock("../api/spotWhale.js", () => ({
           exchanges: [
             { exchange: "binance", buyVolumeBase: 520, sellVolumeBase: 80, dominance: 0.73 },
             { exchange: "coinbase", buyVolumeBase: 300, sellVolumeBase: 40, dominance: 0.76 },
+            { exchange: "bitfinex", buyVolumeBase: 40, sellVolumeBase: 0, dominance: 1 },
           ],
-          finalResult: "Binance / Coinbase 现货主动买入同步放大",
+          finalResult: "Binance / Coinbase / Bitfinex 现货主动买入同步放大",
         },
       ],
       error: null,
@@ -88,6 +90,7 @@ describe("SpotWhaleMonitor", () => {
     expect(await screen.findByText("BTC / ETH 现货监控")).toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getByText("Coinbase")).toBeInTheDocument();
+    expect(screen.getByText("Bitfinex")).toBeInTheDocument();
     expect(await screen.findByText("现货主动买入")).toBeInTheDocument();
     expect(screen.getByLabelText("净方向")).toBeInTheDocument();
     expect(
@@ -149,17 +152,18 @@ describe("SpotWhaleMonitor", () => {
         sellRatio: 0,
         updatedAtMs: null,
       },
-      exchanges: {
-        binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 50 },
-        coinbase: { connected: false, status: "stale", lastTradeAt: 1_699_999_000_000, latencyMs: 1_000_000 },
-      },
+        exchanges: {
+          binance: { connected: true, status: "connected", lastTradeAt: 1_700_000_000_000, latencyMs: 50 },
+          coinbase: { connected: false, status: "stale", lastTradeAt: 1_699_999_000_000, latencyMs: 1_000_000 },
+          bitfinex: { connected: false, status: "stale", lastTradeAt: 1_699_999_000_000, latencyMs: 1_000_000 },
+        },
     };
     fetchSpotWhaleSummary.mockResolvedValueOnce({ summary: staleSummary, error: null });
     fetchSpotWhaleLatest.mockResolvedValueOnce({ summary: staleSummary, items: [], error: null });
 
     render(<SpotWhaleMonitor />);
 
-    expect(await screen.findByText("无近期成交")).toBeInTheDocument();
+    expect((await screen.findAllByText("无近期成交")).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("健康状态")).toBeInTheDocument();
     expect(screen.getByText("异常")).toBeInTheDocument();
     expect(screen.getByText(/60s 总成交 0 BTC/)).toBeInTheDocument();

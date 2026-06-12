@@ -45,6 +45,15 @@ pub struct OkxTrade {
     pub ts: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BitfinexTrade {
+    pub symbol: String,
+    pub trade_id: serde_json::Value,
+    pub ts: i64,
+    pub amount: f64,
+    pub price: f64,
+}
+
 pub fn normalize_binance_agg_trade(raw: BinanceAggTrade) -> Option<NormalizedTrade> {
     build_trade(
         Venue::Binance,
@@ -94,6 +103,23 @@ pub fn normalize_okx_trade(raw: OkxTrade) -> Option<NormalizedTrade> {
         raw.sz.parse().ok()?,
         side,
         raw.trade_id,
+    )
+}
+
+pub fn normalize_bitfinex_trade(raw: BitfinexTrade) -> Option<NormalizedTrade> {
+    let side = if raw.amount >= 0.0 {
+        AggressorSide::Buy
+    } else {
+        AggressorSide::Sell
+    };
+    build_trade(
+        Venue::Bitfinex,
+        &raw.symbol,
+        raw.ts,
+        raw.price,
+        raw.amount.abs(),
+        side,
+        Some(raw.trade_id.to_string().trim_matches('"').to_string()),
     )
 }
 

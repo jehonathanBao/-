@@ -5,6 +5,7 @@
 //! account state, or modifies exchange account state.
 
 pub mod collector_binance;
+pub mod collector_bitfinex;
 pub mod collector_coinbase;
 pub mod config;
 pub mod detector;

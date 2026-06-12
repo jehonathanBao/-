@@ -59,7 +59,7 @@ pub struct FlowState {
 }
 
 pub fn empty_venue_breakdown() -> BTreeMap<String, VenueFlowBreakdown> {
-    ["binance", "bybit", "okx"]
+    ["binance", "bybit", "okx", "bitfinex"]
         .into_iter()
         .map(|venue| (venue.to_string(), empty_breakdown()))
         .collect()

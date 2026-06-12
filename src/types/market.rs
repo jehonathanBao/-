@@ -10,6 +10,7 @@ pub enum Venue {
     Binance,
     Bybit,
     Okx,
+    Bitfinex,
 }
 
 impl Venue {
@@ -20,6 +21,7 @@ impl Venue {
             Venue::Binance => "binance",
             Venue::Bybit => "bybit",
             Venue::Okx => "okx",
+            Venue::Bitfinex => "bitfinex",
         }
     }
 }
@@ -195,7 +197,9 @@ impl VenueHealth {
             ws_last_error: None,
             ws_error_class: "none".to_string(),
             trade_stream_configured: enabled && !mapping_missing,
-            book_stream_configured: enabled && !mapping_missing,
+            book_stream_configured: enabled
+                && !mapping_missing
+                && !matches!(venue, Venue::Bitfinex),
             trade_subscribe_attempted: false,
             book_subscribe_attempted: false,
             trade_subscribe_acked: false,
@@ -270,6 +274,7 @@ pub fn venue_enable_source(venue: Venue) -> &'static str {
         Venue::Binance => "enable_binance",
         Venue::Bybit => "enable_bybit",
         Venue::Okx => "enable_okx",
+        Venue::Bitfinex => "enable_bitfinex",
     };
     let has_toml_value = ::config::Config::builder()
         .add_source(::config::File::with_name("config/default").required(false))
@@ -289,6 +294,7 @@ pub fn venue_enable_flag_name(venue: Venue) -> &'static str {
         Venue::Binance => "ENABLE_BINANCE",
         Venue::Bybit => "ENABLE_BYBIT",
         Venue::Okx => "ENABLE_OKX",
+        Venue::Bitfinex => "ENABLE_BITFINEX",
     }
 }
 
@@ -298,8 +304,11 @@ pub fn venue_symbol_mapping(venue: Venue, requested_symbol: &str) -> VenueSymbol
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_uppercase();
-    let supported_btc_perp = matches!(normalized.as_str(), "BTCPERP" | "BTCUSDT" | "BTCUSDTPERP");
-    if !supported_btc_perp {
+    let supported_perp = matches!(
+        normalized.as_str(),
+        "BTCPERP" | "BTCUSDT" | "BTCUSDTPERP" | "ETHPERP" | "ETHUSDT" | "ETHUSDTPERP"
+    );
+    if !supported_perp {
         return VenueSymbolMapping {
             venue_symbol: None,
             venue_market_type: None,
@@ -311,8 +320,27 @@ pub fn venue_symbol_mapping(venue: Venue, requested_symbol: &str) -> VenueSymbol
         };
     }
     let (venue_symbol, venue_market_type) = match venue {
-        Venue::Binance | Venue::Bybit => ("BTCUSDT", "linear_perpetual"),
-        Venue::Okx => ("BTC-USDT-SWAP", "swap"),
+        Venue::Binance | Venue::Bybit => {
+            if normalized.starts_with("ETH") {
+                ("ETHUSDT", "linear_perpetual")
+            } else {
+                ("BTCUSDT", "linear_perpetual")
+            }
+        }
+        Venue::Okx => {
+            if normalized.starts_with("ETH") {
+                ("ETH-USDT-SWAP", "swap")
+            } else {
+                ("BTC-USDT-SWAP", "swap")
+            }
+        }
+        Venue::Bitfinex => {
+            if normalized.starts_with("ETH") {
+                ("tETHF0:USTF0", "perpetual")
+            } else {
+                ("tBTCF0:USTF0", "perpetual")
+            }
+        }
     };
     VenueSymbolMapping {
         venue_symbol: Some(venue_symbol.to_string()),
@@ -325,7 +353,7 @@ pub fn venue_symbol_mapping(venue: Venue, requested_symbol: &str) -> VenueSymbol
 pub fn venue_ack_mode(venue: Venue) -> &'static str {
     match venue {
         Venue::Binance => "not_supported",
-        Venue::Bybit | Venue::Okx => "exchange_ack",
+        Venue::Bybit | Venue::Okx | Venue::Bitfinex => "exchange_ack",
     }
 }
 

@@ -60,6 +60,7 @@ impl Default for SpotWhaleRuntimeConfig {
 pub struct SpotWhaleExchangeConfig {
     pub binance_enabled: bool,
     pub coinbase_enabled: bool,
+    pub bitfinex_enabled: bool,
 }
 
 impl Default for SpotWhaleExchangeConfig {
@@ -67,6 +68,7 @@ impl Default for SpotWhaleExchangeConfig {
         Self {
             binance_enabled: true,
             coinbase_enabled: true,
+            bitfinex_enabled: true,
         }
     }
 }
@@ -246,6 +248,12 @@ pub fn load_spot_whale_runtime_config_from_settings(
                 settings,
                 "SPOT_WHALE_COINBASE_ENABLED",
                 "spot_whale_monitor.exchanges.coinbase.enabled",
+                true,
+            ),
+            bitfinex_enabled: bool_setting(
+                settings,
+                "SPOT_WHALE_BITFINEX_ENABLED",
+                "spot_whale_monitor.exchanges.bitfinex.enabled",
                 true,
             ),
         },

@@ -191,6 +191,7 @@ fn parse_venue(raw: &str, line_no: usize) -> anyhow::Result<Venue> {
         "binance" => Ok(Venue::Binance),
         "bybit" => Ok(Venue::Bybit),
         "okx" => Ok(Venue::Okx),
+        "bitfinex" => Ok(Venue::Bitfinex),
         other => anyhow::bail!("line {line_no}: unsupported venue {other}"),
     }
 }

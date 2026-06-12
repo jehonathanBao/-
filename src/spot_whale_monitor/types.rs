@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub enum SpotExchange {
     Binance,
     Coinbase,
+    Bitfinex,
 }
 
 impl SpotExchange {
@@ -14,6 +15,7 @@ impl SpotExchange {
         match self {
             Self::Binance => "binance",
             Self::Coinbase => "coinbase",
+            Self::Bitfinex => "bitfinex",
         }
     }
 }

@@ -64,6 +64,35 @@ pub fn normalize_coinbase_market_trades_json(payload: &Value) -> Vec<SpotTrade> 
         .collect()
 }
 
+pub fn normalize_bitfinex_trade_value(symbol: &str, trade: &Value) -> Option<SpotTrade> {
+    let values = trade.as_array()?;
+    let trade_id = values.first()?.clone();
+    let ts = values.get(1)?.as_i64()?;
+    let amount = values.get(2)?.as_f64()?;
+    let price = values.get(3)?.as_f64()?;
+    let symbol = normalize_bitfinex_symbol(symbol)?;
+    if !price.is_finite() || !amount.is_finite() || price <= 0.0 || amount == 0.0 {
+        return None;
+    }
+    let qty_base = amount.abs();
+    let side = if amount >= 0.0 {
+        SpotTradeSide::Buy
+    } else {
+        SpotTradeSide::Sell
+    };
+    Some(SpotTrade {
+        ts,
+        exchange: SpotExchange::Bitfinex,
+        symbol,
+        market: "spot".to_string(),
+        price,
+        qty_base,
+        notional_usd: price * qty_base,
+        side,
+        trade_id: Some(trade_id.to_string().trim_matches('"').to_string()),
+    })
+}
+
 pub fn normalize_coinbase_trade_value(trade: &Value) -> Option<SpotTrade> {
     let product_id = trade.get("product_id")?.as_str()?;
     let symbol = normalize_coinbase_symbol(product_id)?;
@@ -107,6 +136,14 @@ fn normalize_coinbase_symbol(product_id: &str) -> Option<String> {
     match product_id.to_ascii_uppercase().as_str() {
         "BTC-USD" => Some("BTC".to_string()),
         "ETH-USD" => Some("ETH".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_bitfinex_symbol(symbol: &str) -> Option<String> {
+    match symbol.to_ascii_uppercase().as_str() {
+        "TBTCUSD" | "BTCUSD" => Some("BTC".to_string()),
+        "TETHUSD" | "ETHUSD" => Some("ETH".to_string()),
         _ => None,
     }
 }

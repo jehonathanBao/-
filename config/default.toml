@@ -10,6 +10,7 @@ sweep_windows_ms = [1000, 5000, 15000]
 enable_binance = false
 enable_bybit = false
 enable_okx = false
+enable_bitfinex = false
 telegram_enabled = false
 telegram_bot_token = ""
 telegram_chat_id = ""
@@ -304,6 +305,9 @@ dry_run = true
 enabled = true
 
 [spot_whale_monitor.exchanges.coinbase]
+enabled = true
+
+[spot_whale_monitor.exchanges.bitfinex]
 enabled = true
 
 [spot_whale_monitor.data_quality]

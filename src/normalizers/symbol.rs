@@ -7,6 +7,8 @@ pub fn normalize_symbol(venue: Venue, symbol: &str) -> Option<&'static str> {
         (Venue::Bybit, "BTCUSDT") => Some("BTC-PERP"),
         (Venue::Okx, "BTC-USDT-SWAP") => Some("BTC-PERP"),
         (Venue::Okx, "ETH-USDT-SWAP") => Some("ETH-PERP"),
+        (Venue::Bitfinex, "tBTCF0:USTF0" | "BTCF0:USTF0") => Some("BTC-PERP"),
+        (Venue::Bitfinex, "tETHF0:USTF0" | "ETHF0:USTF0") => Some("ETH-PERP"),
         _ => None,
     }
 }

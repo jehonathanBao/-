@@ -3,8 +3,8 @@ use btc_toxic_flow_monitor_rs::{
         book::{normalize_book, RawBookInput},
         symbol::normalize_symbol,
         trade::{
-            normalize_binance_agg_trade, normalize_bybit_trade, normalize_okx_trade,
-            BinanceAggTrade, BybitTrade, OkxTrade,
+            normalize_binance_agg_trade, normalize_bitfinex_trade, normalize_bybit_trade,
+            normalize_okx_trade, BinanceAggTrade, BitfinexTrade, BybitTrade, OkxTrade,
         },
     },
     types::market::{AggressorSide, Venue},
@@ -27,6 +27,14 @@ fn symbol_normalizer_maps_btc_perps() {
     );
     assert_eq!(
         normalize_symbol(Venue::Okx, "ETH-USDT-SWAP"),
+        Some("ETH-PERP")
+    );
+    assert_eq!(
+        normalize_symbol(Venue::Bitfinex, "tBTCF0:USTF0"),
+        Some("BTC-PERP")
+    );
+    assert_eq!(
+        normalize_symbol(Venue::Bitfinex, "tETHF0:USTF0"),
         Some("ETH-PERP")
     );
 }
@@ -68,6 +76,20 @@ fn trade_normalizers_map_aggressor_side_and_size_usd() {
     })
     .expect("trade");
     assert_eq!(okx_sell.aggressor_side, AggressorSide::Sell);
+
+    let bitfinex_sell = normalize_bitfinex_trade(BitfinexTrade {
+        symbol: "tETHF0:USTF0".to_string(),
+        trade_id: serde_json::json!(99),
+        ts: 1,
+        amount: -2.0,
+        price: 3500.0,
+    })
+    .expect("trade");
+    assert_eq!(bitfinex_sell.venue, Venue::Bitfinex);
+    assert_eq!(bitfinex_sell.symbol, "ETH-PERP");
+    assert_eq!(bitfinex_sell.aggressor_side, AggressorSide::Sell);
+    assert_eq!(bitfinex_sell.size_btc, 2.0);
+    assert_eq!(bitfinex_sell.size_usd, 7_000.0);
 }
 
 #[test]

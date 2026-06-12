@@ -25,6 +25,7 @@ describe("spotWhale API", () => {
         exchanges: {
           binance: { connected: true, status: "connected" },
           coinbase: { connected: true, status: "connected" },
+          bitfinex: { connected: true, status: "connected" },
         },
       },
     });
@@ -50,7 +51,10 @@ describe("spotWhale API", () => {
             totalNotionalUsd: 51_250_000,
             coinbasePremiumPct: 0.04,
             discordEligible: true,
-            exchanges: [{ exchange: "coinbase", buyVolumeBase: 320 }],
+            exchanges: [
+              { exchange: "coinbase", buyVolumeBase: 320 },
+              { exchange: "bitfinex", buyVolumeBase: 40 },
+            ],
           },
         ],
       },
@@ -63,6 +67,7 @@ describe("spotWhale API", () => {
     expect(result.items[0].triggerPriceUsd).toBe(62_500);
     expect(result.items[0].coinbasePremiumPct).toBe(0.04);
     expect(result.items[0].exchanges[0].exchange).toBe("coinbase");
+    expect(result.items[0].exchanges[1].exchange).toBe("bitfinex");
   });
 
   it("normalizes missing fields safely", () => {
