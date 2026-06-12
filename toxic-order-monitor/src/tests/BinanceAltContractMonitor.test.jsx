@@ -44,8 +44,9 @@ describe("BinanceAltContractMonitor", () => {
     render(<BinanceAltContractMonitor />);
 
     expect(await screen.findByText("山寨合约异常监控")).toBeInTheDocument();
-    expect(screen.getByText("Candidate only · 只读提醒 · 不下单 · dry-run 默认开启")).toBeInTheDocument();
-    expect(screen.getByText("SOLUSDT, DOGEUSDT")).toBeInTheDocument();
+    expect(screen.getByText(/全量监控 Binance USDT 永续山寨合约/)).toBeInTheDocument();
+    expect(screen.getAllByText(/全 Binance USDT 永续/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Tier A1 \/ B1 \/ C0 \/ D0 \/ E0/).length).toBeGreaterThan(0);
     expect(screen.getByText("在线")).toBeInTheDocument();
     expect(screen.getAllByText("主力建多").length).toBeGreaterThan(0);
     expect(screen.getByText("$175.50")).toBeInTheDocument();
@@ -58,6 +59,10 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText("dry-run would_send")).toBeInTheDocument();
     expect(screen.getByText("Dry-run 24h")).toBeInTheDocument();
     expect(screen.getByText(/signals 14/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Candidate/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Hot OI/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/markPrice/)).toBeInTheDocument();
+    expect(screen.getByText(/ticker/)).toBeInTheDocument();
   });
 
   it("uses history when severity filter is selected", async () => {
@@ -110,6 +115,11 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getAllByText("$175.50").length).toBeGreaterThan(0);
     expect(screen.getByText("Discord dry-run")).toBeInTheDocument();
     expect(screen.getAllByText("dry-run would_send").length).toBeGreaterThan(0);
+    expect(screen.getByText("主力置信度")).toBeInTheDocument();
+    expect(screen.getByText("证据数量")).toBeInTheDocument();
+    expect(screen.getByText("Window Confirmations")).toBeInTheDocument();
+    expect(screen.getByText("主动买入占优")).toBeInTheDocument();
+    expect(screen.getByText("多窗口确认")).toBeInTheDocument();
     expect(screen.getByText("Score Breakdown")).toBeInTheDocument();
     expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
     expect(screen.getByText("binance · perp · primary · active")).toBeInTheDocument();
@@ -180,6 +190,26 @@ function altSummary() {
       skippedDataQuality24h: 1,
       liquidationDriven24h: 4,
     },
+    symbolUniverse: {
+      mode: "all_binance_usdt_perp",
+      limit: 0,
+      monitoredCount: 2,
+      tierCounts: { A: 1, B: 1, C: 0, D: 0, E: 0 },
+      whitelist: [],
+      blacklist: [],
+      excludedSymbols: ["BTCUSDT", "ETHUSDT"],
+      min24hQuoteVolumeUsd: 0,
+    },
+    allMarketContext: {
+      markPriceConnected: true,
+      tickerConnected: true,
+      forceOrderConnected: true,
+      lastMarkPriceAt: Date.now(),
+      lastTickerAt: Date.now(),
+      lastForceOrderAt: Date.now(),
+      candidateSymbols: ["SOLUSDT"],
+      hotOiSymbols: ["SOLUSDT"],
+    },
   };
 }
 
@@ -196,6 +226,41 @@ function altSignal() {
     severity: "s",
     abnormalScore: 91,
     buildScore: 87,
+    mainForceConfidence: 84,
+    evidenceCount: 5,
+    evidenceTags: [
+      "aggressive_buy_dominant",
+      "oi_expanding",
+      "dynamic_multiple_critical",
+      "price_follow_through",
+      "multi_window_confirmed",
+    ],
+    windowConfirmations: [
+      {
+        windowSec: 15,
+        notionalUsd: 42_000_000,
+        dynamicMultiple: 8.2,
+        directionalStrength: 0.72,
+        confirmed: true,
+      },
+      {
+        windowSec: 60,
+        notionalUsd: 143_910_000,
+        dynamicMultiple: 10.2,
+        directionalStrength: 0.74,
+        confirmed: true,
+      },
+    ],
+    marketWideMove: false,
+    marketImpulseRatio: 0.04,
+    relativeStrengthRank: 2,
+    postSignalStatus: "pending",
+    signalVwap: 175.5,
+    retestStatus: "unknown",
+    oiFreshnessSec: 14,
+    oiQuality: "fresh",
+    fundingCrowding: "neutral",
+    fundingPenalty: 0,
     directionBias: 76,
     dataQuality: 92,
     totalVolumeBase: 820_000,

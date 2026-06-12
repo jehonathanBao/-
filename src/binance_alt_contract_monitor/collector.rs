@@ -7,15 +7,18 @@ use tokio_tungstenite::connect_async;
 use super::{
     config::binance_alt_contract_runtime_config,
     service::BinanceAltContractService,
+    symbol_universe::{build_symbol_universe, BinanceAltSymbolCandidate},
     types::{AltContractExchange, AltContractTrade, AltContractTradeSide},
     LOG_PREFIX, LOG_TARGET,
 };
 
-const BINANCE_FUTURES_STREAM_BASE: &str = "wss://fstream.binance.com/stream?streams=";
+const BINANCE_FUTURES_STREAM_BASE: &str = "wss://fstream.binance.com/market/stream?streams=";
+const BINANCE_ALL_MARKET_CONTEXT_STREAM_URL: &str =
+    "wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s/!ticker@arr";
 const BINANCE_FORCE_ORDER_STREAM_URL: &str = "wss://fstream.binance.com/ws/!forceOrder@arr";
 const BINANCE_FUTURES_REST_BASE: &str = "https://fapi.binance.com";
 const RECONNECT_DELAY_MS: u64 = 1_000;
-const CONTEXT_POLL_INTERVAL_MS: u64 = 30_000;
+const MAX_STREAMS_PER_CONNECTION: usize = 200;
 
 #[derive(Debug, Deserialize)]
 struct Combined {
@@ -57,6 +60,54 @@ struct BinancePremiumIndex {
 }
 
 #[derive(Debug, Deserialize)]
+struct BinanceExchangeInfo {
+    symbols: Vec<BinanceExchangeInfoSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceExchangeInfoSymbol {
+    symbol: String,
+    #[serde(rename = "quoteAsset")]
+    quote_asset: String,
+    #[serde(rename = "contractType")]
+    contract_type: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceTicker24h {
+    symbol: String,
+    #[serde(rename = "quoteVolume")]
+    quote_volume: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceMarkPriceEvent {
+    #[serde(rename = "E")]
+    event_time_ms: Option<i64>,
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "p")]
+    mark_price: String,
+    #[serde(rename = "r")]
+    funding_rate: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceTickerEvent {
+    #[serde(rename = "E")]
+    event_time_ms: Option<i64>,
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "c")]
+    last_price: String,
+    #[serde(rename = "q")]
+    quote_volume: String,
+    #[serde(rename = "P")]
+    price_change_percent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BinanceForceOrderEvent {
     #[serde(rename = "o")]
     order: BinanceForceOrder,
@@ -81,8 +132,27 @@ struct BinanceForceOrder {
 }
 
 pub async fn run(service: BinanceAltContractService) {
+    let client = reqwest::Client::new();
     loop {
-        let symbols = binance_alt_contract_runtime_config().enabled_symbols();
+        let config = binance_alt_contract_runtime_config();
+        if !config.enabled || !config.exchange.binance_enabled {
+            service.set_exchange_status(AltContractExchange::Binance, "disabled", false, None);
+            tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+            continue;
+        }
+        let symbols = match refresh_symbol_universe(&client, &service).await {
+            Ok(symbols) if !symbols.is_empty() => symbols,
+            Ok(_) => config.enabled_symbols(),
+            Err(error) => {
+                service.record_error();
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "{} binance alt universe refresh failed: {error}",
+                    LOG_PREFIX
+                );
+                config.enabled_symbols()
+            }
+        };
         if symbols.is_empty() {
             service.set_exchange_status(
                 AltContractExchange::Binance,
@@ -93,11 +163,43 @@ pub async fn run(service: BinanceAltContractService) {
             tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
             continue;
         }
+        let shards = shard_symbols(&symbols, MAX_STREAMS_PER_CONNECTION);
+        tracing::info!(
+            target: LOG_TARGET,
+            symbol_count = symbols.len(),
+            shard_count = shards.len(),
+            "{} binance alt aggTrade shards starting",
+            LOG_PREFIX
+        );
+        let shard_futures = shards
+            .into_iter()
+            .enumerate()
+            .map(|(shard_id, shard_symbols)| {
+                run_agg_trade_shard(service.clone(), shard_id, shard_symbols)
+            })
+            .collect::<Vec<_>>();
+        futures_util::future::join_all(shard_futures).await;
+        tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+    }
+}
+
+async fn run_agg_trade_shard(
+    service: BinanceAltContractService,
+    shard_id: usize,
+    symbols: Vec<String>,
+) {
+    loop {
         let url = stream_url(&symbols);
         service.set_exchange_status(AltContractExchange::Binance, "connecting", false, None);
         match connect_async(&url).await {
             Ok((ws, _)) => {
-                tracing::info!(target: LOG_TARGET, "{} binance alt futures connected", LOG_PREFIX);
+                tracing::info!(
+                    target: LOG_TARGET,
+                    shard_id,
+                    stream_count = symbols.len(),
+                    "{} binance alt futures shard connected",
+                    LOG_PREFIX
+                );
                 service.mark_connected(AltContractExchange::Binance);
                 let (_, mut read) = ws.split();
                 while let Some(message) = read.next().await {
@@ -127,13 +229,30 @@ pub async fn run(service: BinanceAltContractService) {
 
 pub async fn run_context_polling(service: BinanceAltContractService) {
     let client = reqwest::Client::new();
+    let mut last_all_poll_at = 0_i64;
     loop {
         let config = binance_alt_contract_runtime_config();
-        if !config.enabled || !config.exchange.binance_enabled {
-            tokio::time::sleep(Duration::from_millis(CONTEXT_POLL_INTERVAL_MS)).await;
+        let hot_interval = Duration::from_secs(config.oi_scheduler.hot_symbols_interval_sec.max(1));
+        if !config.enabled || !config.exchange.binance_enabled || !config.oi_scheduler.enabled {
+            tokio::time::sleep(hot_interval).await;
             continue;
         }
-        for symbol in config.enabled_symbols() {
+        let throttle = Duration::from_millis(
+            1_000_u64.saturating_div(config.oi_scheduler.max_oi_requests_per_sec.max(1)),
+        );
+        let now = crate::normalizers::trade::now_ms();
+        let all_interval_ms = i64::try_from(config.oi_scheduler.all_symbols_interval_sec)
+            .unwrap_or(300)
+            .saturating_mul(1000);
+        let all_due =
+            last_all_poll_at == 0 || now.saturating_sub(last_all_poll_at) >= all_interval_ms;
+        let symbols = if all_due {
+            last_all_poll_at = now;
+            service.monitored_product_ids()
+        } else {
+            service.hot_oi_product_ids()
+        };
+        for symbol in symbols {
             if let Err(error) = poll_symbol_context(&client, &service, &symbol).await {
                 service.record_error();
                 tracing::warn!(
@@ -143,8 +262,57 @@ pub async fn run_context_polling(service: BinanceAltContractService) {
                     LOG_PREFIX
                 );
             }
+            tokio::time::sleep(throttle).await;
         }
-        tokio::time::sleep(Duration::from_millis(CONTEXT_POLL_INTERVAL_MS)).await;
+        tokio::time::sleep(hot_interval).await;
+    }
+}
+
+pub async fn run_all_market_context_stream(service: BinanceAltContractService) {
+    loop {
+        let config = binance_alt_contract_runtime_config();
+        if !config.enabled || !config.exchange.binance_enabled {
+            tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+            continue;
+        }
+        match connect_async(BINANCE_ALL_MARKET_CONTEXT_STREAM_URL).await {
+            Ok((ws, _)) => {
+                tracing::info!(
+                    target: LOG_TARGET,
+                    "{} binance alt all-market markPrice/ticker stream connected",
+                    LOG_PREFIX
+                );
+                service.mark_all_market_context_connected();
+                let (_, mut read) = ws.split();
+                while let Some(message) = read.next().await {
+                    match message {
+                        Ok(message) => {
+                            if let Ok(text) = message.to_text() {
+                                handle_all_market_context_message(text, &service);
+                            }
+                        }
+                        Err(error) => {
+                            service.mark_all_market_context_disconnected(Some(error.to_string()));
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                "{} binance alt all-market context reconnecting: {error}",
+                                LOG_PREFIX
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                service.mark_all_market_context_disconnected(Some(error.to_string()));
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "{} binance alt all-market context connect failed: {error}",
+                    LOG_PREFIX
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
     }
 }
 
@@ -162,6 +330,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
                     "{} binance alt forceOrder snapshot stream connected",
                     LOG_PREFIX
                 );
+                service.mark_force_order_stream_connected();
                 let (_, mut read) = ws.split();
                 while let Some(message) = read.next().await {
                     match message {
@@ -171,7 +340,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
                             }
                         }
                         Err(error) => {
-                            service.record_error();
+                            service.mark_force_order_stream_disconnected(Some(error.to_string()));
                             tracing::warn!(
                                 target: LOG_TARGET,
                                 "{} binance alt forceOrder stream reconnecting: {error}",
@@ -183,7 +352,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
                 }
             }
             Err(error) => {
-                service.record_error();
+                service.mark_force_order_stream_disconnected(Some(error.to_string()));
                 tracing::warn!(
                     target: LOG_TARGET,
                     "{} binance alt forceOrder connect failed: {error}",
@@ -232,6 +401,14 @@ pub fn stream_url(symbols: &[String]) -> String {
     format!("{BINANCE_FUTURES_STREAM_BASE}{streams}")
 }
 
+pub fn shard_symbols(symbols: &[String], max_streams_per_connection: usize) -> Vec<Vec<String>> {
+    let chunk_size = max_streams_per_connection.max(1);
+    symbols
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
 fn handle_message(text: &str, service: &BinanceAltContractService) {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         service.set_exchange_status(
@@ -257,10 +434,112 @@ fn handle_message(text: &str, service: &BinanceAltContractService) {
     let Some(trade) = normalize_binance_futures_agg_trade(raw) else {
         return;
     };
-    if binance_alt_contract_runtime_config().symbol_enabled(&trade.product_id) {
+    let config = binance_alt_contract_runtime_config();
+    if service.product_enabled(&trade.product_id, &config) {
         service.mark_connected(AltContractExchange::Binance);
         service.ingest_live_trade(trade);
     }
+}
+
+fn handle_all_market_context_message(text: &str, service: &BinanceAltContractService) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        service.mark_all_market_context_disconnected(Some(
+            "binance alt all-market json parse error".to_string(),
+        ));
+        return;
+    };
+    let config = binance_alt_contract_runtime_config();
+    for payload in market_payloads(value) {
+        let event_type = payload
+            .get("e")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if event_type == "markPriceUpdate" || payload.get("r").is_some() {
+            let Ok(event) = serde_json::from_value::<BinanceMarkPriceEvent>(payload) else {
+                continue;
+            };
+            let product_id = event.symbol.to_ascii_uppercase();
+            if !service.product_enabled(&product_id, &config) {
+                continue;
+            }
+            service.update_mark_price_context(
+                &product_id,
+                event
+                    .event_time_ms
+                    .unwrap_or_else(crate::normalizers::trade::now_ms),
+                parse_number(&event.mark_price),
+                event.funding_rate.as_deref().and_then(parse_number),
+            );
+        } else if event_type == "24hrTicker" || payload.get("q").is_some() {
+            let Ok(event) = serde_json::from_value::<BinanceTickerEvent>(payload) else {
+                continue;
+            };
+            let product_id = event.symbol.to_ascii_uppercase();
+            if !service.product_enabled(&product_id, &config) {
+                continue;
+            }
+            service.update_ticker_context(
+                &product_id,
+                event
+                    .event_time_ms
+                    .unwrap_or_else(crate::normalizers::trade::now_ms),
+                parse_number(&event.last_price),
+                parse_number(&event.quote_volume),
+                event.price_change_percent.as_deref().and_then(parse_number),
+            );
+        }
+    }
+}
+
+async fn refresh_symbol_universe(
+    client: &reqwest::Client,
+    service: &BinanceAltContractService,
+) -> Result<Vec<String>, reqwest::Error> {
+    let config = binance_alt_contract_runtime_config();
+    let exchange_info = client
+        .get(format!("{BINANCE_FUTURES_REST_BASE}/fapi/v1/exchangeInfo"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<BinanceExchangeInfo>()
+        .await?;
+    let tickers = client
+        .get(format!("{BINANCE_FUTURES_REST_BASE}/fapi/v1/ticker/24hr"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<BinanceTicker24h>>()
+        .await?;
+    let volumes = tickers
+        .into_iter()
+        .map(|ticker| {
+            (
+                ticker.symbol.to_ascii_uppercase(),
+                ticker.quote_volume.parse::<f64>().unwrap_or_default(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let candidates = exchange_info
+        .symbols
+        .into_iter()
+        .map(|symbol| BinanceAltSymbolCandidate {
+            quote_volume_24h_usd: volumes
+                .get(&symbol.symbol.to_ascii_uppercase())
+                .copied()
+                .unwrap_or_default(),
+            symbol: symbol.symbol,
+            quote_asset: symbol.quote_asset,
+            contract_type: symbol.contract_type,
+            status: symbol.status,
+        })
+        .collect::<Vec<_>>();
+    let metas = build_symbol_universe(&candidates, &config);
+    let symbols = metas
+        .iter()
+        .map(|meta| meta.product_id.clone())
+        .collect::<Vec<_>>();
+    service.update_symbol_universe(metas);
+    Ok(symbols)
 }
 
 async fn poll_symbol_context(
@@ -313,7 +592,8 @@ fn handle_force_order_message(text: &str, service: &BinanceAltContractService) {
             continue;
         };
         let product_id = event.order.symbol.to_ascii_uppercase();
-        if !binance_alt_contract_runtime_config().symbol_enabled(&product_id) {
+        let config = binance_alt_contract_runtime_config();
+        if !service.product_enabled(&product_id, &config) {
             continue;
         }
         let price = event
@@ -392,4 +672,24 @@ fn force_order_payloads(value: serde_json::Value) -> Vec<serde_json::Value> {
             .collect();
     }
     Vec::new()
+}
+
+fn market_payloads(value: serde_json::Value) -> Vec<serde_json::Value> {
+    if let Some(data) = value.get("data") {
+        if let Some(items) = data.as_array() {
+            return items.to_vec();
+        }
+        return vec![data.clone()];
+    }
+    if let Some(items) = value.as_array() {
+        return items.to_vec();
+    }
+    vec![value]
+}
+
+fn parse_number(value: &str) -> Option<f64> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
 }

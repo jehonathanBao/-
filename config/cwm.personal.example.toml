@@ -73,12 +73,36 @@ enabled = true
 [binance_alt_contract_monitor]
 enabled = true
 dry_run = true
-symbol_limit = 40
+universe_mode = "all_binance_usdt_perp"
+symbol_limit = 0
 exclude_symbols = ["BTCUSDT", "ETHUSDT"]
-whitelist = ["SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "SUIUSDT"]
+whitelist = []
+blacklist = []
+
+[binance_alt_contract_monitor.symbol_filter]
+quote_asset = "USDT"
+contract_type = "PERPETUAL"
+status = "TRADING"
+min_24h_quote_volume_usd = 0
 
 [binance_alt_contract_monitor.exchanges.binance]
 enabled = true
+
+[binance_alt_contract_monitor.oi_scheduler]
+enabled = true
+all_symbols_interval_sec = 300
+hot_symbols_interval_sec = 15
+candidate_ttl_sec = 600
+max_oi_requests_per_sec = 5
+immediate_fetch_on_candidate = true
+
+[binance_alt_contract_monitor.storage]
+persist_all_1s = false
+persist_all_1m = true
+persist_hot_1s = true
+hot_1s_retention_hours = 24
+flow_1m_retention_days = 14
+signals_retention_days = 180
 
 [binance_alt_contract_monitor.discord]
 enabled = true
@@ -88,5 +112,13 @@ cooldown_sec = 900
 [binance_alt_contract_monitor.tier_rules.tier_d]
 discord_min_abnormal_score = 85
 discord_min_build_score = 85
+require_non_liquidation = true
+max_severity_without_build_confirmation = "high"
+
+[binance_alt_contract_monitor.tier_rules.tier_e]
+discord_min_abnormal_score = 92
+discord_min_build_score = 90
+min_dynamic_multiple = 10.0
+require_oi_confirmation = true
 require_non_liquidation = true
 max_severity_without_build_confirmation = "high"

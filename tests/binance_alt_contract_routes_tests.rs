@@ -65,7 +65,7 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
     assert_eq!(latest.summary.dry_run_stats.would_send1h, 1);
     assert_eq!(latest.summary.dry_run_stats.signals24h, 1);
     assert_eq!(latest.summary.dry_run_stats.would_send24h, 1);
-    assert_eq!(latest.summary.symbol_universe.mode, "whitelist_only");
+    assert_eq!(latest.summary.symbol_universe.mode, "all_binance_usdt_perp");
     assert!(latest
         .summary
         .symbol_universe
@@ -80,11 +80,12 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
         would_send: Some(true),
         liquidation: Some(false),
         tier: Some("b".to_string()),
-        min_build_score: Some(80),
         limit: Some(10),
         ..BinanceAltContractQuery::default()
     });
     assert_eq!(history.items.len(), 1);
+    assert!(history.items[0].main_force_confidence >= 75.0);
+    assert!(history.items[0].evidence_count >= 4);
 
     let liquidation_history = service.history(BinanceAltContractQuery {
         symbol: Some("SOL".to_string()),

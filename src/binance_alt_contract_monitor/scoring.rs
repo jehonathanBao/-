@@ -38,6 +38,7 @@ pub fn score_alt_contract_signal(
     let liquidation_score = liquidation_score(context);
     let persistence_score = f64::from(context.persistence_windows.min(3)) / 3.0 * 5.0;
     let funding_score = funding_score(context);
+    let funding_penalty = funding_crowding_penalty(stats, context);
     let data_quality_score = f64::from(stats.data_quality) / 100.0 * 5.0;
     let penalty_score = penalty_score(stats, context);
 
@@ -55,6 +56,7 @@ pub fn score_alt_contract_signal(
         + price_score * 0.6
         + persistence_score
         + funding_score
+        - funding_penalty
         + data_quality_score
         + build_penalty(context, penalty_score);
 
@@ -78,6 +80,34 @@ pub fn score_alt_contract_signal(
             abnormal_score: f64::from(abnormal_score),
             build_score: f64::from(build_score),
         },
+    }
+}
+
+pub fn funding_crowding_label(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+) -> String {
+    let Some(rate) = context.funding_rate else {
+        return "unknown".to_string();
+    };
+    let extreme_long = rate >= 0.001;
+    let extreme_short = rate <= -0.001;
+    match (stats.direction, extreme_long, extreme_short) {
+        (AltContractDirection::Buy, true, _) => "long_overcrowded".to_string(),
+        (AltContractDirection::Sell, _, true) => "short_overcrowded".to_string(),
+        (AltContractDirection::Sell, true, _) => "anti_crowded_short_build".to_string(),
+        (AltContractDirection::Buy, _, true) => "anti_crowded_long_build".to_string(),
+        _ => "neutral".to_string(),
+    }
+}
+
+pub fn funding_crowding_penalty(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+) -> f64 {
+    match funding_crowding_label(stats, context).as_str() {
+        "long_overcrowded" | "short_overcrowded" => 8.0,
+        _ => 0.0,
     }
 }
 
@@ -142,6 +172,9 @@ fn penalty_score(stats: &AltContractWindowStats, context: &AltContractContext) -
     }
     if matches!(stats.tier, AltContractSymbolTier::D) {
         penalty -= 10.0;
+    }
+    if matches!(stats.tier, AltContractSymbolTier::E) {
+        penalty -= 20.0;
     }
     if context.force_order_snapshot && context.liquidation_suspected {
         penalty -= 5.0;

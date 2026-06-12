@@ -17,19 +17,41 @@ pub struct BinanceAltContractRuntimeConfig {
     pub windows_sec: Vec<u64>,
     pub dynamic: BinanceAltDynamicConfig,
     pub data_quality: BinanceAltDataQualityConfig,
+    pub oi_scheduler: BinanceAltOiSchedulerConfig,
+    pub storage: BinanceAltStorageConfig,
     pub discord: BinanceAltDiscordConfig,
     pub tier_d_rules: BinanceAltTierDRulesConfig,
+    pub tier_e_rules: BinanceAltTierERulesConfig,
     pub persistence_path: PathBuf,
     pub thresholds: BTreeMap<AltContractSymbolTier, AltContractTierThresholds>,
     pub tier_d_min_signal_score: u8,
 }
 
 impl BinanceAltContractRuntimeConfig {
-    pub fn enabled_symbols(&self) -> Vec<String> {
-        let mut symbols = if self.symbol_universe.whitelist.is_empty() {
-            default_alt_symbols()
+    pub fn effective_universe_mode(&self) -> BinanceAltUniverseMode {
+        if !self.symbol_universe.whitelist.is_empty() {
+            BinanceAltUniverseMode::WhitelistOnly
         } else {
-            self.symbol_universe.whitelist.clone()
+            self.symbol_universe.universe_mode
+        }
+    }
+
+    pub fn enabled_symbols(&self) -> Vec<String> {
+        let mut symbols = match self.effective_universe_mode() {
+            BinanceAltUniverseMode::AllBinanceUsdtPerp => {
+                if self.symbol_universe.whitelist.is_empty() {
+                    default_alt_symbols()
+                } else {
+                    self.symbol_universe.whitelist.clone()
+                }
+            }
+            BinanceAltUniverseMode::TopN | BinanceAltUniverseMode::WhitelistOnly => {
+                if self.symbol_universe.whitelist.is_empty() {
+                    default_alt_symbols()
+                } else {
+                    self.symbol_universe.whitelist.clone()
+                }
+            }
         };
         let excludes = self
             .symbol_universe
@@ -47,17 +69,44 @@ impl BinanceAltContractRuntimeConfig {
             .into_iter()
             .map(|symbol| normalize_product_id(&symbol))
             .filter(|symbol| !excludes.contains(symbol) && !blacklist.contains(symbol))
-            .take(self.symbol_universe.symbol_limit)
             .collect();
+        if self.symbol_universe.symbol_limit > 0
+            && !matches!(
+                self.effective_universe_mode(),
+                BinanceAltUniverseMode::AllBinanceUsdtPerp
+            )
+        {
+            symbols.truncate(self.symbol_universe.symbol_limit);
+        }
         symbols.sort();
         symbols.dedup();
         symbols
     }
 
     pub fn symbol_enabled(&self, product_id: &str) -> bool {
-        self.enabled_symbols()
+        let product_id = normalize_product_id(product_id);
+        if self
+            .symbol_universe
+            .exclude_symbols
             .iter()
-            .any(|symbol| symbol == &normalize_product_id(product_id))
+            .map(|symbol| normalize_product_id(symbol))
+            .any(|symbol| symbol == product_id)
+            || self
+                .symbol_universe
+                .blacklist
+                .iter()
+                .map(|symbol| normalize_product_id(symbol))
+                .any(|symbol| symbol == product_id)
+        {
+            return false;
+        }
+        match self.effective_universe_mode() {
+            BinanceAltUniverseMode::AllBinanceUsdtPerp => product_id.ends_with("USDT"),
+            BinanceAltUniverseMode::TopN | BinanceAltUniverseMode::WhitelistOnly => self
+                .enabled_symbols()
+                .iter()
+                .any(|symbol| symbol == &product_id),
+        }
     }
 
     pub fn thresholds_for_tier(&self, tier: AltContractSymbolTier) -> AltContractTierThresholds {
@@ -78,8 +127,11 @@ impl Default for BinanceAltContractRuntimeConfig {
             windows_sec: vec![15, 60, 300],
             dynamic: BinanceAltDynamicConfig::default(),
             data_quality: BinanceAltDataQualityConfig::default(),
+            oi_scheduler: BinanceAltOiSchedulerConfig::default(),
+            storage: BinanceAltStorageConfig::default(),
             discord: BinanceAltDiscordConfig::default(),
             tier_d_rules: BinanceAltTierDRulesConfig::default(),
+            tier_e_rules: BinanceAltTierERulesConfig::default(),
             persistence_path: PathBuf::from(".runtime/binance-alt-contract-signals.jsonl"),
             thresholds: default_thresholds(),
             tier_d_min_signal_score: 88,
@@ -100,8 +152,26 @@ impl Default for BinanceAltExchangeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinanceAltUniverseMode {
+    AllBinanceUsdtPerp,
+    TopN,
+    WhitelistOnly,
+}
+
+impl BinanceAltUniverseMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllBinanceUsdtPerp => "all_binance_usdt_perp",
+            Self::TopN => "top_n",
+            Self::WhitelistOnly => "whitelist_only",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BinanceAltSymbolUniverseConfig {
+    pub universe_mode: BinanceAltUniverseMode,
     pub quote_asset: String,
     pub contract_type: String,
     pub status: String,
@@ -115,12 +185,13 @@ pub struct BinanceAltSymbolUniverseConfig {
 impl Default for BinanceAltSymbolUniverseConfig {
     fn default() -> Self {
         Self {
+            universe_mode: BinanceAltUniverseMode::AllBinanceUsdtPerp,
             quote_asset: "USDT".to_string(),
             contract_type: "PERPETUAL".to_string(),
             status: "TRADING".to_string(),
-            symbol_limit: 80,
-            min_24h_quote_volume_usd: 20_000_000.0,
-            whitelist: default_alt_symbols(),
+            symbol_limit: 0,
+            min_24h_quote_volume_usd: 0.0,
+            whitelist: Vec::new(),
             blacklist: Vec::new(),
             exclude_symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
         }
@@ -168,6 +239,52 @@ impl Default for BinanceAltDataQualityConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct BinanceAltOiSchedulerConfig {
+    pub enabled: bool,
+    pub all_symbols_interval_sec: u64,
+    pub hot_symbols_interval_sec: u64,
+    pub candidate_ttl_sec: u64,
+    pub max_oi_requests_per_sec: u64,
+    pub immediate_fetch_on_candidate: bool,
+}
+
+impl Default for BinanceAltOiSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            all_symbols_interval_sec: 300,
+            hot_symbols_interval_sec: 15,
+            candidate_ttl_sec: 600,
+            max_oi_requests_per_sec: 5,
+            immediate_fetch_on_candidate: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltStorageConfig {
+    pub persist_all_1s: bool,
+    pub persist_all_1m: bool,
+    pub persist_hot_1s: bool,
+    pub hot_1s_retention_hours: u64,
+    pub flow_1m_retention_days: u64,
+    pub signals_retention_days: u64,
+}
+
+impl Default for BinanceAltStorageConfig {
+    fn default() -> Self {
+        Self {
+            persist_all_1s: false,
+            persist_all_1m: true,
+            persist_hot_1s: true,
+            hot_1s_retention_hours: 24,
+            flow_1m_retention_days: 14,
+            signals_retention_days: 180,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BinanceAltDiscordConfig {
     pub enabled: bool,
     pub dry_run: bool,
@@ -201,6 +318,29 @@ impl Default for BinanceAltTierDRulesConfig {
         Self {
             discord_min_abnormal_score: 85,
             discord_min_build_score: 85,
+            require_non_liquidation: true,
+            max_severity_without_build_confirmation: AltContractSeverity::High,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltTierERulesConfig {
+    pub discord_min_abnormal_score: u8,
+    pub discord_min_build_score: u8,
+    pub min_dynamic_multiple: f64,
+    pub require_oi_confirmation: bool,
+    pub require_non_liquidation: bool,
+    pub max_severity_without_build_confirmation: AltContractSeverity,
+}
+
+impl Default for BinanceAltTierERulesConfig {
+    fn default() -> Self {
+        Self {
+            discord_min_abnormal_score: 92,
+            discord_min_build_score: 90,
+            min_dynamic_multiple: 10.0,
+            require_oi_confirmation: true,
             require_non_liquidation: true,
             max_severity_without_build_confirmation: AltContractSeverity::High,
         }
@@ -251,6 +391,12 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
             ),
         },
         symbol_universe: BinanceAltSymbolUniverseConfig {
+            universe_mode: universe_mode_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_UNIVERSE_MODE",
+                "binance_alt_contract_monitor.universe_mode",
+                fallback.symbol_universe.universe_mode,
+            ),
             quote_asset: string_setting(
                 settings,
                 "binance_alt_contract_monitor.symbol_filter.quote_asset",
@@ -271,7 +417,7 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.symbol_limit",
                 fallback.symbol_universe.symbol_limit,
             ),
-            min_24h_quote_volume_usd: f64_setting(
+            min_24h_quote_volume_usd: nonnegative_f64_setting(
                 settings,
                 "binance_alt_contract_monitor.symbol_filter.min_24h_quote_volume_usd",
                 fallback.symbol_universe.min_24h_quote_volume_usd,
@@ -347,6 +493,60 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 fallback.data_quality.heartbeat_stale_ms,
             ),
         },
+        oi_scheduler: BinanceAltOiSchedulerConfig {
+            enabled: settings
+                .get_bool("binance_alt_contract_monitor.oi_scheduler.enabled")
+                .unwrap_or(fallback.oi_scheduler.enabled),
+            all_symbols_interval_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi_scheduler.all_symbols_interval_sec",
+                fallback.oi_scheduler.all_symbols_interval_sec,
+            ),
+            hot_symbols_interval_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi_scheduler.hot_symbols_interval_sec",
+                fallback.oi_scheduler.hot_symbols_interval_sec,
+            ),
+            candidate_ttl_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi_scheduler.candidate_ttl_sec",
+                fallback.oi_scheduler.candidate_ttl_sec,
+            ),
+            max_oi_requests_per_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi_scheduler.max_oi_requests_per_sec",
+                fallback.oi_scheduler.max_oi_requests_per_sec,
+            ),
+            immediate_fetch_on_candidate: settings
+                .get_bool("binance_alt_contract_monitor.oi_scheduler.immediate_fetch_on_candidate")
+                .unwrap_or(fallback.oi_scheduler.immediate_fetch_on_candidate),
+        },
+        storage: BinanceAltStorageConfig {
+            persist_all_1s: settings
+                .get_bool("binance_alt_contract_monitor.storage.persist_all_1s")
+                .unwrap_or(fallback.storage.persist_all_1s),
+            persist_all_1m: settings
+                .get_bool("binance_alt_contract_monitor.storage.persist_all_1m")
+                .unwrap_or(fallback.storage.persist_all_1m),
+            persist_hot_1s: settings
+                .get_bool("binance_alt_contract_monitor.storage.persist_hot_1s")
+                .unwrap_or(fallback.storage.persist_hot_1s),
+            hot_1s_retention_hours: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.hot_1s_retention_hours",
+                fallback.storage.hot_1s_retention_hours,
+            ),
+            flow_1m_retention_days: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.flow_1m_retention_days",
+                fallback.storage.flow_1m_retention_days,
+            ),
+            signals_retention_days: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.signals_retention_days",
+                fallback.storage.signals_retention_days,
+            ),
+        },
         discord: BinanceAltDiscordConfig {
             enabled: settings
                 .get_bool("binance_alt_contract_monitor.discord.enabled")
@@ -389,6 +589,36 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.tier_rules.tier_d.max_severity_without_build_confirmation",
                 fallback
                     .tier_d_rules
+                    .max_severity_without_build_confirmation,
+            ),
+        },
+        tier_e_rules: BinanceAltTierERulesConfig {
+            discord_min_abnormal_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_e.discord_min_abnormal_score",
+                fallback.tier_e_rules.discord_min_abnormal_score,
+            ),
+            discord_min_build_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_e.discord_min_build_score",
+                fallback.tier_e_rules.discord_min_build_score,
+            ),
+            min_dynamic_multiple: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_e.min_dynamic_multiple",
+                fallback.tier_e_rules.min_dynamic_multiple,
+            ),
+            require_oi_confirmation: settings
+                .get_bool("binance_alt_contract_monitor.tier_rules.tier_e.require_oi_confirmation")
+                .unwrap_or(fallback.tier_e_rules.require_oi_confirmation),
+            require_non_liquidation: settings
+                .get_bool("binance_alt_contract_monitor.tier_rules.tier_e.require_non_liquidation")
+                .unwrap_or(fallback.tier_e_rules.require_non_liquidation),
+            max_severity_without_build_confirmation: severity_setting(
+                settings,
+                "binance_alt_contract_monitor.tier_rules.tier_e.max_severity_without_build_confirmation",
+                fallback
+                    .tier_e_rules
                     .max_severity_without_build_confirmation,
             ),
         },
@@ -444,6 +674,14 @@ fn default_thresholds() -> BTreeMap<AltContractSymbolTier, AltContractTierThresh
                 s_notional_usd: 15_000_000.0,
             },
         ),
+        (
+            AltContractSymbolTier::E,
+            AltContractTierThresholds {
+                high_notional_usd: 1_000_000.0,
+                critical_notional_usd: 3_000_000.0,
+                s_notional_usd: 8_000_000.0,
+            },
+        ),
     ])
 }
 
@@ -456,6 +694,7 @@ fn load_thresholds(
         AltContractSymbolTier::B,
         AltContractSymbolTier::C,
         AltContractSymbolTier::D,
+        AltContractSymbolTier::E,
     ]
     .into_iter()
     .map(|tier| {
@@ -464,6 +703,7 @@ fn load_thresholds(
             AltContractSymbolTier::B => "b",
             AltContractSymbolTier::C => "c",
             AltContractSymbolTier::D => "d",
+            AltContractSymbolTier::E => "e",
         };
         let default = fallback[&tier];
         (
@@ -572,6 +812,14 @@ fn f64_setting(settings: &::config::Config, path: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn nonnegative_f64_setting(settings: &::config::Config, path: &str, default: f64) -> f64 {
+    settings
+        .get_float(path)
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(default)
+}
+
 fn i64_setting(settings: &::config::Config, path: &str, default: i64) -> i64 {
     settings
         .get_int(path)
@@ -594,7 +842,6 @@ fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usi
         .get_int(path)
         .ok()
         .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
         .unwrap_or(default)
 }
 
@@ -623,6 +870,30 @@ fn severity_setting(
         "high" => AltContractSeverity::High,
         "medium" => AltContractSeverity::Medium,
         "calm" => AltContractSeverity::Calm,
+        _ => default,
+    }
+}
+
+fn universe_mode_setting(
+    settings: &::config::Config,
+    env_key: &str,
+    toml_key: &str,
+    default: BinanceAltUniverseMode,
+) -> BinanceAltUniverseMode {
+    let value = std::env::var(env_key)
+        .ok()
+        .or_else(|| settings.get_string(toml_key).ok());
+    match value
+        .unwrap_or_else(|| default.as_str().to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "all" | "all_binance_usdt_perp" | "all_usdt_perp" => {
+            BinanceAltUniverseMode::AllBinanceUsdtPerp
+        }
+        "top" | "top_n" | "topn" => BinanceAltUniverseMode::TopN,
+        "whitelist" | "whitelist_only" => BinanceAltUniverseMode::WhitelistOnly,
         _ => default,
     }
 }

@@ -16,12 +16,16 @@ use super::{
     collector,
     config::binance_alt_contract_runtime_config,
     context::empty_context,
-    detector::detect_alt_contract_signal,
-    symbol_universe::meta_from_product_id,
+    detector::{
+        detect_alt_contract_signal_with_context, window_confirmation_for, MarketImpulseContext,
+    },
+    symbol_universe::{meta_from_product_id, tier_for_quote_volume},
     types::{
-        AltContractContext, AltContractDryRunStats, AltContractExchange, AltContractExchangeStatus,
-        AltContractLatestResponse, AltContractSeverity, AltContractSignal, AltContractSummary,
-        AltContractSymbolUniverseSummary, AltContractTrade,
+        AltContractAllMarketContextStatus, AltContractContext, AltContractDryRunStats,
+        AltContractExchange, AltContractExchangeStatus, AltContractLatestResponse,
+        AltContractSeverity, AltContractSignal, AltContractSummary, AltContractSymbolMeta,
+        AltContractSymbolTier, AltContractSymbolUniverseSummary, AltContractTrade,
+        AltContractTradeSide, AltContractWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -50,11 +54,29 @@ struct BinanceAltContractState {
     seen_signal_ids: BTreeSet<String>,
     exchanges: BTreeMap<String, AltContractExchangeStatus>,
     contexts: BTreeMap<String, AltContractContext>,
+    symbol_metas: BTreeMap<String, AltContractSymbolMeta>,
     oi_snapshots: BTreeMap<String, VecDeque<(i64, f64)>>,
     liquidation_seen_at: BTreeMap<String, i64>,
+    candidate_seen_at: BTreeMap<String, i64>,
+    hot_oi_seen_at: BTreeMap<String, i64>,
+    events: BTreeMap<String, AltContractEventState>,
     last_oi_poll_at: Option<i64>,
     last_force_order_at: Option<i64>,
+    last_mark_price_at: Option<i64>,
+    last_ticker_at: Option<i64>,
+    mark_price_stream_connected: bool,
+    ticker_stream_connected: bool,
+    force_order_stream_connected: bool,
     error_events: VecDeque<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct AltContractEventState {
+    id: String,
+    updated_at: i64,
+    peak_abnormal_score: u8,
+    peak_build_score: u8,
+    signal_count: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -94,10 +116,19 @@ impl BinanceAltContractService {
                 seen_signal_ids: restored.seen_signal_ids,
                 exchanges,
                 contexts: BTreeMap::new(),
+                symbol_metas: BTreeMap::new(),
                 oi_snapshots: BTreeMap::new(),
                 liquidation_seen_at: BTreeMap::new(),
+                candidate_seen_at: BTreeMap::new(),
+                hot_oi_seen_at: BTreeMap::new(),
+                events: BTreeMap::new(),
                 last_oi_poll_at: None,
                 last_force_order_at: None,
+                last_mark_price_at: None,
+                last_ticker_at: None,
+                mark_price_stream_connected: false,
+                ticker_stream_connected: false,
+                force_order_stream_connected: false,
                 error_events: VecDeque::new(),
             })),
             tasks: Arc::new(RwLock::new(Vec::new())),
@@ -127,6 +158,10 @@ impl BinanceAltContractService {
             }));
             let service = self.clone();
             self.tasks.write().push(tokio::spawn(async move {
+                collector::run_all_market_context_stream(service).await;
+            }));
+            let service = self.clone();
+            self.tasks.write().push(tokio::spawn(async move {
                 collector::run_force_order_stream(service).await;
             }));
         }
@@ -146,7 +181,7 @@ impl BinanceAltContractService {
 
     pub fn ingest_trade(&self, trade: AltContractTrade) -> Vec<AltContractSignal> {
         let config = binance_alt_contract_runtime_config();
-        if !self.enabled || !config.symbol_enabled(&trade.product_id) {
+        if !self.enabled || !self.product_enabled(&trade.product_id, &config) {
             return Vec::new();
         }
         self.mark_trade(trade.exchange, trade.ts);
@@ -155,9 +190,10 @@ impl BinanceAltContractService {
             state.trades.push_back(trade.clone());
             prune_trades(&mut state.trades, trade.ts);
         }
-        let meta = meta_from_product_id(&trade.product_id);
+        self.update_post_signal_validation(&trade);
+        let meta = self.meta_for_product(&trade.product_id);
         let context = self.context_for_product(&trade.product_id);
-        let mut candidates = config
+        let window_stats = config
             .windows_sec
             .iter()
             .filter_map(|window_sec| {
@@ -172,7 +208,37 @@ impl BinanceAltContractService {
                     &config,
                 )
             })
-            .filter_map(|stats| detect_alt_contract_signal(&stats, &context, &config))
+            .collect::<Vec<_>>();
+        if window_stats
+            .iter()
+            .any(|stats| light_scan_candidate(stats, &context, &config))
+        {
+            self.mark_candidate_product(&trade.product_id, trade.ts);
+        }
+        let window_confirmations = window_stats
+            .iter()
+            .map(|stats| window_confirmation_for(stats, &config))
+            .collect::<Vec<_>>();
+        let market_context = self.market_impulse_context(
+            &trade.product_id,
+            trade.ts,
+            window_stats
+                .iter()
+                .find(|stats| stats.window_sec == 60)
+                .or_else(|| window_stats.first()),
+        );
+        let mut candidates = window_stats
+            .into_iter()
+            .filter(|stats| light_scan_candidate(stats, &context, &config))
+            .filter_map(|stats| {
+                detect_alt_contract_signal_with_context(
+                    &stats,
+                    &context,
+                    &config,
+                    window_confirmations.clone(),
+                    market_context.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         candidates.sort_by(|left, right| {
             right
@@ -198,6 +264,39 @@ impl BinanceAltContractService {
 
     pub fn insert_signal_for_tests(&self, signal: AltContractSignal) -> bool {
         self.insert_signal(signal)
+    }
+
+    pub fn update_symbol_universe(&self, metas: Vec<AltContractSymbolMeta>) {
+        let mut state = self.state.write();
+        state.symbol_metas = metas
+            .into_iter()
+            .map(|meta| (meta.product_id.clone(), meta))
+            .collect();
+    }
+
+    pub fn monitored_product_ids(&self) -> Vec<String> {
+        let config = binance_alt_contract_runtime_config();
+        let state = self.state.read();
+        let mut items = if state.symbol_metas.is_empty() {
+            config.enabled_symbols()
+        } else {
+            state.symbol_metas.keys().cloned().collect::<Vec<_>>()
+        };
+        items.sort();
+        items
+    }
+
+    pub fn product_enabled(
+        &self,
+        product_id: &str,
+        config: &super::config::BinanceAltContractRuntimeConfig,
+    ) -> bool {
+        let product_id = product_id_for_symbol(product_id);
+        let state = self.state.read();
+        if state.symbol_metas.is_empty() {
+            return config.symbol_enabled(&product_id);
+        }
+        state.symbol_metas.contains_key(&product_id)
     }
 
     pub fn update_open_interest(&self, product_id: &str, ts: i64, open_interest_base: f64) {
@@ -230,6 +329,7 @@ impl BinanceAltContractService {
         context.oi_change_1m_base = change_1m;
         context.oi_change_5m_base = change_5m;
         context.oi_change_pct = base;
+        context.oi_updated_at = Some(ts);
         state.last_oi_poll_at = Some(ts);
     }
 
@@ -250,6 +350,73 @@ impl BinanceAltContractService {
         });
     }
 
+    pub fn update_mark_price_context(
+        &self,
+        product_id: &str,
+        ts: i64,
+        mark_price_usd: Option<f64>,
+        funding_rate: Option<f64>,
+    ) {
+        let product_id = product_id_for_symbol(product_id);
+        let mut state = self.state.write();
+        let context = state.contexts.entry(product_id).or_default();
+        if let Some(mark_price_usd) =
+            mark_price_usd.filter(|value| value.is_finite() && *value > 0.0)
+        {
+            context.mark_price_usd = Some(mark_price_usd);
+            context.mark_price_updated_at = Some(ts);
+        }
+        if let Some(funding_rate) = funding_rate.filter(|value| value.is_finite()) {
+            context.funding_rate = Some(funding_rate);
+            context.funding_bias = Some(if funding_rate > 0.0001 {
+                "long".to_string()
+            } else if funding_rate < -0.0001 {
+                "short".to_string()
+            } else {
+                "neutral".to_string()
+            });
+        }
+        state.last_mark_price_at = Some(ts);
+        state.mark_price_stream_connected = true;
+    }
+
+    pub fn update_ticker_context(
+        &self,
+        product_id: &str,
+        ts: i64,
+        last_price_usd: Option<f64>,
+        quote_volume_24h_usd: Option<f64>,
+        price_change_24h_pct: Option<f64>,
+    ) {
+        let product_id = product_id_for_symbol(product_id);
+        let mut state = self.state.write();
+        let last_price_usd = last_price_usd.filter(|value| value.is_finite() && *value > 0.0);
+        let quote_volume_24h_usd =
+            quote_volume_24h_usd.filter(|value| value.is_finite() && *value >= 0.0);
+        let price_change_24h_pct = price_change_24h_pct.filter(|value| value.is_finite());
+        {
+            let context = state.contexts.entry(product_id.clone()).or_default();
+            if let Some(last_price_usd) = last_price_usd {
+                context.last_price_usd = Some(last_price_usd);
+            }
+            if let Some(quote_volume_24h_usd) = quote_volume_24h_usd {
+                context.ticker_quote_volume_24h_usd = Some(quote_volume_24h_usd);
+            }
+            if let Some(price_change_24h_pct) = price_change_24h_pct {
+                context.ticker_price_change_24h_pct = Some(price_change_24h_pct);
+            }
+            context.ticker_updated_at = Some(ts);
+        }
+        if let Some(quote_volume_24h_usd) = quote_volume_24h_usd {
+            if let Some(meta) = state.symbol_metas.get_mut(&product_id) {
+                meta.quote_volume_24h_usd = quote_volume_24h_usd;
+                meta.tier = tier_for_quote_volume(quote_volume_24h_usd);
+            }
+        }
+        state.last_ticker_at = Some(ts);
+        state.ticker_stream_connected = true;
+    }
+
     pub fn update_liquidation_context(&self, product_id: &str, ts: i64, notional_usd: f64) {
         if !notional_usd.is_finite() || notional_usd <= 0.0 {
             return;
@@ -263,6 +430,50 @@ impl BinanceAltContractService {
         context.force_order_snapshot = true;
         state.liquidation_seen_at.insert(product_id, ts);
         state.last_force_order_at = Some(ts);
+        state.force_order_stream_connected = true;
+    }
+
+    pub fn mark_all_market_context_connected(&self) {
+        let mut state = self.state.write();
+        state.mark_price_stream_connected = true;
+        state.ticker_stream_connected = true;
+    }
+
+    pub fn mark_all_market_context_disconnected(&self, error: Option<String>) {
+        let mut state = self.state.write();
+        let has_error = error.is_some();
+        state.mark_price_stream_connected = false;
+        state.ticker_stream_connected = false;
+        if has_error {
+            push_error_event(&mut state, now_ms());
+        }
+    }
+
+    pub fn mark_force_order_stream_connected(&self) {
+        self.state.write().force_order_stream_connected = true;
+    }
+
+    pub fn mark_force_order_stream_disconnected(&self, error: Option<String>) {
+        let mut state = self.state.write();
+        let has_error = error.is_some();
+        state.force_order_stream_connected = false;
+        if has_error {
+            push_error_event(&mut state, now_ms());
+        }
+    }
+
+    pub fn hot_oi_product_ids(&self) -> Vec<String> {
+        let config = binance_alt_contract_runtime_config();
+        let now = now_ms();
+        let ttl_ms = i64::try_from(config.oi_scheduler.candidate_ttl_sec)
+            .unwrap_or(600)
+            .saturating_mul(1000);
+        let mut state = self.state.write();
+        prune_seen_map(&mut state.candidate_seen_at, now, ttl_ms);
+        prune_seen_map(&mut state.hot_oi_seen_at, now, ttl_ms);
+        let mut items = state.hot_oi_seen_at.keys().cloned().collect::<Vec<_>>();
+        items.sort();
+        items
     }
 
     pub fn record_error(&self) {
@@ -327,7 +538,11 @@ impl BinanceAltContractService {
                 .map(|item| &signal.product_id == item)
                 .unwrap_or(true)
         });
-        let monitored_symbols = config.enabled_symbols();
+        let monitored_symbols = if state.symbol_metas.is_empty() {
+            config.enabled_symbols()
+        } else {
+            state.symbol_metas.keys().cloned().collect::<Vec<_>>()
+        };
         let trend_product = product_filter
             .clone()
             .or_else(|| latest.map(|signal| signal.product_id.clone()))
@@ -362,6 +577,19 @@ impl BinanceAltContractService {
             .values()
             .filter_map(|status| status.last_trade_at)
             .max();
+        let candidate_ttl_ms = i64::try_from(config.oi_scheduler.candidate_ttl_sec)
+            .unwrap_or(600)
+            .saturating_mul(1000);
+        let all_market_context = AltContractAllMarketContextStatus {
+            mark_price_connected: state.mark_price_stream_connected,
+            ticker_connected: state.ticker_stream_connected,
+            force_order_connected: state.force_order_stream_connected,
+            last_mark_price_at: state.last_mark_price_at,
+            last_ticker_at: state.last_ticker_at,
+            last_force_order_at: state.last_force_order_at,
+            candidate_symbols: recent_seen_keys(&state.candidate_seen_at, now, candidate_ttl_ms),
+            hot_oi_symbols: recent_seen_keys(&state.hot_oi_seen_at, now, candidate_ttl_ms),
+        };
         AltContractSummary {
             status: latest
                 .map(|signal| status_from_severity(signal.severity).to_string())
@@ -413,7 +641,8 @@ impl BinanceAltContractService {
             trend60s: trend_for_symbol(&state.trades, &trend_product, now),
             exchanges,
             dry_run_stats,
-            symbol_universe: symbol_universe_summary(&config),
+            symbol_universe: symbol_universe_summary(&config, &state.symbol_metas),
+            all_market_context,
         }
     }
 
@@ -515,11 +744,12 @@ impl BinanceAltContractService {
         }
     }
 
-    fn insert_signal(&self, signal: AltContractSignal) -> bool {
+    fn insert_signal(&self, mut signal: AltContractSignal) -> bool {
         let mut state = self.state.write();
         if state.seen_signal_ids.contains(&signal.id) || duplicate_recent(&state.signals, &signal) {
             return false;
         }
+        merge_event_state(&mut state, &mut signal);
         state.seen_signal_ids.insert(signal.id.clone());
         state.signals.push_back(signal.clone());
         while state.signals.len() > MAX_SIGNALS {
@@ -530,6 +760,71 @@ impl BinanceAltContractService {
         drop(state);
         self.persist_signal(&signal);
         true
+    }
+
+    fn update_post_signal_validation(&self, trade: &AltContractTrade) {
+        let mut state = self.state.write();
+        let context = state
+            .contexts
+            .get(&trade.product_id)
+            .cloned()
+            .unwrap_or_default();
+        for signal in state
+            .signals
+            .iter_mut()
+            .filter(|signal| signal.product_id == trade.product_id)
+            .filter(|signal| signal.post_signal_status == "pending")
+        {
+            let age_ms = trade.ts.saturating_sub(signal.ts);
+            if age_ms < 5 * 60_000 || signal.signal_vwap <= 0.0 {
+                continue;
+            }
+            let oi_contracting = context
+                .oi_change_1m_base
+                .or(context.oi_change_5m_base)
+                .is_some_and(|change| change < 0.0);
+            match signal.direction {
+                super::types::AltContractDirection::Buy => {
+                    if trade.price >= signal.signal_vwap && !oi_contracting {
+                        signal.post_signal_status = "validated".to_string();
+                        signal.validated_at = Some(trade.ts);
+                        signal.retest_status = "defended".to_string();
+                    } else if trade.price < signal.signal_vwap {
+                        signal.post_signal_status = if matches!(
+                            signal.signal_type,
+                            super::types::AltContractSignalType::AbnormalPump
+                                | super::types::AltContractSignalType::MainForceLongBuild
+                        ) {
+                            "trap".to_string()
+                        } else {
+                            "failed".to_string()
+                        };
+                        signal.failed_at = Some(trade.ts);
+                        signal.retest_status = "lost".to_string();
+                    }
+                }
+                super::types::AltContractDirection::Sell => {
+                    if trade.price <= signal.signal_vwap && !oi_contracting {
+                        signal.post_signal_status = "validated".to_string();
+                        signal.validated_at = Some(trade.ts);
+                        signal.retest_status = "defended".to_string();
+                    } else if trade.price > signal.signal_vwap {
+                        signal.post_signal_status = if matches!(
+                            signal.signal_type,
+                            super::types::AltContractSignalType::AbnormalDump
+                                | super::types::AltContractSignalType::MainForceShortBuild
+                        ) {
+                            "trap".to_string()
+                        } else {
+                            "failed".to_string()
+                        };
+                        signal.failed_at = Some(trade.ts);
+                        signal.retest_status = "lost".to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn mark_trade(&self, exchange: AltContractExchange, ts: i64) {
@@ -544,6 +839,92 @@ impl BinanceAltContractService {
         entry.last_trade_at = Some(ts);
         entry.latency_ms = Some(now.saturating_sub(ts).max(0));
         entry.last_error = None;
+    }
+
+    fn mark_candidate_product(&self, product_id: &str, ts: i64) {
+        let product_id = product_id_for_symbol(product_id);
+        let mut state = self.state.write();
+        state.candidate_seen_at.insert(product_id.clone(), ts);
+        state.hot_oi_seen_at.insert(product_id, ts);
+    }
+
+    fn market_impulse_context(
+        &self,
+        product_id: &str,
+        now: i64,
+        current_stats: Option<&AltContractWindowStats>,
+    ) -> MarketImpulseContext {
+        let Some(current_stats) = current_stats else {
+            return MarketImpulseContext::default();
+        };
+        let direction = current_stats.direction;
+        if !matches!(
+            direction,
+            super::types::AltContractDirection::Buy | super::types::AltContractDirection::Sell
+        ) {
+            return MarketImpulseContext::default();
+        }
+        let config = binance_alt_contract_runtime_config();
+        let state = self.state.read();
+        let monitored_count = if state.symbol_metas.is_empty() {
+            config.enabled_symbols().len()
+        } else {
+            state.symbol_metas.len()
+        }
+        .max(1);
+        let start = now.saturating_sub(3 * 60_000);
+        let mut by_symbol = BTreeMap::<String, (f64, f64, f64)>::new();
+        for trade in state
+            .trades
+            .iter()
+            .filter(|trade| trade.ts >= start && trade.ts <= now)
+        {
+            let entry = by_symbol.entry(trade.product_id.clone()).or_default();
+            match trade.side {
+                AltContractTradeSide::Buy => entry.0 += trade.notional_usd,
+                AltContractTradeSide::Sell => entry.1 += trade.notional_usd,
+            }
+            entry.2 += trade.notional_usd;
+        }
+        let same_direction = by_symbol
+            .iter()
+            .filter(|(_, (buy, sell, total))| {
+                let net = buy - sell;
+                let dominance = if *total > 0.0 {
+                    net.abs() / *total
+                } else {
+                    0.0
+                };
+                dominance >= 0.60
+                    && match direction {
+                        super::types::AltContractDirection::Buy => net > 0.0,
+                        super::types::AltContractDirection::Sell => net < 0.0,
+                        _ => false,
+                    }
+            })
+            .map(|(symbol, (_, _, total))| (symbol.clone(), *total))
+            .collect::<Vec<_>>();
+        let ratio = same_direction.len() as f64 / monitored_count as f64;
+        let mut ranked = same_direction;
+        ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+        let current_product = product_id_for_symbol(product_id);
+        let rank = ranked
+            .iter()
+            .position(|(symbol, _)| symbol == &current_product)
+            .map(|index| index as u32 + 1);
+        MarketImpulseContext {
+            market_wide_move: ratio >= 0.15,
+            market_wide_direction: Some(
+                match direction {
+                    super::types::AltContractDirection::Buy => "buy",
+                    super::types::AltContractDirection::Sell => "sell",
+                    _ => "neutral",
+                }
+                .to_string(),
+            ),
+            market_impulse_ratio: ratio,
+            relative_strength_rank: rank,
+        }
     }
 
     fn context_for_product(&self, product_id: &str) -> AltContractContext {
@@ -569,6 +950,16 @@ impl BinanceAltContractService {
             context.force_order_snapshot = false;
         }
         context
+    }
+
+    fn meta_for_product(&self, product_id: &str) -> AltContractSymbolMeta {
+        let product_id = product_id_for_symbol(product_id);
+        self.state
+            .read()
+            .symbol_metas
+            .get(&product_id)
+            .cloned()
+            .unwrap_or_else(|| meta_from_product_id(&product_id))
     }
 
     fn persist_signal(&self, signal: &AltContractSignal) {
@@ -702,6 +1093,38 @@ fn duplicate_recent(signals: &VecDeque<AltContractSignal>, signal: &AltContractS
     })
 }
 
+fn merge_event_state(state: &mut BinanceAltContractState, signal: &mut AltContractSignal) {
+    let now = signal.ts;
+    state
+        .events
+        .retain(|_, event| now.saturating_sub(event.updated_at) <= 15 * 60_000);
+    let event_key = format!(
+        "{}:{:?}:{:?}",
+        signal.product_id, signal.direction, signal.signal_type
+    );
+    let event = state
+        .events
+        .entry(event_key)
+        .or_insert_with(|| AltContractEventState {
+            id: format!(
+                "bacm-event:{}:{:?}:{:?}:{}",
+                signal.product_id, signal.direction, signal.signal_type, signal.ts
+            ),
+            updated_at: signal.ts,
+            peak_abnormal_score: signal.abnormal_score,
+            peak_build_score: signal.build_score,
+            signal_count: 0,
+        });
+    event.updated_at = signal.ts;
+    event.peak_abnormal_score = event.peak_abnormal_score.max(signal.abnormal_score);
+    event.peak_build_score = event.peak_build_score.max(signal.build_score);
+    event.signal_count = event.signal_count.saturating_add(1);
+    signal.event_id = Some(event.id.clone());
+    signal.event_signal_count = event.signal_count;
+    signal.event_peak_abnormal_score = event.peak_abnormal_score;
+    signal.event_peak_build_score = event.peak_build_score;
+}
+
 fn prune_trades(trades: &mut VecDeque<AltContractTrade>, now: i64) {
     while trades.len() > MAX_TRADES
         || trades
@@ -721,6 +1144,35 @@ fn push_error_event(state: &mut BinanceAltContractState, now: i64) {
     {
         state.error_events.pop_front();
     }
+}
+
+fn prune_seen_map(items: &mut BTreeMap<String, i64>, now: i64, ttl_ms: i64) {
+    items.retain(|_, seen_at| now.saturating_sub(*seen_at) <= ttl_ms);
+}
+
+fn recent_seen_keys(items: &BTreeMap<String, i64>, now: i64, ttl_ms: i64) -> Vec<String> {
+    let mut keys = items
+        .iter()
+        .filter(|(_, seen_at)| now.saturating_sub(**seen_at) <= ttl_ms)
+        .map(|(symbol, _)| symbol.clone())
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn light_scan_candidate(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+    config: &super::config::BinanceAltContractRuntimeConfig,
+) -> bool {
+    let thresholds = config.thresholds_for_tier(stats.tier);
+    let high = thresholds.high_notional_usd.max(1.0);
+    stats.total_notional_usd >= high * 0.6
+        || (stats.window_sec >= 60 && stats.total_notional_usd >= high * 0.5)
+        || stats.dynamic_multiple.is_some_and(|value| value >= 3.0)
+        || stats.price_move_pct.is_some_and(|value| value.abs() >= 2.0)
+        || context.force_order_snapshot
+        || (stats.dominance >= 0.60 && stats.total_notional_usd >= high * 0.25)
 }
 
 fn oi_change_for_window(
@@ -907,14 +1359,24 @@ fn top_active_symbols(trades: &VecDeque<AltContractTrade>, now: i64) -> Vec<Stri
 
 fn symbol_universe_summary(
     config: &super::config::BinanceAltContractRuntimeConfig,
+    metas: &BTreeMap<String, AltContractSymbolMeta>,
 ) -> AltContractSymbolUniverseSummary {
+    let mut tier_counts = BTreeMap::<String, usize>::new();
+    for meta in metas.values() {
+        let tier = match meta.tier {
+            AltContractSymbolTier::A => "A",
+            AltContractSymbolTier::B => "B",
+            AltContractSymbolTier::C => "C",
+            AltContractSymbolTier::D => "D",
+            AltContractSymbolTier::E => "E",
+        };
+        *tier_counts.entry(tier.to_string()).or_default() += 1;
+    }
     AltContractSymbolUniverseSummary {
-        mode: if config.symbol_universe.whitelist.is_empty() {
-            "auto".to_string()
-        } else {
-            "whitelist_only".to_string()
-        },
+        mode: config.effective_universe_mode().as_str().to_string(),
         limit: config.symbol_universe.symbol_limit,
+        monitored_count: metas.len(),
+        tier_counts,
         whitelist: config.symbol_universe.whitelist.clone(),
         blacklist: config.symbol_universe.blacklist.clone(),
         excluded_symbols: config.symbol_universe.exclude_symbols.clone(),

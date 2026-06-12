@@ -1,5 +1,5 @@
 use super::{
-    config::BinanceAltContractRuntimeConfig,
+    config::{BinanceAltContractRuntimeConfig, BinanceAltUniverseMode},
     types::{AltContractSymbolMeta, AltContractSymbolTier},
 };
 
@@ -51,9 +51,15 @@ pub fn build_symbol_universe(
         .filter(|candidate| !blacklist.contains(&candidate.symbol.to_ascii_uppercase()))
         .filter(|candidate| !exclude.contains(&candidate.symbol.to_ascii_uppercase()))
         .filter(|candidate| {
-            whitelist.is_empty()
-                || whitelist.contains(&candidate.symbol.to_ascii_uppercase())
-                || candidate.quote_volume_24h_usd >= config.symbol_universe.min_24h_quote_volume_usd
+            let symbol = candidate.symbol.to_ascii_uppercase();
+            match config.effective_universe_mode() {
+                BinanceAltUniverseMode::AllBinanceUsdtPerp => true,
+                BinanceAltUniverseMode::TopN => {
+                    candidate.quote_volume_24h_usd
+                        >= config.symbol_universe.min_24h_quote_volume_usd
+                }
+                BinanceAltUniverseMode::WhitelistOnly => whitelist.contains(&symbol),
+            }
         })
         .map(|candidate| AltContractSymbolMeta {
             symbol: base_symbol(&candidate.symbol),
@@ -69,19 +75,27 @@ pub fn build_symbol_universe(
             .total_cmp(&left.quote_volume_24h_usd)
             .then_with(|| left.product_id.cmp(&right.product_id))
     });
-    items.truncate(config.symbol_universe.symbol_limit);
+    if matches!(
+        config.effective_universe_mode(),
+        BinanceAltUniverseMode::TopN
+    ) && config.symbol_universe.symbol_limit > 0
+    {
+        items.truncate(config.symbol_universe.symbol_limit);
+    }
     items
 }
 
 pub fn tier_for_quote_volume(quote_volume_24h_usd: f64) -> AltContractSymbolTier {
-    if quote_volume_24h_usd >= 1_000_000_000.0 {
+    if quote_volume_24h_usd >= 500_000_000.0 {
         AltContractSymbolTier::A
-    } else if quote_volume_24h_usd >= 250_000_000.0 {
+    } else if quote_volume_24h_usd >= 100_000_000.0 {
         AltContractSymbolTier::B
-    } else if quote_volume_24h_usd >= 50_000_000.0 {
+    } else if quote_volume_24h_usd >= 20_000_000.0 {
         AltContractSymbolTier::C
-    } else {
+    } else if quote_volume_24h_usd >= 5_000_000.0 {
         AltContractSymbolTier::D
+    } else {
+        AltContractSymbolTier::E
     }
 }
 

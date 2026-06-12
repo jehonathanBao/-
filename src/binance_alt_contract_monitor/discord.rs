@@ -119,10 +119,24 @@ pub fn evaluate_alt_contract_discord_gate_with_store(
     if signal.data_quality < 70 {
         return gate(false, false, config.dry_run, "data_quality_low", None);
     }
+    let is_main_force = matches!(
+        signal.signal_type,
+        AltContractSignalType::MainForceLongBuild | AltContractSignalType::MainForceShortBuild
+    );
     let score_ok = signal.build_score >= config.min_build_score
-        || signal.abnormal_score >= config.min_abnormal_score;
+        || signal.abnormal_score >= config.min_abnormal_score
+        || (is_main_force && signal.main_force_confidence >= f64::from(config.min_build_score));
     if !score_ok {
         return gate(false, false, config.dry_run, "low_score", None);
+    }
+    if is_main_force && (signal.main_force_confidence < 75.0 || signal.evidence_count < 4) {
+        return gate(
+            false,
+            false,
+            config.dry_run,
+            "main_force_evidence_low",
+            None,
+        );
     }
     if let Some(reason) = cooldown_store.skip_reason(signal, config.cooldown_sec, now) {
         return gate(false, false, config.dry_run, reason, None);
@@ -147,6 +161,9 @@ pub fn build_alt_contract_discord_payload(signal: &AltContractSignal) -> serde_j
                 {"name": "Window", "value": format!("{}s", signal.window_sec), "inline": true},
                 {"name": "Abnormal Score", "value": format!("{}/100", signal.abnormal_score), "inline": true},
                 {"name": "Build Score", "value": format!("{}/100", signal.build_score), "inline": true},
+                {"name": "Main Force Confidence", "value": format!("{:.0}/100", signal.main_force_confidence), "inline": true},
+                {"name": "Evidence", "value": format!("{} items", signal.evidence_count), "inline": true},
+                {"name": "Post Signal", "value": signal.post_signal_status.clone(), "inline": true},
                 {"name": "Notional", "value": format!("${:.1}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
                 {"name": "Dynamic Multiple", "value": signal.dynamic_multiple.map(|value| format!("{value:.1}x")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
                 {"name": "Data Quality", "value": format!("{}/100", signal.data_quality), "inline": true},

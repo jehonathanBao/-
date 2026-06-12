@@ -49,7 +49,8 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
         AltContractSignalType::MainForceLongBuild
     );
     assert_eq!(signal.direction, AltContractDirection::Buy);
-    assert!(signal.build_score >= 80);
+    assert!(signal.main_force_confidence >= 75.0);
+    assert!(signal.evidence_count >= 4);
     assert_eq!(signal.severity, AltContractSeverity::S);
     assert!(signal.discord_eligible);
     assert!(signal.discord_would_send);
@@ -91,7 +92,8 @@ fn detects_main_force_short_build_when_sell_flow_and_oi_align() {
         AltContractSignalType::MainForceShortBuild
     );
     assert_eq!(signal.direction, AltContractDirection::Sell);
-    assert!(signal.build_score >= 80);
+    assert!(signal.main_force_confidence >= 75.0);
+    assert!(signal.evidence_count >= 4);
     assert!(signal.direction_bias < 0);
 }
 
@@ -194,8 +196,23 @@ fn service_context_updates_enrich_generated_signal() {
 
     service.update_open_interest("SOLUSDT", now - 70_000, 1_000_000.0);
     service.update_open_interest("SOLUSDT", now, 1_250_000.0);
+    service.update_mark_price_context("SOLUSDT", now, Some(174.9), Some(0.00021));
+    service.update_ticker_context("SOLUSDT", now, Some(175.5), Some(600_000_000.0), Some(2.4));
     service.update_funding_context("SOLUSDT", Some(0.00021));
     service.update_liquidation_context("SOLUSDT", now, 1_000_000.0);
+
+    let warmup = service.ingest_trade(AltContractTrade {
+        ts: now - 10_000,
+        exchange: AltContractExchange::Binance,
+        symbol: "SOL".to_string(),
+        product_id: "SOLUSDT".to_string(),
+        price: 170.0,
+        qty_base: 10.0,
+        notional_usd: 1_700.0,
+        side: AltContractTradeSide::Buy,
+        trade_id: Some("pre".to_string()),
+    });
+    assert!(warmup.is_empty());
 
     let signals = service.ingest_trade(AltContractTrade {
         ts: now,
@@ -210,9 +227,18 @@ fn service_context_updates_enrich_generated_signal() {
     });
 
     let signal = signals.first().expect("context-enriched signal");
-    assert_eq!(
+    assert_ne!(
         signal.signal_type,
         AltContractSignalType::MainForceLongBuild
+    );
+    assert!(
+        matches!(
+            signal.signal_type,
+            AltContractSignalType::AbnormalPump
+                | AltContractSignalType::LiquidationCascade
+                | AltContractSignalType::UpsideResistance
+        ),
+        "liquidation context should avoid direct main-force wording"
     );
     assert_eq!(signal.oi_change_1m_base, Some(250_000.0));
     assert_eq!(signal.funding_rate, Some(0.00021));
@@ -220,6 +246,23 @@ fn service_context_updates_enrich_generated_signal() {
     assert!(signal.force_order_snapshot);
     assert!(signal.read_only);
     assert!(!signal.execution_enabled);
+
+    let summary = service.summary(Some("SOL"));
+    assert!(summary.all_market_context.mark_price_connected);
+    assert!(summary.all_market_context.ticker_connected);
+    assert!(summary.all_market_context.force_order_connected);
+    assert_eq!(summary.all_market_context.last_mark_price_at, Some(now));
+    assert_eq!(summary.all_market_context.last_ticker_at, Some(now));
+    assert!(summary
+        .all_market_context
+        .candidate_symbols
+        .iter()
+        .any(|symbol| symbol == "SOLUSDT"));
+    assert!(summary
+        .all_market_context
+        .hot_oi_symbols
+        .iter()
+        .any(|symbol| symbol == "SOLUSDT"));
 
     let _ = std::fs::remove_file(config.persistence_path);
     reset_binance_alt_contract_runtime_config();
