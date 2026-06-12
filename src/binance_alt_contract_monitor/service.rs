@@ -36,6 +36,7 @@ const TRADE_RETENTION_MS: i64 = 3_600_000;
 const DUPLICATE_WINDOW_MS: i64 = 10_000;
 const OI_RETENTION_MS: i64 = 10 * 60_000;
 const LIQUIDATION_CONTEXT_TTL_MS: i64 = 60_000;
+const SUMMARY_MONITORED_SYMBOL_LIMIT: usize = 12;
 
 #[derive(Clone)]
 pub struct BinanceAltContractService {
@@ -538,7 +539,7 @@ impl BinanceAltContractService {
                 .map(|item| &signal.product_id == item)
                 .unwrap_or(true)
         });
-        let monitored_symbols = if state.symbol_metas.is_empty() {
+        let all_monitored_symbols = if state.symbol_metas.is_empty() {
             config.enabled_symbols()
         } else {
             state.symbol_metas.keys().cloned().collect::<Vec<_>>()
@@ -546,7 +547,7 @@ impl BinanceAltContractService {
         let trend_product = product_filter
             .clone()
             .or_else(|| latest.map(|signal| signal.product_id.clone()))
-            .or_else(|| monitored_symbols.first().cloned())
+            .or_else(|| all_monitored_symbols.first().cloned())
             .unwrap_or_else(|| "SOLUSDT".to_string());
         let exchanges = summarized_exchange_statuses(
             self.enabled,
@@ -577,6 +578,13 @@ impl BinanceAltContractService {
             .values()
             .filter_map(|status| status.last_trade_at)
             .max();
+        let top_active_symbols = top_active_symbols(&state.trades, now);
+        let monitored_symbols = summary_monitored_symbols(
+            &all_monitored_symbols,
+            &top_active_symbols,
+            product_filter.as_deref(),
+            latest,
+        );
         let candidate_ttl_ms = i64::try_from(config.oi_scheduler.candidate_ttl_sec)
             .unwrap_or(600)
             .saturating_mul(1000);
@@ -607,7 +615,7 @@ impl BinanceAltContractService {
                 .count(),
             signals1h: dry_run_stats.signals1h,
             would_send1h: dry_run_stats.would_send1h,
-            top_active_symbols: top_active_symbols(&state.trades, now),
+            top_active_symbols,
             errors1h: state
                 .error_events
                 .iter()
@@ -1357,6 +1365,40 @@ fn top_active_symbols(trades: &VecDeque<AltContractTrade>, now: i64) -> Vec<Stri
         .collect()
 }
 
+fn summary_monitored_symbols(
+    all_symbols: &[String],
+    top_active_symbols: &[String],
+    product_filter: Option<&str>,
+    latest: Option<&AltContractSignal>,
+) -> Vec<String> {
+    let mut items = Vec::new();
+    push_summary_symbol(&mut items, product_filter);
+    push_summary_symbol(&mut items, latest.map(|signal| signal.product_id.as_str()));
+    for symbol in top_active_symbols {
+        push_summary_symbol(&mut items, Some(symbol));
+    }
+    for symbol in all_symbols {
+        if items.len() >= SUMMARY_MONITORED_SYMBOL_LIMIT {
+            break;
+        }
+        push_summary_symbol(&mut items, Some(symbol));
+    }
+    items
+}
+
+fn push_summary_symbol(items: &mut Vec<String>, symbol: Option<&str>) {
+    if items.len() >= SUMMARY_MONITORED_SYMBOL_LIMIT {
+        return;
+    }
+    let Some(symbol) = symbol else {
+        return;
+    };
+    if symbol.is_empty() || items.iter().any(|item| item == symbol) {
+        return;
+    }
+    items.push(symbol.to_string());
+}
+
 fn symbol_universe_summary(
     config: &super::config::BinanceAltContractRuntimeConfig,
     metas: &BTreeMap<String, AltContractSymbolMeta>,
@@ -1375,7 +1417,11 @@ fn symbol_universe_summary(
     AltContractSymbolUniverseSummary {
         mode: config.effective_universe_mode().as_str().to_string(),
         limit: config.symbol_universe.symbol_limit,
-        monitored_count: metas.len(),
+        monitored_count: if metas.is_empty() {
+            config.enabled_symbols().len()
+        } else {
+            metas.len()
+        },
         tier_counts,
         whitelist: config.symbol_universe.whitelist.clone(),
         blacklist: config.symbol_universe.blacklist.clone(),

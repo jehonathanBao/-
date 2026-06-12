@@ -130,6 +130,8 @@ fn disabled_summary_is_read_only_and_lists_configured_symbols() {
         .monitored_symbols
         .iter()
         .all(|symbol| symbol != "BTCUSDT" && symbol != "ETHUSDT"));
+    assert!(summary.monitored_symbols.len() <= 12);
+    assert!(summary.symbol_universe.monitored_count >= summary.monitored_symbols.len());
     reset_binance_alt_contract_runtime_config();
 }
 
