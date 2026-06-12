@@ -28,6 +28,7 @@ describe("binance alt contract api", () => {
           latestDirection: "buy",
           latestSeverity: "s",
           monitoredSymbols: ["SOLUSDT", "DOGEUSDT"],
+          displayMinNotionalUsd: 500_000,
           activeAnomalyCount: 2,
           recentCriticalOrSCount: 1,
           dryRunWouldSendCount: 1,
@@ -73,7 +74,7 @@ describe("binance alt contract api", () => {
             },
           },
         },
-        items: [altSignal()],
+        items: [altSignal(), lowNotionalSignal()],
       },
     });
 
@@ -86,6 +87,7 @@ describe("binance alt contract api", () => {
       latestDirection: "buy",
       latestSeverity: "s",
       monitoredSymbols: ["SOLUSDT", "DOGEUSDT"],
+      displayMinNotionalUsd: 500_000,
       activeAnomalyCount: 2,
       recentCriticalOrSCount: 1,
       dryRunWouldSendCount: 1,
@@ -115,6 +117,7 @@ describe("binance alt contract api", () => {
         },
       },
     });
+    expect(payload.items).toHaveLength(1);
     expect(payload.items[0]).toMatchObject({
       id: "bacm-sol-s",
       symbol: "SOL",
@@ -236,5 +239,17 @@ function altSignal() {
     discordSent: false,
     discordReason: "dry_run",
     finalResult: "山寨合约主动买入爆发，OI 同步上升，疑似主力建多。",
+  };
+}
+
+function lowNotionalSignal() {
+  return {
+    ...altSignal(),
+    id: "bacm-doge-small",
+    symbol: "DOGE",
+    productId: "DOGEUSDT",
+    totalVolumeBase: 1_000,
+    totalNotionalUsd: 499_999,
+    triggerPriceUsd: 0.2,
   };
 }

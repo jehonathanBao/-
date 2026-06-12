@@ -639,6 +639,7 @@ impl BinanceAltContractService {
                 })
                 .count(),
             monitored_symbols,
+            display_min_notional_usd: config.display.min_notional_usd,
             active_anomaly_count,
             recent_critical_or_s_count,
             dry_run_would_send_count,
@@ -655,6 +656,7 @@ impl BinanceAltContractService {
     }
 
     pub fn latest(&self, symbol: Option<&str>, limit: usize) -> AltContractLatestResponse {
+        let config = binance_alt_contract_runtime_config();
         let limit = limit.clamp(1, 200);
         let product_filter = symbol.map(product_id_for_symbol);
         let mut items = self
@@ -668,6 +670,7 @@ impl BinanceAltContractService {
                     .map(|item| &signal.product_id == item)
                     .unwrap_or(true)
             })
+            .filter(|signal| display_signal(signal, config.display.min_notional_usd))
             .cloned()
             .collect::<Vec<_>>();
         sort_signals(&mut items);
@@ -680,6 +683,7 @@ impl BinanceAltContractService {
     }
 
     pub fn history(&self, query: BinanceAltContractQuery) -> AltContractLatestResponse {
+        let config = binance_alt_contract_runtime_config();
         let limit = query.limit.unwrap_or(50).clamp(1, 200);
         let product_filter = query.symbol.as_deref().map(product_id_for_symbol);
         let severity_filter = query.severity.as_deref().map(compact_filter_value);
@@ -697,6 +701,7 @@ impl BinanceAltContractService {
                     .map(|item| &signal.product_id == item)
                     .unwrap_or(true)
             })
+            .filter(|signal| display_signal(signal, config.display.min_notional_usd))
             .filter(|signal| {
                 severity_filter
                     .as_ref()
@@ -1440,6 +1445,10 @@ fn sort_signals(items: &mut [AltContractSignal]) {
             .then_with(|| right.abnormal_score.cmp(&left.abnormal_score))
             .then_with(|| right.ts.cmp(&left.ts))
     });
+}
+
+fn display_signal(signal: &AltContractSignal, min_notional_usd: f64) -> bool {
+    signal.total_notional_usd >= min_notional_usd
 }
 
 fn redact_error(error: String) -> String {

@@ -415,6 +415,7 @@ pub struct AltContractSummary {
     pub latest_signal_at: Option<i64>,
     pub signal_count: usize,
     pub monitored_symbols: Vec<String>,
+    pub display_min_notional_usd: f64,
     pub active_anomaly_count: usize,
     pub recent_critical_or_s_count: usize,
     pub dry_run_would_send_count: usize,

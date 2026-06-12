@@ -1,5 +1,7 @@
 import axios from "axios";
 
+export const DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD = 500_000;
+
 const calmSummary = {
   status: "calm",
   healthStatus: "disabled",
@@ -18,6 +20,7 @@ const calmSummary = {
   latestSignalAt: null,
   signalCount: 0,
   monitoredSymbols: [],
+  displayMinNotionalUsd: DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD,
   activeAnomalyCount: 0,
   recentCriticalOrSCount: 0,
   dryRunWouldSendCount: 0,
@@ -86,9 +89,10 @@ export async function fetchBinanceAltContractLatest(limit = 50, symbol = "all") 
     const query = buildQuery({ limit, symbol });
     const response = await axios.get(`${baseURL}/api/binance-alt-contract/latest?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const summary = normalizeSummary(response.data?.summary);
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeAltContractSignal),
+      summary,
+      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary.displayMinNotionalUsd),
       error: null,
     };
   } catch {
@@ -102,9 +106,10 @@ export async function fetchBinanceAltContractHistory(filters = {}) {
     const query = buildQuery({ ...filters, limit: filters.limit ?? 50 });
     const response = await axios.get(`${baseURL}/api/binance-alt-contract/history?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const summary = normalizeSummary(response.data?.summary);
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeAltContractSignal),
+      summary,
+      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary.displayMinNotionalUsd),
       error: null,
     };
   } catch {
@@ -186,6 +191,8 @@ function normalizeSummary(summary) {
     latestSignalAt: numberOrNull(summary.latestSignalAt),
     signalCount: numberOrNull(summary.signalCount) || 0,
     monitoredSymbols: Array.isArray(summary.monitoredSymbols) ? summary.monitoredSymbols : [],
+    displayMinNotionalUsd:
+      numberOrNull(summary.displayMinNotionalUsd) || DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD,
     activeAnomalyCount: numberOrNull(summary.activeAnomalyCount) || 0,
     recentCriticalOrSCount: numberOrNull(summary.recentCriticalOrSCount) || 0,
     dryRunWouldSendCount: numberOrNull(summary.dryRunWouldSendCount) || 0,
@@ -198,6 +205,11 @@ function normalizeSummary(summary) {
     dryRunStats: normalizeDryRunStats(summary.dryRunStats),
     symbolUniverse: normalizeSymbolUniverse(summary.symbolUniverse),
   };
+}
+
+function filterDisplaySignals(items, minNotionalUsd) {
+  const min = Number(minNotionalUsd || DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD);
+  return items.filter((item) => Number(item.totalNotionalUsd || 0) >= min);
 }
 
 function normalizeDryRunStats(stats) {

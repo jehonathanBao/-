@@ -42,7 +42,7 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
     let service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
     let mut window = stats("SOL", AltContractDirection::Buy);
     window.ts = unix_ms();
-    let signal = detect_alt_contract_signal(
+    let mut signal = detect_alt_contract_signal(
         &window,
         &AltContractContext {
             oi_change_1m_base: Some(100_000.0),
@@ -54,12 +54,16 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
         &config,
     )
     .expect("signal");
+    signal.discord_eligible = true;
+    signal.discord_would_send = true;
+    signal.discord_reason = "dry_run".to_string();
     assert!(service.insert_signal_for_tests(signal.clone()));
 
     let latest = service.latest(Some("SOL"), 50);
     assert_eq!(latest.items.len(), 1);
     assert_eq!(latest.items[0].product_id, "SOLUSDT");
     assert_eq!(latest.summary.signal_count, 1);
+    assert_eq!(latest.summary.display_min_notional_usd, 500_000.0);
     assert_eq!(latest.summary.signals1h, 1);
     assert_eq!(latest.summary.dry_run_stats.signals1h, 1);
     assert_eq!(latest.summary.dry_run_stats.would_send1h, 1);
@@ -107,6 +111,56 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
     let restored_latest = restored.latest(Some("SOL"), 50);
     assert_eq!(restored_latest.items.len(), 1);
     assert_eq!(restored_latest.items[0].id, signal.id);
+
+    let _ = fs::remove_file(&path);
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn service_filters_low_notional_signals_from_frontend_lists() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let path = temp_path("bacm-routes-display-min-notional.jsonl");
+    let _ = fs::remove_file(&path);
+    let mut config = BinanceAltContractRuntimeConfig::default();
+    config.enabled = true;
+    config.dry_run = true;
+    config.data_quality.warmup_ms = 1;
+    config.persistence_path = path.clone();
+    set_binance_alt_contract_runtime_config(config.clone());
+
+    let service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
+    let high = detect_alt_contract_signal(
+        &stats("SOL", AltContractDirection::Buy),
+        &AltContractContext {
+            oi_change_1m_base: Some(100_000.0),
+            oi_change_pct: Some(1.5),
+            persistence_windows: 3,
+            ..AltContractContext::default()
+        },
+        &config,
+    )
+    .expect("high notional signal");
+    let mut low = high.clone();
+    low.id = "low-notional-doge".to_string();
+    low.symbol = "DOGE".to_string();
+    low.product_id = "DOGEUSDT".to_string();
+    low.total_notional_usd = 499_999.0;
+
+    assert!(service.insert_signal_for_tests(high));
+    assert!(service.insert_signal_for_tests(low));
+
+    let latest = service.latest(None, 50);
+    assert_eq!(latest.summary.signal_count, 2);
+    assert_eq!(latest.items.len(), 1);
+    assert_eq!(latest.items[0].product_id, "SOLUSDT");
+
+    let history = service.history(BinanceAltContractQuery {
+        limit: Some(50),
+        ..BinanceAltContractQuery::default()
+    });
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].product_id, "SOLUSDT");
 
     let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();

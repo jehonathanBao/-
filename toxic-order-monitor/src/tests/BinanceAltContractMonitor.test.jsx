@@ -20,7 +20,7 @@ vi.mock("../api/binanceAltContract.js", () => ({
   fetchBinanceAltContractLatest: vi.fn(() =>
     Promise.resolve({
       summary: altSummary(),
-      items: [altSignal()],
+      items: [altSignal(), lowNotionalSignal()],
       error: null,
     }),
   ),
@@ -47,6 +47,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText(/全量监控 Binance USDT 永续山寨合约/)).toBeInTheDocument();
     expect(screen.getAllByText(/全 Binance USDT 永续/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Tier A1 \/ B1 \/ C0 \/ D0 \/ E0/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/仅展示 Notional ≥ \$500,000/)).toBeInTheDocument();
     expect(screen.getByText("在线")).toBeInTheDocument();
     expect(screen.getAllByText("主力建多").length).toBeGreaterThan(0);
     expect(screen.getByText("$175.50")).toBeInTheDocument();
@@ -63,6 +64,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getAllByText(/Hot OI/).length).toBeGreaterThan(0);
     expect(screen.getByText(/markPrice/)).toBeInTheDocument();
     expect(screen.getByText(/ticker/)).toBeInTheDocument();
+    expect(screen.queryByTestId("alt-contract-row-bacm-doge-small")).not.toBeInTheDocument();
   });
 
   it("uses history when severity filter is selected", async () => {
@@ -146,6 +148,7 @@ function altSummary() {
     latestSignalAt: 1_700_000_000_000,
     signalCount: 1,
     monitoredSymbols: ["SOLUSDT", "DOGEUSDT"],
+    displayMinNotionalUsd: 500_000,
     activeAnomalyCount: 1,
     recentCriticalOrSCount: 1,
     dryRunWouldSendCount: 1,
@@ -212,6 +215,18 @@ function altSummary() {
       candidateSymbols: ["SOLUSDT"],
       hotOiSymbols: ["SOLUSDT"],
     },
+  };
+}
+
+function lowNotionalSignal() {
+  return {
+    ...altSignal(),
+    id: "bacm-doge-small",
+    symbol: "DOGE",
+    productId: "DOGEUSDT",
+    totalVolumeBase: 1_000,
+    totalNotionalUsd: 499_999,
+    triggerPriceUsd: 0.2,
   };
 }
 

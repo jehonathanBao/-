@@ -19,6 +19,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub data_quality: BinanceAltDataQualityConfig,
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub storage: BinanceAltStorageConfig,
+    pub display: BinanceAltDisplayConfig,
     pub discord: BinanceAltDiscordConfig,
     pub tier_d_rules: BinanceAltTierDRulesConfig,
     pub tier_e_rules: BinanceAltTierERulesConfig,
@@ -129,6 +130,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             data_quality: BinanceAltDataQualityConfig::default(),
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             storage: BinanceAltStorageConfig::default(),
+            display: BinanceAltDisplayConfig::default(),
             discord: BinanceAltDiscordConfig::default(),
             tier_d_rules: BinanceAltTierDRulesConfig::default(),
             tier_e_rules: BinanceAltTierERulesConfig::default(),
@@ -280,6 +282,19 @@ impl Default for BinanceAltStorageConfig {
             hot_1s_retention_hours: 24,
             flow_1m_retention_days: 14,
             signals_retention_days: 180,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltDisplayConfig {
+    pub min_notional_usd: f64,
+}
+
+impl Default for BinanceAltDisplayConfig {
+    fn default() -> Self {
+        Self {
+            min_notional_usd: 500_000.0,
         }
     }
 }
@@ -545,6 +560,13 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.storage.signals_retention_days",
                 fallback.storage.signals_retention_days,
+            ),
+        },
+        display: BinanceAltDisplayConfig {
+            min_notional_usd: nonnegative_f64_setting(
+                settings,
+                "binance_alt_contract_monitor.display.min_notional_usd",
+                fallback.display.min_notional_usd,
             ),
         },
         discord: BinanceAltDiscordConfig {

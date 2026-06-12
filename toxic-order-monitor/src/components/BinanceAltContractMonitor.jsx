@@ -87,11 +87,16 @@ export default function BinanceAltContractMonitor() {
   }, [filters]);
 
   const summary = state.summary || fallbackSummary();
+  const displayMinNotionalUsd = summary.displayMinNotionalUsd || 500_000;
+  const visibleItems = useMemo(
+    () => state.items.filter((item) => Number(item.totalNotionalUsd || 0) >= displayMinNotionalUsd),
+    [displayMinNotionalUsd, state.items],
+  );
   const symbolOptions = useMemo(
     () => ["all", ...(summary.monitoredSymbols || []).map((symbol) => symbol.replace(/USDT$/, ""))],
     [summary.monitoredSymbols],
   );
-  const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
+  const selectedSignal = visibleItems.find((item) => item.id === selectedSignalId) || null;
 
   return (
     <section className="console-panel mb-5 p-4 md:p-5">
@@ -115,6 +120,9 @@ export default function BinanceAltContractMonitor() {
 
       <AltTrendBar trend={summary.trend60s} />
       <RuntimeSummary summary={summary} />
+      <p className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100">
+        仅展示 Notional ≥ {formatUsd(displayMinNotionalUsd)} 的山寨合约信号；小额异常仍后台记录，不进入前端列表。
+      </p>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
         <CollapsedUniverseSummary summary={summary} />
@@ -142,7 +150,7 @@ export default function BinanceAltContractMonitor() {
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             山寨合约监控载入中...
           </p>
-        ) : state.items.length === 0 ? (
+        ) : visibleItems.length === 0 ? (
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             {summary.enabled ? "暂无山寨合约异常" : "山寨合约异常监控未启用"}
           </p>
@@ -168,7 +176,7 @@ export default function BinanceAltContractMonitor() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
-              {state.items.map((item) => (
+              {visibleItems.map((item) => (
                 <tr
                   className="console-row"
                   data-testid={`alt-contract-row-${item.id}`}
@@ -648,6 +656,7 @@ function fallbackSummary() {
       latestDirection: "neutral",
       latestSeverity: "calm",
       monitoredSymbols: [],
+      displayMinNotionalUsd: 500_000,
       collectorStatus: "disabled",
       lastTradeAt: null,
       lastOiPollAt: null,

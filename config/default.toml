@@ -425,6 +425,9 @@ hot_1s_retention_hours = 24
 flow_1m_retention_days = 14
 signals_retention_days = 180
 
+[binance_alt_contract_monitor.display]
+min_notional_usd = 500000
+
 [binance_alt_contract_monitor.discord]
 enabled = true
 dry_run = true
