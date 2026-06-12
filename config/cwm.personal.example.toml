@@ -115,7 +115,72 @@ min_notional_usd = 500000
 [binance_alt_contract_monitor.discord]
 enabled = true
 dry_run = true
+webhook_env = "BACM_DISCORD_WEBHOOK_URL"
 cooldown_sec = 900
+global_hourly_cap = 12
+min_data_quality = 70
+min_display_notional_usd = 500000
+push_build_score = 80
+push_abnormal_score = 90
+push_main_force_confidence = 75
+push_min_evidence_count = 4
+allow_liquidation_alerts = true
+push_liquidation_abnormal_score = 92
+min_abnormal_score = 85
+min_build_score = 80
+market_wide_symbol_count = 15
+market_wide_ratio = 0.12
+market_wide_top_n = 5
+
+[binance_alt_contract_monitor.discord.tier_a]
+enabled = true
+min_notional_usd = 3000000
+critical_notional_usd = 8000000
+s_notional_usd = 20000000
+s_enabled = true
+require_build_score = 80
+require_abnormal_score = 90
+require_non_liquidation = false
+
+[binance_alt_contract_monitor.discord.tier_b]
+enabled = true
+min_notional_usd = 1500000
+critical_notional_usd = 3000000
+s_notional_usd = 8000000
+s_enabled = true
+require_build_score = 80
+require_abnormal_score = 90
+require_non_liquidation = false
+
+[binance_alt_contract_monitor.discord.tier_c]
+enabled = true
+min_notional_usd = 500000
+critical_notional_usd = 1500000
+s_notional_usd = 4000000
+s_enabled = true
+require_build_score = 80
+require_abnormal_score = 90
+require_non_liquidation = false
+
+[binance_alt_contract_monitor.discord.tier_d]
+enabled = true
+min_notional_usd = 500000
+critical_notional_usd = 1200000
+s_notional_usd = 999999999999
+s_enabled = false
+require_build_score = 85
+require_abnormal_score = 85
+require_non_liquidation = true
+
+[binance_alt_contract_monitor.discord.tier_e]
+enabled = false
+min_notional_usd = 999999999999
+critical_notional_usd = 999999999999
+s_notional_usd = 999999999999
+s_enabled = false
+require_build_score = 90
+require_abnormal_score = 92
+require_non_liquidation = true
 
 [binance_alt_contract_monitor.tier_rules.tier_d]
 discord_min_abnormal_score = 85

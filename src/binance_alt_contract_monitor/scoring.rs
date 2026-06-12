@@ -49,11 +49,11 @@ pub fn score_alt_contract_signal(
         + liquidation_score
         + data_quality_score
         + penalty_score;
-    let raw_build = volume_score * 0.65
-        + dynamic_score * 0.65
+    let raw_build = volume_score * 0.8
+        + dynamic_score * 0.8
         + directional_score
         + oi_score
-        + price_score * 0.6
+        + price_score * 0.8
         + persistence_score
         + funding_score
         - funding_penalty

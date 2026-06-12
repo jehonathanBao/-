@@ -1,7 +1,7 @@
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::{
         reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
-        BinanceAltContractRuntimeConfig,
+        BinanceAltContractRuntimeConfig, BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
     },
     detector::{
         detect_alt_contract_signal_with_context, window_confirmation_for, MarketImpulseContext,
@@ -15,12 +15,19 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
 };
 
 fn config() -> BinanceAltContractRuntimeConfig {
-    let mut config = BinanceAltContractRuntimeConfig::default();
-    config.enabled = true;
-    config.dry_run = true;
-    config.discord.dry_run = true;
-    config.data_quality.warmup_ms = 1;
-    config
+    BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        discord: BinanceAltDiscordConfig {
+            dry_run: true,
+            ..BinanceAltDiscordConfig::default()
+        },
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        ..BinanceAltContractRuntimeConfig::default()
+    }
 }
 
 #[test]

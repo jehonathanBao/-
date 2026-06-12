@@ -1,7 +1,7 @@
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::{
         reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
-        BinanceAltContractRuntimeConfig,
+        BinanceAltContractRuntimeConfig, BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
     },
     detector::detect_alt_contract_signal,
     service::BinanceAltContractService,
@@ -13,12 +13,19 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
 };
 
 fn test_config() -> BinanceAltContractRuntimeConfig {
-    let mut config = BinanceAltContractRuntimeConfig::default();
-    config.enabled = true;
-    config.dry_run = true;
-    config.discord.dry_run = true;
-    config.data_quality.warmup_ms = 1;
-    config
+    BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        discord: BinanceAltDiscordConfig {
+            dry_run: true,
+            ..BinanceAltDiscordConfig::default()
+        },
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        ..BinanceAltContractRuntimeConfig::default()
+    }
 }
 
 #[test]
@@ -37,7 +44,8 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
     let context = AltContractContext {
         oi_change_1m_base: Some(240_000.0),
         oi_change_pct: Some(1.8),
-        funding_rate: Some(0.0012),
+        oi_updated_at: Some(stats.ts - 10_000),
+        funding_rate: Some(0.0),
         persistence_windows: 3,
         ..AltContractContext::default()
     };
@@ -52,7 +60,17 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
     assert!(signal.main_force_confidence >= 75.0);
     assert!(signal.evidence_count >= 4);
     assert_eq!(signal.severity, AltContractSeverity::S);
-    assert!(signal.discord_eligible);
+    assert!(
+        signal.discord_eligible,
+        "discord_reason={} alert_kind={} build={} abnormal={} confidence={} evidence={} oi_quality={}",
+        signal.discord_reason,
+        signal.discord_alert_kind,
+        signal.build_score,
+        signal.abnormal_score,
+        signal.main_force_confidence,
+        signal.evidence_count,
+        signal.oi_quality
+    );
     assert!(signal.discord_would_send);
     assert!(!signal.explain_tags.is_empty());
     assert!(signal.abnormal_explanation.contains("异常分"));

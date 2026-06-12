@@ -362,6 +362,10 @@ pub struct AltContractSignal {
     pub discord_sent: bool,
     pub discord_sent_at: Option<i64>,
     pub discord_reason: String,
+    #[serde(default = "default_discord_alert_kind")]
+    pub discord_alert_kind: String,
+    #[serde(default)]
+    pub discord_min_notional_usd: f64,
     pub final_result: String,
     pub read_only: bool,
     pub analysis_only: bool,
@@ -495,4 +499,8 @@ fn default_oi_quality() -> String {
 
 fn default_funding_crowding() -> String {
     "neutral".to_string()
+}
+
+fn default_discord_alert_kind() -> String {
+    "none".to_string()
 }

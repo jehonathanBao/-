@@ -184,6 +184,8 @@ pub fn detect_alt_contract_signal_with_context(
         discord_sent: false,
         discord_sent_at: None,
         discord_reason: "not_evaluated".to_string(),
+        discord_alert_kind: "none".to_string(),
+        discord_min_notional_usd: 0.0,
         final_result: final_result_text(signal_type, main_force_confidence, context),
         read_only: true,
         analysis_only: true,
@@ -195,12 +197,26 @@ pub fn detect_alt_contract_signal_with_context(
         signal.discord_sent = false;
         signal.discord_sent_at = None;
         signal.discord_reason = "low_liquidity_tier_guard".to_string();
+        signal.discord_alert_kind = "none".to_string();
+        signal.discord_min_notional_usd = config
+            .discord
+            .tier_thresholds
+            .get(&signal.tier)
+            .map(|tier| tier.min_notional_usd)
+            .unwrap_or_default();
     } else if tier_d_discord_guard(&signal, config) {
         signal.discord_eligible = false;
         signal.discord_would_send = false;
         signal.discord_sent = false;
         signal.discord_sent_at = None;
         signal.discord_reason = "tier_d_guard".to_string();
+        signal.discord_alert_kind = "none".to_string();
+        signal.discord_min_notional_usd = config
+            .discord
+            .tier_thresholds
+            .get(&signal.tier)
+            .map(|tier| tier.min_notional_usd)
+            .unwrap_or_default();
     } else {
         let gate = evaluate_alt_contract_discord_gate(&signal, &config.discord, warmup);
         signal.discord_eligible = gate.eligible;
@@ -208,6 +224,8 @@ pub fn detect_alt_contract_signal_with_context(
         signal.discord_sent = gate.sent;
         signal.discord_sent_at = gate.sent_at_ms;
         signal.discord_reason = gate.reason;
+        signal.discord_alert_kind = gate.alert_kind;
+        signal.discord_min_notional_usd = round(gate.min_notional_usd, 2);
     }
     tracing::info!(
         target: LOG_TARGET,
@@ -496,16 +514,11 @@ fn evidence_for(
     if confirmed_windows >= 2 || context.persistence_windows >= 2 {
         tags.push("multi_window_confirmed".to_string());
     }
-    if !market_context.market_wide_move {
-        match stats.direction {
-            AltContractDirection::Buy => tags.push("market_relative_strength".to_string()),
-            AltContractDirection::Sell => tags.push("market_relative_weakness".to_string()),
-            _ => {}
-        }
-    } else if market_context
-        .relative_strength_rank
-        .is_some_and(|rank| rank <= 10)
-    {
+    let relative_leader = !market_context.market_wide_move
+        || market_context
+            .relative_strength_rank
+            .is_some_and(|rank| rank <= 10);
+    if relative_leader {
         match stats.direction {
             AltContractDirection::Buy => tags.push("market_relative_strength".to_string()),
             AltContractDirection::Sell => tags.push("market_relative_weakness".to_string()),
@@ -535,9 +548,9 @@ fn main_force_confidence(
         confidence -= 18.0;
     }
     if market_context.market_wide_move
-        && !market_context
+        && market_context
             .relative_strength_rank
-            .is_some_and(|rank| rank <= 10)
+            .is_none_or(|rank| rank > 10)
     {
         confidence -= 15.0;
     }

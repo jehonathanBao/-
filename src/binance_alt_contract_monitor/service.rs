@@ -306,10 +306,7 @@ impl BinanceAltContractService {
         }
         let product_id = product_id_for_symbol(product_id);
         let mut state = self.state.write();
-        let snapshots = state
-            .oi_snapshots
-            .entry(product_id.clone())
-            .or_insert_with(VecDeque::new);
+        let snapshots = state.oi_snapshots.entry(product_id.clone()).or_default();
         snapshots.push_back((ts, open_interest_base));
         while snapshots
             .front()
@@ -926,7 +923,8 @@ impl BinanceAltContractService {
             .position(|(symbol, _)| symbol == &current_product)
             .map(|index| index as u32 + 1);
         MarketImpulseContext {
-            market_wide_move: ratio >= 0.15,
+            market_wide_move: ranked.len() >= config.discord.market_wide_symbol_count
+                || ratio >= config.discord.market_wide_ratio,
             market_wide_direction: Some(
                 match direction {
                     super::types::AltContractDirection::Buy => "buy",
@@ -1331,7 +1329,17 @@ fn dry_run_window_stats(
             .count(),
         skipped_low_score: recent
             .iter()
-            .filter(|signal| signal.discord_reason == "low_score")
+            .filter(|signal| {
+                matches!(
+                    signal.discord_reason.as_str(),
+                    "low_score"
+                        | "main_force_evidence_low"
+                        | "liquidation_evidence_low"
+                        | "tier_notional_low"
+                        | "tier_critical_notional_low"
+                        | "medium_or_low"
+                )
+            })
             .count(),
         skipped_cooldown: recent
             .iter()

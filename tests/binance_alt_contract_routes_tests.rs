@@ -7,7 +7,7 @@ use std::{
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::{
         reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
-        BinanceAltContractRuntimeConfig,
+        BinanceAltContractRuntimeConfig, BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
     },
     detector::detect_alt_contract_signal,
     service::{BinanceAltContractQuery, BinanceAltContractService},
@@ -31,12 +31,20 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
     reset_binance_alt_contract_runtime_config();
     let path = temp_path("bacm-routes-signals.jsonl");
     let _ = fs::remove_file(&path);
-    let mut config = BinanceAltContractRuntimeConfig::default();
-    config.enabled = true;
-    config.dry_run = true;
-    config.discord.dry_run = true;
-    config.data_quality.warmup_ms = 1;
-    config.persistence_path = path.clone();
+    let config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        discord: BinanceAltDiscordConfig {
+            dry_run: true,
+            ..BinanceAltDiscordConfig::default()
+        },
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
     set_binance_alt_contract_runtime_config(config.clone());
 
     let service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
@@ -122,11 +130,16 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
     reset_binance_alt_contract_runtime_config();
     let path = temp_path("bacm-routes-display-min-notional.jsonl");
     let _ = fs::remove_file(&path);
-    let mut config = BinanceAltContractRuntimeConfig::default();
-    config.enabled = true;
-    config.dry_run = true;
-    config.data_quality.warmup_ms = 1;
-    config.persistence_path = path.clone();
+    let config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
     set_binance_alt_contract_runtime_config(config.clone());
 
     let service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
@@ -170,8 +183,10 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
 fn disabled_summary_is_read_only_and_lists_configured_symbols() {
     let _guard = guard();
     reset_binance_alt_contract_runtime_config();
-    let mut config = BinanceAltContractRuntimeConfig::default();
-    config.enabled = false;
+    let config = BinanceAltContractRuntimeConfig {
+        enabled: false,
+        ..BinanceAltContractRuntimeConfig::default()
+    };
     set_binance_alt_contract_runtime_config(config);
 
     let service = BinanceAltContractService::new(false, true, 1_700_000_000_000);

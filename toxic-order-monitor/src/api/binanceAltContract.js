@@ -165,6 +165,8 @@ export function normalizeAltContractSignal(item) {
     discordSent: Boolean(item.discordSent),
     discordSentAt: numberOrNull(item.discordSentAt),
     discordReason: item.discordReason || "not_sent",
+    discordAlertKind: item.discordAlertKind || "none",
+    discordMinNotionalUsd: numberOrNull(item.discordMinNotionalUsd) || 0,
     finalResult: item.finalResult || "Binance alt contract anomaly candidate",
   };
 }
@@ -204,6 +206,7 @@ function normalizeSummary(summary) {
     exchanges: normalizeExchanges(summary.exchanges),
     dryRunStats: normalizeDryRunStats(summary.dryRunStats),
     symbolUniverse: normalizeSymbolUniverse(summary.symbolUniverse),
+    allMarketContext: summary.allMarketContext || {},
   };
 }
 
@@ -245,6 +248,8 @@ function normalizeSymbolUniverse(universe) {
     blacklist: Array.isArray(source.blacklist) ? source.blacklist : [],
     excludedSymbols: Array.isArray(source.excludedSymbols) ? source.excludedSymbols : [],
     min24hQuoteVolumeUsd: numberOrNull(source.min24hQuoteVolumeUsd) || 0,
+    monitoredCount: numberOrNull(source.monitoredCount) || 0,
+    tierCounts: source.tierCounts && typeof source.tierCounts === "object" ? source.tierCounts : {},
   };
 }
 

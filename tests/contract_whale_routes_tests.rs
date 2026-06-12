@@ -583,7 +583,7 @@ fn contract_whale_generated_response_marks_price_deviation_context() {
     assert_eq!(response.items.len(), 1);
     assert!(response.items[0].order_price_usd.is_some());
     assert!(response.items[0].current_market_price_usd.is_some());
-    assert_eq!(response.items[0].price_deviation_filtered, false);
+    assert!(!response.items[0].price_deviation_filtered);
     assert!(response.items[0]
         .price_deviation_pct
         .is_some_and(|value| value <= 5.0));

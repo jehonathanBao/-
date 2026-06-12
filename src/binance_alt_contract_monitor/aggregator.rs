@@ -42,6 +42,7 @@ pub fn rolling_window_stats(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn stats_from_trades(
     window_trades: &[AltContractTrade],
     all_trades: &VecDeque<AltContractTrade>,

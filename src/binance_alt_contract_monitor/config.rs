@@ -7,6 +7,7 @@ use std::{
 use super::types::{AltContractSeverity, AltContractSymbolTier, AltContractTierThresholds};
 
 static GLOBAL_CONFIG: OnceLock<RwLock<BinanceAltContractRuntimeConfig>> = OnceLock::new();
+const DISABLED_NOTIONAL_USD: f64 = 999_999_999_999.0;
 
 #[derive(Debug, Clone)]
 pub struct BinanceAltContractRuntimeConfig {
@@ -303,9 +304,23 @@ impl Default for BinanceAltDisplayConfig {
 pub struct BinanceAltDiscordConfig {
     pub enabled: bool,
     pub dry_run: bool,
+    pub webhook_env: String,
     pub cooldown_sec: i64,
+    pub global_hourly_cap: usize,
+    pub min_data_quality: u8,
+    pub min_display_notional_usd: f64,
+    pub push_build_score: u8,
+    pub push_abnormal_score: u8,
+    pub push_main_force_confidence: u8,
+    pub push_min_evidence_count: u8,
+    pub allow_liquidation_alerts: bool,
+    pub push_liquidation_abnormal_score: u8,
     pub min_abnormal_score: u8,
     pub min_build_score: u8,
+    pub tier_thresholds: BTreeMap<AltContractSymbolTier, BinanceAltDiscordTierConfig>,
+    pub market_wide_symbol_count: usize,
+    pub market_wide_ratio: f64,
+    pub market_wide_top_n: u32,
 }
 
 impl Default for BinanceAltDiscordConfig {
@@ -313,11 +328,37 @@ impl Default for BinanceAltDiscordConfig {
         Self {
             enabled: true,
             dry_run: true,
+            webhook_env: "BACM_DISCORD_WEBHOOK_URL".to_string(),
             cooldown_sec: 900,
+            global_hourly_cap: 12,
+            min_data_quality: 70,
+            min_display_notional_usd: 500_000.0,
+            push_build_score: 80,
+            push_abnormal_score: 90,
+            push_main_force_confidence: 75,
+            push_min_evidence_count: 4,
+            allow_liquidation_alerts: true,
+            push_liquidation_abnormal_score: 92,
             min_abnormal_score: 85,
             min_build_score: 80,
+            tier_thresholds: default_discord_tier_thresholds(),
+            market_wide_symbol_count: 15,
+            market_wide_ratio: 0.12,
+            market_wide_top_n: 5,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BinanceAltDiscordTierConfig {
+    pub enabled: bool,
+    pub min_notional_usd: f64,
+    pub critical_notional_usd: f64,
+    pub s_notional_usd: f64,
+    pub s_enabled: bool,
+    pub require_build_score: u8,
+    pub require_abnormal_score: u8,
+    pub require_non_liquidation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -576,10 +617,58 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
             dry_run: settings
                 .get_bool("binance_alt_contract_monitor.discord.dry_run")
                 .unwrap_or(dry_run),
+            webhook_env: string_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.webhook_env",
+                &fallback.discord.webhook_env,
+            ),
             cooldown_sec: i64_setting(
                 settings,
                 "binance_alt_contract_monitor.discord.cooldown_sec",
                 fallback.discord.cooldown_sec,
+            ),
+            global_hourly_cap: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.global_hourly_cap",
+                fallback.discord.global_hourly_cap,
+            ),
+            min_data_quality: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.min_data_quality",
+                fallback.discord.min_data_quality,
+            ),
+            min_display_notional_usd: nonnegative_f64_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.min_display_notional_usd",
+                fallback.discord.min_display_notional_usd,
+            ),
+            push_build_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.push_build_score",
+                fallback.discord.push_build_score,
+            ),
+            push_abnormal_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.push_abnormal_score",
+                fallback.discord.push_abnormal_score,
+            ),
+            push_main_force_confidence: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.push_main_force_confidence",
+                fallback.discord.push_main_force_confidence,
+            ),
+            push_min_evidence_count: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.push_min_evidence_count",
+                fallback.discord.push_min_evidence_count,
+            ),
+            allow_liquidation_alerts: settings
+                .get_bool("binance_alt_contract_monitor.discord.allow_liquidation_alerts")
+                .unwrap_or(fallback.discord.allow_liquidation_alerts),
+            push_liquidation_abnormal_score: u8_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.push_liquidation_abnormal_score",
+                fallback.discord.push_liquidation_abnormal_score,
             ),
             min_abnormal_score: u8_setting(
                 settings,
@@ -590,6 +679,25 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.discord.min_build_score",
                 fallback.discord.min_build_score,
+            ),
+            tier_thresholds: load_discord_tier_thresholds(
+                settings,
+                &fallback.discord.tier_thresholds,
+            ),
+            market_wide_symbol_count: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.market_wide_symbol_count",
+                fallback.discord.market_wide_symbol_count,
+            ),
+            market_wide_ratio: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.market_wide_ratio",
+                fallback.discord.market_wide_ratio,
+            ),
+            market_wide_top_n: u32_setting(
+                settings,
+                "binance_alt_contract_monitor.discord.market_wide_top_n",
+                fallback.discord.market_wide_top_n,
             ),
         },
         tier_d_rules: BinanceAltTierDRulesConfig {
@@ -707,6 +815,77 @@ fn default_thresholds() -> BTreeMap<AltContractSymbolTier, AltContractTierThresh
     ])
 }
 
+fn default_discord_tier_thresholds() -> BTreeMap<AltContractSymbolTier, BinanceAltDiscordTierConfig>
+{
+    BTreeMap::from([
+        (
+            AltContractSymbolTier::A,
+            BinanceAltDiscordTierConfig {
+                enabled: true,
+                min_notional_usd: 3_000_000.0,
+                critical_notional_usd: 8_000_000.0,
+                s_notional_usd: 20_000_000.0,
+                s_enabled: true,
+                require_build_score: 80,
+                require_abnormal_score: 90,
+                require_non_liquidation: false,
+            },
+        ),
+        (
+            AltContractSymbolTier::B,
+            BinanceAltDiscordTierConfig {
+                enabled: true,
+                min_notional_usd: 1_500_000.0,
+                critical_notional_usd: 3_000_000.0,
+                s_notional_usd: 8_000_000.0,
+                s_enabled: true,
+                require_build_score: 80,
+                require_abnormal_score: 90,
+                require_non_liquidation: false,
+            },
+        ),
+        (
+            AltContractSymbolTier::C,
+            BinanceAltDiscordTierConfig {
+                enabled: true,
+                min_notional_usd: 500_000.0,
+                critical_notional_usd: 1_500_000.0,
+                s_notional_usd: 4_000_000.0,
+                s_enabled: true,
+                require_build_score: 80,
+                require_abnormal_score: 90,
+                require_non_liquidation: false,
+            },
+        ),
+        (
+            AltContractSymbolTier::D,
+            BinanceAltDiscordTierConfig {
+                enabled: true,
+                min_notional_usd: 500_000.0,
+                critical_notional_usd: 1_200_000.0,
+                s_notional_usd: DISABLED_NOTIONAL_USD,
+                s_enabled: false,
+                require_build_score: 85,
+                require_abnormal_score: 85,
+                require_non_liquidation: true,
+            },
+        ),
+        (
+            AltContractSymbolTier::E,
+            BinanceAltDiscordTierConfig {
+                enabled: false,
+                min_notional_usd: DISABLED_NOTIONAL_USD,
+                critical_notional_usd: DISABLED_NOTIONAL_USD,
+                s_notional_usd: DISABLED_NOTIONAL_USD,
+                s_enabled: false,
+                require_build_score: 90,
+                require_abnormal_score: 92,
+                require_non_liquidation: true,
+            },
+        ),
+    ])
+}
+
 fn load_thresholds(
     settings: &::config::Config,
     fallback: &BTreeMap<AltContractSymbolTier, AltContractTierThresholds>,
@@ -746,6 +925,76 @@ fn load_thresholds(
                     &format!("binance_alt_contract_monitor.thresholds.{key}.s_notional_usd"),
                     default.s_notional_usd,
                 ),
+            },
+        )
+    })
+    .collect()
+}
+
+fn load_discord_tier_thresholds(
+    settings: &::config::Config,
+    fallback: &BTreeMap<AltContractSymbolTier, BinanceAltDiscordTierConfig>,
+) -> BTreeMap<AltContractSymbolTier, BinanceAltDiscordTierConfig> {
+    [
+        AltContractSymbolTier::A,
+        AltContractSymbolTier::B,
+        AltContractSymbolTier::C,
+        AltContractSymbolTier::D,
+        AltContractSymbolTier::E,
+    ]
+    .into_iter()
+    .map(|tier| {
+        let key = match tier {
+            AltContractSymbolTier::A => "tier_a",
+            AltContractSymbolTier::B => "tier_b",
+            AltContractSymbolTier::C => "tier_c",
+            AltContractSymbolTier::D => "tier_d",
+            AltContractSymbolTier::E => "tier_e",
+        };
+        let default = fallback[&tier];
+        (
+            tier,
+            BinanceAltDiscordTierConfig {
+                enabled: settings
+                    .get_bool(&format!(
+                        "binance_alt_contract_monitor.discord.{key}.enabled"
+                    ))
+                    .unwrap_or(default.enabled),
+                min_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.discord.{key}.min_notional_usd"),
+                    default.min_notional_usd,
+                ),
+                critical_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.discord.{key}.critical_notional_usd"),
+                    default.critical_notional_usd,
+                ),
+                s_notional_usd: f64_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.discord.{key}.s_notional_usd"),
+                    default.s_notional_usd,
+                ),
+                s_enabled: settings
+                    .get_bool(&format!(
+                        "binance_alt_contract_monitor.discord.{key}.s_enabled"
+                    ))
+                    .unwrap_or(default.s_enabled),
+                require_build_score: u8_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.discord.{key}.require_build_score"),
+                    default.require_build_score,
+                ),
+                require_abnormal_score: u8_setting(
+                    settings,
+                    &format!("binance_alt_contract_monitor.discord.{key}.require_abnormal_score"),
+                    default.require_abnormal_score,
+                ),
+                require_non_liquidation: settings
+                    .get_bool(&format!(
+                        "binance_alt_contract_monitor.discord.{key}.require_non_liquidation"
+                    ))
+                    .unwrap_or(default.require_non_liquidation),
             },
         )
     })
@@ -864,6 +1113,15 @@ fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usi
         .get_int(path)
         .ok()
         .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default)
+}
+
+fn u32_setting(settings: &::config::Config, path: &str, default: u32) -> u32 {
+    settings
+        .get_int(path)
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
         .unwrap_or(default)
 }
 

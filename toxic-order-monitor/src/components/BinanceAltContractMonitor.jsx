@@ -172,6 +172,7 @@ export default function BinanceAltContractMonitor() {
                 <HeaderCell>OI</HeaderCell>
                 <HeaderCell>价格变化</HeaderCell>
                 <HeaderCell>清算</HeaderCell>
+                <HeaderCell>Gate 类型</HeaderCell>
                 <HeaderCell>Discord</HeaderCell>
               </tr>
             </thead>
@@ -209,6 +210,7 @@ export default function BinanceAltContractMonitor() {
                   <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
                   <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
                   <Cell>{item.liquidationSuspected ? "疑似" : "否"}</Cell>
+                  <Cell>{discordAlertKindLabel(item.discordAlertKind)}</Cell>
                   <Cell>{discordStatus(item)}</Cell>
                 </tr>
               ))}
@@ -478,6 +480,9 @@ function AltSignalDetail({ signal, onClose }) {
           <Detail label="Funding 拥挤" value={fundingCrowdingLabel(signal.fundingCrowding)} />
           <Detail label="市场共振" value={marketWideText(signal)} />
           <Detail label="清算上下文" value={liquidationContextText(signal)} />
+          <Detail label="Discord Gate 类型" value={discordAlertKindLabel(signal.discordAlertKind)} />
+          <Detail label="Discord 名义额门槛" value={formatUsd(signal.discordMinNotionalUsd)} />
+          <Detail label="Discord 跳过原因" value={discordReasonLabel(signal.discordReason)} />
           <Detail label="Discord dry-run" value={discordStatus(signal)} />
           <Detail label="最终判断" value={signal.finalResult} wide />
         </div>
@@ -791,7 +796,52 @@ function discordStatus(item) {
   if (item.discordSent) return "已推送";
   if (item.discordWouldSend) return "dry-run would_send";
   if (item.discordEligible) return "符合 gate";
-  return item.discordReason || "展示";
+  return discordReasonLabel(item.discordReason || "display");
+}
+
+function discordAlertKindLabel(value) {
+  return {
+    main_force_build: "主力建仓",
+    extreme_impulse: "极端异常",
+    liquidation_shock: "清算冲击",
+    market_wide_summary: "集体异动",
+    display_only: "仅展示",
+    none: "未进入",
+  }[String(value || "none").toLowerCase()] || value || "未进入";
+}
+
+function discordReasonLabel(value) {
+  return {
+    dry_run_would_send: "dry-run would_send",
+    main_force_build: "主力建仓 gate 通过",
+    extreme_impulse: "极端异常 gate 通过",
+    liquidation_shock: "清算冲击 gate 通过",
+    low_score: "评分或证据不足",
+    medium_or_low: "Medium/Low 仅展示",
+    display: "仅展示",
+    low_display_notional: "低于展示名义额门槛",
+    tier_notional_low: "低于 Tier 推送门槛",
+    tier_critical_notional_low: "低于 Tier Critical 门槛",
+    tier_guard: "Tier 默认不推",
+    tier_d_guard: "Tier D 保护",
+    low_liquidity_tier_guard: "低流动性 Tier 保护",
+    tier_requires_non_liquidation: "该 Tier 要求非清算",
+    tier_s_disabled: "该 Tier 不允许 S 推送",
+    main_force_evidence_low: "主力证据不足",
+    liquidation_evidence_low: "清算证据不足",
+    liquidation_alerts_disabled: "清算提醒关闭",
+    market_wide_not_top: "集体异动非 Top 强度",
+    global_hourly_cap: "每小时限流",
+    cooldown: "冷却中",
+    duplicate: "重复信号",
+    data_quality_low: "数据质量不足",
+    warmup: "启动预热中",
+    webhook_missing: "Webhook 未配置",
+    live_send_not_enabled_for_bacm: "BACM live 发送未启用",
+    disabled: "Discord gate 关闭",
+    not_sent: "未推送",
+    not_evaluated: "未评估",
+  }[String(value || "").toLowerCase()] || value || "未推送";
 }
 
 function liquidationContextText(signal) {
