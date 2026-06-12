@@ -358,31 +358,23 @@ function CollapsedUniverseSummary({ summary }) {
   const monitoredCount = universe.monitoredCount || monitoredSymbols.length || 0;
 
   return (
-    <details className="group console-panel-muted p-3 text-xs text-slate-400">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+    <div className="console-panel-muted p-3 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <span>
           <span className="font-semibold text-white">监控范围</span>
           <span className="ml-2 text-slate-500">
-            已折叠 · {universeModeLabel(universe.mode)} · {monitoredCount} 个合约 · Tier {formatTierCounts(universe.tierCounts)}
+            已隐藏列表 · {universeModeLabel(universe.mode)} · {monitoredCount} 个合约 · Tier {formatTierCounts(universe.tierCounts)}
           </span>
         </span>
-        <span className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 group-open:hidden">
-          展开
+        <span className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold text-cyan-100">
+          范围摘要
         </span>
-        <span className="hidden rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1 text-[11px] font-semibold text-slate-300 group-open:inline">
-          收起
-        </span>
-      </summary>
-      <div className="mt-3 max-h-36 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/50 p-3 leading-5">
-        <p>
-          仅 USDT / PERPETUAL / TRADING · 排除 {excludedSymbols.join(", ") || "无"} · Candidate only · 只读提醒 · 不下单 ·
-          dry-run 默认开启
-        </p>
-        {monitoredSymbols.length ? (
-          <p className="mt-2 text-slate-500">合约列表：{monitoredSymbols.join(", ")}</p>
-        ) : null}
       </div>
-    </details>
+      <p className="mt-2 leading-5 text-slate-500">
+        仅 USDT / PERPETUAL / TRADING · 排除 {excludedSymbols.join(", ") || "无"} · Candidate only · 只读提醒 · 不下单 ·
+        dry-run 默认开启
+      </p>
+    </div>
   );
 }
 
