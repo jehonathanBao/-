@@ -35,11 +35,12 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
         signal.severity,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
     ) || (signal.severity == ContractWhaleSeverity::High
-        && signal.score >= 85
-        && signal
-            .exchanges
-            .iter()
-            .filter(|item| item.total_volume_btc > 0.0)
-            .count()
-            >= 2)
+        && ((signal.score >= 85
+            && signal
+                .exchanges
+                .iter()
+                .filter(|item| item.total_volume_btc > 0.0)
+                .count()
+                >= 2)
+            || signal.discord_reason == "high_primary_source_extreme"))
 }

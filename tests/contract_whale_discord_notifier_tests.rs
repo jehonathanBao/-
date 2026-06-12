@@ -125,7 +125,7 @@ fn cwm_discord_gate_reports_duplicate_low_score_and_data_quality_reasons() {
 
     let mut low_score = sample_s_signal();
     low_score.id = "contract-whale-low-score".to_string();
-    low_score.score = 79;
+    low_score.score = 69;
     let low_score_decision =
         evaluate_contract_whale_discord_gate(&settings, &low_score, &cooldown, low_score.ts);
     assert!(!low_score_decision.allowed);
@@ -138,6 +138,23 @@ fn cwm_discord_gate_reports_duplicate_low_score_and_data_quality_reasons() {
         evaluate_contract_whale_discord_gate(&settings, &low_quality, &cooldown, low_quality.ts);
     assert!(!low_quality_decision.allowed);
     assert_eq!(low_quality_decision.reason, "data_quality_low");
+}
+
+#[test]
+fn cwm_discord_gate_allows_primary_source_high_override() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_single_exchange_high_signal();
+    signal.id = "contract-whale-primary-high".to_string();
+    signal.severity = ContractWhaleSeverity::High;
+    signal.score = 54;
+    signal.data_quality = 70;
+    signal.discord_eligible = true;
+    signal.discord_reason = "high_primary_source_extreme".to_string();
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "eligible");
 }
 
 #[test]

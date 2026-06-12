@@ -485,6 +485,42 @@ fn detector_keeps_single_exchange_high_signal_out_of_discord() {
 }
 
 #[test]
+fn detector_allows_primary_single_exchange_extreme_high_override() {
+    let now = 1_700_000_060_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 63_000.0, 1_453.5, false).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 63_000.0, 308.5, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats =
+        rolling_window_stats(&buckets, "BTC", 60, now, Some(0.22), None, 68).expect("60s stats");
+    let signal = detect_contract_whale_signal(&stats).expect("high override signal");
+
+    assert_eq!(signal.severity, ContractWhaleSeverity::High);
+    assert_eq!(signal.data_quality, 70);
+    assert!(signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "high_primary_source_extreme");
+    assert!(should_push_contract_whale_discord(&signal));
+}
+
+#[test]
+fn detector_recovers_critical_when_dynamic_baseline_is_temporarily_unavailable() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_200.0, false).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 400.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats =
+        rolling_window_stats(&buckets, "BTC", 15, now, Some(0.21), None, 80).expect("15s stats");
+    let signal = detect_contract_whale_signal(&stats).expect("critical fallback signal");
+
+    assert_eq!(signal.severity, ContractWhaleSeverity::Critical);
+    assert!(signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "critical_or_s_gate");
+}
+
+#[test]
 fn detector_uses_dynamic_multiple_to_downgrade_fixed_threshold_noise() {
     let now = 1_700_000_015_000;
     let trades = vec![

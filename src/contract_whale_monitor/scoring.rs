@@ -45,6 +45,8 @@ pub fn score_contract_whale_breakdown_with_profile(
         config.thresholds_for_symbol_window_with_profile(&stats.symbol, stats.window_sec, profile);
     let notional_thresholds = config.notional_thresholds_usd_for_profile(profile);
     let scoring = &config.scoring;
+    let primary_source_extreme =
+        primary_source_extreme_score_candidate(stats, config, thresholds, notional_thresholds);
     let volume_cap = scoring.volume_strength_weight * 0.70;
     let notional_cap = (scoring.volume_strength_weight - volume_cap).max(0.0);
     let volume_score = if thresholds.s_btc.is_finite() {
@@ -82,6 +84,7 @@ pub fn score_contract_whale_breakdown_with_profile(
     if config.active_exchange_count() >= 2
         && stats.exchange_count == 1
         && stats.total_volume_btc >= thresholds.critical_btc
+        && !primary_source_extreme
     {
         penalty_score += scoring.penalties.single_exchange_only;
     }
@@ -148,6 +151,25 @@ fn dominant_venue_net_flow_adjustment(stats: &ContractWhaleWindowStats, critical
     ((share - 0.70) / 0.30 * 5.0).clamp(0.0, 5.0)
 }
 
+fn primary_source_extreme_score_candidate(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+    thresholds: super::types::ContractWhaleThresholds,
+    notional_thresholds: super::config::ContractWhaleNotionalThresholds,
+) -> bool {
+    stats.dynamic_multiple.is_none()
+        && stats.exchange_count == 1
+        && stats.main_exchange.as_deref().is_some_and(|exchange| {
+            config
+                .primary_contract_exchanges()
+                .iter()
+                .any(|item| item == exchange)
+        })
+        && stats.total_notional_usd >= notional_thresholds.high
+        && stats.dominance >= 0.60
+        && stats.net_volume_btc.abs() >= (thresholds.high_btc * 0.40).max(500.0)
+}
+
 pub fn dominant_venue_net_flow_score_for_display(stats: &ContractWhaleWindowStats) -> f64 {
     dominant_venue_net_flow_adjustment(
         stats,
@@ -162,16 +184,20 @@ pub fn discord_gate(
     score: u8,
     multi_exchange_confirmed: bool,
     data_quality: u8,
+    primary_source_override: bool,
 ) -> (bool, String) {
     if data_quality < 70 {
         return (false, "data_quality_display_only".to_string());
     }
     match severity {
         ContractWhaleSeverity::S | ContractWhaleSeverity::Critical => {
-            (score >= 80, "critical_or_s_gate".to_string())
+            (score >= 70, "critical_or_s_gate".to_string())
         }
         ContractWhaleSeverity::High if score >= 85 && multi_exchange_confirmed => {
             (true, "high_score_multi_exchange".to_string())
+        }
+        ContractWhaleSeverity::High if primary_source_override => {
+            (true, "high_primary_source_extreme".to_string())
         }
         ContractWhaleSeverity::High => (false, "high_without_discord_confirmation".to_string()),
         ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => {

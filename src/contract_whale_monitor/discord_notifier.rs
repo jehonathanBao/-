@@ -169,13 +169,20 @@ pub fn evaluate_contract_whale_discord_gate(
     cooldown_store: &ContractWhaleDiscordCooldownStore,
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
+    let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
+    let min_score = match signal.severity {
+        ContractWhaleSeverity::High if primary_source_override => 0,
+        ContractWhaleSeverity::High => 85,
+        ContractWhaleSeverity::Critical | ContractWhaleSeverity::S => 70,
+        ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => 101,
+    };
     if !settings.enabled {
         return gate(false, "disabled");
     }
     if signal.data_quality < 70 {
         return gate(false, "data_quality_low");
     }
-    if signal.score < 80 {
+    if signal.score < min_score {
         return gate(false, "low_score");
     }
     if !signal.discord_eligible || !should_push_contract_whale_discord(signal) {

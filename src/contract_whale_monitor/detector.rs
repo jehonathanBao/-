@@ -1,13 +1,15 @@
 use super::{
     config::{
-        contract_whale_runtime_config, ContractWhaleRuntimeConfig, ThresholdProfileResolution,
+        contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
+        ThresholdProfileResolution,
     },
     log_events,
     scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
     types::{
         ContractWhaleActiveSourceEntry, ContractWhaleActiveSources, ContractWhaleDirection,
         ContractWhaleMarketType, ContractWhalePriceResponseType, ContractWhaleSeverity,
-        ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleWindowStats,
+        ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleThresholds,
+        ContractWhaleWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -32,7 +34,7 @@ pub fn detect_contract_whale_signal_with_config(
         return None;
     }
     let mut scoring_stats = stats.clone();
-    scoring_stats.data_quality = effective_data_quality(&scoring_stats, config);
+    scoring_stats.data_quality = effective_data_quality(&scoring_stats, config, &resolution);
     if scoring_stats.total_volume_btc <= 0.0 || scoring_stats.data_quality < 50 {
         return None;
     }
@@ -53,12 +55,15 @@ pub fn detect_contract_whale_signal_with_config(
     let score = score_breakdown.final_score.round().clamp(0.0, 100.0) as u8;
     let multi_exchange_confirmed =
         multi_exchange_confirmed_with_config(&scoring_stats, config, &resolution);
+    let primary_source_override =
+        primary_source_extreme_discord_candidate(&scoring_stats, signal_type, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         severity,
         score,
         multi_exchange_confirmed,
         scoring_stats.data_quality,
+        primary_source_override,
     );
     if warmup_collect_only {
         discord_eligible = false;
@@ -249,6 +254,17 @@ fn classify_severity(
         || stats.price_reversal_ratio.unwrap_or(0.0) >= 0.50);
     let primary_source_confirmed = active_primary_same_direction(stats, config, resolution);
     let multi_exchange_confirmed = multi_exchange_confirmed_with_config(stats, config, resolution);
+    let primary_source_extreme =
+        primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds);
+    let critical_dynamic_ok = dynamic_threshold_required(stats.dynamic_multiple, 7.0)
+        || critical_absolute_fallback(
+            stats,
+            signal_type,
+            config,
+            thresholds,
+            notional_thresholds,
+            primary_source_extreme,
+        );
 
     if stats.total_volume_btc >= thresholds.s_btc
         && stats.total_notional_usd >= notional_thresholds.s
@@ -265,7 +281,7 @@ fn classify_severity(
 
     if stats.total_volume_btc >= thresholds.critical_btc
         && stats.total_notional_usd >= notional_thresholds.critical
-        && dynamic_threshold_required(stats.dynamic_multiple, 7.0)
+        && critical_dynamic_ok
         && percentile_threshold_pass(stats.percentile_level, 99.5)
         && stats.dominance >= 0.60
         && stats.data_quality >= config.data_quality.min_critical_quality
@@ -276,14 +292,18 @@ fn classify_severity(
         return ContractWhaleSeverity::Critical;
     }
 
-    if stats.total_volume_btc >= thresholds.high_btc
+    let standard_high = stats.total_volume_btc >= thresholds.high_btc
         && stats.total_notional_usd >= notional_thresholds.high
         && dynamic_threshold_pass(stats.dynamic_multiple, 5.0)
         && percentile_threshold_pass(stats.percentile_level, 99.0)
         && stats.dominance >= 0.55
         && stats.data_quality >= 65
-        && stats.exchange_count >= 1
-    {
+        && stats.exchange_count >= 1;
+    let primary_extreme_high = stats.dynamic_multiple.is_none()
+        && primary_source_extreme
+        && stats.data_quality >= 65
+        && (same_direction_price_move >= 0.10 || muted_absorption);
+    if standard_high || primary_extreme_high {
         return ContractWhaleSeverity::High;
     }
 
@@ -305,6 +325,25 @@ fn dynamic_threshold_required(dynamic_multiple: Option<f64>, required_multiple: 
         Some(multiple) => multiple >= required_multiple,
         None => false,
     }
+}
+
+fn critical_absolute_fallback(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+    thresholds: ContractWhaleThresholds,
+    notional_thresholds: ContractWhaleNotionalThresholds,
+    primary_source_extreme: bool,
+) -> bool {
+    if stats.dynamic_multiple.is_some() || !primary_source_extreme || runtime_warmup(stats, config)
+    {
+        return false;
+    }
+    let same_direction_price_move = same_direction_price_move(stats, signal_type);
+    stats.total_volume_btc >= thresholds.critical_btc
+        && stats.total_notional_usd >= notional_thresholds.critical
+        && stats.dominance >= 0.70
+        && same_direction_price_move >= 0.18
 }
 
 fn percentile_threshold_pass(percentile_level: Option<f64>, required_level: f64) -> bool {
@@ -349,9 +388,20 @@ fn liquidation_shape_suspected(
 fn effective_data_quality(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
 ) -> u8 {
     let mut quality = stats.data_quality;
-    if config.active_exchange_count() >= 2 && stats.exchange_count <= 1 {
+    let thresholds = config.thresholds_for_symbol_window_with_profile(
+        &stats.symbol,
+        stats.window_sec,
+        resolution.profile,
+    );
+    let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
+    if stats.dynamic_multiple.is_none()
+        && primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds)
+    {
+        quality = quality.max(config.data_quality.min_discord_quality);
+    } else if config.active_exchange_count() >= 2 && stats.exchange_count <= 1 {
         quality = quality.saturating_sub(config.data_quality.single_exchange_penalty);
     }
     if stats
@@ -377,6 +427,40 @@ fn effective_data_quality(
             quality.saturating_sub(penalty_to_u8(config.scoring.penalties.price_jump_anomaly));
     }
     quality
+}
+
+fn primary_source_extreme_discord_candidate(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
+) -> bool {
+    let thresholds = config.thresholds_for_symbol_window_with_profile(
+        &stats.symbol,
+        stats.window_sec,
+        resolution.profile,
+    );
+    let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
+    stats.dynamic_multiple.is_none()
+        && primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds)
+        && stats.data_quality >= config.data_quality.min_discord_quality
+        && stats.total_notional_usd >= notional_thresholds.critical
+        && same_direction_price_move(stats, signal_type) >= 0.15
+        && !stats.liquidation_driven
+}
+
+fn primary_source_extreme_flow(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
+    thresholds: ContractWhaleThresholds,
+    notional_thresholds: ContractWhaleNotionalThresholds,
+) -> bool {
+    stats.exchange_count == 1
+        && active_primary_same_direction(stats, config, resolution)
+        && stats.total_notional_usd >= notional_thresholds.high
+        && stats.dominance >= 0.60
+        && stats.net_volume_btc.abs() >= (thresholds.high_btc * 0.40).max(500.0)
 }
 
 fn runtime_warmup(stats: &ContractWhaleWindowStats, config: &ContractWhaleRuntimeConfig) -> bool {
