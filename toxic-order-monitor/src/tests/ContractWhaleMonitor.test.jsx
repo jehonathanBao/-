@@ -16,6 +16,7 @@ function hasPriceText(text) {
 }
 
 vi.mock("../api/contractWhale.js", () => ({
+  CWM_MAX_PRICE_DEVIATION_PCT: 5,
   fetchContractWhaleSummary: vi.fn(() =>
     Promise.resolve({
       summary: {
@@ -233,10 +234,17 @@ vi.mock("../api/contractWhale.js", () => ({
           direction: "buy",
           severity: "s",
           score: 94,
+          mainForceScore: 87,
+          spotScore: 81,
+          contractScore: 94,
           totalVolumeBtc: 4820,
           netVolumeBtc: 3260,
           totalNotionalUsd: 337_000_000,
           dominance: 0.676,
+          orderPriceUsd: 69_917,
+          currentMarketPriceUsd: 70_000,
+          priceDeviationPct: 0.1186,
+          priceDeviationFiltered: false,
           priceMovePct: 0.31,
           priceMove15sPct: 0.31,
           priceResponseType: "trend_follow_up",
@@ -496,6 +504,9 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("4,820 BTC")).toBeInTheDocument();
     expect(screen.getByText("$337M")).toBeInTheDocument();
     expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
+    expect(screen.getByText("0.12%")).toBeInTheDocument();
+    expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
+    expect(screen.getByText("S 81 / C 94")).toBeInTheDocument();
     expect(screen.getByText("净买入 3,260 BTC")).toBeInTheDocument();
     expect(screen.getByText("67.6%")).toBeInTheDocument();
     expect(screen.getByText("9.4x")).toBeInTheDocument();
@@ -508,7 +519,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主力结构事件历史")).toBeInTheDocument();
     expect(screen.getByText("让你知道这里发生过什么主力行为")).toBeInTheDocument();
     expect(screen.getByText("结构判断")).toBeInTheDocument();
-    expect(screen.getByText("主力评分")).toBeInTheDocument();
+    expect(screen.getAllByText("主力评分").length).toBeGreaterThan(0);
     expect(screen.getByText("现货确认")).toBeInTheDocument();
     expect(screen.getByText("Dry-run 1h")).toBeInTheDocument();
     expect(screen.getByText("would-send 3")).toBeInTheDocument();
@@ -630,6 +641,14 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("Coinbase · Perp")).not.toBeInTheDocument();
     expect(screen.queryByText("OKX · Perp")).not.toBeInTheDocument();
     expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
+    expect(screen.getByText("当前价格")).toBeInTheDocument();
+    expect(screen.getByText("$70,000")).toBeInTheDocument();
+    expect(screen.getByText("信号价格")).toBeInTheDocument();
+    expect(screen.getAllByText("价格偏离").length).toBeGreaterThan(0);
+    expect(screen.getByText("未过滤（阈值 5%）")).toBeInTheDocument();
+    expect(screen.getByText("Main Force Score")).toBeInTheDocument();
+    expect(screen.getByText("Spot Score")).toBeInTheDocument();
+    expect(screen.getByText("Contract Score")).toBeInTheDocument();
     expect(screen.getByText("5s / 15s / 60s 窗口数据")).toBeInTheDocument();
     expect(screen.getByText("平台拆分")).toBeInTheDocument();
     expect(screen.getByText("主动买入：2,610 BTC")).toBeInTheDocument();

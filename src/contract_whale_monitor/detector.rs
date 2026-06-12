@@ -87,10 +87,17 @@ pub fn detect_contract_whale_signal_with_config(
         direction,
         severity,
         score,
+        main_force_score: None,
+        spot_score: None,
+        contract_score: None,
         total_volume_btc: round(stats.total_volume_btc, 3),
         net_volume_btc: round(stats.net_volume_btc, 3),
         total_notional_usd: round(stats.total_notional_usd, 2),
         dominance: round(stats.dominance, 4),
+        order_price_usd: signal_price_usd(&scoring_stats).map(|value| round(value, 2)),
+        current_market_price_usd: None,
+        price_deviation_pct: None,
+        price_deviation_filtered: false,
         price_move_pct: scoring_stats.price_move_pct.map(|value| round(value, 4)),
         price_move_5s_pct: price_move_for_window(&scoring_stats, 5),
         price_move_15s_pct: price_move_for_window(&scoring_stats, 15),
@@ -178,6 +185,12 @@ pub fn detect_contract_whale_signal_with_config(
         LOG_PREFIX
     );
     Some(signal)
+}
+
+fn signal_price_usd(stats: &ContractWhaleWindowStats) -> Option<f64> {
+    (stats.total_volume_btc > f64::EPSILON && stats.total_notional_usd > 0.0)
+        .then(|| stats.total_notional_usd / stats.total_volume_btc)
+        .filter(|price| price.is_finite() && *price > 0.0)
 }
 
 fn classify_signal_type(

@@ -36,6 +36,7 @@ static GLOBAL_CONFIG: OnceLock<RwLock<ContractWhaleRuntimeConfig>> = OnceLock::n
 pub struct ContractWhaleRuntimeConfig {
     pub exchanges: ContractWhaleExchangeConfig,
     pub scoring: ContractWhaleScoringConfig,
+    pub toxic_order: ContractWhaleToxicOrderConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
     pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
@@ -485,6 +486,7 @@ impl Default for ContractWhaleRuntimeConfig {
         Self {
             exchanges: ContractWhaleExchangeConfig::default(),
             scoring: ContractWhaleScoringConfig::default(),
+            toxic_order: ContractWhaleToxicOrderConfig::default(),
             symbols,
             threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
@@ -884,6 +886,23 @@ pub struct ContractWhaleScoringConfig {
     pub penalties: ContractWhaleScoringPenalties,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractWhaleToxicOrderConfig {
+    pub max_price_deviation_pct: f64,
+    pub enable_spot_score: bool,
+    pub enable_contract_score: bool,
+}
+
+impl Default for ContractWhaleToxicOrderConfig {
+    fn default() -> Self {
+        Self {
+            max_price_deviation_pct: 5.0,
+            enable_spot_score: true,
+            enable_contract_score: true,
+        }
+    }
+}
+
 impl Default for ContractWhaleScoringConfig {
     fn default() -> Self {
         Self {
@@ -1041,6 +1060,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
     ContractWhaleRuntimeConfig {
         exchanges: load_exchange_config(settings),
         scoring: load_scoring_config(settings),
+        toxic_order: load_toxic_order_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
         threshold_profiles: load_threshold_profiles(settings),
@@ -1299,6 +1319,29 @@ fn load_scoring_config(settings: &::config::Config) -> ContractWhaleScoringConfi
                 defaults.penalties.price_jump_anomaly,
             ),
         },
+    }
+}
+
+fn load_toxic_order_config(settings: &::config::Config) -> ContractWhaleToxicOrderConfig {
+    let defaults = ContractWhaleToxicOrderConfig::default();
+    ContractWhaleToxicOrderConfig {
+        max_price_deviation_pct: positive_float_setting(
+            settings,
+            "toxicOrder.max_price_deviation_pct",
+            defaults.max_price_deviation_pct,
+        ),
+        enable_spot_score: bool_setting(
+            settings,
+            "TOXIC_ORDER_ENABLE_SPOT_SCORE",
+            "toxicOrder.enable_spot_score",
+            defaults.enable_spot_score,
+        ),
+        enable_contract_score: bool_setting(
+            settings,
+            "TOXIC_ORDER_ENABLE_CONTRACT_SCORE",
+            "toxicOrder.enable_contract_score",
+            defaults.enable_contract_score,
+        ),
     }
 }
 

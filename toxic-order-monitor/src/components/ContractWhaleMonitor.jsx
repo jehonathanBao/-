@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
@@ -233,6 +234,9 @@ export default function ContractWhaleMonitor() {
           setFilters(nextFilters);
         }}
       />
+      <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
+        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；详情里可查看当前价格、信号价格和偏离比例。
+      </p>
 
       <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/30">
         {state.loading ? (
@@ -255,6 +259,9 @@ export default function ContractWhaleMonitor() {
                 <HeaderCell>成交量</HeaderCell>
                 <HeaderCell>名义金额</HeaderCell>
                 <HeaderCell>价格</HeaderCell>
+                <HeaderCell>价格偏离</HeaderCell>
+                <HeaderCell>主力评分</HeaderCell>
+                <HeaderCell>现货 / 合约</HeaderCell>
                 <HeaderCell>净方向</HeaderCell>
                 <HeaderCell>方向占比</HeaderCell>
                 <HeaderCell>异常倍数</HeaderCell>
@@ -304,6 +311,9 @@ export default function ContractWhaleMonitor() {
                   <Cell>{formatBtc(item.totalVolumeBtc)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
                   <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
+                  <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
+                  <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
+                  <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
                   <Cell>{netDirection(item.netVolumeBtc)}</Cell>
                   <Cell>{formatPct(item.dominance * 100)}</Cell>
                   <Cell>{formatMultiple(item.dynamicMultiple)}</Cell>
@@ -455,9 +465,16 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["窗口", `${signal.windowSec}s`],
                 ["触发时间", formatTime(signal.ts)],
                 ["触发价格", formatPrice(signalTriggerPrice(signal))],
+                ["信号价格", formatPrice(signal.orderPriceUsd ?? signalTriggerPrice(signal))],
+                ["当前价格", formatPrice(signal.currentMarketPriceUsd)],
+                ["价格偏离", formatDeviation(signal.priceDeviationPct)],
+                ["偏离过滤", signal.priceDeviationFiltered ? "已过滤" : `未过滤（阈值 ${CWM_MAX_PRICE_DEVIATION_PCT}%）`],
                 ["Market Type", marketLabel(signal.marketType)],
                 ["Source Role", sourceRoleLabel(signal.sourceRole)],
                 ["Risk Score", `${signal.score}/100`],
+                ["Main Force Score", formatScore(signal.mainForceScore)],
+                ["Spot Score", formatScore(signal.spotScore)],
+                ["Contract Score", formatScore(signal.contractScore)],
                 ["Data Quality", `${signal.dataQuality}/100`],
                 ["Threshold Profile", thresholdProfileLabel(signal.thresholdProfile || summary?.thresholdProfile)],
                 ["Profile Reason", signal.thresholdProfileReason || signal.activeSources?.thresholdProfileReason || summary?.thresholdProfileReason || "N/A"],
@@ -1260,6 +1277,16 @@ function formatScore(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "0/100";
   return `${Math.round(number)}/100`;
+}
+
+function formatScorePair(spotScore, contractScore) {
+  return `S ${Math.round(Number(spotScore || 0))} / C ${Math.round(Number(contractScore || 0))}`;
+}
+
+function formatDeviation(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  return `${number.toFixed(2)}%`;
 }
 
 function clampRatio(value) {

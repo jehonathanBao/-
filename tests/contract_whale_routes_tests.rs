@@ -44,8 +44,14 @@ fn contract_whale_response_keeps_eth_flow_separate_from_btc() {
     eth_window.net_aggressive_btc = 22_000.0;
     eth_window.abs_aggressive_btc = 26_000.0;
     eth_window.venue_breakdown = BTreeMap::from([
-        ("binance".to_string(), breakdown(14_000.0, 1_000.0)),
-        ("okx".to_string(), breakdown(10_000.0, 1_000.0)),
+        (
+            "binance".to_string(),
+            breakdown_at_price(14_000.0, 1_000.0, 3_500.0),
+        ),
+        (
+            "okx".to_string(),
+            breakdown_at_price(10_000.0, 1_000.0, 3_500.0),
+        ),
     ]);
     let flow_state = FlowState {
         symbol: "ETH-PERP".to_string(),
@@ -531,6 +537,59 @@ fn contract_whale_latest_response_clamps_limit_and_keeps_persisted_items() {
 }
 
 #[test]
+fn contract_whale_latest_response_filters_price_deviated_items() {
+    let _guard = contract_whale_test_guard();
+    let mut kept = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Critical);
+    kept.id = "contract-whale:BTC:15:kept".to_string();
+    kept.order_price_usd = Some(69_000.0);
+    kept.current_market_price_usd = Some(70_000.0);
+    let mut filtered = persisted_signal(1_700_000_031_000, ContractWhaleSeverity::S);
+    filtered.id = "contract-whale:BTC:15:filtered".to_string();
+    filtered.ts = 1_700_000_010_000;
+    filtered.order_price_usd = Some(60_000.0);
+    filtered.current_market_price_usd = Some(70_000.0);
+
+    let response = build_contract_whale_items_response(
+        vec![kept.clone(), filtered],
+        "BTC",
+        50,
+        true,
+        true,
+        BTreeMap::new(),
+        ContractWhaleTrend60s::default(),
+    );
+
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.items[0].id, kept.id);
+    assert_eq!(response.items[0].current_market_price_usd, Some(70_000.0));
+    assert_eq!(response.items[0].order_price_usd, Some(69_000.0));
+    assert!(response.items[0]
+        .price_deviation_pct
+        .is_some_and(|value| value < 5.0));
+    assert!(!response.items[0].price_deviation_filtered);
+}
+
+#[test]
+fn contract_whale_generated_response_marks_price_deviation_context() {
+    let _guard = contract_whale_test_guard();
+    let flow_state = FlowState {
+        symbol: "BTC-PERP".to_string(),
+        updated_at: 1_700_000_030_000,
+        windows: BTreeMap::from([("15000".to_string(), high_conviction_window())]),
+    };
+
+    let response = build_contract_whale_response(&flow_state, "BTC", 50, None, true, true);
+
+    assert_eq!(response.items.len(), 1);
+    assert!(response.items[0].order_price_usd.is_some());
+    assert!(response.items[0].current_market_price_usd.is_some());
+    assert_eq!(response.items[0].price_deviation_filtered, false);
+    assert!(response.items[0]
+        .price_deviation_pct
+        .is_some_and(|value| value <= 5.0));
+}
+
+#[test]
 fn contract_whale_history_query_validates_filters_and_clamps_limit() {
     let _guard = contract_whale_test_guard();
     let query = ContractWhaleQuery {
@@ -670,11 +729,15 @@ fn high_conviction_window() -> FlowWindow {
 }
 
 fn breakdown(buy: f64, sell: f64) -> VenueFlowBreakdown {
+    breakdown_at_price(buy, sell, 70_000.0)
+}
+
+fn breakdown_at_price(buy: f64, sell: f64, price: f64) -> VenueFlowBreakdown {
     VenueFlowBreakdown {
         aggressive_buy_btc: buy,
         aggressive_sell_btc: sell,
-        aggressive_buy_usd: buy * 70_000.0,
-        aggressive_sell_usd: sell * 70_000.0,
+        aggressive_buy_usd: buy * price,
+        aggressive_sell_usd: sell * price,
         net_aggressive_btc: buy - sell,
         abs_aggressive_btc: (buy - sell).abs(),
         trade_count: 10,

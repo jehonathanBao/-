@@ -512,10 +512,24 @@ pub struct ContractWhaleSignal {
     pub direction: ContractWhaleDirection,
     pub severity: ContractWhaleSeverity,
     pub score: u8,
+    #[serde(default)]
+    pub main_force_score: Option<u8>,
+    #[serde(default)]
+    pub spot_score: Option<u8>,
+    #[serde(default)]
+    pub contract_score: Option<u8>,
     pub total_volume_btc: f64,
     pub net_volume_btc: f64,
     pub total_notional_usd: f64,
     pub dominance: f64,
+    #[serde(default)]
+    pub order_price_usd: Option<f64>,
+    #[serde(default)]
+    pub current_market_price_usd: Option<f64>,
+    #[serde(default)]
+    pub price_deviation_pct: Option<f64>,
+    #[serde(default)]
+    pub price_deviation_filtered: bool,
     pub price_move_pct: Option<f64>,
     #[serde(default)]
     pub price_move_5s_pct: Option<f64>,

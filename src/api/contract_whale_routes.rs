@@ -364,6 +364,15 @@ fn enrich_contract_whale_response_with_state(
     state: &AppState,
     symbol: &str,
 ) {
+    let flow_state = state.flow_state_for_symbol(symbol);
+    let current_market_price = current_market_price_from_flow_state(&flow_state, symbol);
+    decorate_and_filter_price_deviated_signals(
+        &mut response.items,
+        current_market_price,
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
     let spot_context = spot_confirmation_context_from_state(state, symbol);
     enrich_contract_whale_response(response, &spot_context);
 }
@@ -374,7 +383,62 @@ fn enrich_contract_whale_response(
 ) {
     for signal in &mut response.items {
         signal.spot_confirmation = spot_confirmation_for_signal(signal, spot_context);
+        decorate_market_structure_scores(signal, response.summary.overall_data_quality);
     }
+    refresh_response_summary_from_items(response, spot_context);
+}
+
+fn decorate_market_structure_scores(signal: &mut ContractWhaleSignal, _data_quality: u8) {
+    let runtime_config = contract_whale_runtime_config();
+    let spot_score = if runtime_config.toxic_order.enable_spot_score
+        && signal.spot_confirmation.status != "disabled"
+        && signal.spot_confirmation.status != "no_spot_sample"
+    {
+        signal.spot_confirmation.score
+    } else {
+        0
+    };
+    let contract_score = if runtime_config.toxic_order.enable_contract_score {
+        signal.score
+    } else {
+        0
+    };
+    let cross_confirm_score = cross_confirm_score(&signal.spot_confirmation.confirmation_type);
+    let structure_raw =
+        0.4 * spot_score as f64 + 0.4 * contract_score as f64 + 0.2 * cross_confirm_score as f64;
+    signal.spot_score = Some(spot_score);
+    signal.contract_score = Some(contract_score);
+    signal.main_force_score = Some(structure_raw.round().clamp(0.0, 100.0) as u8);
+}
+
+fn refresh_response_summary_from_items(
+    response: &mut ContractWhaleLatestResponse,
+    spot_context: &ContractWhaleSpotConfirmationContext,
+) {
+    let latest = response.items.first();
+    response.summary.signal_count = response.items.len();
+    response.summary.latest_signal_at = latest.map(|signal| signal.ts);
+    response.summary.latest_severity = latest
+        .map(|signal| signal.severity)
+        .unwrap_or(ContractWhaleSeverity::Calm);
+    let latest_direction = latest
+        .map(|signal| direction_key(signal.direction).to_string())
+        .unwrap_or_else(|| "neutral".to_string());
+    if !response.summary.warmup && response.summary.enabled {
+        response.summary.status = latest
+            .map(|signal| status_code(signal.severity).to_string())
+            .unwrap_or_else(|| "calm".to_string());
+    }
+    response.summary.direction = latest_direction.clone();
+    response.summary.latest_direction = latest_direction;
+    let last_discord_sent_at = response
+        .items
+        .iter()
+        .filter(|signal| signal.discord_sent)
+        .filter_map(|signal| signal.discord_sent_at.or(Some(signal.ts)))
+        .max();
+    response.summary.latest_pushed_at_ms = last_discord_sent_at;
+    response.summary.last_discord_sent_at = last_discord_sent_at;
     response.summary.discord_dry_run_stats =
         discord_dry_run_stats(&response.items, response.summary.updated_at_ms);
     response.summary.market_structure_lite = market_structure_lite_from_items(
@@ -382,6 +446,78 @@ fn enrich_contract_whale_response(
         spot_context,
         response.summary.overall_data_quality,
     );
+}
+
+fn decorate_and_filter_price_deviated_signals(
+    items: &mut Vec<ContractWhaleSignal>,
+    current_market_price_usd: Option<f64>,
+    max_deviation_pct: f64,
+) {
+    let max_deviation_pct = if max_deviation_pct.is_finite() && max_deviation_pct > 0.0 {
+        max_deviation_pct
+    } else {
+        5.0
+    };
+    for signal in items.iter_mut() {
+        let order_price = signal
+            .order_price_usd
+            .filter(|price| price.is_finite() && *price > 0.0)
+            .or_else(|| signal_average_price_usd(signal));
+        let current_price = current_market_price_usd
+            .filter(|price| price.is_finite() && *price > 0.0)
+            .or(signal.current_market_price_usd);
+        signal.order_price_usd = order_price.map(|price| round_for_route(price, 2));
+        signal.current_market_price_usd = current_price.map(|price| round_for_route(price, 2));
+        signal.price_deviation_pct = order_price
+            .zip(current_price)
+            .and_then(|(order_price, current_price)| {
+                price_deviation_pct(order_price, current_price)
+            })
+            .map(|value| round_for_route(value, 4));
+        signal.price_deviation_filtered = signal
+            .price_deviation_pct
+            .is_some_and(|value| value > max_deviation_pct);
+    }
+    items.retain(|signal| !signal.price_deviation_filtered);
+}
+
+fn signal_average_price_usd(signal: &ContractWhaleSignal) -> Option<f64> {
+    (signal.total_volume_btc > f64::EPSILON && signal.total_notional_usd > 0.0)
+        .then(|| signal.total_notional_usd / signal.total_volume_btc)
+        .filter(|price| price.is_finite() && *price > 0.0)
+}
+
+fn price_deviation_pct(order_price: f64, current_price: f64) -> Option<f64> {
+    (order_price.is_finite()
+        && current_price.is_finite()
+        && order_price > 0.0
+        && current_price > 0.0)
+        .then(|| (order_price - current_price).abs() / current_price * 100.0)
+}
+
+fn current_market_price_from_flow_state(flow_state: &FlowState, symbol: &str) -> Option<f64> {
+    [5_u64, 15, 60]
+        .into_iter()
+        .filter_map(|window_sec| flow_window_for_seconds(flow_state, window_sec))
+        .filter(|window| symbol_matches_window(&window.symbol, symbol))
+        .find_map(current_market_price_from_window)
+}
+
+fn current_market_price_from_window(window: &FlowWindow) -> Option<f64> {
+    let total_volume = window.aggressive_buy_btc + window.aggressive_sell_btc;
+    let total_notional = window.aggressive_buy_usd + window.aggressive_sell_usd;
+    if total_volume > f64::EPSILON && total_notional > 0.0 {
+        return Some(total_notional / total_volume)
+            .filter(|price| price.is_finite() && *price > 0.0);
+    }
+    window
+        .mid_end
+        .or(window.mid_start)
+        .filter(|price| price.is_finite() && *price > 0.0)
+}
+
+fn current_market_price_from_trend(_trend: &ContractWhaleTrend60s) -> Option<f64> {
+    None
 }
 
 fn spot_confirmation_context_from_state(
@@ -473,8 +609,15 @@ fn market_structure_lite_from_items(
             ..Default::default()
         };
     };
-    let contract_score = signal.score;
-    let spot_score = if spot_context.status == "disabled" || spot_context.status == "no_spot_sample"
+    let runtime_config = contract_whale_runtime_config();
+    let contract_score = if runtime_config.toxic_order.enable_contract_score {
+        signal.score
+    } else {
+        0
+    };
+    let spot_score = if !runtime_config.toxic_order.enable_spot_score
+        || spot_context.status == "disabled"
+        || spot_context.status == "no_spot_sample"
     {
         0
     } else {
@@ -888,6 +1031,13 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
         .filter(|signal| severity_matches(signal.severity, severity))
         .collect();
     items = merge_contract_whale_signals(items);
+    decorate_and_filter_price_deviated_signals(
+        &mut items,
+        current_market_price_from_flow_state(flow_state, symbol),
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
     items.sort_by(|left, right| {
         right
             .severity
@@ -954,6 +1104,13 @@ pub fn build_contract_whale_history_response(
         };
     }
     items.retain(|signal| is_perp_signal(signal) && severity_matches(signal.severity, severity));
+    decorate_and_filter_price_deviated_signals(
+        &mut items,
+        None,
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
     items.sort_by(|left, right| {
         right
             .ts
@@ -1000,6 +1157,13 @@ pub fn build_contract_whale_items_response(
     }
     items.retain(is_perp_signal);
     items = merge_contract_whale_signals(items);
+    decorate_and_filter_price_deviated_signals(
+        &mut items,
+        current_market_price_from_trend(&trend_60s),
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
     items.sort_by(|left, right| {
         right
             .ts

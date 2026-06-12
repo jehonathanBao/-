@@ -213,6 +213,13 @@ describe("contract whale api", () => {
       discordWouldSend: true,
       mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
       triggerPriceUsd: 337_000_000 / 4_820,
+      orderPriceUsd: 69_917,
+      currentMarketPriceUsd: 70_000,
+      priceDeviationPct: 0.1186,
+      priceDeviationFiltered: false,
+      mainForceScore: 87,
+      spotScore: 81,
+      contractScore: 94,
     });
     expect(payload.items[0].activeSources.contract).not.toEqual(
       expect.arrayContaining([
@@ -277,6 +284,36 @@ describe("contract whale api", () => {
     expect(payload.summary.exchanges.coinbase.status).toBe("spot_only");
     expect(payload.summary.platforms.coinbase.status).toBe("spot_only");
     expect(payload.summary.marketType).toBe("perp");
+  });
+
+  it("filters price-deviated signals from latest response", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {},
+        items: [
+          contractWhaleItem({
+            id: "kept",
+            orderPriceUsd: 69_000,
+            currentMarketPriceUsd: 70_000,
+            priceDeviationPct: undefined,
+          }),
+          contractWhaleItem({
+            id: "filtered",
+            orderPriceUsd: 60_000,
+            currentMarketPriceUsd: 70_000,
+            priceDeviationPct: undefined,
+          }),
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20);
+
+    expect(payload.items.map((item) => item.id)).toEqual(["kept"]);
+    expect(payload.items[0]).toMatchObject({
+      priceDeviationFiltered: false,
+      priceDeviationPct: expect.any(Number),
+    });
   });
 
   it("fetches history with server-side filters", async () => {
@@ -432,7 +469,7 @@ describe("contract whale api", () => {
   });
 });
 
-function contractWhaleItem() {
+function contractWhaleItem(overrides = {}) {
   return {
     id: "contract-whale:BTC:15:1700000000000:buy",
     ts: 1_700_000_000_000,
@@ -442,10 +479,17 @@ function contractWhaleItem() {
     direction: "buy",
     severity: "s",
     score: 94,
+    mainForceScore: 87,
+    spotScore: 81,
+    contractScore: 94,
     totalVolumeBtc: 4820,
     netVolumeBtc: 3260,
     totalNotionalUsd: 337_000_000,
     dominance: 0.676,
+    orderPriceUsd: 69_917,
+    currentMarketPriceUsd: 70_000,
+    priceDeviationPct: 0.1186,
+    priceDeviationFiltered: false,
     priceMovePct: 0.31,
     priceMove15sPct: 0.31,
     priceResponseType: "trend_follow_up",
@@ -533,5 +577,6 @@ function contractWhaleItem() {
     discordReason: "critical_or_s_gate",
     finalResult: "多平台主动买入爆发，疑似主力合约拉盘",
     mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+    ...overrides,
   };
 }

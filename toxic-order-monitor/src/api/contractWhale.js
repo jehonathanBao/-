@@ -1,5 +1,7 @@
 import axios from "axios";
 
+export const CWM_MAX_PRICE_DEVIATION_PCT = 5;
+
 const calmSummary = {
   status: "calm",
   healthStatus: "disabled",
@@ -212,7 +214,7 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC") {
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     return {
       summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeContractWhaleSignal),
+      items: items.map(normalizeContractWhaleSignal).filter(isVisibleContractWhaleSignal),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
@@ -229,7 +231,7 @@ export async function fetchContractWhaleHistory(filters = {}) {
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     return {
       summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeContractWhaleSignal),
+      items: items.map(normalizeContractWhaleSignal).filter(isVisibleContractWhaleSignal),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
@@ -257,6 +259,21 @@ export function normalizeContractWhaleSignal(item) {
   const totalVolumeBtc = numberOrNull(item.totalVolumeBtc) || 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   const activeSources = normalizeActiveSources(item.activeSources);
+  const triggerPriceUsd = normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd);
+  const orderPriceUsd =
+    numberOrNull(item.orderPriceUsd) ??
+    numberOrNull(item.orderPrice) ??
+    numberOrNull(item.signalPriceUsd) ??
+    triggerPriceUsd;
+  const currentMarketPriceUsd =
+    numberOrNull(item.currentMarketPriceUsd) ??
+    numberOrNull(item.currentMarketPrice) ??
+    numberOrNull(item.marketPriceUsd);
+  const priceDeviationPct =
+    numberOrNull(item.priceDeviationPct) ?? computePriceDeviationPct(orderPriceUsd, currentMarketPriceUsd);
+  const priceDeviationFiltered =
+    Boolean(item.priceDeviationFiltered) ||
+    (priceDeviationPct !== null && priceDeviationPct > CWM_MAX_PRICE_DEVIATION_PCT);
   return {
     id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -275,7 +292,11 @@ export function normalizeContractWhaleSignal(item) {
     priceMove15sPct: numberOrNull(item.priceMove15sPct),
     priceMove30sPct: numberOrNull(item.priceMove30sPct),
     priceResponseType: item.priceResponseType ? String(item.priceResponseType).toLowerCase() : "no_clear_response",
-    triggerPriceUsd: normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd),
+    triggerPriceUsd,
+    orderPriceUsd,
+    currentMarketPriceUsd,
+    priceDeviationPct,
+    priceDeviationFiltered,
     mainExchange: item.mainExchange || "Multi",
     marketType: item.marketType ? String(item.marketType).toLowerCase() : "perp",
     sourceRole: item.sourceRole ? String(item.sourceRole).toLowerCase() : "optional",
@@ -299,6 +320,9 @@ export function normalizeContractWhaleSignal(item) {
     fundingBias: item.fundingBias || "unknown",
     exchanges: normalizeSignalExchanges(item.exchanges),
     dataQuality: numberOrNull(item.dataQuality) || 0,
+    mainForceScore: numberOrNull(item.mainForceScore),
+    spotScore: numberOrNull(item.spotScore ?? item.spotConfirmation?.score),
+    contractScore: numberOrNull(item.contractScore ?? item.score),
     scoreBreakdown: normalizeScoreBreakdown(item.scoreBreakdown),
     thresholdProfile: item.thresholdProfile ? String(item.thresholdProfile).toLowerCase() : activeSources.thresholdProfile,
     thresholdProfileReason: item.thresholdProfileReason ? String(item.thresholdProfileReason) : activeSources.thresholdProfileReason,
@@ -321,6 +345,24 @@ export function normalizeContractWhaleSignal(item) {
     finalResult: item.finalResult || "contract whale flow candidate",
     mergedFrom: Array.isArray(item.mergedFrom) ? item.mergedFrom.filter(Boolean).map(String) : [],
   };
+}
+
+function isVisibleContractWhaleSignal(signal) {
+  return !signal.priceDeviationFiltered;
+}
+
+function computePriceDeviationPct(orderPrice, currentMarketPrice) {
+  if (
+    orderPrice === null ||
+    currentMarketPrice === null ||
+    !Number.isFinite(orderPrice) ||
+    !Number.isFinite(currentMarketPrice) ||
+    orderPrice <= 0 ||
+    currentMarketPrice <= 0
+  ) {
+    return null;
+  }
+  return Math.abs(orderPrice - currentMarketPrice) / currentMarketPrice * 100;
 }
 
 function normalizeSpotConfirmation(value) {

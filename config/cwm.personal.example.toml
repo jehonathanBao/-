@@ -8,6 +8,11 @@
 #
 # This overlay keeps the system read-only and Discord in dry-run mode.
 
+[toxicOrder]
+max_price_deviation_pct = 5.0
+enable_spot_score = true
+enable_contract_score = true
+
 [contract_whale_monitor]
 enabled = true
 dry_run = true
