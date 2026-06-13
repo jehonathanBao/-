@@ -286,6 +286,58 @@ fn service_context_updates_enrich_generated_signal() {
     reset_binance_alt_contract_runtime_config();
 }
 
+#[test]
+fn detector_throttle_does_not_block_large_trade_after_small_trade() {
+    reset_binance_alt_contract_runtime_config();
+    let mut config = test_config();
+    config.detector.scan_interval_ms = 60_000;
+    config.symbol_universe.whitelist = vec!["SOLUSDT".to_string()];
+    config.persistence_path = std::env::temp_dir().join(format!(
+        "{}-bacm-detector-throttle.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&config.persistence_path);
+    set_binance_alt_contract_runtime_config(config.clone());
+
+    let now = unix_ms();
+    let service = BinanceAltContractService::new(true, true, now - 120_000);
+    service.update_open_interest("SOLUSDT", now - 70_000, 1_000_000.0);
+    service.update_open_interest("SOLUSDT", now, 1_250_000.0);
+
+    let small = service.ingest_trade(AltContractTrade {
+        ts: now,
+        exchange: AltContractExchange::Binance,
+        symbol: "SOL".to_string(),
+        product_id: "SOLUSDT".to_string(),
+        price: 170.0,
+        qty_base: 1.0,
+        notional_usd: 170.0,
+        side: AltContractTradeSide::Buy,
+        trade_id: Some("small".to_string()),
+    });
+    assert!(small.is_empty());
+
+    let signals = service.ingest_trade(AltContractTrade {
+        ts: now + 1_000,
+        exchange: AltContractExchange::Binance,
+        symbol: "SOL".to_string(),
+        product_id: "SOLUSDT".to_string(),
+        price: 175.0,
+        qty_base: 1_000_000.0,
+        notional_usd: 175_000_000.0,
+        side: AltContractTradeSide::Buy,
+        trade_id: Some("large".to_string()),
+    });
+
+    assert!(
+        !signals.is_empty(),
+        "large trade should force a detector scan despite per-symbol throttling"
+    );
+
+    let _ = std::fs::remove_file(config.persistence_path);
+    reset_binance_alt_contract_runtime_config();
+}
+
 fn unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

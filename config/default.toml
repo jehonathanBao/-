@@ -418,12 +418,20 @@ min_discord_quality = 70
 warmup_ms = 60000
 heartbeat_stale_ms = 45000
 
+[binance_alt_contract_monitor.detector]
+scan_interval_ms = 2000
+candidate_ttl_sec = 600
+max_full_scores_per_sec = 8
+max_global_full_scoring_per_sec = 8
+max_burst_full_scoring = 3
+burst_window_ms = 1000
+
 [binance_alt_contract_monitor.oi_scheduler]
 enabled = true
-all_symbols_interval_sec = 300
-hot_symbols_interval_sec = 15
+all_symbols_interval_sec = 600
+hot_symbols_interval_sec = 30
 candidate_ttl_sec = 600
-max_oi_requests_per_sec = 5
+max_oi_requests_per_sec = 2
 immediate_fetch_on_candidate = true
 
 [binance_alt_contract_monitor.storage]

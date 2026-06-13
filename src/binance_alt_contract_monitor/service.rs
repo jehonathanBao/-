@@ -63,6 +63,8 @@ struct BinanceAltContractState {
     liquidation_seen_at: BTreeMap<String, i64>,
     candidate_seen_at: BTreeMap<String, i64>,
     hot_oi_seen_at: BTreeMap<String, i64>,
+    last_detector_scan_at: BTreeMap<String, i64>,
+    scoring_budget: ScoringBudgetState,
     events: BTreeMap<String, AltContractEventState>,
     last_oi_poll_at: Option<i64>,
     last_force_order_at: Option<i64>,
@@ -81,6 +83,44 @@ struct AltContractEventState {
     peak_abnormal_score: u8,
     peak_build_score: u8,
     signal_count: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScoringBudgetState {
+    window_start_ms: i64,
+    full_scores: u64,
+    burst_scores: u64,
+}
+
+impl ScoringBudgetState {
+    fn allow(
+        &mut self,
+        ts: i64,
+        force_scan: bool,
+        max_full_scores: u64,
+        max_burst_scores: u64,
+        window_ms: i64,
+    ) -> bool {
+        let window_ms = window_ms.max(1);
+        if ts.saturating_sub(self.window_start_ms) >= window_ms {
+            *self = ScoringBudgetState {
+                window_start_ms: ts,
+                full_scores: 0,
+                burst_scores: 0,
+            };
+        }
+        if self.full_scores >= max_full_scores.max(1) {
+            return false;
+        }
+        if force_scan {
+            if self.burst_scores >= max_burst_scores.max(1) {
+                return false;
+            }
+            self.burst_scores = self.burst_scores.saturating_add(1);
+        }
+        self.full_scores = self.full_scores.saturating_add(1);
+        true
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -125,6 +165,8 @@ impl BinanceAltContractService {
                 liquidation_seen_at: BTreeMap::new(),
                 candidate_seen_at: BTreeMap::new(),
                 hot_oi_seen_at: BTreeMap::new(),
+                last_detector_scan_at: BTreeMap::new(),
+                scoring_budget: ScoringBudgetState::default(),
                 events: BTreeMap::new(),
                 last_oi_poll_at: None,
                 last_force_order_at: None,
@@ -197,6 +239,19 @@ impl BinanceAltContractService {
         self.update_post_signal_validation(&trade);
         let meta = self.meta_for_product(&trade.product_id);
         let context = self.context_for_product(&trade.product_id);
+        let force_scan = context.force_order_snapshot
+            || trade.notional_usd
+                >= config
+                    .thresholds_for_tier(meta.tier)
+                    .high_notional_usd
+                    .max(1.0)
+                    * 0.25;
+        if !self.should_run_detector(&trade.product_id, trade.ts, &config, force_scan) {
+            if force_scan {
+                self.mark_candidate_product(&trade.product_id, trade.ts);
+            }
+            return Vec::new();
+        }
         let window_stats = config
             .windows_sec
             .iter()
@@ -880,6 +935,40 @@ impl BinanceAltContractService {
         state.hot_oi_seen_at.insert(product_id, ts);
     }
 
+    fn should_run_detector(
+        &self,
+        product_id: &str,
+        ts: i64,
+        config: &super::config::BinanceAltContractRuntimeConfig,
+        force_scan: bool,
+    ) -> bool {
+        let product_id = product_id_for_symbol(product_id);
+        let min_interval_ms = config.detector.scan_interval_ms.max(1);
+        let mut state = self.state.write();
+        let last_scan_at = state.last_detector_scan_at.get(&product_id).copied();
+        if !force_scan && last_scan_at.is_some_and(|last| ts.saturating_sub(last) < min_interval_ms)
+        {
+            return false;
+        }
+        let max_full_scores = config
+            .detector
+            .max_global_full_scoring_per_sec
+            .max(config.detector.max_full_scores_per_sec)
+            .max(1);
+        let max_burst_scores = config.detector.max_burst_full_scoring.max(1);
+        if !state.scoring_budget.allow(
+            ts,
+            force_scan,
+            max_full_scores,
+            max_burst_scores,
+            config.detector.burst_window_ms,
+        ) {
+            return false;
+        }
+        state.last_detector_scan_at.insert(product_id, ts);
+        true
+    }
+
     fn market_impulse_context(
         &self,
         product_id: &str,
@@ -1495,4 +1584,39 @@ fn redact_error(error: String) -> String {
         "https://discord.com/api/webhooks/",
         "https://discord.com/api/webhooks/[redacted]/",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScoringBudgetState;
+
+    #[test]
+    fn scoring_budget_limits_global_full_scores_per_window() {
+        let mut budget = ScoringBudgetState::default();
+
+        assert!(budget.allow(1_000, false, 1, 3, 1_000));
+        assert!(
+            !budget.allow(1_100, false, 1, 3, 1_000),
+            "second score in the same budget window should be deferred"
+        );
+        assert!(
+            budget.allow(2_100, false, 1, 3, 1_000),
+            "new budget window should admit scoring again"
+        );
+    }
+
+    #[test]
+    fn scoring_budget_limits_force_scan_bursts() {
+        let mut budget = ScoringBudgetState::default();
+
+        assert!(budget.allow(1_000, true, 10, 1, 1_000));
+        assert!(
+            !budget.allow(1_100, true, 10, 1, 1_000),
+            "extra force scan in the same window should be deferred by burst budget"
+        );
+        assert!(
+            budget.allow(1_200, false, 10, 1, 1_000),
+            "normal non-burst scoring can still use remaining global budget"
+        );
+    }
 }

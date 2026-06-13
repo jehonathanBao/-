@@ -21,6 +21,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub windows_sec: Vec<u64>,
     pub dynamic: BinanceAltDynamicConfig,
     pub data_quality: BinanceAltDataQualityConfig,
+    pub detector: BinanceAltDetectorConfig,
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
@@ -142,6 +143,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             windows_sec: vec![15, 60, 300],
             dynamic: BinanceAltDynamicConfig::default(),
             data_quality: BinanceAltDataQualityConfig::default(),
+            detector: BinanceAltDetectorConfig::default(),
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
@@ -256,6 +258,29 @@ impl Default for BinanceAltDataQualityConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct BinanceAltDetectorConfig {
+    pub scan_interval_ms: i64,
+    pub candidate_ttl_sec: u64,
+    pub max_full_scores_per_sec: u64,
+    pub max_global_full_scoring_per_sec: u64,
+    pub max_burst_full_scoring: u64,
+    pub burst_window_ms: i64,
+}
+
+impl Default for BinanceAltDetectorConfig {
+    fn default() -> Self {
+        Self {
+            scan_interval_ms: 2_000,
+            candidate_ttl_sec: 600,
+            max_full_scores_per_sec: 8,
+            max_global_full_scoring_per_sec: 8,
+            max_burst_full_scoring: 3,
+            burst_window_ms: 1_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BinanceAltOiSchedulerConfig {
     pub enabled: bool,
     pub all_symbols_interval_sec: u64,
@@ -269,10 +294,10 @@ impl Default for BinanceAltOiSchedulerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            all_symbols_interval_sec: 300,
-            hot_symbols_interval_sec: 15,
+            all_symbols_interval_sec: 600,
+            hot_symbols_interval_sec: 30,
             candidate_ttl_sec: 600,
-            max_oi_requests_per_sec: 5,
+            max_oi_requests_per_sec: 2,
             immediate_fetch_on_candidate: true,
         }
     }
@@ -628,6 +653,38 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.data_quality.heartbeat_stale_ms",
                 fallback.data_quality.heartbeat_stale_ms,
+            ),
+        },
+        detector: BinanceAltDetectorConfig {
+            scan_interval_ms: i64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.scan_interval_ms",
+                fallback.detector.scan_interval_ms,
+            ),
+            candidate_ttl_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.candidate_ttl_sec",
+                fallback.detector.candidate_ttl_sec,
+            ),
+            max_full_scores_per_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.max_full_scores_per_sec",
+                fallback.detector.max_full_scores_per_sec,
+            ),
+            max_global_full_scoring_per_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.max_global_full_scoring_per_sec",
+                fallback.detector.max_global_full_scoring_per_sec,
+            ),
+            max_burst_full_scoring: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.max_burst_full_scoring",
+                fallback.detector.max_burst_full_scoring,
+            ),
+            burst_window_ms: i64_setting(
+                settings,
+                "binance_alt_contract_monitor.detector.burst_window_ms",
+                fallback.detector.burst_window_ms,
             ),
         },
         oi_scheduler: BinanceAltOiSchedulerConfig {
