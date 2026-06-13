@@ -13,7 +13,7 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::{BinanceAltContractQuery, BinanceAltContractService},
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractSymbolTier, AltContractWindowStats,
+        AltContractMarketTier, AltContractSymbolTier, AltContractWindowStats,
     },
 };
 
@@ -70,8 +70,16 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
     let latest = service.latest(Some("SOL"), 50);
     assert_eq!(latest.items.len(), 1);
     assert_eq!(latest.items[0].product_id, "SOLUSDT");
+    assert_eq!(
+        latest.items[0].market_tier,
+        AltContractMarketTier::UltraCore
+    );
+    assert_eq!(latest.items[0].display_threshold_usd, 750_000.0);
     assert_eq!(latest.summary.signal_count, 1);
-    assert_eq!(latest.summary.display_min_notional_usd, 500_000.0);
+    assert_eq!(latest.summary.display_min_notional_usd, 150_000.0);
+    assert_eq!(latest.summary.display_thresholds_usd.ultra_core, 750_000.0);
+    assert_eq!(latest.summary.display_thresholds_usd.mainstream, 500_000.0);
+    assert_eq!(latest.summary.display_thresholds_usd.alt, 150_000.0);
     assert_eq!(latest.summary.signals1h, 1);
     assert_eq!(latest.summary.dry_run_stats.signals1h, 1);
     assert_eq!(latest.summary.dry_run_stats.would_send1h, 1);
@@ -174,6 +182,74 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
     });
     assert_eq!(history.items.len(), 1);
     assert_eq!(history.items[0].product_id, "SOLUSDT");
+
+    let _ = fs::remove_file(&path);
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn service_filters_signals_by_market_tier_display_thresholds() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let path = temp_path("bacm-routes-tiered-display-thresholds.jsonl");
+    let _ = fs::remove_file(&path);
+    let config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
+    set_binance_alt_contract_runtime_config(config.clone());
+
+    let service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
+    let base = detect_alt_contract_signal(
+        &stats("SOL", AltContractDirection::Buy),
+        &AltContractContext {
+            oi_change_1m_base: Some(100_000.0),
+            oi_change_pct: Some(1.5),
+            persistence_windows: 3,
+            ..AltContractContext::default()
+        },
+        &config,
+    )
+    .expect("base signal");
+
+    for (product_id, notional) in [
+        ("BTCUSDT", 400_000.0),
+        ("ETHUSDT", 800_000.0),
+        ("XRPUSDT", 400_000.0),
+        ("ADAUSDT", 600_000.0),
+        ("PEPEUSDT", 100_000.0),
+        ("WIFUSDT", 200_000.0),
+    ] {
+        let mut signal = base.clone();
+        signal.id = format!("{product_id}-{notional}");
+        signal.product_id = product_id.to_string();
+        signal.symbol = product_id.trim_end_matches("USDT").to_string();
+        signal.total_notional_usd = notional;
+        signal.market_tier = config.classify_market_tier(product_id);
+        signal.display_threshold_usd = 0.0;
+        assert!(service.insert_signal_for_tests(signal));
+    }
+
+    let latest = service.latest(None, 50);
+    let product_ids = latest
+        .items
+        .iter()
+        .map(|signal| signal.product_id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(latest.summary.signal_count, 6);
+    assert!(product_ids.contains(&"ETHUSDT"));
+    assert!(product_ids.contains(&"ADAUSDT"));
+    assert!(product_ids.contains(&"WIFUSDT"));
+    assert!(!product_ids.contains(&"BTCUSDT"));
+    assert!(!product_ids.contains(&"XRPUSDT"));
+    assert!(!product_ids.contains(&"PEPEUSDT"));
 
     let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();

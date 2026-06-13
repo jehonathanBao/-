@@ -2,7 +2,7 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     collector::shard_symbols,
     config::{BinanceAltContractRuntimeConfig, BinanceAltUniverseMode},
     symbol_universe::{build_symbol_universe, BinanceAltSymbolCandidate},
-    types::AltContractSymbolTier,
+    types::{AltContractMarketTier, AltContractSymbolTier},
 };
 
 fn candidate(symbol: &str, quote_volume_24h_usd: f64) -> BinanceAltSymbolCandidate {
@@ -66,6 +66,42 @@ fn all_binance_usdt_perp_mode_keeps_all_matching_symbols_without_top_n_limit() {
         universe.last().expect("tiny").tier,
         AltContractSymbolTier::E
     );
+    assert_eq!(universe[0].market_tier, AltContractMarketTier::UltraCore);
+    assert_eq!(universe[1].market_tier, AltContractMarketTier::Mainstream);
+    assert_eq!(universe[2].market_tier, AltContractMarketTier::Mainstream);
+    assert_eq!(universe[3].market_tier, AltContractMarketTier::Alt);
+}
+
+#[test]
+fn market_classification_splits_ultra_core_mainstream_and_alt() {
+    let config = all_mode_config();
+
+    for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"] {
+        assert_eq!(
+            config.classify_market_tier(symbol),
+            AltContractMarketTier::UltraCore,
+            "{symbol} should be ultra core"
+        );
+        assert_eq!(config.display_threshold_for_product(symbol), 750_000.0);
+    }
+
+    for symbol in ["XRPUSDT", "ADAUSDT", "AVAXUSDT"] {
+        assert_eq!(
+            config.classify_market_tier(symbol),
+            AltContractMarketTier::Mainstream,
+            "{symbol} should be mainstream"
+        );
+        assert_eq!(config.display_threshold_for_product(symbol), 500_000.0);
+    }
+
+    for symbol in ["PEPEUSDT", "WIFUSDT", "FLOKIUSDT"] {
+        assert_eq!(
+            config.classify_market_tier(symbol),
+            AltContractMarketTier::Alt,
+            "{symbol} should be alt"
+        );
+        assert_eq!(config.display_threshold_for_product(symbol), 150_000.0);
+    }
 }
 
 #[test]

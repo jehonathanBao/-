@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  displayThresholdForSignal,
   fetchBinanceAltContractHistory,
   fetchBinanceAltContractLatest,
   fetchBinanceAltContractSummary,
@@ -87,10 +88,9 @@ export default function BinanceAltContractMonitor() {
   }, [filters]);
 
   const summary = state.summary || fallbackSummary();
-  const displayMinNotionalUsd = summary.displayMinNotionalUsd || 500_000;
   const visibleItems = useMemo(
-    () => state.items.filter((item) => Number(item.totalNotionalUsd || 0) >= displayMinNotionalUsd),
-    [displayMinNotionalUsd, state.items],
+    () => state.items.filter((item) => Number(item.totalNotionalUsd || 0) >= displayThresholdForSignal(item, summary)),
+    [summary, state.items],
   );
   const symbolOptions = useMemo(
     () => ["all", ...(summary.monitoredSymbols || []).map((symbol) => symbol.replace(/USDT$/, ""))],
@@ -120,8 +120,11 @@ export default function BinanceAltContractMonitor() {
 
       <AltTrendBar trend={summary.trend60s} />
       <RuntimeSummary summary={summary} />
+      <SmafAuditCard report={summary.smafReport} />
+      <SmllLearningCard report={summary.smllReport} />
+      <AtcaAgentCard report={summary.atcaReport} />
       <p className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100">
-        仅展示 Notional ≥ {formatUsd(displayMinNotionalUsd)} 的山寨合约信号；小额异常仍后台记录，不进入前端列表。
+        分层展示门槛：Ultra Core {formatUsd(summary.displayThresholdsUsd?.ultraCore)}+ · Mainstream {formatUsd(summary.displayThresholdsUsd?.mainstream)}+ · Alt {formatUsd(summary.displayThresholdsUsd?.alt)}+；小额异常仍后台记录，不进入前端列表。
       </p>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
@@ -160,6 +163,11 @@ export default function BinanceAltContractMonitor() {
               <tr>
                 <HeaderCell>时间</HeaderCell>
                 <HeaderCell>币种 / 价格</HeaderCell>
+                <HeaderCell>市场层级</HeaderCell>
+                <HeaderCell>MCSS</HeaderCell>
+                <HeaderCell>Regime</HeaderCell>
+                <HeaderCell>Lifecycle</HeaderCell>
+                <HeaderCell>Prediction</HeaderCell>
                 <HeaderCell>类型</HeaderCell>
                 <HeaderCell>等级</HeaderCell>
                 <HeaderCell>窗口</HeaderCell>
@@ -198,6 +206,31 @@ export default function BinanceAltContractMonitor() {
                       <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(item.triggerPriceUsd)}</span>
                     </span>
                   </Cell>
+                  <Cell>{marketTierLabel(item.marketTier)}</Cell>
+                  <Cell>
+                    <span className="flex flex-col leading-tight">
+                      <span className="font-semibold text-cyan-100">{formatMcss(item.masterCapitalStrength?.mcss)}</span>
+                      <span className="mt-1 text-[11px] text-slate-500">{item.masterCapitalStrength?.interpretation || "N/A"}</span>
+                    </span>
+                  </Cell>
+                  <Cell>
+                    <span className="flex flex-col leading-tight">
+                      <span className="font-semibold text-slate-100">{marketRegimeLabel(item.marketRegime?.regime)}</span>
+                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.marketRegime?.confidence)}</span>
+                    </span>
+                  </Cell>
+                  <Cell>
+                    <span className="flex flex-col leading-tight">
+                      <span className="font-semibold text-emerald-100">{lifecycleStateLabel(item.smartMoneyLifecycle?.lifecycleState)}</span>
+                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyLifecycle?.stateConfidence)}</span>
+                    </span>
+                  </Cell>
+                  <Cell>
+                    <span className="flex flex-col leading-tight">
+                      <span className="font-semibold text-sky-100">{lifecycleStateLabel(item.smartMoneyPrediction?.nextState)}</span>
+                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyPrediction?.probability)}</span>
+                    </span>
+                  </Cell>
                   <Cell>{signalTypeLabel(item.signalType)}</Cell>
                   <Cell><span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>{severityLabel(item.severity)}</span></Cell>
                   <Cell>{item.windowSec}s</Cell>
@@ -205,7 +238,7 @@ export default function BinanceAltContractMonitor() {
                   <Cell>{item.buildScore}/100</Cell>
                   <Cell>{directionLabel(item.direction)} {signedNumber(item.directionBias)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
-                  <Cell>{formatUsd(item.sGradeNotionalThresholdUsd)}</Cell>
+                  <Cell>{formatUsd(displayThresholdForSignal(item, summary))}</Cell>
                   <Cell>{item.dynamicMultiple ? `${item.dynamicMultiple.toFixed(1)}x` : "N/A"}</Cell>
                   <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
                   <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
@@ -220,7 +253,7 @@ export default function BinanceAltContractMonitor() {
       </div>
 
       {selectedSignal ? (
-        <AltSignalDetail onClose={() => setSelectedSignalId(null)} signal={selectedSignal} />
+        <AltSignalDetail onClose={() => setSelectedSignalId(null)} signal={selectedSignal} summary={summary} />
       ) : null}
     </section>
   );
@@ -361,6 +394,178 @@ function RuntimeSummary({ summary }) {
   );
 }
 
+function AtcaAgentCard({ report }) {
+  const item = report || {};
+  const agents = Array.isArray(item.agents) ? item.agents : [];
+  const topAgents = agents.slice(0, 3);
+  const counters = [
+    ["感知", item.perceptionCount || 0],
+    ["解释", item.interpretationCount || 0],
+    ["意图", item.intentionCount || 0],
+    ["预测", item.predictionCount || 0],
+    ["决策", item.decisionCount || 0],
+  ];
+  return (
+    <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-400/10 p-3 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="console-label text-violet-300">ATCA Cognition Agent</p>
+          <p className="mt-1 text-sm font-bold text-white">
+            认知状态 {atcaStatusLabel(item.cognitionStatus)} · {item.memorySummary || "short_memory=0 symbols"}
+          </p>
+        </div>
+        <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-3 py-1 font-semibold text-violet-100">
+          {item.protectedRealtime === false ? "可执行" : "只读认知"}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-5">
+        {counters.map(([label, value]) => (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2" key={label}>
+            <p className="text-slate-500">{label}</p>
+            <p className="mt-1 font-semibold text-slate-100">{value}</p>
+          </div>
+        ))}
+      </div>
+      {topAgents.length ? (
+        <div className="mt-3 grid gap-2 xl:grid-cols-3">
+          {topAgents.map((agent) => (
+            <div className="rounded-lg border border-violet-400/20 bg-slate-950/50 p-3" key={agent.symbol}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-bold text-white">{agent.symbol}</p>
+                <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-300">
+                  {agent.decision?.severity || "Ignore"}
+                </span>
+              </div>
+              <p className="mt-2 text-slate-300">
+                {lifecycleStateLabel(agent.state)} · {atcaIntentLabel(agent.intent)} → {lifecycleStateLabel(agent.prediction)}
+              </p>
+              <p className="mt-1 text-slate-500">
+                confidence {formatPercentNumber(agent.confidence)} · risk {atcaRiskLabel(agent.risk)} · {agent.marketState?.priceStructure || "unknown"}
+              </p>
+              <p className="mt-2 text-[11px] text-violet-100">{agent.decision?.reason || "agent_filtered"}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-slate-500">
+          ATCA 等待最新 signal；Agent 层只统一感知、解释、意图、预测和通知决策，不会执行交易。
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SmllLearningCard({ report }) {
+  const item = report || {};
+  const weights = item.suggestedWeights || {};
+  const drift = item.driftReport || {};
+  const updates = Array.isArray(item.calibrationUpdates) ? item.calibrationUpdates : [];
+  const errors = Array.isArray(item.errorReports) ? item.errorReports : [];
+  const rows = [
+    ["样本", `${item.sampleSize || 0}/${item.minSamplesForUpdate || 3}`],
+    ["准确率", formatPercentNumber(item.accuracyRate)],
+    ["错误", item.wrongCount || 0],
+    ["中性", item.neutralCount || 0],
+    ["OI 权重", formatWeight(weights.oiWeight)],
+    ["价格权重", formatWeight(weights.priceWeight)],
+    ["清算权重", formatWeight(weights.liquidationWeight)],
+    ["漂移", drift.driftDetected ? "已检测" : "未检测"],
+  ];
+  return (
+    <div className="mt-3 rounded-xl border border-sky-400/20 bg-sky-400/10 p-3 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="console-label text-sky-300">SMLL Self-Learning Loop</p>
+          <p className="mt-1 text-sm font-bold text-white">
+            自学习 {formatAuditScore(item.learningScore)} · {smllStatusLabel(item.status)}
+          </p>
+        </div>
+        <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 font-semibold text-sky-100">
+          {item.protectedRealtime === false ? "实时可变更" : "只读建议"}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-4 xl:grid-cols-8">
+        {rows.map(([label, value]) => (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2" key={label}>
+            <p className="text-slate-500">{label}</p>
+            <p className="mt-1 font-semibold text-slate-100">{value}</p>
+          </div>
+        ))}
+      </div>
+      {errors.length || updates.length ? (
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          {errors.length ? (
+            <div className="rounded-lg border border-yellow-400/20 bg-yellow-400/10 p-3 text-yellow-100">
+              <p className="font-semibold">误差归因</p>
+              <p className="mt-1 text-slate-300">
+                {errors.slice(0, 3).map((error) => `${smllErrorLabel(error.rootCause)} · ${error.affectedModule}`).join(" / ")}
+              </p>
+            </div>
+          ) : null}
+          {updates.length ? (
+            <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/10 p-3 text-cyan-100">
+              <p className="font-semibold">校准建议</p>
+              <p className="mt-1 text-slate-300">
+                {updates.slice(0, 3).map((update) => `${update.parameter}: ${Number(update.oldValue).toFixed(2)} → ${Number(update.newValue).toFixed(2)}`).join(" / ")}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <p className="mt-3 text-slate-500">
+          自学习层只记录结果、归因错误并给出延迟校准建议；不会自动修改当前阈值、权重、信号或 Discord gate。
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SmafAuditCard({ report }) {
+  const item = report || {};
+  const rows = [
+    ["数据完整性", item.dataAudit?.integrityScore, item.dataAudit?.dataRiskLevel || "unknown"],
+    ["信号稳定性", item.signalAudit?.integrityScore, `single ${formatAuditScore(item.signalAudit?.singleSourceDependency)}`],
+    ["行为结构", item.behaviorAudit?.structuralIntegrity, `entropy ${formatAuditScore(item.behaviorAudit?.transitionEntropy)}`],
+    ["预测可靠性", item.predictionAudit?.integrityScore, `flip ${formatAuditScore(item.predictionAudit?.flipRate)}`],
+  ];
+  const issues = Array.isArray(item.criticalIssues) ? item.criticalIssues : [];
+  return (
+    <div className="mt-3 rounded-xl border border-slate-700/60 bg-slate-950/50 p-3 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="console-label">SMAF System Audit</p>
+          <p className="mt-1 text-sm font-bold text-white">
+            系统健康 {formatAuditScore(item.smafScore)} · {smafRiskLabel(item.riskLevel)}
+          </p>
+        </div>
+        <span className={`rounded-full border px-3 py-1 font-semibold ${smafToneClass(item.smafScore)}`}>
+          {smafRiskLabel(item.riskLevel)}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
+        {rows.map(([label, value, hint]) => (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2" key={label}>
+            <p className="text-slate-500">{label}</p>
+            <p className="mt-1 font-semibold text-slate-100">{formatAuditScore(value)}</p>
+            <p className="mt-1 text-[11px] text-slate-500">{hint}</p>
+          </div>
+        ))}
+      </div>
+      {issues.length ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {issues.map((issue) => (
+            <span className="rounded-full border border-yellow-400/20 bg-yellow-400/10 px-3 py-1 text-yellow-100" key={issue}>
+              {smafIssueLabel(issue)}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-slate-500">未发现关键审计问题；SMAF 只做旁路审计，不影响信号和 Discord gate。</p>
+      )}
+    </div>
+  );
+}
+
 function CollapsedUniverseSummary({ summary }) {
   const universe = summary.symbolUniverse || {};
   const monitoredSymbols = summary.monitoredSymbols || [];
@@ -448,7 +653,7 @@ function ExchangeStatus({ status }) {
   );
 }
 
-function AltSignalDetail({ signal, onClose }) {
+function AltSignalDetail({ signal, summary, onClose }) {
   const explainTags = Array.isArray(signal.explainTags) ? signal.explainTags : [];
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
@@ -467,6 +672,28 @@ function AltSignalDetail({ signal, onClose }) {
           <Detail label="证据数量" value={`${signal.evidenceCount || 0} 项`} />
           <Detail label="后续验证" value={postSignalStatusLabel(signal.postSignalStatus)} />
           <Detail label="Signal VWAP" value={formatPrice(signal.signalVwap)} />
+          <Detail label="Market Tier" value={marketTierLabel(signal.marketTier)} />
+          <Detail label="展示门槛" value={formatUsd(displayThresholdForSignal(signal, summary))} />
+          <Detail
+            label="MCSS"
+            value={`${formatMcss(signal.masterCapitalStrength?.mcss)} · ${signal.masterCapitalStrength?.interpretation || "N/A"}`}
+          />
+          <Detail
+            label="Market Regime"
+            value={`${marketRegimeLabel(signal.marketRegime?.regime)} ${formatConfidence(signal.marketRegime?.confidence)}${
+              signal.marketRegime?.subType ? ` · ${marketRegimeLabel(signal.marketRegime.subType)}` : ""
+            }`}
+          />
+          <Detail
+            label="Smart Money Lifecycle"
+            value={`${lifecycleStateLabel(signal.smartMoneyLifecycle?.lifecycleState)} ${formatConfidence(signal.smartMoneyLifecycle?.stateConfidence)}${
+              signal.smartMoneyLifecycle?.transitionSignal ? ` · ${signal.smartMoneyLifecycle.transitionSignal}` : ""
+            }`}
+          />
+          <Detail
+            label="Next Stage Prediction"
+            value={`${lifecycleStateLabel(signal.smartMoneyPrediction?.nextState)} ${formatConfidence(signal.smartMoneyPrediction?.probability)} · ${predictionBiasLabel(signal.smartMoneyPrediction?.directionBias)} ${formatDirectionProbability(signal.smartMoneyPrediction?.directionProbability)}`}
+          />
           <Detail label="方向 Bias" value={signedNumber(signal.directionBias)} />
           <Detail label="Data Quality" value={`${signal.dataQuality}/100`} />
           <Detail label="触发价格" value={formatPrice(signal.triggerPriceUsd)} />
@@ -487,6 +714,10 @@ function AltSignalDetail({ signal, onClose }) {
           <Detail label="最终判断" value={signal.finalResult} wide />
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <McssCard masterCapitalStrength={signal.masterCapitalStrength} />
+          <MarketRegimeCard marketRegime={signal.marketRegime} />
+          <SmartMoneyLifecycleCard lifecycle={signal.smartMoneyLifecycle} />
+          <SmartMoneyPredictionCard prediction={signal.smartMoneyPrediction} />
           <BreakdownCard breakdown={signal.scoreBreakdown} />
           <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Active Source Snapshot</p>
@@ -616,6 +847,203 @@ function BreakdownCard({ breakdown }) {
   );
 }
 
+function McssCard({ masterCapitalStrength }) {
+  const mcss = masterCapitalStrength || {};
+  const rows = [
+    ["市场层级", `${mcss.tier || "Unknown"} · x${Number(mcss.liquidityWeight || 0).toFixed(2)}`],
+    ["成交强度", signedScore(mcss.notionalScore)],
+    ["方向强度", signedScore(mcss.directionScore)],
+    ["OI确认", signedScore(mcss.oiScore)],
+    ["价格响应", signedScore(mcss.priceScore)],
+    ["异常倍率", signedScore(mcss.anomalyScore)],
+    ["清算惩罚", `-${Number(mcss.liquidationPenalty || 0).toFixed(1)}`],
+  ];
+  return (
+    <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Master Capital Strength</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-2xl font-bold text-white">{formatMcss(mcss.mcss)}</p>
+          <p className="mt-1 text-xs text-cyan-100">{mcss.interpretation || "暂无主力资金强度解释"}</p>
+        </div>
+        <p className="rounded-full border border-cyan-400/20 px-3 py-1 text-xs font-semibold text-cyan-100">
+          {mcss.tier || "Unknown"}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        MCSS 只用于跨市场资金强度解释，不替代 abnormalScore / buildScore，也不直接控制 Discord gate。
+      </p>
+    </div>
+  );
+}
+
+function MarketRegimeCard({ marketRegime }) {
+  const regime = marketRegime || {};
+  const tags = Array.isArray(regime.explanationTags) ? regime.explanationTags : [];
+  const rows = [
+    ["OI", trendLabel(regime.oiTrend)],
+    ["价格", trendLabel(regime.priceTrend)],
+    ["5m", trendLabel(regime.trend5m)],
+    ["15m", trendLabel(regime.trend15m)],
+    ["效率", Number(regime.efficiencyRatio || 0).toFixed(4)],
+    ["OI lag", Number(regime.oiLagIndex || 0).toFixed(2)],
+  ];
+  return (
+    <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-fuchsia-300">Market Regime</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-xl font-bold text-white">
+            {marketRegimeLabel(regime.regime)} {formatConfidence(regime.confidence)}
+          </p>
+          <p className="mt-1 text-xs text-fuchsia-100">
+            {regime.subType ? `${marketRegimeLabel(regime.subType)} · ` : ""}
+            {regimeConclusion(regime)}
+          </p>
+        </div>
+        <p className="rounded-full border border-fuchsia-400/20 px-3 py-1 text-xs font-semibold text-fuchsia-100">
+          行为结构
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      {tags.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {tags.map((tag) => (
+            <span className="rounded-full border border-fuchsia-400/20 bg-fuchsia-400/10 px-3 py-1 text-fuchsia-100" key={tag}>
+              {regimeTagLabel(tag)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        Regime 是滞后行为结构判断，用于区分吸筹、派发和操控；不替代 BACM 信号触发，也不直接控制 Discord gate。
+      </p>
+    </div>
+  );
+}
+
+function SmartMoneyLifecycleCard({ lifecycle }) {
+  const smle = lifecycle || {};
+  const tags = Array.isArray(smle.explanationTags) ? smle.explanationTags : [];
+  const path = Array.isArray(smle.statePath) && smle.statePath.length ? smle.statePath : [smle.lifecycleState || "Accumulation"];
+  const rows = [
+    ["持续时间", `${Number(smle.stateDurationMin || 0).toFixed(1)} min`],
+    ["状态置信度", formatConfidence(smle.stateConfidence)],
+    ["流动一致性", `${Math.round(Number(smle.flowConsistencyScore || 0))}/100`],
+    ["生命周期分", `${Math.round(Number(smle.lifecycleScore || 0))}/100`],
+    ["转移信号", smle.transitionSignal || "无"],
+  ];
+  return (
+    <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-emerald-300">Smart Money Lifecycle</p>
+      <div className="mt-3 flex flex-col gap-3">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-xl font-bold text-white">
+              {lifecycleStateLabel(smle.lifecycleState)} {formatConfidence(smle.stateConfidence)}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-emerald-100">
+              {smle.currentExplanation || "生命周期结构仍未确认。"}
+            </p>
+          </div>
+          <p className="rounded-full border border-emerald-400/20 px-3 py-1 text-xs font-semibold text-emerald-100">
+            行为周期
+          </p>
+        </div>
+        <div className="rounded-lg border border-emerald-400/10 bg-slate-950/50 px-3 py-2 text-xs font-semibold text-emerald-100">
+          {path.map(lifecycleStateLabel).join(" → ")}
+        </div>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      {tags.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {tags.map((tag) => (
+            <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-emerald-100" key={tag}>
+              {lifecycleTagLabel(tag)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        SMLE 是时间序列状态机视角；BACM 是事件层，MCSS 是强度层，Regime 是行为类型，Lifecycle 才描述完整主力周期。
+      </p>
+    </div>
+  );
+}
+
+function SmartMoneyPredictionCard({ prediction }) {
+  const smp = prediction || {};
+  const factors = Array.isArray(smp.triggerFactors) ? smp.triggerFactors : [];
+  const rows = [
+    ["当前阶段", lifecycleStateLabel(smp.currentState)],
+    ["预测阶段", lifecycleStateLabel(smp.nextState)],
+    ["时间窗口", `${Number(smp.timeHorizonMin || 0)} min`],
+    ["方向偏好", `${predictionBiasLabel(smp.directionBias)} ${formatDirectionProbability(smp.directionProbability)}`],
+    ["预测分", `${Math.round(Number(smp.predictionScore || 0))}/100`],
+    ["信心", formatConfidence(smp.confidence)],
+  ];
+  return (
+    <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-sky-300">Smart Money Prediction</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-xl font-bold text-white">
+            {lifecycleStateLabel(smp.nextState)} {formatConfidence(smp.probability)}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-sky-100">
+            {smp.explanation || "预测层等待生命周期确认。"}
+          </p>
+        </div>
+        <p className="rounded-full border border-sky-400/20 px-3 py-1 text-xs font-semibold text-sky-100">
+          下一阶段
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      {factors.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {factors.map((factor) => (
+            <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-sky-100" key={factor}>
+              {predictionFactorLabel(factor)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        SMP 只预测主力行为阶段转移，不预测具体价格；Manipulation 仅作为噪音过滤，不直接改变主生命周期预测。
+      </p>
+    </div>
+  );
+}
+
 function Detail({ label, value, wide = false }) {
   return (
     <div className={`rounded-xl border border-slate-700/60 bg-slate-900/70 p-3 ${wide ? "md:col-span-3" : ""}`}>
@@ -662,6 +1090,11 @@ function fallbackSummary() {
       latestSeverity: "calm",
       monitoredSymbols: [],
       displayMinNotionalUsd: 500_000,
+      displayThresholdsUsd: {
+        ultraCore: 750_000,
+        mainstream: 500_000,
+        alt: 150_000,
+      },
       collectorStatus: "disabled",
       lastTradeAt: null,
       lastOiPollAt: null,
@@ -679,8 +1112,136 @@ function fallbackSummary() {
       dryRunStats: {},
       symbolUniverse: {},
       allMarketContext: {},
+      smafReport: {
+        dataAudit: { freshnessScore: 0, completenessScore: 0, consistencyScore: 0, integrityScore: 0, dataRiskLevel: "disabled" },
+        signalAudit: { noiseRatio: 0, duplicationRate: 0, singleSourceDependency: 0, falseSignalEstimate: 0, integrityScore: 100 },
+        behaviorAudit: { stateStability: 100, transitionEntropy: 0, manipulationNoise: 0, structuralIntegrity: 100 },
+        predictionAudit: { accuracy: 100, flipRate: 0, overfittingScore: 0, followThroughRate: 100, integrityScore: 100 },
+        smafScore: 0,
+        riskLevel: "disabled",
+        criticalIssues: [],
+      },
+      smllReport: {
+        enabled: true,
+        protectedRealtime: true,
+        status: "collecting_outcomes",
+        learningScore: 0,
+        sampleSize: 0,
+        minSamplesForUpdate: 3,
+        accuracyRate: 100,
+        wrongCount: 0,
+        neutralCount: 0,
+        outcomeRecords: [],
+        errorReports: [],
+        suggestedWeights: { volumeWeight: 1, oiWeight: 1, priceWeight: 1, liquidationWeight: 1, fundingWeight: 1 },
+        driftReport: { driftDetected: false, affectedComponents: [], suggestedRetrain: false, reason: "no_material_drift" },
+        calibrationUpdates: [],
+      },
+      atcaReport: {
+        enabled: true,
+        protectedRealtime: true,
+        cognitionStatus: "waiting_for_signals",
+        memorySummary: "short_memory=0 symbols",
+        perceptionCount: 0,
+        interpretationCount: 0,
+        intentionCount: 0,
+        predictionCount: 0,
+        decisionCount: 0,
+        agents: [],
+      },
     },
   };
+}
+
+function formatAuditScore(value) {
+  const number = Number(value || 0);
+  return `${Math.round(number)}/100`;
+}
+
+function smafRiskLabel(value) {
+  return {
+    "production ready": "Production Ready",
+    "stable but tuning needed": "Stable but tuning",
+    risky: "Risky",
+    "not reliable": "Not reliable",
+    disabled: "Disabled",
+  }[String(value || "").toLowerCase()] || value || "Unknown";
+}
+
+function smafToneClass(score) {
+  const value = Number(score || 0);
+  if (value >= 90) return "border-emerald-400/30 bg-emerald-400/10 text-emerald-100";
+  if (value >= 75) return "border-cyan-400/30 bg-cyan-400/10 text-cyan-100";
+  if (value >= 60) return "border-yellow-400/30 bg-yellow-400/10 text-yellow-100";
+  return "border-red-400/30 bg-red-400/10 text-red-100";
+}
+
+function smafIssueLabel(value) {
+  return {
+    data_integrity_low: "数据完整性偏低",
+    single_source_dependency_high: "单源依赖过高",
+    duplicate_signal_rate_high: "重复信号偏多",
+    lifecycle_transition_entropy_high: "生命周期切换过乱",
+    manipulation_noise_high: "操控噪音偏高",
+    prediction_flip_rate_high: "预测翻转偏高",
+    prediction_overfitting_risk: "预测过拟合风险",
+  }[String(value || "").toLowerCase()] || value;
+}
+
+function smllStatusLabel(value) {
+  return {
+    collecting_outcomes: "收集结果中",
+    stable_learning: "稳定学习",
+    calibration_suggested: "建议校准",
+    drift_watch: "结构漂移观察",
+  }[String(value || "").toLowerCase()] || value || "未知";
+}
+
+function smllErrorLabel(value) {
+  return {
+    data_quality_or_latency: "数据质量/延迟",
+    oi_confirmation_misled_direction: "OI 误导方向",
+    liquidation_context_misread_as_build: "清算误判建仓",
+    lifecycle_or_regime_confidence_overstated: "行为置信过高",
+    smp_direction_or_stage_followthrough_failed: "预测未跟随",
+  }[String(value || "").toLowerCase()] || value || "未知误差";
+}
+
+function formatWeight(value) {
+  return `x${Number(value ?? 1).toFixed(2)}`;
+}
+
+function formatPercentNumber(value) {
+  return `${Math.round(Number(value || 0))}%`;
+}
+
+function atcaStatusLabel(value) {
+  return {
+    waiting_for_signals: "等待信号",
+    active_cognition: "主动认知",
+    degraded_cognition: "降级认知",
+  }[String(value || "").toLowerCase()] || value || "未知";
+}
+
+function atcaIntentLabel(value) {
+  return {
+    accumulate: "吸筹意图",
+    distribute: "派发意图",
+    trap: "诱多/陷阱",
+    stop_hunt: "扫止损",
+    trend_drive: "趋势推动",
+    exit_liquidity: "退出流动性",
+    monitor: "观察",
+  }[String(value || "").toLowerCase()] || value || "观察";
+}
+
+function atcaRiskLabel(value) {
+  return {
+    high: "高",
+    medium: "中",
+    low: "低",
+    liquidation_risk: "清算风险",
+  }[String(value || "").toLowerCase()] || value || "低";
 }
 
 function universeModeLabel(value) {
@@ -740,6 +1301,39 @@ function severityBadgeClass(value) {
     high: "bg-orange-400/15 text-orange-200",
     medium: "bg-yellow-400/15 text-yellow-200",
   }[String(value || "").toLowerCase()] || "bg-slate-700 text-slate-200";
+}
+
+function marketTierLabel(value) {
+  return {
+    ultra_core: "Ultra Core",
+    ultracore: "Ultra Core",
+    mainstream: "Mainstream",
+    alt: "Alt",
+  }[String(value || "alt").toLowerCase()] || "Alt";
+}
+
+function marketRegimeLabel(value) {
+  return {
+    accumulation: "Accumulation",
+    distribution: "Distribution",
+    manipulation: "Manipulation",
+    manipulation_up: "Manipulation UP",
+    manipulation_down: "Manipulation DOWN",
+    liquidity_trap: "Liquidity Trap",
+    stop_hunt: "Stop Hunt",
+    unclear: "Unclear",
+  }[String(value || "unclear").toLowerCase()] || value || "Unclear";
+}
+
+function lifecycleStateLabel(value) {
+  return {
+    accumulation: "Accumulation",
+    markup: "Markup",
+    distribution: "Distribution",
+    markdown: "Markdown",
+    reaccumulation: "Re-Accumulation",
+    re_accumulation: "Re-Accumulation",
+  }[String(value || "accumulation").toLowerCase()] || value || "Accumulation";
 }
 
 function signalTypeLabel(value) {
@@ -917,6 +1511,102 @@ function formatUsd(value) {
   const number = Number(value || 0);
   if (number >= 1_000_000) return `$${(number / 1_000_000).toFixed(1)}M`;
   return `$${Math.round(number).toLocaleString("en-US")}`;
+}
+
+function formatMcss(value) {
+  const number = Number(value || 0);
+  return `${Math.round(number)}/100`;
+}
+
+function signedScore(value) {
+  const number = Number(value || 0);
+  const prefix = number > 0 ? "+" : "";
+  return `${prefix}${number.toFixed(1)}`;
+}
+
+function formatConfidence(value) {
+  const number = Number(value || 0);
+  return `(${Math.round(number)}%)`;
+}
+
+function trendLabel(value) {
+  return {
+    up: "上升",
+    down: "下降",
+    flat: "横盘",
+    slow_up: "缓慢上升",
+    spike_up: "快速上冲",
+    spike_down: "快速下杀",
+    unknown: "未知",
+  }[String(value || "unknown").toLowerCase()] || value || "未知";
+}
+
+function regimeConclusion(regime) {
+  const key = String(regime?.regime || "unclear").toLowerCase();
+  const subType = String(regime?.subType || "").toLowerCase();
+  if (key === "accumulation") return "主力吸筹阶段";
+  if (key === "distribution") return "主力派发阶段";
+  if (key === "manipulation" && subType === "liquidity_trap") return "假突破诱导流动性";
+  if (key === "manipulation" && subType === "manipulation_down") return "砸盘诱空 / 扫止损";
+  if (key === "manipulation" && subType === "manipulation_up") return "拉升诱多 / 挤空";
+  if (key === "manipulation") return "操控/诱导阶段";
+  return "结构未确认";
+}
+
+function regimeTagLabel(tag) {
+  return {
+    oi_expanding: "OI 上升",
+    oi_contracting: "OI 收缩",
+    price_absorption: "价格吸收",
+    price_breakout_failed: "突破失败",
+    liquidity_trap: "流动性陷阱",
+    stop_hunt: "扫止损",
+    smart_money_accumulating: "主力吸筹",
+    distribution_pressure: "派发压力",
+    fake_breakout: "假突破",
+    trend_following: "趋势跟随",
+  }[String(tag || "").toLowerCase()] || tag;
+}
+
+function lifecycleTagLabel(tag) {
+  return {
+    oi_expansion: "OI 扩张",
+    oi_contraction: "OI 收缩",
+    flow_consistent: "行为一致",
+    mcss_confirmed: "MCSS 确认",
+    liquidation_disturbance: "清算扰动",
+    low_price_efficiency: "价格效率下降",
+    manipulation_disturbance: "操控插入事件",
+  }[String(tag || "").toLowerCase()] || tag;
+}
+
+function predictionBiasLabel(value) {
+  return {
+    bullish: "Bullish",
+    bearish: "Bearish",
+    bearishrisk: "Bearish Risk",
+    reboundwatch: "Rebound Watch",
+    sideways: "Sideways",
+  }[String(value || "sideways").toLowerCase()] || value || "Sideways";
+}
+
+function predictionFactorLabel(factor) {
+  return {
+    oi_mcss_expansion: "OI + MCSS 扩张",
+    oi_momentum_divergence: "OI 动能背离",
+    efficiency_decay: "效率衰减",
+    liquidity_stress: "流动性压力",
+    funding_extreme: "Funding 极端",
+    market_structure_consistent: "结构一致",
+    lifecycle_confidence_high: "生命周期信心高",
+    mcss_acceleration: "MCSS 加速",
+    manipulation_noise_filtered: "操控噪音已过滤",
+  }[String(factor || "").toLowerCase()] || factor;
+}
+
+function formatDirectionProbability(value) {
+  const number = Number(value || 0);
+  return `(${number.toFixed(2)})`;
 }
 
 function formatPrice(value) {

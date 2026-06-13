@@ -4,7 +4,10 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
-use super::types::{AltContractSeverity, AltContractSymbolTier, AltContractTierThresholds};
+use super::types::{
+    AltContractDisplayThresholds, AltContractMarketTier, AltContractSeverity,
+    AltContractSymbolTier, AltContractTierThresholds,
+};
 
 static GLOBAL_CONFIG: OnceLock<RwLock<BinanceAltContractRuntimeConfig>> = OnceLock::new();
 const DISABLED_NOTIONAL_USD: f64 = 999_999_999_999.0;
@@ -21,6 +24,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
+    pub market_classification: BinanceAltMarketClassificationConfig,
     pub discord: BinanceAltDiscordConfig,
     pub tier_d_rules: BinanceAltTierDRulesConfig,
     pub tier_e_rules: BinanceAltTierERulesConfig,
@@ -117,6 +121,15 @@ impl BinanceAltContractRuntimeConfig {
             .copied()
             .unwrap_or_else(|| default_thresholds()[&AltContractSymbolTier::B])
     }
+
+    pub fn classify_market_tier(&self, product_id: &str) -> AltContractMarketTier {
+        self.market_classification.classify(product_id)
+    }
+
+    pub fn display_threshold_for_product(&self, product_id: &str) -> f64 {
+        self.display
+            .threshold_for_market_tier(self.classify_market_tier(product_id))
+    }
 }
 
 impl Default for BinanceAltContractRuntimeConfig {
@@ -132,6 +145,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
+            market_classification: BinanceAltMarketClassificationConfig::default(),
             discord: BinanceAltDiscordConfig::default(),
             tier_d_rules: BinanceAltTierDRulesConfig::default(),
             tier_e_rules: BinanceAltTierERulesConfig::default(),
@@ -290,13 +304,80 @@ impl Default for BinanceAltStorageConfig {
 #[derive(Debug, Clone)]
 pub struct BinanceAltDisplayConfig {
     pub min_notional_usd: f64,
+    pub ultra_core_min_notional_usd: f64,
+    pub mainstream_min_notional_usd: f64,
+    pub alt_min_notional_usd: f64,
 }
 
 impl Default for BinanceAltDisplayConfig {
     fn default() -> Self {
         Self {
-            min_notional_usd: 500_000.0,
+            min_notional_usd: 150_000.0,
+            ultra_core_min_notional_usd: 750_000.0,
+            mainstream_min_notional_usd: 500_000.0,
+            alt_min_notional_usd: 150_000.0,
         }
+    }
+}
+
+impl BinanceAltDisplayConfig {
+    pub fn threshold_for_market_tier(&self, market_tier: AltContractMarketTier) -> f64 {
+        match market_tier {
+            AltContractMarketTier::UltraCore => self.ultra_core_min_notional_usd,
+            AltContractMarketTier::Mainstream => self.mainstream_min_notional_usd,
+            AltContractMarketTier::Alt => self.alt_min_notional_usd,
+        }
+    }
+
+    pub fn thresholds_summary(&self) -> AltContractDisplayThresholds {
+        AltContractDisplayThresholds {
+            ultra_core: self.ultra_core_min_notional_usd,
+            mainstream: self.mainstream_min_notional_usd,
+            alt: self.alt_min_notional_usd,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltMarketClassificationConfig {
+    pub ultra_core_symbols: Vec<String>,
+    pub top50_symbols: Vec<String>,
+}
+
+impl Default for BinanceAltMarketClassificationConfig {
+    fn default() -> Self {
+        Self {
+            ultra_core_symbols: vec![
+                "BTCUSDT".to_string(),
+                "ETHUSDT".to_string(),
+                "SOLUSDT".to_string(),
+                "BNBUSDT".to_string(),
+            ],
+            top50_symbols: default_top50_symbols(),
+        }
+    }
+}
+
+impl BinanceAltMarketClassificationConfig {
+    pub fn classify(&self, product_id: &str) -> AltContractMarketTier {
+        let product_id = normalize_product_id(product_id);
+        if self
+            .ultra_core_symbols
+            .iter()
+            .map(|symbol| normalize_product_id(symbol))
+            .any(|symbol| symbol == product_id)
+        {
+            return AltContractMarketTier::UltraCore;
+        }
+        if self
+            .top50_symbols
+            .iter()
+            .map(|symbol| normalize_product_id(symbol))
+            .any(|symbol| symbol == product_id)
+        {
+            return AltContractMarketTier::Mainstream;
+        }
+        AltContractMarketTier::Alt
     }
 }
 
@@ -608,6 +689,35 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.display.min_notional_usd",
                 fallback.display.min_notional_usd,
+            ),
+            ultra_core_min_notional_usd: nonnegative_f64_setting(
+                settings,
+                "binance_alt_contract_monitor.display.ultra_core_min_notional_usd",
+                fallback.display.ultra_core_min_notional_usd,
+            ),
+            mainstream_min_notional_usd: nonnegative_f64_setting(
+                settings,
+                "binance_alt_contract_monitor.display.mainstream_min_notional_usd",
+                fallback.display.mainstream_min_notional_usd,
+            ),
+            alt_min_notional_usd: nonnegative_f64_setting(
+                settings,
+                "binance_alt_contract_monitor.display.alt_min_notional_usd",
+                fallback.display.alt_min_notional_usd,
+            ),
+        },
+        market_classification: BinanceAltMarketClassificationConfig {
+            ultra_core_symbols: string_vec_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_ULTRA_CORE_SYMBOLS",
+                "binance_alt_contract_monitor.market_classification.ultra_core_symbols",
+                fallback.market_classification.ultra_core_symbols.clone(),
+            ),
+            top50_symbols: string_vec_setting(
+                settings,
+                "BINANCE_ALT_CONTRACT_TOP50_SYMBOLS",
+                "binance_alt_contract_monitor.market_classification.top50_symbols",
+                fallback.market_classification.top50_symbols.clone(),
             ),
         },
         discord: BinanceAltDiscordConfig {
@@ -1005,6 +1115,60 @@ fn default_alt_symbols() -> Vec<String> {
     [
         "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "AVAXUSDT", "SUIUSDT",
         "LTCUSDT", "TRXUSDT", "DOTUSDT", "BCHUSDT",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn default_top50_symbols() -> Vec<String> {
+    [
+        "XRPUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "TRXUSDT",
+        "AVAXUSDT",
+        "LINKUSDT",
+        "SUIUSDT",
+        "TONUSDT",
+        "LTCUSDT",
+        "BCHUSDT",
+        "DOTUSDT",
+        "UNIUSDT",
+        "NEARUSDT",
+        "AAVEUSDT",
+        "APTUSDT",
+        "ICPUSDT",
+        "ETCUSDT",
+        "FILUSDT",
+        "ARBUSDT",
+        "OPUSDT",
+        "POLUSDT",
+        "MATICUSDT",
+        "ATOMUSDT",
+        "INJUSDT",
+        "STXUSDT",
+        "RENDERUSDT",
+        "TAOUSDT",
+        "IMXUSDT",
+        "HBARUSDT",
+        "VETUSDT",
+        "ALGOUSDT",
+        "XLMUSDT",
+        "SEIUSDT",
+        "ARUSDT",
+        "FETUSDT",
+        "WLDUSDT",
+        "JUPUSDT",
+        "TIAUSDT",
+        "GRTUSDT",
+        "MKRUSDT",
+        "ENAUSDT",
+        "RUNEUSDT",
+        "QNTUSDT",
+        "SANDUSDT",
+        "MANAUSDT",
+        "LDOUSDT",
     ]
     .into_iter()
     .map(str::to_string)

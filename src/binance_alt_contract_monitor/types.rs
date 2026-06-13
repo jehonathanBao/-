@@ -86,6 +86,16 @@ pub enum AltContractSymbolTier {
     E,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AltContractMarketTier {
+    UltraCore,
+    Mainstream,
+    Alt,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractTrade {
@@ -141,6 +151,8 @@ pub struct AltContractSymbolMeta {
     pub symbol: String,
     pub product_id: String,
     pub tier: AltContractSymbolTier,
+    #[serde(default = "default_market_tier")]
+    pub market_tier: AltContractMarketTier,
     pub quote_volume_24h_usd: f64,
 }
 
@@ -243,6 +255,239 @@ pub struct AltContractGradeCondition {
     pub threshold: String,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractMasterCapitalStrength {
+    pub mcss: f64,
+    pub tier: String,
+    pub liquidity_weight: f64,
+    pub notional_score: f64,
+    pub direction_score: f64,
+    pub oi_score: f64,
+    pub price_score: f64,
+    pub anomaly_score: f64,
+    pub liquidation_penalty: f64,
+    pub interpretation: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractMarketRegime {
+    pub regime: String,
+    pub sub_type: Option<String>,
+    pub confidence: f64,
+    pub mc_score: f64,
+    pub oi_trend: String,
+    pub price_trend: String,
+    pub trend_5m: String,
+    pub trend_15m: String,
+    pub trend_1h: String,
+    pub efficiency_ratio: f64,
+    pub oi_lag_index: f64,
+    pub explanation_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSmartMoneyLifecycle {
+    pub lifecycle_state: String,
+    pub state_confidence: f64,
+    pub state_duration_min: f64,
+    pub transition_signal: Option<String>,
+    pub flow_consistency_score: f64,
+    pub lifecycle_score: f64,
+    pub state_path: Vec<String>,
+    pub explanation_tags: Vec<String>,
+    pub current_explanation: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSmartMoneyPrediction {
+    pub current_state: String,
+    pub next_state: String,
+    pub probability: f64,
+    pub time_horizon_min: u32,
+    pub direction_bias: String,
+    pub direction_probability: f64,
+    pub confidence: f64,
+    pub prediction_score: f64,
+    pub trigger_factors: Vec<String>,
+    pub explanation: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractDataAuditResult {
+    pub freshness_score: f64,
+    pub completeness_score: f64,
+    pub consistency_score: f64,
+    pub integrity_score: f64,
+    pub data_risk_level: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSignalAuditResult {
+    pub noise_ratio: f64,
+    pub duplication_rate: f64,
+    pub single_source_dependency: f64,
+    pub false_signal_estimate: f64,
+    pub integrity_score: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractBehaviorAuditResult {
+    pub state_stability: f64,
+    pub transition_entropy: f64,
+    pub manipulation_noise: f64,
+    pub structural_integrity: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractPredictionAuditResult {
+    pub accuracy: f64,
+    pub flip_rate: f64,
+    pub overfitting_score: f64,
+    pub follow_through_rate: f64,
+    pub integrity_score: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSmafReport {
+    pub data_audit: AltContractDataAuditResult,
+    pub signal_audit: AltContractSignalAuditResult,
+    pub behavior_audit: AltContractBehaviorAuditResult,
+    pub prediction_audit: AltContractPredictionAuditResult,
+    pub smaf_score: f64,
+    pub risk_level: String,
+    pub critical_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSignalOutcomeRecord {
+    pub signal_id: String,
+    pub symbol: String,
+    pub timestamp: i64,
+    pub signal_type: String,
+    pub mc_score: f64,
+    pub regime: String,
+    pub prediction: String,
+    pub entry_price: Option<f64>,
+    pub outcome_price_5m: Option<f64>,
+    pub outcome_price_15m: Option<f64>,
+    pub outcome_price_1h: Option<f64>,
+    pub realized_direction: String,
+    pub accuracy_label: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractLearningErrorReport {
+    pub error_type: String,
+    pub severity: String,
+    pub root_cause: String,
+    pub affected_module: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractAdaptiveWeightConfig {
+    pub volume_weight: f64,
+    pub oi_weight: f64,
+    pub price_weight: f64,
+    pub liquidation_weight: f64,
+    pub funding_weight: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractDriftReport {
+    pub drift_detected: bool,
+    pub affected_components: Vec<String>,
+    pub suggested_retrain: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractCalibrationUpdate {
+    pub parameter: String,
+    pub old_value: f64,
+    pub new_value: f64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSmllReport {
+    pub enabled: bool,
+    pub protected_realtime: bool,
+    pub status: String,
+    pub learning_score: f64,
+    pub sample_size: usize,
+    pub min_samples_for_update: usize,
+    pub accuracy_rate: f64,
+    pub wrong_count: usize,
+    pub neutral_count: usize,
+    pub outcome_records: Vec<AltContractSignalOutcomeRecord>,
+    pub error_reports: Vec<AltContractLearningErrorReport>,
+    pub suggested_weights: AltContractAdaptiveWeightConfig,
+    pub drift_report: AltContractDriftReport,
+    pub calibration_updates: Vec<AltContractCalibrationUpdate>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractMarketStateSnapshot {
+    pub symbol: String,
+    pub price_structure: String,
+    pub volume_flow: String,
+    pub oi_movement: String,
+    pub liquidation_pressure: String,
+    pub market_imbalance: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractAgentDecision {
+    pub notify: bool,
+    pub severity: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractAgentView {
+    pub symbol: String,
+    pub state: String,
+    pub intent: String,
+    pub prediction: String,
+    pub decision: AltContractAgentDecision,
+    pub confidence: f64,
+    pub risk: String,
+    pub market_state: AltContractMarketStateSnapshot,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractAtcaReport {
+    pub enabled: bool,
+    pub protected_realtime: bool,
+    pub cognition_status: String,
+    pub memory_summary: String,
+    pub perception_count: usize,
+    pub interpretation_count: usize,
+    pub intention_count: usize,
+    pub prediction_count: usize,
+    pub decision_count: usize,
+    pub agents: Vec<AltContractAgentView>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractSourceSnapshot {
@@ -261,12 +506,24 @@ pub struct AltContractSignal {
     pub symbol: String,
     pub product_id: String,
     pub tier: AltContractSymbolTier,
+    #[serde(default = "default_market_tier")]
+    pub market_tier: AltContractMarketTier,
+    #[serde(default)]
+    pub display_threshold_usd: f64,
     pub window_sec: u64,
     pub signal_type: AltContractSignalType,
     pub direction: AltContractDirection,
     pub severity: AltContractSeverity,
     pub abnormal_score: u8,
     pub build_score: u8,
+    #[serde(default)]
+    pub master_capital_strength: AltContractMasterCapitalStrength,
+    #[serde(default)]
+    pub market_regime: AltContractMarketRegime,
+    #[serde(default)]
+    pub smart_money_lifecycle: AltContractSmartMoneyLifecycle,
+    #[serde(default)]
+    pub smart_money_prediction: AltContractSmartMoneyPrediction,
     #[serde(default)]
     pub s_grade_eligible: bool,
     #[serde(default)]
@@ -420,6 +677,7 @@ pub struct AltContractSummary {
     pub signal_count: usize,
     pub monitored_symbols: Vec<String>,
     pub display_min_notional_usd: f64,
+    pub display_thresholds_usd: AltContractDisplayThresholds,
     pub active_anomaly_count: usize,
     pub recent_critical_or_s_count: usize,
     pub dry_run_would_send_count: usize,
@@ -432,6 +690,17 @@ pub struct AltContractSummary {
     pub dry_run_stats: AltContractDryRunStats,
     pub symbol_universe: AltContractSymbolUniverseSummary,
     pub all_market_context: AltContractAllMarketContextStatus,
+    pub smaf_report: AltContractSmafReport,
+    pub smll_report: AltContractSmllReport,
+    pub atca_report: AltContractAtcaReport,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractDisplayThresholds {
+    pub ultra_core: f64,
+    pub mainstream: f64,
+    pub alt: f64,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -503,4 +772,8 @@ fn default_funding_crowding() -> String {
 
 fn default_discord_alert_kind() -> String {
     "none".to_string()
+}
+
+fn default_market_tier() -> AltContractMarketTier {
+    AltContractMarketTier::Alt
 }

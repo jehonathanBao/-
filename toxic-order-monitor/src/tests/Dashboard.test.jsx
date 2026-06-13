@@ -23,55 +23,7 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
-vi.mock("../api/contractWhale.js", () => ({
-  fetchContractWhaleSummary: vi.fn(() =>
-    Promise.resolve({
-      summary: {
-        status: "平静",
-        healthStatus: "disabled",
-        direction: "neutral",
-        latestSeverity: "calm",
-        latestPushedAtMs: null,
-        signalCount: 0,
-        readOnly: true,
-        enabled: false,
-        dryRun: true,
-      },
-      error: null,
-    }),
-  ),
-  fetchContractWhaleLatest: vi.fn(() =>
-    Promise.resolve({
-      summary: {
-        status: "平静",
-        healthStatus: "disabled",
-        direction: "neutral",
-        latestSeverity: "calm",
-        latestPushedAtMs: null,
-        signalCount: 0,
-        readOnly: true,
-        enabled: false,
-        dryRun: true,
-      },
-      items: [],
-      error: null,
-    }),
-  ),
-  fetchContractWhaleHistory: vi.fn(() => Promise.resolve({ summary: null, items: [], error: null })),
-  fetchContractWhaleEvents: vi.fn(() => Promise.resolve({ items: [], error: null })),
-  normalizePlatformStatus: vi.fn((platform) => ({
-    key: platform?.platformEnabled ? "active" : "disabled",
-    label: platform?.platformEnabled ? "运行中" : "未启用",
-    description: "test platform status",
-    tone: platform?.platformEnabled ? "emerald" : "slate",
-  })),
-  normalizeMarketStatus: vi.fn((market) => ({
-    key: market?.enabled ? "active" : "disabled",
-    label: market?.enabled ? "运行中" : "未启用",
-    detail: "test market status",
-    tone: market?.enabled ? "emerald" : "slate",
-  })),
-}));
+vi.mock("../api/contractWhale.js", async () => import("./__mocks__/contractWhale.js"));
 
 vi.mock("../api/usageGuide.js", () => ({
   fetchUsageGuide: vi.fn(() =>

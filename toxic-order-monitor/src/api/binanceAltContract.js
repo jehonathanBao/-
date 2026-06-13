@@ -1,6 +1,11 @@
 import axios from "axios";
 
 export const DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD = 500_000;
+const DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD = {
+  ultraCore: 750_000,
+  mainstream: 500_000,
+  alt: 150_000,
+};
 
 const calmSummary = {
   status: "calm",
@@ -28,6 +33,7 @@ const calmSummary = {
   dryRun: true,
   readOnly: true,
   symbol: null,
+  displayThresholdsUsd: DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD,
   trend60s: {
     buyVolumeBase: 0,
     sellVolumeBase: 0,
@@ -70,6 +76,9 @@ const calmSummary = {
     excludedSymbols: [],
     min24hQuoteVolumeUsd: 0,
   },
+  smafReport: defaultSmafReport(),
+  smllReport: defaultSmllReport(),
+  atcaReport: defaultAtcaReport(),
 };
 
 export async function fetchBinanceAltContractSummary(symbol = "all") {
@@ -92,7 +101,7 @@ export async function fetchBinanceAltContractLatest(limit = 50, symbol = "all") 
     const summary = normalizeSummary(response.data?.summary);
     return {
       summary,
-      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary.displayMinNotionalUsd),
+      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary),
       error: null,
     };
   } catch {
@@ -109,7 +118,7 @@ export async function fetchBinanceAltContractHistory(filters = {}) {
     const summary = normalizeSummary(response.data?.summary);
     return {
       summary,
-      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary.displayMinNotionalUsd),
+      items: filterDisplaySignals(items.map(normalizeAltContractSignal), summary),
       error: null,
     };
   } catch {
@@ -126,12 +135,18 @@ export function normalizeAltContractSignal(item) {
     symbol: item.symbol || productToBase(item.productId) || "ALT",
     productId: item.productId || `${item.symbol || "ALT"}USDT`,
     tier: item.tier || "b",
+    marketTier: item.marketTier || "alt",
+    displayThresholdUsd: numberOrNull(item.displayThresholdUsd) || 0,
     windowSec: numberOrNull(item.windowSec) || 0,
     signalType: item.signalType || "unclear_contract_anomaly",
     direction: item.direction || "neutral",
     severity: item.severity || "high",
     abnormalScore: numberOrNull(item.abnormalScore) || 0,
     buildScore: numberOrNull(item.buildScore) || 0,
+    masterCapitalStrength: normalizeMasterCapitalStrength(item.masterCapitalStrength),
+    marketRegime: normalizeMarketRegime(item.marketRegime),
+    smartMoneyLifecycle: normalizeSmartMoneyLifecycle(item.smartMoneyLifecycle),
+    smartMoneyPrediction: normalizeSmartMoneyPrediction(item.smartMoneyPrediction),
     sGradeEligible: Boolean(item.sGradeEligible),
     sGradeConditions: Array.isArray(item.sGradeConditions) ? item.sGradeConditions : [],
     sGradeNotionalThresholdUsd: numberOrNull(item.sGradeNotionalThresholdUsd) || 0,
@@ -195,6 +210,7 @@ function normalizeSummary(summary) {
     monitoredSymbols: Array.isArray(summary.monitoredSymbols) ? summary.monitoredSymbols : [],
     displayMinNotionalUsd:
       numberOrNull(summary.displayMinNotionalUsd) || DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD,
+    displayThresholdsUsd: normalizeDisplayThresholds(summary.displayThresholdsUsd),
     activeAnomalyCount: numberOrNull(summary.activeAnomalyCount) || 0,
     recentCriticalOrSCount: numberOrNull(summary.recentCriticalOrSCount) || 0,
     dryRunWouldSendCount: numberOrNull(summary.dryRunWouldSendCount) || 0,
@@ -207,12 +223,245 @@ function normalizeSummary(summary) {
     dryRunStats: normalizeDryRunStats(summary.dryRunStats),
     symbolUniverse: normalizeSymbolUniverse(summary.symbolUniverse),
     allMarketContext: summary.allMarketContext || {},
+    smafReport: normalizeSmafReport(summary.smafReport),
+    smllReport: normalizeSmllReport(summary.smllReport),
+    atcaReport: normalizeAtcaReport(summary.atcaReport),
   };
 }
 
-function filterDisplaySignals(items, minNotionalUsd) {
-  const min = Number(minNotionalUsd || DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD);
-  return items.filter((item) => Number(item.totalNotionalUsd || 0) >= min);
+function defaultSmafReport() {
+  return {
+    dataAudit: {
+      freshnessScore: 0,
+      completenessScore: 0,
+      consistencyScore: 0,
+      integrityScore: 0,
+      dataRiskLevel: "disabled",
+    },
+    signalAudit: {
+      noiseRatio: 0,
+      duplicationRate: 0,
+      singleSourceDependency: 0,
+      falseSignalEstimate: 0,
+      integrityScore: 100,
+    },
+    behaviorAudit: {
+      stateStability: 100,
+      transitionEntropy: 0,
+      manipulationNoise: 0,
+      structuralIntegrity: 100,
+    },
+    predictionAudit: {
+      accuracy: 100,
+      flipRate: 0,
+      overfittingScore: 0,
+      followThroughRate: 100,
+      integrityScore: 100,
+    },
+    smafScore: 0,
+    riskLevel: "disabled",
+    criticalIssues: [],
+  };
+}
+
+function normalizeSmafReport(report) {
+  const fallback = defaultSmafReport();
+  const source = report && typeof report === "object" ? report : {};
+  return {
+    dataAudit: {
+      freshnessScore: numberOrNull(source.dataAudit?.freshnessScore) ?? fallback.dataAudit.freshnessScore,
+      completenessScore: numberOrNull(source.dataAudit?.completenessScore) ?? fallback.dataAudit.completenessScore,
+      consistencyScore: numberOrNull(source.dataAudit?.consistencyScore) ?? fallback.dataAudit.consistencyScore,
+      integrityScore: numberOrNull(source.dataAudit?.integrityScore) ?? fallback.dataAudit.integrityScore,
+      dataRiskLevel: source.dataAudit?.dataRiskLevel || fallback.dataAudit.dataRiskLevel,
+    },
+    signalAudit: {
+      noiseRatio: numberOrNull(source.signalAudit?.noiseRatio) ?? fallback.signalAudit.noiseRatio,
+      duplicationRate: numberOrNull(source.signalAudit?.duplicationRate) ?? fallback.signalAudit.duplicationRate,
+      singleSourceDependency:
+        numberOrNull(source.signalAudit?.singleSourceDependency) ?? fallback.signalAudit.singleSourceDependency,
+      falseSignalEstimate:
+        numberOrNull(source.signalAudit?.falseSignalEstimate) ?? fallback.signalAudit.falseSignalEstimate,
+      integrityScore: numberOrNull(source.signalAudit?.integrityScore) ?? fallback.signalAudit.integrityScore,
+    },
+    behaviorAudit: {
+      stateStability: numberOrNull(source.behaviorAudit?.stateStability) ?? fallback.behaviorAudit.stateStability,
+      transitionEntropy:
+        numberOrNull(source.behaviorAudit?.transitionEntropy) ?? fallback.behaviorAudit.transitionEntropy,
+      manipulationNoise:
+        numberOrNull(source.behaviorAudit?.manipulationNoise) ?? fallback.behaviorAudit.manipulationNoise,
+      structuralIntegrity:
+        numberOrNull(source.behaviorAudit?.structuralIntegrity) ?? fallback.behaviorAudit.structuralIntegrity,
+    },
+    predictionAudit: {
+      accuracy: numberOrNull(source.predictionAudit?.accuracy) ?? fallback.predictionAudit.accuracy,
+      flipRate: numberOrNull(source.predictionAudit?.flipRate) ?? fallback.predictionAudit.flipRate,
+      overfittingScore:
+        numberOrNull(source.predictionAudit?.overfittingScore) ?? fallback.predictionAudit.overfittingScore,
+      followThroughRate:
+        numberOrNull(source.predictionAudit?.followThroughRate) ?? fallback.predictionAudit.followThroughRate,
+      integrityScore: numberOrNull(source.predictionAudit?.integrityScore) ?? fallback.predictionAudit.integrityScore,
+    },
+    smafScore: numberOrNull(source.smafScore) ?? fallback.smafScore,
+    riskLevel: source.riskLevel || fallback.riskLevel,
+    criticalIssues: Array.isArray(source.criticalIssues) ? source.criticalIssues : [],
+  };
+}
+
+function defaultSmllReport() {
+  return {
+    enabled: true,
+    protectedRealtime: true,
+    status: "collecting_outcomes",
+    learningScore: 0,
+    sampleSize: 0,
+    minSamplesForUpdate: 3,
+    accuracyRate: 100,
+    wrongCount: 0,
+    neutralCount: 0,
+    outcomeRecords: [],
+    errorReports: [],
+    suggestedWeights: {
+      volumeWeight: 1,
+      oiWeight: 1,
+      priceWeight: 1,
+      liquidationWeight: 1,
+      fundingWeight: 1,
+    },
+    driftReport: {
+      driftDetected: false,
+      affectedComponents: [],
+      suggestedRetrain: false,
+      reason: "no_material_drift",
+    },
+    calibrationUpdates: [],
+  };
+}
+
+function normalizeSmllReport(report) {
+  const fallback = defaultSmllReport();
+  const source = report && typeof report === "object" ? report : {};
+  return {
+    enabled: source.enabled !== false,
+    protectedRealtime: source.protectedRealtime !== false,
+    status: source.status || fallback.status,
+    learningScore: numberOrNull(source.learningScore) ?? fallback.learningScore,
+    sampleSize: numberOrNull(source.sampleSize) ?? fallback.sampleSize,
+    minSamplesForUpdate: numberOrNull(source.minSamplesForUpdate) ?? fallback.minSamplesForUpdate,
+    accuracyRate: numberOrNull(source.accuracyRate) ?? fallback.accuracyRate,
+    wrongCount: numberOrNull(source.wrongCount) ?? fallback.wrongCount,
+    neutralCount: numberOrNull(source.neutralCount) ?? fallback.neutralCount,
+    outcomeRecords: Array.isArray(source.outcomeRecords) ? source.outcomeRecords : [],
+    errorReports: Array.isArray(source.errorReports) ? source.errorReports : [],
+    suggestedWeights: {
+      volumeWeight:
+        numberOrNull(source.suggestedWeights?.volumeWeight) ?? fallback.suggestedWeights.volumeWeight,
+      oiWeight: numberOrNull(source.suggestedWeights?.oiWeight) ?? fallback.suggestedWeights.oiWeight,
+      priceWeight:
+        numberOrNull(source.suggestedWeights?.priceWeight) ?? fallback.suggestedWeights.priceWeight,
+      liquidationWeight:
+        numberOrNull(source.suggestedWeights?.liquidationWeight) ??
+        fallback.suggestedWeights.liquidationWeight,
+      fundingWeight:
+        numberOrNull(source.suggestedWeights?.fundingWeight) ?? fallback.suggestedWeights.fundingWeight,
+    },
+    driftReport: {
+      driftDetected: Boolean(source.driftReport?.driftDetected),
+      affectedComponents: Array.isArray(source.driftReport?.affectedComponents)
+        ? source.driftReport.affectedComponents
+        : [],
+      suggestedRetrain: Boolean(source.driftReport?.suggestedRetrain),
+      reason: source.driftReport?.reason || fallback.driftReport.reason,
+    },
+    calibrationUpdates: Array.isArray(source.calibrationUpdates) ? source.calibrationUpdates : [],
+  };
+}
+
+function defaultAtcaReport() {
+  return {
+    enabled: true,
+    protectedRealtime: true,
+    cognitionStatus: "waiting_for_signals",
+    memorySummary: "short_memory=0 symbols",
+    perceptionCount: 0,
+    interpretationCount: 0,
+    intentionCount: 0,
+    predictionCount: 0,
+    decisionCount: 0,
+    agents: [],
+  };
+}
+
+function normalizeAtcaReport(report) {
+  const fallback = defaultAtcaReport();
+  const source = report && typeof report === "object" ? report : {};
+  return {
+    enabled: source.enabled !== false,
+    protectedRealtime: source.protectedRealtime !== false,
+    cognitionStatus: source.cognitionStatus || fallback.cognitionStatus,
+    memorySummary: source.memorySummary || fallback.memorySummary,
+    perceptionCount: numberOrNull(source.perceptionCount) ?? fallback.perceptionCount,
+    interpretationCount: numberOrNull(source.interpretationCount) ?? fallback.interpretationCount,
+    intentionCount: numberOrNull(source.intentionCount) ?? fallback.intentionCount,
+    predictionCount: numberOrNull(source.predictionCount) ?? fallback.predictionCount,
+    decisionCount: numberOrNull(source.decisionCount) ?? fallback.decisionCount,
+    agents: Array.isArray(source.agents)
+      ? source.agents.map((agent) => ({
+          symbol: agent.symbol || "UNKNOWN",
+          state: agent.state || "Unknown",
+          intent: agent.intent || "monitor",
+          prediction: agent.prediction || "unknown",
+          confidence: numberOrNull(agent.confidence) ?? 0,
+          risk: agent.risk || "low",
+          decision: {
+            notify: Boolean(agent.decision?.notify),
+            severity: agent.decision?.severity || "Ignore",
+            reason: agent.decision?.reason || "agent_filtered",
+          },
+          marketState: {
+            symbol: agent.marketState?.symbol || agent.symbol || "UNKNOWN",
+            priceStructure: agent.marketState?.priceStructure || "unknown",
+            volumeFlow: agent.marketState?.volumeFlow || "mixed",
+            oiMovement: agent.marketState?.oiMovement || "unknown",
+            liquidationPressure: agent.marketState?.liquidationPressure || "normal",
+            marketImbalance: numberOrNull(agent.marketState?.marketImbalance) ?? 0,
+          },
+        }))
+      : [],
+  };
+}
+
+function filterDisplaySignals(items, summary = calmSummary) {
+  return items.filter((item) => {
+    const min = displayThresholdForSignal(item, summary);
+    return Number(item.totalNotionalUsd || 0) >= min;
+  });
+}
+
+function normalizeDisplayThresholds(thresholds) {
+  const source = thresholds && typeof thresholds === "object" ? thresholds : {};
+  return {
+    ultraCore: numberOrNull(source.ultraCore) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.ultraCore,
+    mainstream: numberOrNull(source.mainstream) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.mainstream,
+    alt: numberOrNull(source.alt) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.alt,
+  };
+}
+
+export function displayThresholdForSignal(signal, summary = calmSummary) {
+  const explicit = numberOrNull(signal?.displayThresholdUsd);
+  if (explicit && explicit > 0) return explicit;
+  return displayThresholdForMarketTier(signal?.marketTier || "alt", summary?.displayThresholdsUsd);
+}
+
+function displayThresholdForMarketTier(marketTier, thresholds = DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD) {
+  const normalized = String(marketTier || "alt").toLowerCase();
+  if (normalized === "ultra_core" || normalized === "ultracore") {
+    return numberOrNull(thresholds?.ultraCore) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.ultraCore;
+  }
+  if (normalized === "mainstream") {
+    return numberOrNull(thresholds?.mainstream) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.mainstream;
+  }
+  return numberOrNull(thresholds?.alt) || DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD.alt;
 }
 
 function normalizeDryRunStats(stats) {
@@ -305,6 +554,71 @@ function normalizeScoreBreakdown(scoreBreakdown) {
     fundingScore: numberOrNull(source.fundingScore) || 0,
     dataQualityScore: numberOrNull(source.dataQualityScore) || 0,
     penaltyScore: numberOrNull(source.penaltyScore) || 0,
+  };
+}
+
+function normalizeMasterCapitalStrength(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    mcss: numberOrNull(source.mcss) || 0,
+    tier: source.tier || "Unknown",
+    liquidityWeight: numberOrNull(source.liquidityWeight) || 0,
+    notionalScore: numberOrNull(source.notionalScore) || 0,
+    directionScore: numberOrNull(source.directionScore) || 0,
+    oiScore: numberOrNull(source.oiScore) || 0,
+    priceScore: numberOrNull(source.priceScore) || 0,
+    anomalyScore: numberOrNull(source.anomalyScore) || 0,
+    liquidationPenalty: numberOrNull(source.liquidationPenalty) || 0,
+    interpretation: source.interpretation || "暂无主力资金强度解释",
+  };
+}
+
+function normalizeMarketRegime(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    regime: source.regime || "Unclear",
+    subType: source.subType || null,
+    confidence: numberOrNull(source.confidence) || 0,
+    mcScore: numberOrNull(source.mcScore) || 0,
+    oiTrend: source.oiTrend || "unknown",
+    priceTrend: source.priceTrend || "unknown",
+    trend5m: source.trend5m || "unknown",
+    trend15m: source.trend15m || "unknown",
+    trend1h: source.trend1h || "unknown",
+    efficiencyRatio: numberOrNull(source.efficiencyRatio) || 0,
+    oiLagIndex: numberOrNull(source.oiLagIndex) || 0,
+    explanationTags: Array.isArray(source.explanationTags) ? source.explanationTags : [],
+  };
+}
+
+function normalizeSmartMoneyLifecycle(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    lifecycleState: source.lifecycleState || "Accumulation",
+    stateConfidence: numberOrNull(source.stateConfidence) || 0,
+    stateDurationMin: numberOrNull(source.stateDurationMin) || 0,
+    transitionSignal: source.transitionSignal || null,
+    flowConsistencyScore: numberOrNull(source.flowConsistencyScore) || 0,
+    lifecycleScore: numberOrNull(source.lifecycleScore) || 0,
+    statePath: Array.isArray(source.statePath) ? source.statePath : [],
+    explanationTags: Array.isArray(source.explanationTags) ? source.explanationTags : [],
+    currentExplanation: source.currentExplanation || "生命周期结构仍未确认。",
+  };
+}
+
+function normalizeSmartMoneyPrediction(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    currentState: source.currentState || "Accumulation",
+    nextState: source.nextState || "Sideways",
+    probability: numberOrNull(source.probability) || 0,
+    timeHorizonMin: numberOrNull(source.timeHorizonMin) || 0,
+    directionBias: source.directionBias || "Sideways",
+    directionProbability: numberOrNull(source.directionProbability) || 0,
+    confidence: numberOrNull(source.confidence) || 0,
+    predictionScore: numberOrNull(source.predictionScore) || 0,
+    triggerFactors: Array.isArray(source.triggerFactors) ? source.triggerFactors : [],
+    explanation: source.explanation || "预测层等待生命周期确认。",
   };
 }
 

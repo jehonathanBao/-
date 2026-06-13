@@ -435,7 +435,23 @@ flow_1m_retention_days = 14
 signals_retention_days = 180
 
 [binance_alt_contract_monitor.display]
-min_notional_usd = 500000
+min_notional_usd = 150000
+ultra_core_min_notional_usd = 750000
+mainstream_min_notional_usd = 500000
+alt_min_notional_usd = 150000
+
+[binance_alt_contract_monitor.market_classification]
+ultra_core_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+top50_symbols = [
+  "XRPUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT", "AVAXUSDT", "LINKUSDT",
+  "SUIUSDT", "TONUSDT", "LTCUSDT", "BCHUSDT", "DOTUSDT", "UNIUSDT",
+  "NEARUSDT", "AAVEUSDT", "APTUSDT", "ICPUSDT", "ETCUSDT", "FILUSDT",
+  "ARBUSDT", "OPUSDT", "POLUSDT", "MATICUSDT", "ATOMUSDT", "INJUSDT",
+  "STXUSDT", "RENDERUSDT", "TAOUSDT", "IMXUSDT", "HBARUSDT", "VETUSDT",
+  "ALGOUSDT", "XLMUSDT", "SEIUSDT", "ARUSDT", "FETUSDT", "WLDUSDT",
+  "JUPUSDT", "TIAUSDT", "GRTUSDT", "MKRUSDT", "ENAUSDT", "RUNEUSDT",
+  "QNTUSDT", "SANDUSDT", "MANAUSDT", "LDOUSDT"
+]
 
 [binance_alt_contract_monitor.discord]
 enabled = true

@@ -24,34 +24,7 @@ vi.mock("../api/scanLogs.js", async () => {
   };
 });
 
-vi.mock("../api/contractWhale.js", () => ({
-  fetchContractWhaleEvents: vi.fn(() => Promise.resolve({ items: [], error: null })),
-  fetchContractWhaleLatest: vi.fn(() =>
-    Promise.resolve({
-      summary: {
-        status: "平静",
-        direction: "neutral",
-        latestSeverity: "calm",
-        latestPushedAtMs: null,
-        signalCount: 0,
-        readOnly: true,
-      },
-      items: [],
-    }),
-  ),
-  normalizePlatformStatus: vi.fn((platform) => ({
-    key: platform?.platformEnabled ? "active" : "disabled",
-    label: platform?.platformEnabled ? "运行中" : "未启用",
-    description: "test platform status",
-    tone: platform?.platformEnabled ? "emerald" : "slate",
-  })),
-  normalizeMarketStatus: vi.fn((market) => ({
-    key: market?.enabled ? "active" : "disabled",
-    label: market?.enabled ? "运行中" : "未启用",
-    detail: "test market status",
-    tone: market?.enabled ? "emerald" : "slate",
-  })),
-}));
+vi.mock("../api/contractWhale.js", async () => import("./__mocks__/contractWhale.js"));
 
 vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
   useReconnectingWebSocket: vi.fn(() => ({ status: "idle", socket: null })),

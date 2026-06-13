@@ -13,12 +13,15 @@ use crate::normalizers::trade::now_ms;
 
 use super::{
     aggregator::{rolling_window_stats, trend_for_symbol},
+    atca::run_trading_cognition_agent,
     collector,
     config::binance_alt_contract_runtime_config,
     context::empty_context,
     detector::{
         detect_alt_contract_signal_with_context, window_confirmation_for, MarketImpulseContext,
     },
+    smaf::{audit_smart_money_system, SmafAuditInput},
+    smll::audit_self_learning_loop,
     symbol_universe::{meta_from_product_id, tier_for_quote_volume},
     types::{
         AltContractAllMarketContextStatus, AltContractContext, AltContractDryRunStats,
@@ -552,6 +555,11 @@ impl BinanceAltContractService {
             now,
             config.data_quality.heartbeat_stale_ms,
         );
+        let errors1h = state
+            .error_events
+            .iter()
+            .filter(|seen_at| now.saturating_sub(**seen_at) <= 60 * 60_000)
+            .count();
         let active_anomaly_count = state
             .signals
             .iter()
@@ -595,6 +603,20 @@ impl BinanceAltContractService {
             candidate_symbols: recent_seen_keys(&state.candidate_seen_at, now, candidate_ttl_ms),
             hot_oi_symbols: recent_seen_keys(&state.hot_oi_seen_at, now, candidate_ttl_ms),
         };
+        let smaf_report = audit_smart_money_system(SmafAuditInput {
+            enabled: self.enabled,
+            now_ms: now,
+            exchanges: &exchanges,
+            signals: &state.signals,
+            last_oi_poll_at: state.last_oi_poll_at,
+            last_force_order_at: state.last_force_order_at,
+            last_mark_price_at: state.last_mark_price_at,
+            last_ticker_at: state.last_ticker_at,
+            errors1h,
+        });
+        let smll_report = audit_self_learning_loop(now, &state.signals);
+        let atca_report =
+            run_trading_cognition_agent(now, &state.signals, &smaf_report, &smll_report);
         AltContractSummary {
             status: latest
                 .map(|signal| status_from_severity(signal.severity).to_string())
@@ -613,11 +635,7 @@ impl BinanceAltContractService {
             signals1h: dry_run_stats.signals1h,
             would_send1h: dry_run_stats.would_send1h,
             top_active_symbols,
-            errors1h: state
-                .error_events
-                .iter()
-                .filter(|seen_at| now.saturating_sub(**seen_at) <= 60 * 60_000)
-                .count(),
+            errors1h,
             latest_direction: latest
                 .map(|signal| format!("{:?}", signal.direction).to_ascii_lowercase())
                 .unwrap_or_else(|| "neutral".to_string()),
@@ -637,6 +655,7 @@ impl BinanceAltContractService {
                 .count(),
             monitored_symbols,
             display_min_notional_usd: config.display.min_notional_usd,
+            display_thresholds_usd: config.display.thresholds_summary(),
             active_anomaly_count,
             recent_critical_or_s_count,
             dry_run_would_send_count,
@@ -649,6 +668,9 @@ impl BinanceAltContractService {
             dry_run_stats,
             symbol_universe: symbol_universe_summary(&config, &state.symbol_metas),
             all_market_context,
+            smaf_report,
+            smll_report,
+            atca_report,
         }
     }
 
@@ -667,7 +689,7 @@ impl BinanceAltContractService {
                     .map(|item| &signal.product_id == item)
                     .unwrap_or(true)
             })
-            .filter(|signal| display_signal(signal, config.display.min_notional_usd))
+            .filter(|signal| display_signal(signal, &config))
             .cloned()
             .collect::<Vec<_>>();
         sort_signals(&mut items);
@@ -698,7 +720,7 @@ impl BinanceAltContractService {
                     .map(|item| &signal.product_id == item)
                     .unwrap_or(true)
             })
-            .filter(|signal| display_signal(signal, config.display.min_notional_usd))
+            .filter(|signal| display_signal(signal, &config))
             .filter(|signal| {
                 severity_filter
                     .as_ref()
@@ -1455,8 +1477,17 @@ fn sort_signals(items: &mut [AltContractSignal]) {
     });
 }
 
-fn display_signal(signal: &AltContractSignal, min_notional_usd: f64) -> bool {
-    signal.total_notional_usd >= min_notional_usd
+fn display_signal(
+    signal: &AltContractSignal,
+    config: &super::config::BinanceAltContractRuntimeConfig,
+) -> bool {
+    let threshold =
+        if signal.display_threshold_usd.is_finite() && signal.display_threshold_usd > 0.0 {
+            signal.display_threshold_usd
+        } else {
+            config.display_threshold_for_product(&signal.product_id)
+        };
+    signal.total_notional_usd >= threshold
 }
 
 fn redact_error(error: String) -> String {

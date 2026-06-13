@@ -1,6 +1,7 @@
 import axios from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  displayThresholdForSignal,
   fetchBinanceAltContractHistory,
   fetchBinanceAltContractLatest,
   fetchBinanceAltContractSummary,
@@ -29,6 +30,11 @@ describe("binance alt contract api", () => {
           latestSeverity: "s",
           monitoredSymbols: ["SOLUSDT", "DOGEUSDT"],
           displayMinNotionalUsd: 500_000,
+          displayThresholdsUsd: {
+            ultraCore: 750_000,
+            mainstream: 500_000,
+            alt: 150_000,
+          },
           activeAnomalyCount: 2,
           recentCriticalOrSCount: 1,
           dryRunWouldSendCount: 1,
@@ -73,6 +79,113 @@ describe("binance alt contract api", () => {
               reconnectCount: 0,
             },
           },
+          smafReport: {
+            dataAudit: {
+              freshnessScore: 96,
+              completenessScore: 88,
+              consistencyScore: 94,
+              integrityScore: 92.7,
+              dataRiskLevel: "low",
+            },
+            signalAudit: {
+              noiseRatio: 3,
+              duplicationRate: 0,
+              singleSourceDependency: 25,
+              falseSignalEstimate: 5,
+              integrityScore: 91.8,
+            },
+            behaviorAudit: {
+              stateStability: 86,
+              transitionEntropy: 12,
+              manipulationNoise: 8,
+              structuralIntegrity: 88,
+            },
+            predictionAudit: {
+              accuracy: 84,
+              flipRate: 10,
+              overfittingScore: 5,
+              followThroughRate: 84,
+              integrityScore: 86,
+            },
+            smafScore: 89.6,
+            riskLevel: "Stable but tuning needed",
+            criticalIssues: ["single_source_dependency_high"],
+          },
+          smllReport: {
+            enabled: true,
+            protectedRealtime: true,
+            status: "calibration_suggested",
+            learningScore: 72,
+            sampleSize: 8,
+            minSamplesForUpdate: 3,
+            accuracyRate: 58,
+            wrongCount: 3,
+            neutralCount: 1,
+            outcomeRecords: [],
+            errorReports: [
+              {
+                errorType: "prediction_error",
+                severity: "high",
+                rootCause: "smp_direction_or_stage_followthrough_failed",
+                affectedModule: "SMP",
+              },
+            ],
+            suggestedWeights: {
+              volumeWeight: 0.95,
+              oiWeight: 0.85,
+              priceWeight: 1,
+              liquidationWeight: 1,
+              fundingWeight: 0.95,
+            },
+            driftReport: {
+              driftDetected: true,
+              affectedComponents: ["prediction_accuracy"],
+              suggestedRetrain: true,
+              reason: "accuracy_or_state_transition_changed",
+            },
+            calibrationUpdates: [
+              {
+                parameter: "smp.confidence_cap",
+                oldValue: 100,
+                newValue: 80,
+                reason: "SMP accuracy 低于 60%，建议收紧预测置信度上限",
+              },
+            ],
+          },
+          atcaReport: {
+            enabled: true,
+            protectedRealtime: true,
+            cognitionStatus: "active_cognition",
+            memorySummary: "short_memory=1 symbols · smaf=90 · learning_samples=8",
+            perceptionCount: 1,
+            interpretationCount: 1,
+            intentionCount: 1,
+            predictionCount: 1,
+            decisionCount: 1,
+            agents: [
+              {
+                symbol: "SOLUSDT",
+                state: "Markup",
+                intent: "trend_drive",
+                prediction: "Distribution",
+                confidence: 82,
+                risk: "high",
+                decision: {
+                  notify: true,
+                  severity: "S",
+                  reason: "trend_drive intent with 82% confidence",
+                },
+                marketState: {
+                  symbol: "SOLUSDT",
+                  priceStructure: "breakout_up",
+                  volumeFlow: "aggressive_buy",
+                  oiMovement: "expanding",
+                  liquidationPressure: "normal",
+                  marketImbalance: 74,
+                },
+              },
+            ],
+          },
         },
         items: [altSignal(), lowNotionalSignal()],
       },
@@ -88,6 +201,11 @@ describe("binance alt contract api", () => {
       latestSeverity: "s",
       monitoredSymbols: ["SOLUSDT", "DOGEUSDT"],
       displayMinNotionalUsd: 500_000,
+      displayThresholdsUsd: {
+        ultraCore: 750_000,
+        mainstream: 500_000,
+        alt: 150_000,
+      },
       activeAnomalyCount: 2,
       recentCriticalOrSCount: 1,
       dryRunWouldSendCount: 1,
@@ -116,16 +234,110 @@ describe("binance alt contract api", () => {
           latencyMs: 90,
         },
       },
+      smafReport: {
+        smafScore: 89.6,
+        riskLevel: "Stable but tuning needed",
+        criticalIssues: ["single_source_dependency_high"],
+        dataAudit: {
+          integrityScore: 92.7,
+          dataRiskLevel: "low",
+        },
+        predictionAudit: {
+          flipRate: 10,
+          integrityScore: 86,
+        },
+      },
+      smllReport: {
+        status: "calibration_suggested",
+        learningScore: 72,
+        sampleSize: 8,
+        accuracyRate: 58,
+        wrongCount: 3,
+        protectedRealtime: true,
+        suggestedWeights: {
+          oiWeight: 0.85,
+          volumeWeight: 0.95,
+        },
+        driftReport: {
+          driftDetected: true,
+          suggestedRetrain: true,
+        },
+        calibrationUpdates: [
+          {
+            parameter: "smp.confidence_cap",
+          },
+        ],
+      },
+      atcaReport: {
+        cognitionStatus: "active_cognition",
+        memorySummary: "short_memory=1 symbols · smaf=90 · learning_samples=8",
+        perceptionCount: 1,
+        decisionCount: 1,
+        protectedRealtime: true,
+        agents: [
+          {
+            symbol: "SOLUSDT",
+            intent: "trend_drive",
+            decision: {
+              notify: true,
+              severity: "S",
+            },
+            marketState: {
+              priceStructure: "breakout_up",
+            },
+          },
+        ],
+      },
     });
     expect(payload.items).toHaveLength(1);
     expect(payload.items[0]).toMatchObject({
       id: "bacm-sol-s",
       symbol: "SOL",
       productId: "SOLUSDT",
+      marketTier: "ultra_core",
+      displayThresholdUsd: 750_000,
       signalType: "main_force_long_build",
       severity: "s",
       abnormalScore: 91,
       buildScore: 87,
+      masterCapitalStrength: {
+        mcss: 88,
+        tier: "Ultra Core",
+        liquidityWeight: 0.6,
+        interpretation: "疑似机构级别流入",
+      },
+      marketRegime: {
+        regime: "Manipulation",
+        subType: "Manipulation_UP",
+        confidence: 82,
+        oiTrend: "down",
+        priceTrend: "spike_up",
+        efficiencyRatio: 0.12,
+        explanationTags: ["stop_hunt", "fake_breakout"],
+      },
+      smartMoneyLifecycle: {
+        lifecycleState: "Markup",
+        stateConfidence: 78,
+        stateDurationMin: 42,
+        transitionSignal: "Accumulation->Markup",
+        flowConsistencyScore: 81,
+        lifecycleScore: 84,
+        statePath: ["Accumulation", "Markup"],
+        explanationTags: ["oi_expansion", "flow_consistent", "mcss_confirmed"],
+        currentExplanation: "当前接近拉升阶段。",
+      },
+      smartMoneyPrediction: {
+        currentState: "Markup",
+        nextState: "Distribution",
+        probability: 76,
+        timeHorizonMin: 45,
+        directionBias: "BearishRisk",
+        directionProbability: 0.62,
+        confidence: 81,
+        predictionScore: 79,
+        triggerFactors: ["oi_momentum_divergence", "efficiency_decay"],
+        explanation: "拉升后默认观察是否进入派发阶段。",
+      },
       triggerPriceUsd: 175.5,
       discordWouldSend: true,
       discordSent: false,
@@ -137,6 +349,19 @@ describe("binance alt contract api", () => {
           status: "active",
         },
       ],
+    });
+    expect(payload.items[0].smartMoneyLifecycle).toMatchObject({
+      lifecycleState: "Markup",
+      stateConfidence: 78,
+      transitionSignal: "Accumulation->Markup",
+      statePath: ["Accumulation", "Markup"],
+    });
+    expect(payload.items[0].smartMoneyPrediction).toMatchObject({
+      currentState: "Markup",
+      nextState: "Distribution",
+      probability: 76,
+      directionBias: "BearishRisk",
+      directionProbability: 0.62,
     });
   });
 
@@ -184,6 +409,36 @@ describe("binance alt contract api", () => {
     expect(signal.token).toBeUndefined();
   });
 
+  it("filters display signals by ultra core, mainstream, and alt thresholds", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {
+          displayThresholdsUsd: {
+            ultraCore: 750_000,
+            mainstream: 500_000,
+            alt: 150_000,
+          },
+        },
+        items: [
+          { ...altSignal(), id: "btc-small", symbol: "BTC", productId: "BTCUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 400_000 },
+          { ...altSignal(), id: "eth-large", symbol: "ETH", productId: "ETHUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 800_000 },
+          { ...altSignal(), id: "xrp-small", symbol: "XRP", productId: "XRPUSDT", marketTier: "mainstream", displayThresholdUsd: 0, totalNotionalUsd: 400_000 },
+          { ...altSignal(), id: "ada-large", symbol: "ADA", productId: "ADAUSDT", marketTier: "mainstream", displayThresholdUsd: 0, totalNotionalUsd: 600_000 },
+          { ...altSignal(), id: "pepe-small", symbol: "PEPE", productId: "PEPEUSDT", marketTier: "alt", displayThresholdUsd: 0, totalNotionalUsd: 100_000 },
+          { ...altSignal(), id: "wif-large", symbol: "WIF", productId: "WIFUSDT", marketTier: "alt", displayThresholdUsd: 0, totalNotionalUsd: 200_000 },
+        ],
+      },
+    });
+
+    const payload = await fetchBinanceAltContractLatest(50);
+    const ids = payload.items.map((item) => item.id);
+
+    expect(ids).toEqual(["eth-large", "ada-large", "wif-large"]);
+    expect(displayThresholdForSignal(payload.items[0], payload.summary)).toBe(750_000);
+    expect(displayThresholdForSignal(payload.items[1], payload.summary)).toBe(500_000);
+    expect(displayThresholdForSignal(payload.items[2], payload.summary)).toBe(150_000);
+  });
+
   it("falls back to disabled read-only summary on request failure", async () => {
     axios.get.mockRejectedValueOnce(new Error("network"));
 
@@ -217,6 +472,57 @@ function altSignal() {
     totalVolumeBase: 820_000,
     netVolumeBase: 610_000,
     totalNotionalUsd: 143_910_000,
+    marketTier: "ultra_core",
+    displayThresholdUsd: 750_000,
+    masterCapitalStrength: {
+      mcss: 88,
+      tier: "Ultra Core",
+      liquidityWeight: 0.6,
+      notionalScore: 22,
+      directionScore: 25,
+      oiScore: 25,
+      priceScore: 20,
+      anomalyScore: 20,
+      liquidationPenalty: 0,
+      interpretation: "疑似机构级别流入",
+    },
+    marketRegime: {
+      regime: "Manipulation",
+      subType: "Manipulation_UP",
+      confidence: 82,
+      mcScore: 88,
+      oiTrend: "down",
+      priceTrend: "spike_up",
+      trend5m: "spike_up",
+      trend15m: "spike_up",
+      trend1h: "unknown",
+      efficiencyRatio: 0.12,
+      oiLagIndex: 1.4,
+      explanationTags: ["stop_hunt", "fake_breakout"],
+    },
+    smartMoneyLifecycle: {
+      lifecycleState: "Markup",
+      stateConfidence: 78,
+      stateDurationMin: 42,
+      transitionSignal: "Accumulation->Markup",
+      flowConsistencyScore: 81,
+      lifecycleScore: 84,
+      statePath: ["Accumulation", "Markup"],
+      explanationTags: ["oi_expansion", "flow_consistent", "mcss_confirmed"],
+      currentExplanation: "当前接近拉升阶段。",
+    },
+    smartMoneyPrediction: {
+      currentState: "Markup",
+      nextState: "Distribution",
+      probability: 76,
+      timeHorizonMin: 45,
+      directionBias: "BearishRisk",
+      directionProbability: 0.62,
+      confidence: 81,
+      predictionScore: 79,
+      triggerFactors: ["oi_momentum_divergence", "efficiency_decay"],
+      explanation: "拉升后默认观察是否进入派发阶段。",
+    },
     triggerPriceUsd: 175.5,
     dominance: 0.74,
     priceMovePct: 2.4,
@@ -248,6 +554,8 @@ function lowNotionalSignal() {
     id: "bacm-doge-small",
     symbol: "DOGE",
     productId: "DOGEUSDT",
+    marketTier: "mainstream",
+    displayThresholdUsd: 500_000,
     totalVolumeBase: 1_000,
     totalNotionalUsd: 499_999,
     triggerPriceUsd: 0.2,

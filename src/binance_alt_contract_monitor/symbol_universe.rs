@@ -65,6 +65,7 @@ pub fn build_symbol_universe(
             symbol: base_symbol(&candidate.symbol),
             product_id: candidate.symbol.to_ascii_uppercase(),
             tier: tier_for_quote_volume(candidate.quote_volume_24h_usd),
+            market_tier: config.classify_market_tier(&candidate.symbol),
             quote_volume_24h_usd: candidate.quote_volume_24h_usd,
         })
         .collect::<Vec<_>>();
@@ -100,10 +101,12 @@ pub fn tier_for_quote_volume(quote_volume_24h_usd: f64) -> AltContractSymbolTier
 }
 
 pub fn meta_from_product_id(product_id: &str) -> AltContractSymbolMeta {
+    let config = super::config::binance_alt_contract_runtime_config();
     AltContractSymbolMeta {
         symbol: base_symbol(product_id),
         product_id: product_id.to_ascii_uppercase(),
         tier: AltContractSymbolTier::B,
+        market_tier: config.classify_market_tier(product_id),
         quote_volume_24h_usd: 250_000_000.0,
     }
 }

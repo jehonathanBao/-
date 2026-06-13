@@ -1,10 +1,14 @@
 use super::{
     config::BinanceAltContractRuntimeConfig,
     discord::{evaluate_alt_contract_discord_gate, AltContractDiscordCooldownStore},
+    mcss::score_master_capital_strength,
+    regime::classify_market_regime,
     scoring::{
         funding_crowding_label, funding_crowding_penalty, score_alt_contract_signal,
         AltContractScoreResult,
     },
+    smle::classify_smart_money_lifecycle,
+    smp::predict_smart_money_next_stage,
     types::{
         AltContractContext, AltContractDirection, AltContractGradeCondition,
         AltContractScoreBreakdown, AltContractSeverity, AltContractSignal, AltContractSignalType,
@@ -93,6 +97,31 @@ pub fn detect_alt_contract_signal_with_context(
     let funding_crowding = funding_crowding_label(stats, context);
     let funding_penalty = funding_crowding_penalty(stats, context);
     let signal_vwap = stats.trigger_price_usd.unwrap_or_default();
+    let market_tier = config.classify_market_tier(&stats.product_id);
+    let display_threshold_usd = config.display.threshold_for_market_tier(market_tier);
+    let master_capital_strength = score_master_capital_strength(stats, context, market_tier);
+    let market_regime = classify_market_regime(
+        stats,
+        context,
+        &master_capital_strength,
+        &window_confirmations,
+        &market_context,
+    );
+    let smart_money_lifecycle = classify_smart_money_lifecycle(
+        stats,
+        context,
+        &master_capital_strength,
+        &market_regime,
+        &window_confirmations,
+        None,
+    );
+    let smart_money_prediction = predict_smart_money_next_stage(
+        stats,
+        context,
+        &master_capital_strength,
+        &smart_money_lifecycle,
+        &market_regime,
+    );
     let warmup = stats
         .startup_age_ms
         .is_some_and(|age| age < config.data_quality.warmup_ms);
@@ -108,12 +137,18 @@ pub fn detect_alt_contract_signal_with_context(
         symbol: stats.symbol.clone(),
         product_id: stats.product_id.clone(),
         tier: stats.tier,
+        market_tier,
+        display_threshold_usd: round(display_threshold_usd, 2),
         window_sec: stats.window_sec,
         signal_type,
         direction,
         severity,
         abnormal_score: score.abnormal_score,
         build_score: score.build_score,
+        master_capital_strength,
+        market_regime,
+        smart_money_lifecycle,
+        smart_money_prediction,
         s_grade_eligible: s_grade.eligible,
         s_grade_conditions: s_grade.conditions,
         s_grade_notional_threshold_usd: round(s_grade.notional_threshold_usd, 2),
