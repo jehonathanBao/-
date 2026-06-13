@@ -13,6 +13,7 @@ pub struct SpotWhaleRuntimeConfig {
     pub exchanges: SpotWhaleExchangeConfig,
     pub symbols: BTreeMap<String, SpotWhaleSymbolConfig>,
     pub data_quality: SpotWhaleDataQualityConfig,
+    pub performance: SpotWhalePerformanceConfig,
 }
 
 impl SpotWhaleRuntimeConfig {
@@ -52,6 +53,7 @@ impl Default for SpotWhaleRuntimeConfig {
             exchanges: SpotWhaleExchangeConfig::default(),
             symbols,
             data_quality: SpotWhaleDataQualityConfig::default(),
+            performance: SpotWhalePerformanceConfig::default(),
         }
     }
 }
@@ -220,6 +222,21 @@ impl Default for SpotWhaleDataQualityConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SpotWhalePerformanceConfig {
+    pub scan_interval_ms: i64,
+    pub duplicate_window_ms: i64,
+}
+
+impl Default for SpotWhalePerformanceConfig {
+    fn default() -> Self {
+        Self {
+            scan_interval_ms: 2_000,
+            duplicate_window_ms: 60_000,
+        }
+    }
+}
+
 pub fn spot_whale_runtime_config() -> SpotWhaleRuntimeConfig {
     global_config()
         .read()
@@ -278,6 +295,18 @@ pub fn load_spot_whale_runtime_config_from_settings(
                 settings,
                 "spot_whale_monitor.data_quality.heartbeat_stale_ms",
                 45_000,
+            ),
+        },
+        performance: SpotWhalePerformanceConfig {
+            scan_interval_ms: i64_setting(
+                settings,
+                "spot_whale_monitor.performance.scan_interval_ms",
+                2_000,
+            ),
+            duplicate_window_ms: i64_setting(
+                settings,
+                "spot_whale_monitor.performance.duplicate_window_ms",
+                60_000,
             ),
         },
     }

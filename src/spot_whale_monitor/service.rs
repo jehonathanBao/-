@@ -31,7 +31,6 @@ const WINDOWS_SEC: [u64; 3] = [5, 15, 60];
 const MAX_TRADES: usize = 120_000;
 const MAX_SIGNALS: usize = 500;
 const TRADE_RETENTION_MS: i64 = 3_600_000;
-const DUPLICATE_WINDOW_MS: i64 = 10_000;
 
 #[derive(Clone)]
 pub struct SpotWhaleService {
@@ -49,6 +48,7 @@ struct SpotWhaleState {
     signals: VecDeque<SpotWhaleSignal>,
     seen_signal_ids: BTreeSet<String>,
     exchanges: BTreeMap<String, SpotExchangeStatus>,
+    last_detector_scan_at: BTreeMap<String, i64>,
     last_discord_sent_at: Option<i64>,
 }
 
@@ -96,6 +96,7 @@ impl SpotWhaleService {
                 signals: restored.signals,
                 seen_signal_ids: restored.seen_signal_ids,
                 exchanges,
+                last_detector_scan_at: BTreeMap::new(),
                 last_discord_sent_at: restored.last_discord_sent_at,
             })),
             tasks: Arc::new(RwLock::new(Vec::new())),
@@ -162,6 +163,9 @@ impl SpotWhaleService {
             prune_trades(&mut state.trades, trade.ts);
         }
         let config = spot_whale_runtime_config();
+        if !self.should_run_detector(&trade.symbol, trade.ts, config.performance.scan_interval_ms) {
+            return Vec::new();
+        }
         let mut candidates = WINDOWS_SEC
             .iter()
             .filter_map(|window_sec| {
@@ -454,8 +458,11 @@ impl SpotWhaleService {
     }
 
     fn insert_signal(&self, signal: SpotWhaleSignal) -> bool {
+        let duplicate_window_ms = spot_whale_runtime_config().performance.duplicate_window_ms;
         let mut state = self.state.write();
-        if state.seen_signal_ids.contains(&signal.id) || duplicate_recent(&state.signals, &signal) {
+        if state.seen_signal_ids.contains(&signal.id)
+            || duplicate_recent(&state.signals, &signal, duplicate_window_ms)
+        {
             return false;
         }
         state.seen_signal_ids.insert(signal.id.clone());
@@ -467,6 +474,21 @@ impl SpotWhaleService {
         }
         drop(state);
         self.persist_signal(&signal);
+        true
+    }
+
+    fn should_run_detector(&self, symbol: &str, now: i64, scan_interval_ms: i64) -> bool {
+        let scan_interval_ms = scan_interval_ms.max(0);
+        let mut state = self.state.write();
+        let last_scan_at = state
+            .last_detector_scan_at
+            .get(symbol)
+            .copied()
+            .unwrap_or(i64::MIN);
+        if now.saturating_sub(last_scan_at) < scan_interval_ms {
+            return false;
+        }
+        state.last_detector_scan_at.insert(symbol.to_string(), now);
         true
     }
 
@@ -730,12 +752,17 @@ fn exchange_latest_price(trades: &[SpotTrade], exchange: &str) -> Option<f64> {
         .map(|trade| trade.price)
 }
 
-fn duplicate_recent(signals: &VecDeque<SpotWhaleSignal>, signal: &SpotWhaleSignal) -> bool {
+fn duplicate_recent(
+    signals: &VecDeque<SpotWhaleSignal>,
+    signal: &SpotWhaleSignal,
+    duplicate_window_ms: i64,
+) -> bool {
+    let duplicate_window_ms = duplicate_window_ms.max(0);
     signals.iter().rev().take(20).any(|existing| {
         existing.symbol == signal.symbol
             && existing.signal_type == signal.signal_type
             && existing.direction == signal.direction
-            && signal.ts.saturating_sub(existing.ts) <= DUPLICATE_WINDOW_MS
+            && signal.ts.saturating_sub(existing.ts) <= duplicate_window_ms
             && existing.severity.rank() >= signal.severity.rank()
     })
 }

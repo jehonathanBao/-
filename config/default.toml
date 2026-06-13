@@ -316,6 +316,10 @@ warmup_ms = 60000
 single_exchange_penalty = 20
 heartbeat_stale_ms = 45000
 
+[spot_whale_monitor.performance]
+scan_interval_ms = 2000
+duplicate_window_ms = 60000
+
 [spot_whale_monitor.symbols.BTC]
 enabled = true
 

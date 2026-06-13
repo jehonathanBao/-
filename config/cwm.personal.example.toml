@@ -80,6 +80,10 @@ enabled = true
 [spot_whale_monitor.exchanges.bitfinex]
 enabled = true
 
+[spot_whale_monitor.performance]
+scan_interval_ms = 2000
+duplicate_window_ms = 60000
+
 [binance_alt_contract_monitor]
 enabled = true
 dry_run = true

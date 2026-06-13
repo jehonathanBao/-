@@ -62,14 +62,25 @@ pub fn detect_spot_whale_signal_with_config(
         analysis_only: true,
         execution_enabled: false,
     };
-    tracing::info!(
-        target: LOG_TARGET,
-        symbol = signal.symbol.as_str(),
-        severity = ?signal.severity,
-        score = signal.score,
-        "{} signal generated",
-        LOG_PREFIX
-    );
+    if signal.severity.rank() >= SpotWhaleSeverity::High.rank() {
+        tracing::info!(
+            target: LOG_TARGET,
+            symbol = signal.symbol.as_str(),
+            severity = ?signal.severity,
+            score = signal.score,
+            "{} signal generated",
+            LOG_PREFIX
+        );
+    } else {
+        tracing::debug!(
+            target: LOG_TARGET,
+            symbol = signal.symbol.as_str(),
+            severity = ?signal.severity,
+            score = signal.score,
+            "{} signal generated",
+            LOG_PREFIX
+        );
+    }
     Some(signal)
 }
 
