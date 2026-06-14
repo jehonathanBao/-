@@ -59,6 +59,7 @@ const calmSummary = {
     reason: "",
   },
   trend60s: {
+    symbol: "BTC",
     buyVolumeBtc: 0,
     sellVolumeBtc: 0,
     totalVolumeBtc: 0,
@@ -520,7 +521,7 @@ function normalizeSummary(summary) {
     overallDataQuality: numberOrNull(summary.overallDataQuality) || 0,
     discordDryRunStats: normalizeDiscordDryRunStats(summary.discordDryRunStats),
     marketStructureLite: normalizeMarketStructureLite(summary.marketStructureLite),
-    trend60s: normalizeTrend60s(summary.trend60s),
+    trend60s: normalizeTrend60s(summary.trend60s, summary.symbol),
     exchanges: normalizeExchanges(summary.exchanges),
     platforms: normalizePlatforms(summary.platforms),
   };
@@ -655,9 +656,10 @@ function normalizeStringMap(value) {
   );
 }
 
-function normalizeTrend60s(trend) {
+function normalizeTrend60s(trend, symbol = "BTC") {
   const source = trend && typeof trend === "object" ? trend : {};
   return {
+    symbol: source.symbol || symbol || "BTC",
     buyVolumeBtc: numberOrNull(source.buyVolumeBtc) || 0,
     sellVolumeBtc: numberOrNull(source.sellVolumeBtc) || 0,
     totalVolumeBtc: numberOrNull(source.totalVolumeBtc) || 0,

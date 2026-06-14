@@ -530,6 +530,76 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("已结束")).toBeInTheDocument();
   });
 
+  it("uses the signal symbol as the base unit for ETH contract flow values", async () => {
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: {
+        status: "active",
+        healthStatus: "healthy",
+        thresholdProfile: "binance_bitfinex",
+        thresholdProfileReason: "active_contract_sources=binance,bitfinex",
+        latestDirection: "buy",
+        latestSeverity: "medium",
+        signalCount: 1,
+        readOnly: true,
+        enabled: true,
+        dryRun: true,
+        contractDataQuality: 78,
+        spotDataQuality: 60,
+        overallDataQuality: 71,
+        discordDryRunStats: {},
+        marketStructureLite: {},
+        trend60s: {
+          symbol: "ETH",
+          buyVolumeBtc: 688,
+          sellVolumeBtc: 73,
+          totalVolumeBtc: 761,
+          netVolumeBtc: 614,
+          dominance: 0.807,
+          buyRatio: 0.904,
+          sellRatio: 0.096,
+        },
+        exchanges: {},
+        platforms: {},
+      },
+      items: [
+        {
+          id: "eth-contract-whale-row",
+          ts: 1_700_000_100_000,
+          symbol: "ETH",
+          windowSec: 60,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 34,
+          mainForceScore: 34,
+          spotScore: 27,
+          contractScore: 21,
+          totalVolumeBtc: 16869,
+          netVolumeBtc: 610,
+          totalNotionalUsd: 28_000_000,
+          dominance: 0.036,
+          triggerPriceUsd: 1675,
+          priceDeviationPct: 0.04,
+          priceMovePct: 0.03,
+          mainExchange: "binance",
+          liquidationSuspected: false,
+          oiBias: "unknown",
+          fundingBias: "unknown",
+          exchanges: [],
+          finalResult: "ETH 主动买入放大",
+        },
+      ],
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText("16,869 ETH")).toBeInTheDocument();
+    expect(screen.getByText("净买入 610 ETH")).toBeInTheDocument();
+    expect(screen.getByText("总量 761 ETH · dominance 80.7%")).toBeInTheDocument();
+    expect(screen.queryByText("净买入 610 BTC")).not.toBeInTheDocument();
+  });
+
   it("syncs filters to the history API", async () => {
     const user = userEvent.setup();
     render(<ContractWhaleMonitor />);

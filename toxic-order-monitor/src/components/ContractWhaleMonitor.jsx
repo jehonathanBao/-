@@ -202,7 +202,7 @@ export default function ContractWhaleMonitor() {
         </div>
       </div>
 
-      <ContractWhaleTrendBar trend={summary.trend60s} />
+      <ContractWhaleTrendBar trend={summary.trend60s} symbol={filters.symbol} />
 
       <p className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2 text-xs leading-5 text-slate-400">
         合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
@@ -308,13 +308,13 @@ export default function ContractWhaleMonitor() {
                     </span>
                   </Cell>
                   <Cell>{item.windowSec}s</Cell>
-                  <Cell>{formatBtc(item.totalVolumeBtc)}</Cell>
+                  <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
                   <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
                   <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
                   <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
                   <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
-                  <Cell>{netDirection(item.netVolumeBtc)}</Cell>
+                  <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
                   <Cell>{formatPct(item.dominance * 100)}</Cell>
                   <Cell>{formatMultiple(item.dynamicMultiple)}</Cell>
                   <Cell>{formatPercentile(item.percentileLevel)}</Cell>
@@ -516,8 +516,8 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["现货评分", `${Number(signal.spotConfirmation?.score || 0)}/100`],
               ["现货类型", signal.spotConfirmation?.signalType ? spotSignalTypeLabel(signal.spotConfirmation.signalType) : "N/A"],
               ["现货等级", signal.spotConfirmation?.severity ? severityLabel(signal.spotConfirmation.severity) : "N/A"],
-              ["现货成交量", signal.spotConfirmation?.totalVolumeBtc === null || signal.spotConfirmation?.totalVolumeBtc === undefined ? "N/A" : formatBtc(signal.spotConfirmation.totalVolumeBtc)],
-              ["现货净方向", signal.spotConfirmation?.netVolumeBtc === null || signal.spotConfirmation?.netVolumeBtc === undefined ? "N/A" : netDirection(signal.spotConfirmation.netVolumeBtc)],
+              ["现货成交量", signal.spotConfirmation?.totalVolumeBtc === null || signal.spotConfirmation?.totalVolumeBtc === undefined ? "N/A" : formatBaseVolume(signal.spotConfirmation.totalVolumeBtc, signal.symbol)],
+              ["现货净方向", signal.spotConfirmation?.netVolumeBtc === null || signal.spotConfirmation?.netVolumeBtc === undefined ? "N/A" : netDirection(signal.spotConfirmation.netVolumeBtc, signal.symbol)],
               ["Coinbase 溢价", signal.spotConfirmation?.coinbasePremiumPct === null || signal.spotConfirmation?.coinbasePremiumPct === undefined ? "N/A" : formatSignedPct(signal.spotConfirmation.coinbasePremiumPct)],
               ["现货结论", signal.spotConfirmation?.finalResult || "N/A"],
             ]}
@@ -540,10 +540,10 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                   <p className="font-bold text-slate-100">{windowSec}s</p>
                   {item ? (
                     <div className="mt-2 space-y-1 text-xs text-slate-300">
-                      <p>成交量：{formatBtc(item.totalVolumeBtc)}</p>
+                      <p>成交量：{formatBaseVolume(item.totalVolumeBtc, signal.symbol)}</p>
                       <p>名义金额：{formatUsd(item.totalNotionalUsd)}</p>
                       <p>价格：{formatPrice(signalTriggerPrice(item))}</p>
-                      <p>净方向：{netDirection(item.netVolumeBtc)}</p>
+                      <p>净方向：{netDirection(item.netVolumeBtc, signal.symbol)}</p>
                       <p>价格变化：{formatSignedPct(item.priceMovePct)}</p>
                       <p>异常倍数：{formatMultiple(item.dynamicMultiple)}</p>
                     </div>
@@ -563,11 +563,11 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3" key={exchange.exchange}>
                   <p className="font-bold text-slate-100">{exchangeLabel(exchange.exchange)}</p>
                   <div className="mt-2 space-y-1 text-xs text-slate-300">
-                    <p>主动买入：{formatBtc(exchange.buyVolumeBtc)}</p>
-                    <p>主动卖出：{formatBtc(exchange.sellVolumeBtc)}</p>
-                    <p>总量：{formatBtc(exchange.totalVolumeBtc)}</p>
+                    <p>主动买入：{formatBaseVolume(exchange.buyVolumeBtc, signal.symbol)}</p>
+                    <p>主动卖出：{formatBaseVolume(exchange.sellVolumeBtc, signal.symbol)}</p>
+                    <p>总量：{formatBaseVolume(exchange.totalVolumeBtc, signal.symbol)}</p>
                     <p>买/卖占比：{formatPct(Number(exchange.buyShare || 0) * 100)} / {formatPct(Number(exchange.sellShare || 0) * 100)}</p>
-                    <p>净方向：{netDirection(exchange.netVolumeBtc)}</p>
+                    <p>净方向：{netDirection(exchange.netVolumeBtc, signal.symbol)}</p>
                     <p>方向强度：{formatPct(exchange.dominance * 100)}</p>
                     <p>净流贡献：{formatPct(Number(exchange.netContributionShare || 0) * 100)}</p>
                   </div>
@@ -584,7 +584,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <DetailGrid
               rows={[
                 ["Dynamic Multiple", formatMultiple(signal.dynamicMultiple)],
-                ["Dynamic Baseline", signal.dynamicBaselineBtc === null || signal.dynamicBaselineBtc === undefined ? "N/A" : formatBtc(signal.dynamicBaselineBtc)],
+                ["Dynamic Baseline", signal.dynamicBaselineBtc === null || signal.dynamicBaselineBtc === undefined ? "N/A" : formatBaseVolume(signal.dynamicBaselineBtc, signal.symbol)],
                 ["Dynamic Level", dynamicThresholdLevelLabel(signal.dynamicThresholdLevel)],
                 ["Percentile", formatPercentile(signal.percentileLevel)],
                 ["Price Move", formatSignedPct(signal.priceMovePct)],
@@ -640,12 +640,13 @@ function DetailGrid({ rows }) {
   );
 }
 
-function ContractWhaleTrendBar({ trend }) {
+function ContractWhaleTrendBar({ trend, symbol }) {
   const item = trend || {};
+  const baseSymbol = baseAssetSymbol(item.symbol || symbol);
   const total = Number(item.totalVolumeBtc || 0);
   const buyRatio = total > 0 ? clampRatio(item.buyRatio) : 0;
   const sellRatio = total > 0 ? clampRatio(item.sellRatio || (1 - buyRatio)) : 0;
-  const netDirectionLabel = netDirection(Number(item.netVolumeBtc || 0));
+  const netDirectionLabel = netDirection(Number(item.netVolumeBtc || 0), baseSymbol);
   return (
     <div className="console-panel-muted mt-4 px-4 py-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -657,7 +658,7 @@ function ContractWhaleTrendBar({ trend }) {
         </div>
         <div className="text-xs text-slate-400 md:text-right">
           <p>{netDirectionLabel}</p>
-          <p>总量 {formatBtc(total)} · dominance {formatPct(Number(item.dominance || 0) * 100)}</p>
+          <p>总量 {formatBaseVolume(total, baseSymbol)} · dominance {formatPct(Number(item.dominance || 0) * 100)}</p>
         </div>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-red-500/20">
@@ -668,8 +669,8 @@ function ContractWhaleTrendBar({ trend }) {
         />
       </div>
       <div className="mt-2 flex justify-between text-[11px] text-slate-400">
-        <span>主动买入 {formatBtc(item.buyVolumeBtc)}</span>
-        <span>主动卖出 {formatBtc(item.sellVolumeBtc)}</span>
+        <span>主动买入 {formatBaseVolume(item.buyVolumeBtc, baseSymbol)}</span>
+        <span>主动卖出 {formatBaseVolume(item.sellVolumeBtc, baseSymbol)}</span>
       </div>
       <p className="mt-2 text-[11px] text-slate-500">
         最近 60 秒主动成交流只表示 flow，不用于判断平台在线 / 离线状态。
@@ -1226,14 +1227,24 @@ function sourceListLabel(value) {
   return value.map(exchangeLabel).join(", ");
 }
 
-function netDirection(value) {
-  if (value > 0) return `净买入 ${formatBtc(Math.abs(value))}`;
-  if (value < 0) return `净卖出 ${formatBtc(Math.abs(value))}`;
+function netDirection(value, symbol = "BTC") {
+  if (value > 0) return `净买入 ${formatBaseVolume(Math.abs(value), symbol)}`;
+  if (value < 0) return `净卖出 ${formatBaseVolume(Math.abs(value), symbol)}`;
   return "中性";
 }
 
 function formatBtc(value) {
-  return `${Math.round(Number(value || 0)).toLocaleString("en-US")} BTC`;
+  return formatBaseVolume(value, "BTC");
+}
+
+function formatBaseVolume(value, symbol = "BTC") {
+  return `${Math.round(Number(value || 0)).toLocaleString("en-US")} ${baseAssetSymbol(symbol)}`;
+}
+
+function baseAssetSymbol(symbol = "BTC") {
+  return String(symbol || "BTC")
+    .toUpperCase()
+    .replace(/[-_/]?(USDT|USD|PERP|SWAP)$/i, "") || "BTC";
 }
 
 function formatUsd(value) {
@@ -1349,7 +1360,7 @@ function liquidationStatus(item) {
   const ratio = item.liquidationRatio === null || item.liquidationRatio === undefined
     ? "N/A"
     : formatPct(Number(item.liquidationRatio) * 100);
-  return `疑似强平 ${formatBtc(total)} / ${ratio}`;
+  return `疑似强平 ${formatBaseVolume(total, item.symbol)} / ${ratio}`;
 }
 
 function oiStatus(item) {
@@ -1358,7 +1369,7 @@ function oiStatus(item) {
   const pct = item.oiChangePct === null || item.oiChangePct === undefined
     ? ""
     : ` / ${formatSignedPct(item.oiChangePct)}`;
-  return `${formatSignedBtc(item.oiChange5mBtc)}${pct} ${bias}`;
+  return `${formatSignedBaseVolume(item.oiChange5mBtc, item.symbol)}${pct} ${bias}`;
 }
 
 function fundingStatus(item) {
@@ -1441,9 +1452,13 @@ function fundingBiasLabel(value) {
 }
 
 function formatSignedBtc(value) {
+  return formatSignedBaseVolume(value, "BTC");
+}
+
+function formatSignedBaseVolume(value, symbol = "BTC") {
   const number = Number(value || 0);
   const sign = number >= 0 ? "+" : "-";
-  return `${sign}${formatBtc(Math.abs(number))}`;
+  return `${sign}${formatBaseVolume(Math.abs(number), symbol)}`;
 }
 
 function relativeAge(value) {
