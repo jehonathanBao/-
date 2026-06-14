@@ -7,8 +7,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use super::{
     log_events,
     normalizer::{
-        normalize_okx_funding_rate_json, normalize_okx_liquidation_order_json,
-        normalize_okx_open_interest_json,
+        normalize_okx_funding_rate_json_for_inst, normalize_okx_liquidation_order_json_for_inst,
+        normalize_okx_open_interest_json_for_inst, okx_usdt_swap_inst_id,
     },
     types::{ContractFundingSnapshot, ContractLiquidationOrder, ContractOiSnapshot},
     LOG_PREFIX, LOG_TARGET,
@@ -112,33 +112,77 @@ pub fn handle_liquidation_order_message(
     text: &str,
     ct_val_btc: f64,
 ) -> Vec<ContractLiquidationOrder> {
+    handle_liquidation_order_message_for_inst("BTC-USDT-SWAP", text, ct_val_btc)
+}
+
+pub fn handle_liquidation_order_message_for_inst(
+    inst_id: &str,
+    text: &str,
+    ct_val_base: f64,
+) -> Vec<ContractLiquidationOrder> {
     let Ok(payload) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
-    normalize_okx_liquidation_order_json(&payload, ct_val_btc)
+    normalize_okx_liquidation_order_json_for_inst(inst_id, &payload, ct_val_base)
+}
+
+pub fn okx_open_interest_url(symbol: &str) -> String {
+    format!(
+        "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId={}",
+        okx_usdt_swap_inst_id(symbol)
+    )
+}
+
+pub fn okx_funding_rate_url(symbol: &str) -> String {
+    format!(
+        "https://www.okx.com/api/v5/public/funding-rate?instId={}",
+        okx_usdt_swap_inst_id(symbol)
+    )
 }
 
 pub async fn fetch_okx_open_interest_snapshot(
     client: &reqwest::Client,
     ct_val_btc: f64,
 ) -> anyhow::Result<Option<ContractOiSnapshot>> {
+    fetch_okx_open_interest_snapshot_for_symbol(client, "BTC", ct_val_btc).await
+}
+
+pub async fn fetch_okx_open_interest_snapshot_for_symbol(
+    client: &reqwest::Client,
+    symbol: &str,
+    ct_val_base: f64,
+) -> anyhow::Result<Option<ContractOiSnapshot>> {
     let payload = client
-        .get(OKX_BTC_USDT_SWAP_OPEN_INTEREST_URL)
+        .get(okx_open_interest_url(symbol))
         .send()
         .await?
         .json::<serde_json::Value>()
         .await?;
-    Ok(normalize_okx_open_interest_json(&payload, ct_val_btc))
+    Ok(normalize_okx_open_interest_json_for_inst(
+        &okx_usdt_swap_inst_id(symbol),
+        &payload,
+        ct_val_base,
+    ))
 }
 
 pub async fn fetch_okx_funding_snapshot(
     client: &reqwest::Client,
 ) -> anyhow::Result<Option<ContractFundingSnapshot>> {
+    fetch_okx_funding_snapshot_for_symbol(client, "BTC").await
+}
+
+pub async fn fetch_okx_funding_snapshot_for_symbol(
+    client: &reqwest::Client,
+    symbol: &str,
+) -> anyhow::Result<Option<ContractFundingSnapshot>> {
     let payload = client
-        .get(OKX_BTC_USDT_SWAP_FUNDING_RATE_URL)
+        .get(okx_funding_rate_url(symbol))
         .send()
         .await?
         .json::<serde_json::Value>()
         .await?;
-    Ok(normalize_okx_funding_rate_json(&payload))
+    Ok(normalize_okx_funding_rate_json_for_inst(
+        &okx_usdt_swap_inst_id(symbol),
+        &payload,
+    ))
 }

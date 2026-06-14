@@ -73,6 +73,9 @@ pub fn detect_contract_whale_signal_with_config(
     let direction = direction_for(signal_type);
 
     let active_sources = active_source_snapshot(&scoring_stats, config, &resolution);
+    let base_asset = contract_base_asset(&stats.symbol);
+    let total_volume = round(stats.total_volume_btc, 3);
+    let net_volume = round(stats.net_volume_btc, 3);
     let signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
@@ -91,8 +94,12 @@ pub fn detect_contract_whale_signal_with_config(
         main_force_score: None,
         spot_score: None,
         contract_score: None,
-        total_volume_btc: round(stats.total_volume_btc, 3),
-        net_volume_btc: round(stats.net_volume_btc, 3),
+        base_asset: base_asset.clone(),
+        quantity_unit: base_asset,
+        total_volume,
+        net_volume,
+        total_volume_btc: total_volume,
+        net_volume_btc: net_volume,
         total_notional_usd: round(stats.total_notional_usd, 2),
         dominance: round(stats.dominance, 4),
         order_price_usd: signal_price_usd(&scoring_stats).map(|value| round(value, 2)),
@@ -570,6 +577,17 @@ fn active_source_contains(resolution: &ThresholdProfileResolution, exchange: &st
         .active_contract_sources
         .iter()
         .any(|source| source.as_key().eq_ignore_ascii_case(exchange))
+}
+
+fn contract_base_asset(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .unwrap_or(symbol)
+        .trim_end_matches("USDT")
+        .trim_end_matches("USD")
+        .to_ascii_uppercase()
 }
 
 fn direction_for(signal_type: ContractWhaleSignalType) -> ContractWhaleDirection {

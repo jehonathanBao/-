@@ -600,6 +600,107 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("净买入 610 BTC")).not.toBeInTheDocument();
   });
 
+  it("uses the selected symbol as the trend unit when ETH summary omits trend symbol", async () => {
+    const user = userEvent.setup();
+    fetchContractWhaleLatest
+      .mockResolvedValueOnce({
+        summary: {
+          status: "calm",
+          healthStatus: "healthy",
+          latestDirection: "neutral",
+          latestSeverity: "calm",
+          signalCount: 0,
+          readOnly: true,
+          enabled: true,
+          dryRun: true,
+          contractDataQuality: 90,
+          spotDataQuality: 80,
+          overallDataQuality: 85,
+          discordDryRunStats: {},
+          marketStructureLite: {},
+          trend60s: {
+            symbol: "BTC",
+            buyVolumeBtc: 0,
+            sellVolumeBtc: 0,
+            totalVolumeBtc: 0,
+            netVolumeBtc: 0,
+            dominance: 0,
+            buyRatio: 0,
+            sellRatio: 0,
+          },
+          exchanges: {},
+          platforms: {},
+        },
+        items: [],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        summary: {
+          status: "active",
+          healthStatus: "healthy",
+          latestDirection: "buy",
+          latestSeverity: "medium",
+          signalCount: 1,
+          readOnly: true,
+          enabled: true,
+          dryRun: true,
+          contractDataQuality: 78,
+          spotDataQuality: 60,
+          overallDataQuality: 71,
+          discordDryRunStats: {},
+          marketStructureLite: {},
+          trend60s: {
+            buyVolumeBtc: 688,
+            sellVolumeBtc: 73,
+            totalVolumeBtc: 761,
+            netVolumeBtc: 614,
+            dominance: 0.807,
+            buyRatio: 0.904,
+            sellRatio: 0.096,
+          },
+          exchanges: {},
+          platforms: {},
+        },
+        items: [
+          {
+            id: "eth-selected-contract-whale-row",
+            ts: 1_700_000_100_000,
+            symbol: "ETH",
+            windowSec: 60,
+            signalType: "aggressive_buy",
+            direction: "buy",
+            severity: "medium",
+            score: 34,
+            mainForceScore: 34,
+            spotScore: 27,
+            contractScore: 21,
+            totalVolumeBtc: 16869,
+            netVolumeBtc: 610,
+            totalNotionalUsd: 28_000_000,
+            dominance: 0.036,
+            triggerPriceUsd: 1675,
+            priceDeviationPct: 0.04,
+            priceMovePct: 0.03,
+            mainExchange: "binance",
+            exchanges: [],
+            finalResult: "ETH 主动买入放大",
+          },
+        ],
+        error: null,
+      });
+
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("主力合约监控");
+    await user.selectOptions(screen.getByLabelText("币种"), "ETH");
+
+    await waitFor(() => expect(fetchContractWhaleLatest).toHaveBeenLastCalledWith(50, "ETH"));
+    expect(await screen.findByText("总量 761 ETH · dominance 80.7%")).toBeInTheDocument();
+    expect(screen.getByText("净买入 610 ETH")).toBeInTheDocument();
+    expect(screen.queryByText("总量 761 BTC · dominance 80.7%")).not.toBeInTheDocument();
+    expect(screen.queryByText("净买入 610 BTC")).not.toBeInTheDocument();
+  });
+
   it("syncs filters to the history API", async () => {
     const user = userEvent.setup();
     render(<ContractWhaleMonitor />);

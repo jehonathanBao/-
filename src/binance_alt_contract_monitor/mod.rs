@@ -26,6 +26,7 @@ pub mod smll;
 pub mod smp;
 pub mod symbol_universe;
 pub mod types;
+pub mod umck;
 
 pub const LOG_TARGET: &str = "binance_alt_contract_monitor";
 pub const LOG_PREFIX: &str = "[bacm]";

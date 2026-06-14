@@ -518,6 +518,14 @@ pub struct ContractWhaleSignal {
     pub spot_score: Option<u8>,
     #[serde(default)]
     pub contract_score: Option<u8>,
+    #[serde(default)]
+    pub base_asset: String,
+    #[serde(default)]
+    pub quantity_unit: String,
+    #[serde(default)]
+    pub total_volume: f64,
+    #[serde(default)]
+    pub net_volume: f64,
     pub total_volume_btc: f64,
     pub net_volume_btc: f64,
     pub total_notional_usd: f64,
@@ -622,6 +630,12 @@ pub struct ContractWhaleSummary {
     pub status: String,
     pub health_status: String,
     pub health_reason: String,
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub base_asset: String,
+    #[serde(default)]
+    pub quantity_unit: String,
     #[serde(default = "default_contract_summary_market_type")]
     pub market_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,6 +693,20 @@ fn default_contract_summary_market_type() -> String {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleTrend60s {
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub base_asset: String,
+    #[serde(default)]
+    pub quantity_unit: String,
+    #[serde(default)]
+    pub buy_volume: f64,
+    #[serde(default)]
+    pub sell_volume: f64,
+    #[serde(default)]
+    pub total_volume: f64,
+    #[serde(default)]
+    pub net_volume: f64,
     pub buy_volume_btc: f64,
     pub sell_volume_btc: f64,
     pub total_volume_btc: f64,

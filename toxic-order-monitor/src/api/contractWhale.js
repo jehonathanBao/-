@@ -198,12 +198,12 @@ export async function fetchContractWhaleSummary(symbol = "BTC") {
     const query = buildContractWhaleQuery({ symbol });
     const response = await axios.get(`${baseURL}/api/contract-whale/summary?${query}`);
     return {
-      summary: normalizeSummary(response.data),
+      summary: normalizeSummary(response.data, symbol),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, meta: null, error: "summary_unavailable" };
+    return { summary: fallbackSummary(symbol), meta: null, error: "summary_unavailable" };
   }
 }
 
@@ -214,13 +214,16 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC") {
     const response = await axios.get(`${baseURL}/api/contract-whale/latest?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeContractWhaleSignal).filter(isVisibleContractWhaleSignal),
+      summary: normalizeSummary(response.data?.summary, symbol),
+      items: items
+        .filter((item) => signalMatchesRequestedSymbol(item, symbol))
+        .map((item) => normalizeContractWhaleSignal(item, symbol))
+        .filter(isVisibleContractWhaleSignal),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], meta: null, error: "latest_unavailable" };
+    return { summary: fallbackSummary(symbol), items: [], meta: null, error: "latest_unavailable" };
   }
 }
 
@@ -230,14 +233,18 @@ export async function fetchContractWhaleHistory(filters = {}) {
     const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 50 });
     const response = await axios.get(`${baseURL}/api/contract-whale/history?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const requestedSymbol = filters.symbol || "BTC";
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeContractWhaleSignal).filter(isVisibleContractWhaleSignal),
+      summary: normalizeSummary(response.data?.summary, requestedSymbol),
+      items: items
+        .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+        .map((item) => normalizeContractWhaleSignal(item, requestedSymbol))
+        .filter(isVisibleContractWhaleSignal),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], meta: null, error: "history_unavailable" };
+    return { summary: fallbackSummary(filters.symbol || "BTC"), items: [], meta: null, error: "history_unavailable" };
   }
 }
 
@@ -247,8 +254,11 @@ export async function fetchContractWhaleEvents(filters = {}) {
     const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 20 });
     const response = await axios.get(`${baseURL}/api/contract-whale/events?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const requestedSymbol = filters.symbol || "BTC";
     return {
-      items: items.map(normalizeMainForceEvent),
+      items: items
+        .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+        .map((item) => normalizeMainForceEvent(item, requestedSymbol)),
       error: null,
     };
   } catch {
@@ -256,8 +266,8 @@ export async function fetchContractWhaleEvents(filters = {}) {
   }
 }
 
-export function normalizeContractWhaleSignal(item) {
-  const totalVolumeBtc = numberOrNull(item.totalVolumeBtc) || 0;
+export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
+  const totalVolumeBtc = numberOrNull(item.totalVolume) ?? numberOrNull(item.totalVolumeBtc) ?? 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   const activeSources = normalizeActiveSources(item.activeSources);
   const triggerPriceUsd = normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd);
@@ -276,16 +286,18 @@ export function normalizeContractWhaleSignal(item) {
     Boolean(item.priceDeviationFiltered) ||
     (priceDeviationPct !== null && priceDeviationPct > CWM_MAX_PRICE_DEVIATION_PCT);
   return {
-    id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
+    id: item.id || `${item.symbol || fallbackSymbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
-    symbol: item.symbol || "BTC",
+    symbol: item.symbol || item.quantityUnit || item.baseAsset || fallbackSymbol || "BTC",
+    baseAsset: item.baseAsset || item.quantityUnit || item.symbol || fallbackSymbol || "BTC",
+    quantityUnit: item.quantityUnit || item.baseAsset || item.symbol || fallbackSymbol || "BTC",
     windowSec: numberOrNull(item.windowSec) || 0,
     signalType: item.signalType || "unknown",
     direction: item.direction || "neutral",
     severity: item.severity || "medium",
     score: numberOrNull(item.score) || 0,
     totalVolumeBtc,
-    netVolumeBtc: numberOrNull(item.netVolumeBtc) || 0,
+    netVolumeBtc: numberOrNull(item.netVolume) ?? numberOrNull(item.netVolumeBtc) ?? 0,
     totalNotionalUsd,
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
@@ -417,10 +429,25 @@ function normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd) {
   return null;
 }
 
-export function normalizeMainForceEvent(item) {
+function signalMatchesRequestedSymbol(item, requestedSymbol = "BTC") {
+  const requested = baseAssetKey(requestedSymbol);
+  if (!requested || requested === "ALL") return true;
+  const itemSymbol = item?.symbol || item?.quantityUnit || item?.baseAsset;
+  if (!itemSymbol) return true;
+  return baseAssetKey(itemSymbol) === requested;
+}
+
+function baseAssetKey(symbol = "") {
+  return String(symbol || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[-_/]?(USDT|USD|PERP|SWAP)$/i, "");
+}
+
+export function normalizeMainForceEvent(item, fallbackSymbol = "BTC") {
   return {
     id: numberOrNull(item.id) || 0,
-    symbol: item.symbol || "BTC",
+    symbol: item.symbol || fallbackSymbol || "BTC",
     startedAt: numberOrNull(item.startedAt),
     endedAt: numberOrNull(item.endedAt),
     peakAt: numberOrNull(item.peakAt),
@@ -484,14 +511,17 @@ function normalizeActiveSourceEntries(entries) {
   }));
 }
 
-function normalizeSummary(summary) {
+function normalizeSummary(summary, fallbackSymbol = "BTC") {
   if (!summary || typeof summary !== "object") {
-    return calmSummary;
+    return fallbackSummary(fallbackSymbol);
   }
   return {
     status: summary.status || calmSummary.status,
     healthStatus: summary.healthStatus || calmSummary.healthStatus,
     healthReason: summary.healthReason || calmSummary.healthReason,
+    symbol: summary.symbol || summary.quantityUnit || summary.baseAsset || fallbackSymbol,
+    baseAsset: summary.baseAsset || summary.quantityUnit || summary.symbol || fallbackSymbol,
+    quantityUnit: summary.quantityUnit || summary.baseAsset || summary.symbol || fallbackSymbol,
     marketType: summary.marketType ? String(summary.marketType).toLowerCase() : calmSummary.marketType,
     meta: normalizeResponseMeta(summary.meta),
     thresholdProfile: summary.thresholdProfile || calmSummary.thresholdProfile,
@@ -521,9 +551,23 @@ function normalizeSummary(summary) {
     overallDataQuality: numberOrNull(summary.overallDataQuality) || 0,
     discordDryRunStats: normalizeDiscordDryRunStats(summary.discordDryRunStats),
     marketStructureLite: normalizeMarketStructureLite(summary.marketStructureLite),
-    trend60s: normalizeTrend60s(summary.trend60s, summary.symbol),
+    trend60s: normalizeTrend60s(
+      summary.trend60s,
+      summary.symbol || summary.selectedSymbol || summary.quantityUnit || summary.baseAsset || fallbackSymbol,
+    ),
     exchanges: normalizeExchanges(summary.exchanges),
     platforms: normalizePlatforms(summary.platforms),
+  };
+}
+
+function fallbackSummary(symbol = "BTC") {
+  const fallbackSymbol = symbol || "BTC";
+  return {
+    ...calmSummary,
+    trend60s: {
+      ...normalizeTrend60s(calmSummary.trend60s, fallbackSymbol),
+      symbol: fallbackSymbol,
+    },
   };
 }
 
@@ -659,11 +703,13 @@ function normalizeStringMap(value) {
 function normalizeTrend60s(trend, symbol = "BTC") {
   const source = trend && typeof trend === "object" ? trend : {};
   return {
-    symbol: source.symbol || symbol || "BTC",
-    buyVolumeBtc: numberOrNull(source.buyVolumeBtc) || 0,
-    sellVolumeBtc: numberOrNull(source.sellVolumeBtc) || 0,
-    totalVolumeBtc: numberOrNull(source.totalVolumeBtc) || 0,
-    netVolumeBtc: numberOrNull(source.netVolumeBtc) || 0,
+    symbol: source.symbol || source.quantityUnit || source.baseAsset || symbol || "BTC",
+    baseAsset: source.baseAsset || source.quantityUnit || source.symbol || symbol || "BTC",
+    quantityUnit: source.quantityUnit || source.baseAsset || source.symbol || symbol || "BTC",
+    buyVolumeBtc: numberOrNull(source.buyVolume) ?? numberOrNull(source.buyVolumeBtc) ?? 0,
+    sellVolumeBtc: numberOrNull(source.sellVolume) ?? numberOrNull(source.sellVolumeBtc) ?? 0,
+    totalVolumeBtc: numberOrNull(source.totalVolume) ?? numberOrNull(source.totalVolumeBtc) ?? 0,
+    netVolumeBtc: numberOrNull(source.netVolume) ?? numberOrNull(source.netVolumeBtc) ?? 0,
     dominance: numberOrNull(source.dominance) || 0,
     buyRatio: numberOrNull(source.buyRatio) || 0,
     sellRatio: numberOrNull(source.sellRatio) || 0,

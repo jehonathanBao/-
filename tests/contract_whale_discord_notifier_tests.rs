@@ -363,6 +363,7 @@ fn sample_signal_variant(
         ContractWhaleDirection::Sell | ContractWhaleDirection::Absorption
     ) {
         signal.net_volume_btc = -signal.net_volume_btc.abs();
+        signal.net_volume = signal.net_volume_btc;
     }
     signal
 }

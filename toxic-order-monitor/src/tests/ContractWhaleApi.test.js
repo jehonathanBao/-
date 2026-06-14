@@ -286,6 +286,33 @@ describe("contract whale api", () => {
     expect(payload.summary.marketType).toBe("perp");
   });
 
+  it("uses the requested symbol for summary trend units when the backend omits trend symbol", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        trend60s: {
+          buyVolumeBtc: 100,
+          sellVolumeBtc: 50,
+          totalVolumeBtc: 150,
+          netVolumeBtc: 50,
+        },
+      },
+    });
+
+    const payload = await fetchContractWhaleSummary("ETH");
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=ETH");
+    expect(payload.summary.trend60s).toMatchObject({
+      symbol: "ETH",
+      baseAsset: "ETH",
+      quantityUnit: "ETH",
+      buyVolumeBtc: 100,
+      sellVolumeBtc: 50,
+      totalVolumeBtc: 150,
+      netVolumeBtc: 50,
+    });
+    expect(payload.summary.trend60s.symbol).not.toBe("BTC");
+  });
+
   it("filters price-deviated signals from latest response", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
@@ -314,6 +341,57 @@ describe("contract whale api", () => {
       priceDeviationFiltered: false,
       priceDeviationPct: expect.any(Number),
     });
+  });
+
+  it("uses the requested symbol for latest signals when legacy backend rows omit symbol", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          contractWhaleItem({
+            id: undefined,
+            ts: 1_700_000_100_000,
+            windowSec: 60,
+            symbol: undefined,
+            totalVolumeBtc: 16869,
+            netVolumeBtc: 610,
+            totalNotionalUsd: 28_000_000,
+            orderPriceUsd: undefined,
+            currentMarketPriceUsd: undefined,
+            priceDeviationPct: undefined,
+          }),
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20, "ETH");
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=20&symbol=ETH");
+    expect(payload.items[0]).toMatchObject({
+      symbol: "ETH",
+      baseAsset: "ETH",
+      quantityUnit: "ETH",
+      totalVolumeBtc: 16869,
+      netVolumeBtc: 610,
+    });
+    expect(payload.items[0].id).toBe("ETH-60-1700000100000");
+    expect(payload.items[0].triggerPriceUsd).toBeCloseTo(28_000_000 / 16_869, 6);
+    expect(payload.items[0].orderPriceUsd).toBeCloseTo(28_000_000 / 16_869, 6);
+    expect(payload.summary.trend60s.symbol).toBe("ETH");
+  });
+
+  it("drops latest rows whose explicit symbol does not match the requested symbol", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          contractWhaleItem({ id: "wrong-symbol", symbol: "BTC" }),
+          contractWhaleItem({ id: "right-symbol", symbol: "ETH" }),
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20, "ETH");
+
+    expect(payload.items.map((item) => item.id)).toEqual(["right-symbol"]);
   });
 
   it("fetches history with server-side filters", async () => {
@@ -351,6 +429,43 @@ describe("contract whale api", () => {
       exchangeStatus: "spot_only",
       reason: "coinbase_perp_disabled",
     });
+  });
+
+  it("uses requested symbol and drops mismatched explicit symbols in history response", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          contractWhaleItem({
+            id: undefined,
+            ts: 1_700_000_100_000,
+            windowSec: 60,
+            symbol: undefined,
+            totalVolumeBtc: 16869,
+            netVolumeBtc: 610,
+            totalNotionalUsd: 28_000_000,
+            orderPriceUsd: undefined,
+            currentMarketPriceUsd: undefined,
+            priceDeviationPct: undefined,
+          }),
+          contractWhaleItem({ id: "btc-row", symbol: "BTC" }),
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleHistory({ symbol: "ETH", limit: 20 });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/history?symbol=ETH&limit=20");
+    expect(payload.summary.trend60s.symbol).toBe("ETH");
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toMatchObject({
+      id: "ETH-60-1700000100000",
+      symbol: "ETH",
+      baseAsset: "ETH",
+      quantityUnit: "ETH",
+      totalVolumeBtc: 16869,
+      netVolumeBtc: 610,
+    });
+    expect(payload.items[0].triggerPriceUsd).toBeCloseTo(28_000_000 / 16_869, 6);
   });
 
   it("fetches main-force event history for timeline markers", async () => {
@@ -400,6 +515,27 @@ describe("contract whale api", () => {
       reasons: {
         finalResult: "高概率主力建多，不是单纯清算推动。",
       },
+    });
+  });
+
+  it("uses requested symbol and drops mismatched explicit symbols in main-force events", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          { id: 8, startedAt: 1_700_000_000_000, regimeType: "range_rotation" },
+          { id: 9, symbol: "BTC", startedAt: 1_700_000_100_000, regimeType: "main_force_long_build" },
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleEvents({ symbol: "ETH", limit: 12 });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/events?symbol=ETH&limit=12");
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toMatchObject({
+      id: 8,
+      symbol: "ETH",
+      regimeType: "range_rotation",
     });
   });
 

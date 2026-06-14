@@ -6,6 +6,7 @@ pub mod collector_binance;
 pub mod collector_bitfinex;
 pub mod collector_okx;
 pub mod config;
+pub mod context;
 pub mod detector;
 pub mod discord;
 pub mod discord_notifier;

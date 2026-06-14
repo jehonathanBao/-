@@ -212,6 +212,42 @@ fn contract_whale_summary_includes_60s_trend_and_health() {
 }
 
 #[test]
+fn contract_whale_summary_exposes_requested_symbol_unit_for_eth() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    set_contract_whale_runtime_config(three_exchange_runtime_config());
+    let now = 1_700_000_020_000;
+    let mut sixty_sec = high_conviction_window();
+    sixty_sec.symbol = "ETH-PERP".to_string();
+    sixty_sec.window_ms = 60_000;
+    sixty_sec.now_ts = now;
+    sixty_sec.aggressive_buy_btc = 8_739.0;
+    sixty_sec.aggressive_sell_btc = 8_127.0;
+    sixty_sec.aggressive_buy_usd = 14_642_000.0;
+    sixty_sec.aggressive_sell_usd = 13_615_000.0;
+    sixty_sec.venue_breakdown = BTreeMap::from([
+        ("binance".to_string(), breakdown(8_739.0, 8_127.0)),
+        ("bitfinex".to_string(), breakdown(1.0, 2.0)),
+    ]);
+    let flow_state = FlowState {
+        symbol: "ETH-PERP".to_string(),
+        updated_at: now,
+        windows: BTreeMap::from([("60000".to_string(), sixty_sec)]),
+    };
+
+    let response = build_contract_whale_response(&flow_state, "ETH", 50, None, true, true);
+
+    assert_eq!(response.summary.symbol, "ETH");
+    assert_eq!(response.summary.base_asset, "ETH");
+    assert_eq!(response.summary.quantity_unit, "ETH");
+    assert_eq!(response.summary.trend_60s.symbol, "ETH");
+    assert_eq!(response.summary.trend_60s.base_asset, "ETH");
+    assert_eq!(response.summary.trend_60s.quantity_unit, "ETH");
+    assert!(response.summary.trend_60s.total_volume_btc > 0.0);
+    reset_contract_whale_runtime_config();
+}
+
+#[test]
 fn contract_whale_summary_keeps_coinbase_perp_out_of_profile_until_ready() {
     let _guard = contract_whale_test_guard();
     reset_contract_whale_runtime_config();
@@ -667,6 +703,13 @@ fn contract_whale_metrics_text_is_prometheus_safe() {
         true,
         default_test_exchanges(),
         ContractWhaleTrend60s {
+            symbol: "BTC".to_string(),
+            base_asset: "BTC".to_string(),
+            quantity_unit: "BTC".to_string(),
+            buy_volume: 10.0,
+            sell_volume: 20.0,
+            total_volume: 30.0,
+            net_volume: -10.0,
             buy_volume_btc: 10.0,
             sell_volume_btc: 20.0,
             total_volume_btc: 30.0,
@@ -675,6 +718,7 @@ fn contract_whale_metrics_text_is_prometheus_safe() {
             buy_ratio: 10.0 / 30.0,
             sell_ratio: 20.0 / 30.0,
             updated_at_ms: Some(1_700_000_030_000),
+            ..Default::default()
         },
     );
 
@@ -689,8 +733,43 @@ fn contract_whale_metrics_text_is_prometheus_safe() {
     assert!(metrics.contains("cwm_signals_generated_total"));
     assert!(metrics.contains("cwm_discord_skipped_total"));
     assert!(metrics.contains("cwm_data_quality"));
+    assert!(metrics
+        .contains("cwm_trend_60s_buy_volume{symbol=\"btc\",quantity_unit=\"btc\"} 10.000000"));
     assert!(!metrics.to_ascii_lowercase().contains("webhook"));
     assert!(!metrics.to_ascii_lowercase().contains("token"));
+}
+
+#[test]
+fn contract_whale_metrics_text_labels_eth_trend_units() {
+    let _guard = contract_whale_test_guard();
+    let metrics = build_contract_whale_metrics_text(
+        true,
+        &default_test_exchanges(),
+        &ContractWhaleTrend60s {
+            symbol: "ETH".to_string(),
+            base_asset: "ETH".to_string(),
+            quantity_unit: "ETH".to_string(),
+            buy_volume: 688.0,
+            sell_volume: 73.0,
+            total_volume: 761.0,
+            net_volume: 615.0,
+            buy_volume_btc: 688.0,
+            sell_volume_btc: 73.0,
+            total_volume_btc: 761.0,
+            net_volume_btc: 615.0,
+            dominance: 615.0 / 761.0,
+            buy_ratio: 688.0 / 761.0,
+            sell_ratio: 73.0 / 761.0,
+            updated_at_ms: Some(1_700_000_030_000),
+        },
+        &[],
+    );
+
+    assert!(metrics
+        .contains("cwm_trend_60s_buy_volume{symbol=\"eth\",quantity_unit=\"eth\"} 688.000000"));
+    assert!(metrics
+        .contains("cwm_trend_60s_net_volume{symbol=\"eth\",quantity_unit=\"eth\"} 615.000000"));
+    assert!(!metrics.contains("cwm_trend_60s_buy_volume{symbol=\"btc\",quantity_unit=\"btc\"}"));
 }
 
 fn high_conviction_window() -> FlowWindow {

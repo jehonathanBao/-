@@ -831,7 +831,7 @@ fn round_for_route(value: f64, decimals: u32) -> f64 {
 
 pub async fn contract_whale_metrics_route(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config().contract_whale_monitor;
-    let flow_state = state.flow_state();
+    let flow_state = state.flow_state_for_symbol("BTC");
     let venue_health = state.venue_health();
     let now = if flow_state.updated_at > 0 {
         flow_state.updated_at
@@ -840,7 +840,19 @@ pub async fn contract_whale_metrics_route(State(state): State<AppState>) -> impl
     };
     let exchanges =
         contract_exchange_statuses(&flow_state, Some(&venue_health), config.enabled, now);
-    let trend_60s = trend_60s_from_flow_state(&flow_state, "BTC", now);
+    let trend_symbols = ["BTC", "ETH"];
+    let trend_60s_list = trend_symbols
+        .iter()
+        .map(|symbol| {
+            let symbol_flow_state = state.flow_state_for_symbol(symbol);
+            let symbol_now = if symbol_flow_state.updated_at > 0 {
+                symbol_flow_state.updated_at
+            } else {
+                now
+            };
+            trend_60s_from_flow_state(&symbol_flow_state, symbol, symbol_now)
+        })
+        .collect::<Vec<_>>();
     let items = state
         .contract_whale_store()
         .and_then(|store| {
@@ -863,7 +875,12 @@ pub async fn contract_whale_metrics_route(State(state): State<AppState>) -> impl
             )
             .items
         });
-    let body = build_contract_whale_metrics_text(config.enabled, &exchanges, &trend_60s, &items);
+    let body = build_contract_whale_metrics_text_with_trends(
+        config.enabled,
+        &exchanges,
+        &trend_60s_list,
+        &items,
+    );
     (
         [(
             header::CONTENT_TYPE,
@@ -879,6 +896,22 @@ pub fn build_contract_whale_metrics_text(
     trend_60s: &ContractWhaleTrend60s,
     signals: &[ContractWhaleSignal],
 ) -> String {
+    build_contract_whale_metrics_text_with_trends(
+        enabled,
+        exchanges,
+        std::slice::from_ref(trend_60s),
+        signals,
+    )
+}
+
+pub fn build_contract_whale_metrics_text_with_trends(
+    enabled: bool,
+    exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
+    trend_60s_list: &[ContractWhaleTrend60s],
+    signals: &[ContractWhaleSignal],
+) -> String {
+    let fallback_trend = ContractWhaleTrend60s::default();
+    let trend_60s = trend_60s_list.first().unwrap_or(&fallback_trend);
     let mut output = String::new();
     output.push_str("# HELP cwm_enabled Contract whale monitor enabled flag.\n");
     output.push_str("# TYPE cwm_enabled gauge\n");
@@ -949,6 +982,9 @@ pub fn build_contract_whale_metrics_text(
         data_quality_total as f64 / signals.len() as f64
     };
     output.push_str(&format!("cwm_data_quality {data_quality:.1}\n"));
+    for trend_60s in trend_60s_list {
+        append_trend_metrics(&mut output, trend_60s);
+    }
     output.push_str(&format!(
         "cwm_trend_60s_buy_volume_btc {:.6}\n",
         trend_60s.buy_volume_btc
@@ -958,6 +994,27 @@ pub fn build_contract_whale_metrics_text(
         trend_60s.sell_volume_btc
     ));
     output
+}
+
+fn append_trend_metrics(output: &mut String, trend_60s: &ContractWhaleTrend60s) {
+    let trend_symbol = metric_label(&trend_summary_unit(trend_60s));
+    let trend_unit = metric_label(&trend_summary_unit(trend_60s));
+    output.push_str(&format!(
+        "cwm_trend_60s_buy_volume{{symbol=\"{trend_symbol}\",quantity_unit=\"{trend_unit}\"}} {:.6}\n",
+        trend_60s.buy_volume
+    ));
+    output.push_str(&format!(
+        "cwm_trend_60s_sell_volume{{symbol=\"{trend_symbol}\",quantity_unit=\"{trend_unit}\"}} {:.6}\n",
+        trend_60s.sell_volume
+    ));
+    output.push_str(&format!(
+        "cwm_trend_60s_total_volume{{symbol=\"{trend_symbol}\",quantity_unit=\"{trend_unit}\"}} {:.6}\n",
+        trend_60s.total_volume
+    ));
+    output.push_str(&format!(
+        "cwm_trend_60s_net_volume{{symbol=\"{trend_symbol}\",quantity_unit=\"{trend_unit}\"}} {:.6}\n",
+        trend_60s.net_volume
+    ));
 }
 
 pub fn build_contract_whale_response_with_runtime(
@@ -1096,7 +1153,7 @@ pub fn build_contract_whale_history_response(
                 now,
                 dry_run,
                 default_exchange_statuses(),
-                ContractWhaleTrend60s::default(),
+                empty_trend_60s(symbol),
             ),
             items: Vec::new(),
             filter,
@@ -1126,7 +1183,7 @@ pub fn build_contract_whale_history_response(
         dry_run,
         default_exchange_statuses(),
         warmup_state(now, enabled, None),
-        ContractWhaleTrend60s::default(),
+        empty_trend_60s(symbol),
     );
     ContractWhaleLatestResponse {
         summary,
@@ -1149,13 +1206,14 @@ pub fn build_contract_whale_items_response(
     let filter = response_filter(symbol, enabled, dry_run);
     if !enabled {
         return ContractWhaleLatestResponse {
-            summary: disabled_summary(now, dry_run, exchanges, ContractWhaleTrend60s::default()),
+            summary: disabled_summary(now, dry_run, exchanges, empty_trend_60s(symbol)),
             items: Vec::new(),
             filter,
             meta: None,
         };
     }
     items.retain(is_perp_signal);
+    decorate_signal_units(&mut items, symbol);
     items = merge_contract_whale_signals(items);
     decorate_and_filter_price_deviated_signals(
         &mut items,
@@ -1186,6 +1244,24 @@ pub fn build_contract_whale_items_response(
         items,
         filter,
         meta: None,
+    }
+}
+
+fn decorate_signal_units(items: &mut [ContractWhaleSignal], fallback_symbol: &str) {
+    for signal in items {
+        let unit_source = if signal.symbol.trim().is_empty() {
+            fallback_symbol
+        } else {
+            &signal.symbol
+        };
+        let base_asset = contract_base_asset(unit_source);
+        if signal.symbol.trim().is_empty() {
+            signal.symbol = base_asset.clone();
+        }
+        signal.base_asset = base_asset.clone();
+        signal.quantity_unit = base_asset;
+        signal.total_volume = signal.total_volume_btc;
+        signal.net_volume = signal.net_volume_btc;
     }
 }
 
@@ -1660,14 +1736,14 @@ fn trend_60s_from_flow_state(
     now: i64,
 ) -> ContractWhaleTrend60s {
     let Some(window) = flow_window_for_seconds(flow_state, 60) else {
-        return ContractWhaleTrend60s::default();
+        return empty_trend_60s(symbol);
     };
     if !symbol_matches_window(&window.symbol, symbol) {
-        return ContractWhaleTrend60s::default();
+        return empty_trend_60s(symbol);
     }
     let contributions = exchange_contributions(&window.venue_breakdown);
     if contributions.is_empty() {
-        return ContractWhaleTrend60s::default();
+        return empty_trend_60s(symbol);
     }
     let buy_volume_btc = contributions
         .iter()
@@ -1688,6 +1764,13 @@ fn trend_60s_from_flow_state(
         0.0
     };
     ContractWhaleTrend60s {
+        symbol: contract_base_asset(symbol),
+        base_asset: contract_base_asset(symbol),
+        quantity_unit: contract_base_asset(symbol),
+        buy_volume: buy_volume_btc,
+        sell_volume: sell_volume_btc,
+        total_volume: total_volume_btc,
+        net_volume: net_volume_btc,
         buy_volume_btc,
         sell_volume_btc,
         total_volume_btc,
@@ -1697,6 +1780,40 @@ fn trend_60s_from_flow_state(
         sell_ratio: 1.0_f64.min(1.0 - buy_ratio).max(0.0),
         updated_at_ms: Some(window.now_ts).filter(|ts| *ts > 0).or(Some(now)),
     }
+}
+
+fn empty_trend_60s(symbol: &str) -> ContractWhaleTrend60s {
+    let base_asset = contract_base_asset(symbol);
+    ContractWhaleTrend60s {
+        symbol: base_asset.clone(),
+        base_asset: base_asset.clone(),
+        quantity_unit: base_asset,
+        ..Default::default()
+    }
+}
+
+fn contract_base_asset(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .unwrap_or(symbol)
+        .trim_end_matches("USDT")
+        .trim_end_matches("USD")
+        .to_ascii_uppercase()
+}
+
+fn trend_summary_unit(trend_60s: &ContractWhaleTrend60s) -> String {
+    if !trend_60s.quantity_unit.trim().is_empty() {
+        return trend_60s.quantity_unit.clone();
+    }
+    if !trend_60s.base_asset.trim().is_empty() {
+        return trend_60s.base_asset.clone();
+    }
+    if !trend_60s.symbol.trim().is_empty() {
+        return contract_base_asset(&trend_60s.symbol);
+    }
+    "BTC".to_string()
 }
 
 fn symbol_matches_window(window_symbol: &str, requested_symbol: &str) -> bool {
@@ -1799,10 +1916,14 @@ fn disabled_summary(
 ) -> ContractWhaleSummary {
     let runtime_config = contract_whale_runtime_config();
     let resolution = runtime_config.threshold_profile_resolution_with_statuses(&exchanges, now);
+    let quantity_unit = trend_summary_unit(&trend_60s);
     ContractWhaleSummary {
         status: "disabled".to_string(),
         health_status: "disabled".to_string(),
         health_reason: "contract_whale_monitor_disabled".to_string(),
+        symbol: quantity_unit.clone(),
+        base_asset: quantity_unit.clone(),
+        quantity_unit: quantity_unit.clone(),
         market_type: "perp".to_string(),
         meta: None,
         threshold_profile: resolution.profile_name.clone(),
@@ -1853,6 +1974,7 @@ fn build_summary(
     warmup: ContractWhaleWarmupState,
     trend_60s: ContractWhaleTrend60s,
 ) -> ContractWhaleSummary {
+    let quantity_unit = trend_summary_unit(&trend_60s);
     let latest = items.first();
     let latest_direction = latest
         .map(|signal| direction_key(signal.direction).to_string())
@@ -1893,6 +2015,9 @@ fn build_summary(
         },
         health_status,
         health_reason,
+        symbol: quantity_unit.clone(),
+        base_asset: quantity_unit.clone(),
+        quantity_unit: quantity_unit.clone(),
         market_type: "perp".to_string(),
         meta: None,
         threshold_profile: resolution.profile_name.clone(),
