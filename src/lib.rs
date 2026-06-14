@@ -13,6 +13,7 @@ pub mod runtime;
 pub mod safety;
 pub mod spot_whale_monitor;
 pub mod storage;
+pub mod toxic_v3;
 pub mod toxicity;
 pub mod types;
 
