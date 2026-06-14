@@ -158,6 +158,23 @@ fn cwm_discord_gate_allows_primary_source_high_override() {
 }
 
 #[test]
+fn cwm_discord_gate_allows_btc_high_without_multi_exchange_score_gate() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_single_exchange_high_signal();
+    signal.id = "contract-whale-btc-high".to_string();
+    signal.severity = ContractWhaleSeverity::High;
+    signal.score = 54;
+    signal.data_quality = 70;
+    signal.discord_eligible = true;
+    signal.discord_reason = "btc_high_gate".to_string();
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "eligible");
+}
+
+#[test]
 fn cwm_discord_payload_uses_safe_final_fields_only() {
     let mut signal = sample_s_signal();
     signal.oi_change_5m_btc = Some(900.0);

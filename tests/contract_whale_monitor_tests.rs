@@ -470,7 +470,7 @@ fn data_quality_blocks_discord_during_warmup_and_ctval_missing() {
 }
 
 #[test]
-fn detector_keeps_single_exchange_high_signal_out_of_discord() {
+fn detector_marks_btc_high_signal_pushable_while_data_quality_controls_eligibility() {
     let now = 1_700_000_015_000;
     let trades = vec![normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_600.0, false).unwrap()];
     let buckets = aggregate_1s_buckets(&trades);
@@ -479,8 +479,9 @@ fn detector_keeps_single_exchange_high_signal_out_of_discord() {
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(!should_push_contract_whale_discord(&signal));
+    assert!(should_push_contract_whale_discord(&signal));
     assert!(!signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "data_quality_display_only");
     assert!(!signal.discord_sent);
 }
 
@@ -575,7 +576,7 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
 }
 
 #[test]
-fn detector_triggers_5s_threshold_without_discord_overreach() {
+fn detector_triggers_5s_btc_high_threshold_with_discord_gate() {
     let now = 1_700_000_005_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, false).unwrap(),
@@ -590,7 +591,12 @@ fn detector_triggers_5s_threshold_without_discord_overreach() {
     assert_eq!(signal.window_sec, 5);
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(!signal.discord_eligible);
+    assert!(signal.discord_eligible);
+    assert!(should_push_contract_whale_discord(&signal));
+    assert!(matches!(
+        signal.discord_reason.as_str(),
+        "btc_high_gate" | "high_score_multi_exchange"
+    ));
 }
 
 #[test]

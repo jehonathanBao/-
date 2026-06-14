@@ -34,13 +34,23 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
     matches!(
         signal.severity,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
-    ) || (signal.severity == ContractWhaleSeverity::High
-        && ((signal.score >= 85
-            && signal
-                .exchanges
-                .iter()
-                .filter(|item| item.total_volume_btc > 0.0)
-                .count()
-                >= 2)
-            || signal.discord_reason == "high_primary_source_extreme"))
+    ) || (signal.severity == ContractWhaleSeverity::High && is_btc_contract_symbol(&signal.symbol))
+        || (signal.severity == ContractWhaleSeverity::High
+            && ((signal.score >= 85
+                && signal
+                    .exchanges
+                    .iter()
+                    .filter(|item| item.total_volume_btc > 0.0)
+                    .count()
+                    >= 2)
+                || signal.discord_reason == "high_primary_source_extreme"))
+}
+
+pub fn is_btc_contract_symbol(symbol: &str) -> bool {
+    let normalized = symbol
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    matches!(normalized.as_str(), "BTC" | "BTCUSDT" | "BTCPERP")
 }

@@ -64,6 +64,7 @@ pub fn detect_contract_whale_signal_with_config(
         multi_exchange_confirmed,
         scoring_stats.data_quality,
         primary_source_override,
+        &scoring_stats.symbol,
     );
     if warmup_collect_only {
         discord_eligible = false;
