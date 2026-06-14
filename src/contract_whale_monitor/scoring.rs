@@ -204,6 +204,9 @@ pub fn discord_gate(
             (true, "btc_high_gate".to_string())
         }
         ContractWhaleSeverity::High => (false, "high_without_discord_confirmation".to_string()),
+        ContractWhaleSeverity::Medium if is_btc_contract_symbol(symbol) => {
+            (true, "btc_all_contract_signals_gate".to_string())
+        }
         ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => {
             (false, "medium_or_low_display_only".to_string())
         }

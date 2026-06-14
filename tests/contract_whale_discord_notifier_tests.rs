@@ -175,6 +175,41 @@ fn cwm_discord_gate_allows_btc_high_without_multi_exchange_score_gate() {
 }
 
 #[test]
+fn cwm_discord_gate_allows_btc_medium_contract_signals() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_single_exchange_high_signal();
+    signal.id = "contract-whale-btc-medium-all-push".to_string();
+    signal.severity = ContractWhaleSeverity::Medium;
+    signal.score = 42;
+    signal.data_quality = 70;
+    signal.discord_eligible = true;
+    signal.discord_reason = "btc_all_contract_signals_gate".to_string();
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "eligible");
+}
+
+#[test]
+fn cwm_discord_gate_still_rejects_non_btc_medium_contract_signals() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_single_exchange_high_signal();
+    signal.id = "contract-whale-eth-medium-display-only".to_string();
+    signal.symbol = "ETH".to_string();
+    signal.severity = ContractWhaleSeverity::Medium;
+    signal.score = 95;
+    signal.data_quality = 95;
+    signal.discord_eligible = true;
+    signal.discord_reason = "medium_or_low_display_only".to_string();
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "low_score");
+}
+
+#[test]
 fn cwm_discord_payload_uses_safe_final_fields_only() {
     let mut signal = sample_s_signal();
     signal.oi_change_5m_btc = Some(900.0);

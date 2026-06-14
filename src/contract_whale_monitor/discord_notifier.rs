@@ -170,10 +170,13 @@ pub fn evaluate_contract_whale_discord_gate(
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
-    let btc_high_override =
-        signal.severity == ContractWhaleSeverity::High && is_btc_contract_symbol(&signal.symbol);
+    let btc_contract_override = matches!(
+        signal.severity,
+        ContractWhaleSeverity::Medium | ContractWhaleSeverity::High
+    ) && is_btc_contract_symbol(&signal.symbol);
     let min_score = match signal.severity {
-        ContractWhaleSeverity::High if btc_high_override => 0,
+        ContractWhaleSeverity::Medium if btc_contract_override => 0,
+        ContractWhaleSeverity::High if btc_contract_override => 0,
         ContractWhaleSeverity::High if primary_source_override => 0,
         ContractWhaleSeverity::High => 85,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S => 70,

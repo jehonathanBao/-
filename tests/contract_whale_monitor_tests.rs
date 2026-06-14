@@ -522,7 +522,7 @@ fn detector_recovers_critical_when_dynamic_baseline_is_temporarily_unavailable()
 }
 
 #[test]
-fn detector_uses_dynamic_multiple_to_downgrade_fixed_threshold_noise() {
+fn detector_downgrades_fixed_threshold_signal_but_keeps_btc_medium_pushable() {
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 900.0, false).unwrap(),
@@ -535,7 +535,9 @@ fn detector_uses_dynamic_multiple_to_downgrade_fixed_threshold_noise() {
 
     assert_eq!(signal.severity, ContractWhaleSeverity::Medium);
     assert_eq!(signal.dynamic_multiple, Some(4.2));
-    assert!(!signal.discord_eligible);
+    assert!(signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "btc_all_contract_signals_gate");
+    assert!(should_push_contract_whale_discord(&signal));
 }
 
 #[test]
@@ -694,7 +696,8 @@ fn detector_does_not_escalate_to_critical_when_dominance_is_weak() {
 
     assert!(signal.dominance < 0.55);
     assert!(signal.severity < ContractWhaleSeverity::Critical);
-    assert!(!signal.discord_eligible);
+    assert!(signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "btc_all_contract_signals_gate");
 }
 
 #[test]

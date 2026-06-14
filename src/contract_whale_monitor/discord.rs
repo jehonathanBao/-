@@ -34,7 +34,10 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
     matches!(
         signal.severity,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
-    ) || (signal.severity == ContractWhaleSeverity::High && is_btc_contract_symbol(&signal.symbol))
+    ) || (matches!(
+        signal.severity,
+        ContractWhaleSeverity::Medium | ContractWhaleSeverity::High
+    ) && is_btc_contract_symbol(&signal.symbol))
         || (signal.severity == ContractWhaleSeverity::High
             && ((signal.score >= 85
                 && signal
