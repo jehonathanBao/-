@@ -39,6 +39,9 @@ vi.mock("../api/binanceAltContract.js", () => ({
     if (signal?.marketTier === "mainstream") return Number(thresholds.mainstream || 500_000);
     return Number(thresholds.alt || 150_000);
   },
+  shouldDisplayByAltImpact: (signal) =>
+    Number(signal?.altImpactScore?.finalScore || 0) >=
+    Number(signal?.altImpactScore?.displayThreshold || 70),
 }));
 
 describe("BinanceAltContractMonitor", () => {
@@ -55,7 +58,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText(/全量监控 Binance USDT 永续山寨合约/)).toBeInTheDocument();
     expect(screen.getAllByText(/全 Binance USDT 永续/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Tier A1 \/ B1 \/ C0 \/ D0 \/ E0/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/分层展示门槛：Ultra Core \$750,000\+ · Mainstream \$500,000\+ · Alt \$150,000\+/)).toBeInTheDocument();
+    expect(screen.getByText(/相对冲击展示：AIS ≥ 70/)).toBeInTheDocument();
     expect(screen.getByText("在线")).toBeInTheDocument();
     expect(screen.getByText("Ultra Core")).toBeInTheDocument();
     expect(screen.getAllByText("主力建多").length).toBeGreaterThan(0);
@@ -70,6 +73,8 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getAllByText("(76%)").length).toBeGreaterThan(0);
     expect(screen.getByText("91/100")).toBeInTheDocument();
     expect(screen.getByText("87/100")).toBeInTheDocument();
+    expect(screen.getAllByText("94/100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3.00%").length).toBeGreaterThan(0);
     expect(screen.getByText("$143.9M")).toBeInTheDocument();
     expect(screen.getByText("10.2x")).toBeInTheDocument();
     expect(screen.getByText("+210,000 SOL")).toBeInTheDocument();
@@ -94,9 +99,15 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText("ATCA Cognition Agent")).toBeInTheDocument();
     expect(screen.getByText(/认知状态 主动认知/)).toBeInTheDocument();
     expect(screen.getByText("只读认知")).toBeInTheDocument();
-    expect(screen.getByText("SOLUSDT")).toBeInTheDocument();
+    expect(screen.getAllByText("SOLUSDT").length).toBeGreaterThan(0);
     expect(screen.getByText(/Markup · 趋势推动 → Distribution/)).toBeInTheDocument();
     expect(screen.getByText(/trend_drive intent with 82% confidence/)).toBeInTheDocument();
+    expect(screen.getByText("AMIOS Market OS")).toBeInTheDocument();
+    expect(screen.getByText(/主动控盘模式 · Kernel Load 78\/100/)).toBeInTheDocument();
+    expect(screen.getByText("只读 OS")).toBeInTheDocument();
+    expect(screen.getByText("不接管")).toBeInTheDocument();
+    expect(screen.getByText("高置信观察")).toBeInTheDocument();
+    expect(screen.getByText(/smaf=90 smll_samples=8 atca=active_cognition/)).toBeInTheDocument();
     expect(screen.queryByTestId("alt-contract-row-bacm-doge-small")).not.toBeInTheDocument();
   });
 
@@ -154,8 +165,16 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText("证据数量")).toBeInTheDocument();
     expect(screen.getByText("Window Confirmations")).toBeInTheDocument();
     expect(screen.getByText("Market Tier")).toBeInTheDocument();
-    expect(screen.getByText("展示门槛")).toBeInTheDocument();
+    expect(screen.getByText("AIS 展示门槛")).toBeInTheDocument();
     expect(screen.getAllByText("$750,000").length).toBeGreaterThan(0);
+    expect(screen.getByText("Alt Impact Score")).toBeInTheDocument();
+    expect(screen.getByText(/AIS 用相对市场冲击代替固定 USD 门槛/)).toBeInTheDocument();
+    expect(screen.getAllByText("Liquidity Microstructure").length).toBeGreaterThan(0);
+    expect(screen.getByText(/LME 只解释盘口微观结构/)).toBeInTheDocument();
+    expect(screen.getByText("上扫流动性")).toBeInTheDocument();
+    expect(screen.getAllByText("Market Control Graph").length).toBeGreaterThan(0);
+    expect(screen.getByText(/MCG 是控制关系图谱/)).toBeInTheDocument();
+    expect(screen.getAllByText("操控市场").length).toBeGreaterThan(0);
     expect(screen.getByText("S Grade Conditions")).toBeInTheDocument();
     expect(screen.getByText(/成交额达到 S 门槛/)).toBeInTheDocument();
     expect(screen.getByText("主动买入占优")).toBeInTheDocument();
@@ -174,6 +193,12 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText(/SMP 只预测主力行为阶段转移/)).toBeInTheDocument();
     expect(screen.getByText(/拉升后默认观察是否进入派发阶段/)).toBeInTheDocument();
     expect(screen.getByText("Bearish Risk (0.62)")).toBeInTheDocument();
+    expect(screen.getAllByText("Signal Confidence Calibration").length).toBeGreaterThan(0);
+    expect(screen.getByText(/SCC 是最终可信度校准层/)).toBeInTheDocument();
+    expect(screen.getByText(/多层确认较强/)).toBeInTheDocument();
+    expect(screen.getAllByText("高可信").length).toBeGreaterThan(0);
+    expect(screen.getByText("BACM 信号强")).toBeInTheDocument();
+    expect(screen.getByText("预测不一致")).toBeInTheDocument();
     expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
     expect(screen.getByText("binance · perp · primary · active")).toBeInTheDocument();
     expect(screen.getByText("山寨合约主动买入爆发，OI 同步上升，疑似主力建多。")).toBeInTheDocument();
@@ -376,6 +401,50 @@ function altSummary() {
         },
       ],
     },
+    amiosReport: {
+      enabled: true,
+      protectedRealtime: true,
+      osStatus: "running",
+      marketState: "ACTIVE_CONTROL_MODE",
+      kernelLoad: 78,
+      signalThroughput: "normal",
+      confidence: 84,
+      risk: "market_risk",
+      activeProcesses: [
+        {
+          name: "BACM",
+          layer: "kernel",
+          status: "interrupt",
+          load: 89,
+          role: "market_event_interrupts",
+        },
+        {
+          name: "MCG",
+          layer: "graph",
+          status: "active",
+          load: 82,
+          role: "control_graph",
+        },
+      ],
+      currentStates: [
+        {
+          symbol: "SOLUSDT",
+          marketState: "ACTIVE_CONTROL_MODE",
+          kernelLoad: 78,
+          confidence: 84,
+          regime: "Manipulation",
+          lifecycleState: "Markup",
+          prediction: "Distribution",
+          control: "buy:ControlManipulation",
+          risk: "market_risk",
+          explanation: "控制图谱显示 ControlManipulation，控制强度 82/100。",
+        },
+      ],
+      schedulerDecision: "monitor_high_confidence",
+      auditSummary: "smaf=90 smll_samples=8 atca=active_cognition read_only=true direct_discord_gate=false",
+      readOnly: true,
+      directDiscordGate: false,
+    },
   };
 }
 
@@ -390,6 +459,17 @@ function lowNotionalSignal() {
     totalVolumeBase: 1_000,
     totalNotionalUsd: 499_999,
     triggerPriceUsd: 0.2,
+    altImpactScore: {
+      finalScore: 42,
+      displayThreshold: 70,
+      marketImpactRatio: 0.0005,
+      liquidityImpact: 6,
+      directionalScore: 10,
+      oiConfirmation: 0,
+      referenceVolume24hUsd: 1_000_000_000,
+      referenceSource: "ticker_quote_volume_24h",
+      interpretation: "相对市场冲击偏弱",
+    },
   };
 }
 
@@ -419,6 +499,77 @@ function altSignal() {
       anomalyScore: 20,
       liquidationPenalty: 0,
       interpretation: "疑似机构级别流入",
+    },
+    altImpactScore: {
+      marketImpactRatio: 0.03,
+      marketImpactScore: 40,
+      liquidityImpact: 24,
+      capImpact: 0,
+      directionalStrength: 0.74,
+      directionalScore: 20,
+      oiConfirmation: 10,
+      finalScore: 94,
+      displayThreshold: 70,
+      discordThreshold: 85,
+      sThreshold: 90,
+      referenceVolume24hUsd: 4_797_000_000,
+      referenceSource: "ticker_quote_volume_24h",
+      interpretation: "极强相对成交冲击，可能影响该币市场结构",
+    },
+    liquidityMicrostructure: {
+      lmsScore: 82,
+      behavior: "LiquiditySweepUp",
+      marketControl: "buyer_side_control",
+      liquidityPressure: "HIGH",
+      imbalance: 0.62,
+      spreadState: "widening",
+      spoofingState: "none",
+      orderFlowPressure: 91,
+      absorptionStrength: 22,
+      imbalanceScore: 62,
+      spreadBehavior: 64,
+      spoofingPenalty: 0,
+      explanationTags: ["read_only_microstructure", "liquidity_sweep", "aggressive_buy_pressure"],
+      interpretation: "盘口微观结构显示强主力控盘迹象",
+      readOnly: true,
+      directDiscordGate: false,
+    },
+    marketControlGraph: {
+      symbol: "SOL",
+      controlNodes: [
+        {
+          id: "SOLUSDT:symbol",
+          nodeType: "Symbol",
+          label: "SOLUSDT",
+          side: "buy",
+          strength: 82,
+          price: 175.5,
+        },
+        {
+          id: "SOLUSDT:price-zone",
+          nodeType: "PriceLevel",
+          label: "control zone 175.500000",
+          side: "buy",
+          strength: 80,
+          price: 175.5,
+        },
+      ],
+      controlEdges: [
+        {
+          from: "SOLUSDT:symbol",
+          to: "SOLUSDT:price-zone",
+          relation: "manipulation_relation",
+          strength: 82,
+          evidence: ["LiquiditySweepUp"],
+        },
+      ],
+      dominantSide: "buy",
+      controlStrength: 82,
+      controlType: "ControlManipulation",
+      controlPath: ["Liquidity shaping", "Cognitive trap", "Sweep or revert risk"],
+      interpretation: "操控/诱导 · 强控盘 · MCSS 88/100 · LMS 82/100",
+      readOnly: true,
+      directDiscordGate: false,
     },
     marketRegime: {
       regime: "Manipulation",
@@ -456,6 +607,26 @@ function altSignal() {
       predictionScore: 79,
       triggerFactors: ["oi_momentum_divergence", "efficiency_decay"],
       explanation: "拉升后默认观察是否进入派发阶段。",
+    },
+    signalConfidence: {
+      symbol: "SOL",
+      signalType: "main_force_long_build",
+      confidenceScore: 87,
+      confidenceLevel: "high",
+      reliabilityFactors: ["bacm_signal_strong", "mcss_strong_money", "lme_orderbook_support"],
+      riskFactors: ["prediction_misaligned"],
+      breakdown: {
+        bacmSignalStrength: 93,
+        mcssStrength: 88,
+        smleStability: 81,
+        smpPredictionAlignment: 68,
+        lmeMicrostructureSupport: 82,
+        mcgControlCoherence: 82,
+        smafRiskPenalty: 10,
+      },
+      interpretation: "多层确认较强，属于高可信主力行为候选；SCC 不直接触发 Discord。",
+      readOnly: true,
+      directDiscordGate: false,
     },
     sGradeEligible: true,
     sGradeNotionalThresholdUsd: 60_000_000,

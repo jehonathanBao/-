@@ -1,6 +1,9 @@
 import axios from "axios";
 
 export const DEFAULT_ALT_CONTRACT_DISPLAY_MIN_NOTIONAL_USD = 500_000;
+export const DEFAULT_ALT_IMPACT_DISPLAY_THRESHOLD = 70;
+export const DEFAULT_ALT_IMPACT_DISCORD_THRESHOLD = 85;
+export const DEFAULT_ALT_IMPACT_S_THRESHOLD = 90;
 const DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD = {
   ultraCore: 750_000,
   mainstream: 500_000,
@@ -79,6 +82,7 @@ const calmSummary = {
   smafReport: defaultSmafReport(),
   smllReport: defaultSmllReport(),
   atcaReport: defaultAtcaReport(),
+  amiosReport: defaultAmiosReport(),
 };
 
 export async function fetchBinanceAltContractSummary(symbol = "all") {
@@ -144,9 +148,13 @@ export function normalizeAltContractSignal(item) {
     abnormalScore: numberOrNull(item.abnormalScore) || 0,
     buildScore: numberOrNull(item.buildScore) || 0,
     masterCapitalStrength: normalizeMasterCapitalStrength(item.masterCapitalStrength),
+    altImpactScore: normalizeAltImpactScore(item.altImpactScore),
+    liquidityMicrostructure: normalizeLiquidityMicrostructure(item.liquidityMicrostructure),
+    marketControlGraph: normalizeMarketControlGraph(item.marketControlGraph),
     marketRegime: normalizeMarketRegime(item.marketRegime),
     smartMoneyLifecycle: normalizeSmartMoneyLifecycle(item.smartMoneyLifecycle),
     smartMoneyPrediction: normalizeSmartMoneyPrediction(item.smartMoneyPrediction),
+    signalConfidence: normalizeSignalConfidence(item.signalConfidence),
     sGradeEligible: Boolean(item.sGradeEligible),
     sGradeConditions: Array.isArray(item.sGradeConditions) ? item.sGradeConditions : [],
     sGradeNotionalThresholdUsd: numberOrNull(item.sGradeNotionalThresholdUsd) || 0,
@@ -226,6 +234,7 @@ function normalizeSummary(summary) {
     smafReport: normalizeSmafReport(summary.smafReport),
     smllReport: normalizeSmllReport(summary.smllReport),
     atcaReport: normalizeAtcaReport(summary.atcaReport),
+    amiosReport: normalizeAmiosReport(summary.amiosReport),
   };
 }
 
@@ -431,10 +440,75 @@ function normalizeAtcaReport(report) {
   };
 }
 
+function defaultAmiosReport() {
+  return {
+    enabled: true,
+    protectedRealtime: true,
+    osStatus: "idle",
+    marketState: "CALM",
+    kernelLoad: 0,
+    signalThroughput: "quiet",
+    confidence: 0,
+    risk: "normal",
+    activeProcesses: [],
+    currentStates: [],
+    schedulerDecision: "standby",
+    auditSummary: "smaf=0 smll_samples=0 atca=waiting_for_signals read_only=true direct_discord_gate=false",
+    readOnly: true,
+    directDiscordGate: false,
+  };
+}
+
+function normalizeAmiosReport(report) {
+  const fallback = defaultAmiosReport();
+  const source = report && typeof report === "object" ? report : {};
+  return {
+    enabled: source.enabled !== false,
+    protectedRealtime: source.protectedRealtime !== false,
+    osStatus: source.osStatus || fallback.osStatus,
+    marketState: source.marketState || fallback.marketState,
+    kernelLoad: numberOrNull(source.kernelLoad) ?? fallback.kernelLoad,
+    signalThroughput: source.signalThroughput || fallback.signalThroughput,
+    confidence: numberOrNull(source.confidence) ?? fallback.confidence,
+    risk: source.risk || fallback.risk,
+    activeProcesses: Array.isArray(source.activeProcesses)
+      ? source.activeProcesses.map((process) => ({
+          name: process.name || "unknown",
+          layer: process.layer || "kernel",
+          status: process.status || "standby",
+          load: numberOrNull(process.load) ?? 0,
+          role: process.role || "read_only_process",
+        }))
+      : [],
+    currentStates: Array.isArray(source.currentStates)
+      ? source.currentStates.map((state) => ({
+          symbol: state.symbol || "UNKNOWN",
+          marketState: state.marketState || "OBSERVATION_MODE",
+          kernelLoad: numberOrNull(state.kernelLoad) ?? 0,
+          confidence: numberOrNull(state.confidence) ?? 0,
+          regime: state.regime || "Unknown",
+          lifecycleState: state.lifecycleState || "Unknown",
+          prediction: state.prediction || "Unknown",
+          control: state.control || "neutral:NoClearControl",
+          risk: state.risk || "low",
+          explanation: state.explanation || "AMIOS observation state",
+        }))
+      : [],
+    schedulerDecision: source.schedulerDecision || fallback.schedulerDecision,
+    auditSummary: source.auditSummary || fallback.auditSummary,
+    readOnly: source.readOnly !== false,
+    directDiscordGate: Boolean(source.directDiscordGate),
+  };
+}
+
 function filterDisplaySignals(items, summary = calmSummary) {
   return items.filter((item) => {
-    const min = displayThresholdForSignal(item, summary);
-    return Number(item.totalNotionalUsd || 0) >= min;
+    if (shouldDisplayByAltImpact(item)) return true;
+    if (!hasAltImpactScore(item)) {
+      const min = displayThresholdForSignal(item, summary);
+      return Number(item.totalNotionalUsd || 0) >= min;
+    }
+    return false;
   });
 }
 
@@ -451,6 +525,22 @@ export function displayThresholdForSignal(signal, summary = calmSummary) {
   const explicit = numberOrNull(signal?.displayThresholdUsd);
   if (explicit && explicit > 0) return explicit;
   return displayThresholdForMarketTier(signal?.marketTier || "alt", summary?.displayThresholdsUsd);
+}
+
+export function shouldDisplayByAltImpact(signal) {
+  const score = numberOrNull(signal?.altImpactScore?.finalScore);
+  const threshold =
+    numberOrNull(signal?.altImpactScore?.displayThreshold) || DEFAULT_ALT_IMPACT_DISPLAY_THRESHOLD;
+  return score !== null && score >= threshold;
+}
+
+function hasAltImpactScore(signal) {
+  const score = numberOrNull(signal?.altImpactScore?.finalScore);
+  if (score !== null && score > 0) return true;
+  const impact = numberOrNull(signal?.altImpactScore?.marketImpactRatio);
+  const liquidity = numberOrNull(signal?.altImpactScore?.liquidityImpact);
+  const direction = numberOrNull(signal?.altImpactScore?.directionalScore);
+  return Boolean((impact && impact > 0) || (liquidity && liquidity > 0) || (direction && direction > 0));
 }
 
 function displayThresholdForMarketTier(marketTier, thresholds = DEFAULT_ALT_CONTRACT_DISPLAY_THRESHOLDS_USD) {
@@ -557,6 +647,66 @@ function normalizeScoreBreakdown(scoreBreakdown) {
   };
 }
 
+function normalizeAltImpactScore(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    marketImpactRatio: numberOrNull(source.marketImpactRatio) || 0,
+    marketImpactScore: numberOrNull(source.marketImpactScore) || 0,
+    liquidityImpact: numberOrNull(source.liquidityImpact) || 0,
+    capImpact: numberOrNull(source.capImpact) || 0,
+    directionalStrength: numberOrNull(source.directionalStrength) || 0,
+    directionalScore: numberOrNull(source.directionalScore) || 0,
+    oiConfirmation: numberOrNull(source.oiConfirmation) || 0,
+    finalScore: numberOrNull(source.finalScore) || 0,
+    displayThreshold:
+      numberOrNull(source.displayThreshold) || DEFAULT_ALT_IMPACT_DISPLAY_THRESHOLD,
+    discordThreshold:
+      numberOrNull(source.discordThreshold) || DEFAULT_ALT_IMPACT_DISCORD_THRESHOLD,
+    sThreshold: numberOrNull(source.sThreshold) || DEFAULT_ALT_IMPACT_S_THRESHOLD,
+    referenceVolume24hUsd: numberOrNull(source.referenceVolume24hUsd),
+    referenceSource: source.referenceSource || "unavailable",
+    interpretation: source.interpretation || "暂无相对成交冲击解释",
+  };
+}
+
+function normalizeLiquidityMicrostructure(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    lmsScore: numberOrNull(source.lmsScore) || 0,
+    behavior: source.behavior || "OrdinaryFlow",
+    marketControl: source.marketControl || "no_clear_control",
+    liquidityPressure: source.liquidityPressure || "LOW",
+    imbalance: numberOrNull(source.imbalance) || 0,
+    spreadState: source.spreadState || "unknown",
+    spoofingState: source.spoofingState || "none",
+    orderFlowPressure: numberOrNull(source.orderFlowPressure) || 0,
+    absorptionStrength: numberOrNull(source.absorptionStrength) || 0,
+    imbalanceScore: numberOrNull(source.imbalanceScore) || 0,
+    spreadBehavior: numberOrNull(source.spreadBehavior) || 0,
+    spoofingPenalty: numberOrNull(source.spoofingPenalty) || 0,
+    explanationTags: Array.isArray(source.explanationTags) ? source.explanationTags : [],
+    interpretation: source.interpretation || "盘口结构信号较弱或缺少 L2 上下文",
+    readOnly: source.readOnly !== false,
+    directDiscordGate: Boolean(source.directDiscordGate),
+  };
+}
+
+function normalizeMarketControlGraph(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    symbol: source.symbol || "",
+    controlNodes: Array.isArray(source.controlNodes) ? source.controlNodes : [],
+    controlEdges: Array.isArray(source.controlEdges) ? source.controlEdges : [],
+    dominantSide: source.dominantSide || "neutral",
+    controlStrength: numberOrNull(source.controlStrength) || 0,
+    controlType: source.controlType || "NoClearControl",
+    controlPath: Array.isArray(source.controlPath) ? source.controlPath : [],
+    interpretation: source.interpretation || "控制关系未确认",
+    readOnly: source.readOnly !== false,
+    directDiscordGate: Boolean(source.directDiscordGate),
+  };
+}
+
 function normalizeMasterCapitalStrength(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
@@ -619,6 +769,31 @@ function normalizeSmartMoneyPrediction(value) {
     predictionScore: numberOrNull(source.predictionScore) || 0,
     triggerFactors: Array.isArray(source.triggerFactors) ? source.triggerFactors : [],
     explanation: source.explanation || "预测层等待生命周期确认。",
+  };
+}
+
+function normalizeSignalConfidence(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const breakdown = source.breakdown && typeof source.breakdown === "object" ? source.breakdown : {};
+  return {
+    symbol: source.symbol || "",
+    signalType: source.signalType || "",
+    confidenceScore: numberOrNull(source.confidenceScore) || 0,
+    confidenceLevel: source.confidenceLevel || "noise",
+    reliabilityFactors: Array.isArray(source.reliabilityFactors) ? source.reliabilityFactors : [],
+    riskFactors: Array.isArray(source.riskFactors) ? source.riskFactors : [],
+    breakdown: {
+      bacmSignalStrength: numberOrNull(breakdown.bacmSignalStrength) || 0,
+      mcssStrength: numberOrNull(breakdown.mcssStrength) || 0,
+      smleStability: numberOrNull(breakdown.smleStability) || 0,
+      smpPredictionAlignment: numberOrNull(breakdown.smpPredictionAlignment) || 0,
+      lmeMicrostructureSupport: numberOrNull(breakdown.lmeMicrostructureSupport) || 0,
+      mcgControlCoherence: numberOrNull(breakdown.mcgControlCoherence) || 0,
+      smafRiskPenalty: numberOrNull(breakdown.smafRiskPenalty) || 0,
+    },
+    interpretation: source.interpretation || "信号可信度不足或缺少多层确认",
+    readOnly: source.readOnly !== false,
+    directDiscordGate: Boolean(source.directDiscordGate),
   };
 }
 

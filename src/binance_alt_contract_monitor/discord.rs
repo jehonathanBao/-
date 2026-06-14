@@ -9,6 +9,7 @@ use crate::normalizers::trade::now_ms;
 
 use super::{
     config::{BinanceAltDiscordConfig, BinanceAltDiscordTierConfig},
+    impact::{impact_discord_ready, is_legacy_impact_score, ALT_IMPACT_DISCORD_THRESHOLD},
     types::{AltContractDirection, AltContractSeverity, AltContractSignal, AltContractSignalType},
 };
 
@@ -163,8 +164,22 @@ pub fn evaluate_alt_contract_discord_gate_with_store(
             None,
         );
     };
+    if !is_legacy_impact_score(&signal.alt_impact_score)
+        && !impact_discord_ready(&signal.alt_impact_score)
+    {
+        return gate(
+            false,
+            false,
+            config.dry_run,
+            "impact_score_low",
+            "none",
+            ALT_IMPACT_DISCORD_THRESHOLD,
+            None,
+        );
+    }
     let display_floor = config.min_display_notional_usd.max(500_000.0);
-    if signal.total_notional_usd < display_floor {
+    if is_legacy_impact_score(&signal.alt_impact_score) && signal.total_notional_usd < display_floor
+    {
         return gate(
             false,
             false,
@@ -294,6 +309,7 @@ pub fn build_alt_contract_discord_payload(signal: &AltContractSignal) -> serde_j
                 {"name": "Evidence", "value": format!("{} items", signal.evidence_count), "inline": true},
                 {"name": "Post Signal", "value": signal.post_signal_status.clone(), "inline": true},
                 {"name": "Notional", "value": format!("${:.1}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
+                {"name": "AIS", "value": format!("{:.0}/100", signal.alt_impact_score.final_score), "inline": true},
                 {"name": "Discord Gate", "value": format!("{} / {}", signal.discord_alert_kind, signal.discord_reason), "inline": true},
                 {"name": "Dynamic Multiple", "value": signal.dynamic_multiple.map(|value| format!("{value:.1}x")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
                 {"name": "OI Change", "value": signal.oi_change_pct.map(|value| format!("{value:+.2}%")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
@@ -394,7 +410,7 @@ fn main_force_decision(
         signal.funding_crowding.as_str(),
         "long_overcrowded" | "short_overcrowded"
     );
-    if signal.total_notional_usd < min_notional {
+    if signal.total_notional_usd < min_notional && !impact_discord_ready(&signal.alt_impact_score) {
         return Some(decision(
             false,
             "tier_notional_low",
@@ -449,7 +465,9 @@ fn extreme_impulse_decision(
         && price_move >= 0.05
         && !build_confirmed
     {
-        if signal.total_notional_usd < min_notional {
+        if signal.total_notional_usd < min_notional
+            && !impact_discord_ready(&signal.alt_impact_score)
+        {
             return Some(decision(
                 false,
                 "tier_critical_notional_low",
@@ -487,7 +505,8 @@ fn liquidation_decision(
         ));
     }
     if signal.abnormal_score >= config.push_liquidation_abnormal_score
-        && signal.total_notional_usd >= min_notional
+        && (signal.total_notional_usd >= min_notional
+            || impact_discord_ready(&signal.alt_impact_score))
         && oi_contracting(signal)
         && signal.price_move_pct.unwrap_or_default().abs() >= 0.05
     {

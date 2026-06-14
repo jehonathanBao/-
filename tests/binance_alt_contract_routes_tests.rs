@@ -13,7 +13,8 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::{BinanceAltContractQuery, BinanceAltContractService},
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractMarketTier, AltContractSymbolTier, AltContractWindowStats,
+        AltContractImpactScore, AltContractMarketTier, AltContractSymbolTier,
+        AltContractWindowStats,
     },
 };
 
@@ -57,6 +58,7 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
             oi_change_pct: Some(1.5),
             funding_rate: Some(0.001),
             persistence_windows: 3,
+            ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
             ..AltContractContext::default()
         },
         &config,
@@ -133,6 +135,65 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
 }
 
 #[test]
+fn service_prunes_bacm_signal_cache_to_seven_days_and_compacts_persistence() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let path = temp_path("bacm-routes-cache-retention.jsonl");
+    let _ = fs::remove_file(&path);
+    let mut config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
+    config.storage.signals_retention_days = 7;
+    config.storage.cleanup_interval_sec = 60;
+    set_binance_alt_contract_runtime_config(config.clone());
+
+    let now = unix_ms();
+    let service = BinanceAltContractService::new(true, true, now - 120_000);
+    let context = AltContractContext {
+        oi_change_1m_base: Some(100_000.0),
+        oi_change_pct: Some(1.5),
+        persistence_windows: 3,
+        ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+        ..AltContractContext::default()
+    };
+    let mut recent_window = stats("SOL", AltContractDirection::Buy);
+    recent_window.ts = now - 60_000;
+    let recent =
+        detect_alt_contract_signal(&recent_window, &context, &config).expect("recent signal");
+    let mut old = recent.clone();
+    old.id = "old-bacm-cache-signal".to_string();
+    old.ts = now - 8 * 86_400_000;
+
+    assert!(service.insert_signal_for_tests(old.clone()));
+    assert!(service.insert_signal_for_tests(recent.clone()));
+    assert_eq!(service.latest(Some("SOL"), 50).items.len(), 2);
+
+    service.prune_expired_cache_for_tests(now);
+
+    let latest = service.latest(Some("SOL"), 50);
+    assert_eq!(latest.items.len(), 1);
+    assert_eq!(latest.items[0].id, recent.id);
+    let persisted = fs::read_to_string(&path).expect("compacted persistence file");
+    assert!(!persisted.contains(&old.id));
+    assert!(persisted.contains(&recent.id));
+
+    let restored = BinanceAltContractService::new(true, true, now - 120_000);
+    let restored_latest = restored.latest(Some("SOL"), 50);
+    assert_eq!(restored_latest.items.len(), 1);
+    assert_eq!(restored_latest.items[0].id, recent.id);
+
+    let _ = fs::remove_file(&path);
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
 fn service_filters_low_notional_signals_from_frontend_lists() {
     let _guard = guard();
     reset_binance_alt_contract_runtime_config();
@@ -157,6 +218,7 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
             oi_change_1m_base: Some(100_000.0),
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
+            ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
             ..AltContractContext::default()
         },
         &config,
@@ -167,6 +229,7 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
     low.symbol = "DOGE".to_string();
     low.product_id = "DOGEUSDT".to_string();
     low.total_notional_usd = 499_999.0;
+    low.alt_impact_score = impact_score(42.0);
 
     assert!(service.insert_signal_for_tests(high));
     assert!(service.insert_signal_for_tests(low));
@@ -188,7 +251,7 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
 }
 
 #[test]
-fn service_filters_signals_by_market_tier_display_thresholds() {
+fn service_filters_new_signals_by_alt_impact_and_keeps_legacy_threshold_fallback() {
     let _guard = guard();
     reset_binance_alt_contract_runtime_config();
     let path = temp_path("bacm-routes-tiered-display-thresholds.jsonl");
@@ -212,19 +275,20 @@ fn service_filters_signals_by_market_tier_display_thresholds() {
             oi_change_1m_base: Some(100_000.0),
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
+            ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
             ..AltContractContext::default()
         },
         &config,
     )
     .expect("base signal");
 
-    for (product_id, notional) in [
-        ("BTCUSDT", 400_000.0),
-        ("ETHUSDT", 800_000.0),
-        ("XRPUSDT", 400_000.0),
-        ("ADAUSDT", 600_000.0),
-        ("PEPEUSDT", 100_000.0),
-        ("WIFUSDT", 200_000.0),
+    for (product_id, notional, final_impact_score) in [
+        ("BTCUSDT", 400_000.0, 41.0),
+        ("ETHUSDT", 800_000.0, 82.0),
+        ("XRPUSDT", 400_000.0, 45.0),
+        ("ADAUSDT", 600_000.0, 75.0),
+        ("PEPEUSDT", 100_000.0, 42.0),
+        ("WIFUSDT", 200_000.0, 80.0),
     ] {
         let mut signal = base.clone();
         signal.id = format!("{product_id}-{notional}");
@@ -233,6 +297,7 @@ fn service_filters_signals_by_market_tier_display_thresholds() {
         signal.total_notional_usd = notional;
         signal.market_tier = config.classify_market_tier(product_id);
         signal.display_threshold_usd = 0.0;
+        signal.alt_impact_score = impact_score(final_impact_score);
         assert!(service.insert_signal_for_tests(signal));
     }
 
@@ -320,6 +385,29 @@ fn stats(symbol: &str, direction: AltContractDirection) -> AltContractWindowStat
 
 fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{}-{}", std::process::id(), name))
+}
+
+fn impact_score(final_score: f64) -> AltContractImpactScore {
+    AltContractImpactScore {
+        market_impact_ratio: if final_score >= 70.0 { 0.03 } else { 0.0008 },
+        market_impact_score: if final_score >= 70.0 { 40.0 } else { 4.0 },
+        liquidity_impact: if final_score >= 70.0 { 24.0 } else { 6.0 },
+        cap_impact: 0.0,
+        directional_strength: 0.74,
+        directional_score: if final_score >= 70.0 { 20.0 } else { 10.0 },
+        oi_confirmation: if final_score >= 70.0 { 10.0 } else { 0.0 },
+        final_score,
+        display_threshold: 70.0,
+        discord_threshold: 85.0,
+        s_threshold: 90.0,
+        reference_volume_24h_usd: Some(3_000_000_000.0),
+        reference_source: "ticker_quote_volume_24h".to_string(),
+        interpretation: if final_score >= 70.0 {
+            "有效相对冲击".to_string()
+        } else {
+            "相对市场冲击偏弱".to_string()
+        },
+    }
 }
 
 fn unix_ms() -> i64 {

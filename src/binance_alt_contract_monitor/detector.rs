@@ -1,8 +1,12 @@
 use super::{
     config::BinanceAltContractRuntimeConfig,
     discord::{evaluate_alt_contract_discord_gate, AltContractDiscordCooldownStore},
+    impact::{impact_s_ready, score_alt_impact},
+    lme::score_signal_microstructure,
+    mcg::build_market_control_graph,
     mcss::score_master_capital_strength,
     regime::classify_market_regime,
+    scc::calibrate_signal_confidence,
     scoring::{
         funding_crowding_label, funding_crowding_penalty, score_alt_contract_signal,
         AltContractScoreResult,
@@ -11,9 +15,9 @@ use super::{
     smp::predict_smart_money_next_stage,
     types::{
         AltContractContext, AltContractDirection, AltContractGradeCondition,
-        AltContractScoreBreakdown, AltContractSeverity, AltContractSignal, AltContractSignalType,
-        AltContractSourceSnapshot, AltContractSymbolTier, AltContractWindowConfirmation,
-        AltContractWindowStats,
+        AltContractImpactScore, AltContractScoreBreakdown, AltContractSeverity, AltContractSignal,
+        AltContractSignalType, AltContractSourceSnapshot, AltContractSymbolTier,
+        AltContractWindowConfirmation, AltContractWindowStats,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -51,6 +55,9 @@ pub fn detect_alt_contract_signal_with_context(
         return None;
     }
     let score = score_alt_contract_signal(stats, context, config);
+    let market_tier = config.classify_market_tier(&stats.product_id);
+    let alt_impact_score = score_alt_impact(stats, context, market_tier);
+    let liquidity_microstructure = score_signal_microstructure(stats, context);
     let evidence = evidence_for(
         stats,
         context,
@@ -60,7 +67,7 @@ pub fn detect_alt_contract_signal_with_context(
     );
     let main_force_confidence =
         main_force_confidence(stats, context, &score, &evidence, &market_context);
-    let s_grade = s_grade_evaluation(stats, context, &score, config);
+    let s_grade = s_grade_evaluation(stats, context, &score, config, &alt_impact_score);
     let max_score = score.abnormal_score.max(score.build_score);
     if matches!(stats.tier, AltContractSymbolTier::D) && max_score < config.tier_d_min_signal_score
     {
@@ -97,7 +104,6 @@ pub fn detect_alt_contract_signal_with_context(
     let funding_crowding = funding_crowding_label(stats, context);
     let funding_penalty = funding_crowding_penalty(stats, context);
     let signal_vwap = stats.trigger_price_usd.unwrap_or_default();
-    let market_tier = config.classify_market_tier(&stats.product_id);
     let display_threshold_usd = config.display.threshold_for_market_tier(market_tier);
     let master_capital_strength = score_master_capital_strength(stats, context, market_tier);
     let market_regime = classify_market_regime(
@@ -115,12 +121,34 @@ pub fn detect_alt_contract_signal_with_context(
         &window_confirmations,
         None,
     );
+    let market_control_graph = build_market_control_graph(
+        stats,
+        context,
+        &liquidity_microstructure,
+        &master_capital_strength,
+        &market_regime,
+        &smart_money_lifecycle,
+    );
     let smart_money_prediction = predict_smart_money_next_stage(
         stats,
         context,
         &master_capital_strength,
         &smart_money_lifecycle,
         &market_regime,
+    );
+    let signal_confidence = calibrate_signal_confidence(
+        stats,
+        context,
+        signal_type,
+        score.abnormal_score,
+        score.build_score,
+        severity,
+        &master_capital_strength,
+        &smart_money_lifecycle,
+        &smart_money_prediction,
+        &liquidity_microstructure,
+        &market_control_graph,
+        market_context.market_wide_move,
     );
     let warmup = stats
         .startup_age_ms
@@ -146,9 +174,13 @@ pub fn detect_alt_contract_signal_with_context(
         abnormal_score: score.abnormal_score,
         build_score: score.build_score,
         master_capital_strength,
+        alt_impact_score,
+        liquidity_microstructure,
+        market_control_graph,
         market_regime,
         smart_money_lifecycle,
         smart_money_prediction,
+        signal_confidence,
         s_grade_eligible: s_grade.eligible,
         s_grade_conditions: s_grade.conditions,
         s_grade_notional_threshold_usd: round(s_grade.notional_threshold_usd, 2),
@@ -335,6 +367,7 @@ fn s_grade_evaluation(
     context: &AltContractContext,
     score: &AltContractScoreResult,
     config: &BinanceAltContractRuntimeConfig,
+    alt_impact_score: &AltContractImpactScore,
 ) -> SGradeEvaluation {
     let thresholds = config.thresholds_for_tier(stats.tier);
     let notional_threshold_usd = thresholds.s_notional_usd.max(5_000.0);
@@ -392,6 +425,13 @@ fn s_grade_evaluation(
             score.abnormal_score >= 40,
             format!("{}/100", score.abnormal_score),
             ">= 40/100".to_string(),
+        ),
+        grade_condition(
+            "alt_impact_score",
+            "AIS 相对冲击 >= 90",
+            impact_s_ready(alt_impact_score),
+            format!("{:.1}/100", alt_impact_score.final_score),
+            format!(">= {:.1}/100", alt_impact_score.s_threshold),
         ),
         grade_condition(
             "non_liquidation",

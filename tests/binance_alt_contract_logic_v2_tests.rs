@@ -48,6 +48,7 @@ fn true_long_build_requires_evidence_chain() {
         oi_updated_at: Some(stats.ts - 10_000),
         funding_rate: Some(0.0002),
         persistence_windows: 3,
+        ticker_quote_volume_24h_usd: Some(2_000_000_000.0),
         ..AltContractContext::default()
     };
     let windows = vec![
@@ -398,6 +399,13 @@ fn post_signal_validation_marks_failed_when_long_loses_signal_vwap() {
     let service = BinanceAltContractService::new(true, true, now - 120_000);
     service.update_open_interest("SOLUSDT", now - 70_000, 1_000_000.0);
     service.update_open_interest("SOLUSDT", now, 1_250_000.0);
+    service.update_ticker_context(
+        "SOLUSDT",
+        now,
+        Some(100.0),
+        Some(3_000_000_000.0),
+        Some(1.2),
+    );
 
     let warmup = service.ingest_trade(AltContractTrade {
         ts: now - 10_000,

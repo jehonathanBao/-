@@ -11,8 +11,8 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     },
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractSeverity, AltContractSignal, AltContractSignalType, AltContractSymbolTier,
-        AltContractWindowStats,
+        AltContractImpactScore, AltContractSeverity, AltContractSignal, AltContractSignalType,
+        AltContractSymbolTier, AltContractWindowStats,
     },
 };
 
@@ -37,11 +37,12 @@ fn low_notional_is_not_display_or_discord_eligible() {
     let config = config();
     let mut signal = main_force_signal(AltContractSymbolTier::C);
     signal.total_notional_usd = 499_999.0;
+    signal.alt_impact_score = impact_score(42.0);
 
     let gate = gate(&signal, &config, 1);
 
     assert!(!gate.would_send);
-    assert_eq!(gate.reason, "low_display_notional");
+    assert_eq!(gate.reason, "impact_score_low");
     assert_eq!(gate.alert_kind, "none");
 }
 
@@ -61,16 +62,17 @@ fn tier_c_main_force_build_can_would_send_at_800k() {
 }
 
 #[test]
-fn tier_a_800k_is_below_discord_notional_threshold() {
+fn tier_a_800k_low_relative_impact_is_below_discord_threshold() {
     let config = config();
     let mut signal = main_force_signal(AltContractSymbolTier::A);
     signal.total_notional_usd = 800_000.0;
+    signal.alt_impact_score = impact_score(50.0);
 
     let gate = gate(&signal, &config, 3);
 
     assert!(!gate.would_send);
-    assert_eq!(gate.reason, "tier_notional_low");
-    assert_eq!(gate.alert_kind, "main_force_build");
+    assert_eq!(gate.reason, "impact_score_low");
+    assert_eq!(gate.alert_kind, "none");
 }
 
 #[test]
@@ -80,12 +82,13 @@ fn tier_d_abnormal_without_build_confirmation_does_not_push() {
     signal.tier = AltContractSymbolTier::D;
     signal.total_notional_usd = 600_000.0;
     signal.build_score = 45;
+    signal.alt_impact_score = impact_score(55.0);
 
     let gate = gate(&signal, &config, 4);
 
     assert!(!gate.would_send);
-    assert_eq!(gate.reason, "tier_critical_notional_low");
-    assert_eq!(gate.alert_kind, "extreme_impulse");
+    assert_eq!(gate.reason, "impact_score_low");
+    assert_eq!(gate.alert_kind, "none");
 }
 
 #[test]
@@ -226,6 +229,7 @@ fn main_force_signal(tier: AltContractSymbolTier) -> AltContractSignal {
         oi_updated_at: Some(stats.ts - 10_000),
         funding_rate: Some(0.0),
         persistence_windows: 3,
+        ticker_quote_volume_24h_usd: Some(1_500_000_000.0),
         ..AltContractContext::default()
     };
     let mut signal = detect_alt_contract_signal_with_context(
@@ -269,6 +273,7 @@ fn extreme_signal(tier: AltContractSymbolTier) -> AltContractSignal {
         oi_updated_at: None,
         funding_rate: Some(0.0),
         persistence_windows: 1,
+        ticker_quote_volume_24h_usd: Some(250_000_000.0),
         ..AltContractContext::default()
     };
     let mut signal = detect_alt_contract_signal_with_context(
@@ -289,6 +294,29 @@ fn extreme_signal(tier: AltContractSymbolTier) -> AltContractSignal {
     signal.price_move_pct = Some(1.4);
     signal.liquidation_suspected = false;
     signal
+}
+
+fn impact_score(final_score: f64) -> AltContractImpactScore {
+    AltContractImpactScore {
+        market_impact_ratio: if final_score >= 70.0 { 0.03 } else { 0.0008 },
+        market_impact_score: if final_score >= 70.0 { 40.0 } else { 4.0 },
+        liquidity_impact: if final_score >= 70.0 { 24.0 } else { 6.0 },
+        cap_impact: 0.0,
+        directional_strength: 0.74,
+        directional_score: if final_score >= 70.0 { 20.0 } else { 10.0 },
+        oi_confirmation: if final_score >= 70.0 { 10.0 } else { 0.0 },
+        final_score,
+        display_threshold: 70.0,
+        discord_threshold: 85.0,
+        s_threshold: 90.0,
+        reference_volume_24h_usd: Some(1_500_000_000.0),
+        reference_source: "ticker_quote_volume_24h".to_string(),
+        interpretation: if final_score >= 70.0 {
+            "有效相对冲击".to_string()
+        } else {
+            "相对市场冲击偏弱".to_string()
+        },
+    }
 }
 
 fn stats(

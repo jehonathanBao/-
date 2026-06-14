@@ -4,15 +4,17 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
-use parking_lot::RwLock;
-use tokio::task::JoinHandle;
+use parking_lot::{Mutex, RwLock};
+use tokio::{task::JoinHandle, time::MissedTickBehavior};
 
 use crate::normalizers::trade::now_ms;
 
 use super::{
     aggregator::{rolling_window_stats, trend_for_symbol},
+    amios::run_market_intelligence_os,
     atca::run_trading_cognition_agent,
     collector,
     config::binance_alt_contract_runtime_config,
@@ -20,6 +22,7 @@ use super::{
     detector::{
         detect_alt_contract_signal_with_context, window_confirmation_for, MarketImpulseContext,
     },
+    impact::{impact_displayable, is_legacy_impact_score},
     smaf::{audit_smart_money_system, SmafAuditInput},
     smll::audit_self_learning_loop,
     symbol_universe::{meta_from_product_id, tier_for_quote_volume},
@@ -47,6 +50,7 @@ pub struct BinanceAltContractService {
     dry_run: bool,
     booted_at_ms: i64,
     persistence_path: PathBuf,
+    persistence_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<BinanceAltContractState>>,
     tasks: Arc<RwLock<Vec<JoinHandle<()>>>>,
 }
@@ -148,12 +152,18 @@ impl BinanceAltContractService {
                 AltContractExchangeStatus::disabled()
             },
         );
-        let restored = load_persisted_signals(&runtime_config.persistence_path, MAX_SIGNALS);
+        let restored = load_persisted_signals(
+            &runtime_config.persistence_path,
+            MAX_SIGNALS,
+            now_ms(),
+            retention_days_to_ms(runtime_config.storage.signals_retention_days),
+        );
         Self {
             enabled,
             dry_run,
             booted_at_ms,
             persistence_path: runtime_config.persistence_path,
+            persistence_lock: Arc::new(Mutex::new(())),
             state: Arc::new(RwLock::new(BinanceAltContractState {
                 trades: VecDeque::new(),
                 signals: restored.signals,
@@ -211,6 +221,10 @@ impl BinanceAltContractService {
                 collector::run_force_order_stream(service).await;
             }));
         }
+        let service = self.clone();
+        self.tasks.write().push(tokio::spawn(async move {
+            service.run_cache_cleanup_loop().await;
+        }));
     }
 
     pub fn stop(&self) {
@@ -323,6 +337,10 @@ impl BinanceAltContractService {
 
     pub fn insert_signal_for_tests(&self, signal: AltContractSignal) -> bool {
         self.insert_signal(signal)
+    }
+
+    pub fn prune_expired_cache_for_tests(&self, now: i64) {
+        self.prune_expired_cache(now);
     }
 
     pub fn update_symbol_universe(&self, metas: Vec<AltContractSymbolMeta>) {
@@ -672,6 +690,13 @@ impl BinanceAltContractService {
         let smll_report = audit_self_learning_loop(now, &state.signals);
         let atca_report =
             run_trading_cognition_agent(now, &state.signals, &smaf_report, &smll_report);
+        let amios_report = run_market_intelligence_os(
+            now,
+            &state.signals,
+            &smaf_report,
+            &smll_report,
+            &atca_report,
+        );
         AltContractSummary {
             status: latest
                 .map(|signal| status_from_severity(signal.severity).to_string())
@@ -726,6 +751,7 @@ impl BinanceAltContractService {
             smaf_report,
             smll_report,
             atca_report,
+            amios_report,
         }
     }
 
@@ -1085,6 +1111,7 @@ impl BinanceAltContractService {
     }
 
     fn persist_signal(&self, signal: &AltContractSignal) {
+        let _guard = self.persistence_lock.lock();
         if let Some(parent) = self.persistence_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
                 tracing::warn!(
@@ -1131,6 +1158,132 @@ impl BinanceAltContractService {
             }
         }
     }
+
+    async fn run_cache_cleanup_loop(self) {
+        let interval_sec = binance_alt_contract_runtime_config()
+            .storage
+            .cleanup_interval_sec
+            .max(60);
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_sec));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            self.prune_expired_cache(now_ms());
+        }
+    }
+
+    fn prune_expired_cache(&self, now: i64) {
+        let config = binance_alt_contract_runtime_config();
+        let signal_retention_ms = retention_days_to_ms(config.storage.signals_retention_days);
+        let context_retention_ms = signal_retention_ms.max(OI_RETENTION_MS);
+        let mut state = self.state.write();
+        let signals_before = state.signals.len();
+        let events_before = state.events.len();
+        let oi_symbols_before = state.oi_snapshots.len();
+
+        while state
+            .signals
+            .front()
+            .is_some_and(|signal| expired(signal.ts, now, signal_retention_ms))
+        {
+            state.signals.pop_front();
+        }
+        while state.signals.len() > MAX_SIGNALS {
+            state.signals.pop_front();
+        }
+        state.seen_signal_ids = state
+            .signals
+            .iter()
+            .map(|signal| signal.id.clone())
+            .collect();
+
+        state
+            .events
+            .retain(|_, event| !expired(event.updated_at, now, signal_retention_ms));
+        prune_timestamp_map(
+            &mut state.liquidation_seen_at,
+            now,
+            LIQUIDATION_CONTEXT_TTL_MS,
+        );
+        prune_timestamp_map(&mut state.candidate_seen_at, now, context_retention_ms);
+        prune_timestamp_map(&mut state.hot_oi_seen_at, now, context_retention_ms);
+        prune_timestamp_map(&mut state.last_detector_scan_at, now, context_retention_ms);
+        for snapshots in state.oi_snapshots.values_mut() {
+            while snapshots
+                .front()
+                .is_some_and(|(seen_at, _)| expired(*seen_at, now, OI_RETENTION_MS))
+            {
+                snapshots.pop_front();
+            }
+        }
+        state
+            .oi_snapshots
+            .retain(|_, snapshots| !snapshots.is_empty());
+        while state
+            .error_events
+            .front()
+            .is_some_and(|seen_at| expired(*seen_at, now, 60 * 60_000))
+        {
+            state.error_events.pop_front();
+        }
+
+        let retained_signals = state.signals.iter().cloned().collect::<Vec<_>>();
+        let signals_pruned = signals_before.saturating_sub(retained_signals.len());
+        let events_pruned = events_before.saturating_sub(state.events.len());
+        let oi_symbols_pruned = oi_symbols_before.saturating_sub(state.oi_snapshots.len());
+        drop(state);
+
+        if let Err(error) = self.rewrite_persisted_signals(&retained_signals) {
+            tracing::warn!(
+                target: LOG_TARGET,
+                "{} failed to compact BACM signal cache: {error}",
+                LOG_PREFIX
+            );
+            return;
+        }
+        tracing::info!(
+            target: LOG_TARGET,
+            signals_pruned,
+            events_pruned,
+            oi_symbols_pruned,
+            retained_signals = retained_signals.len(),
+            retention_days = config.storage.signals_retention_days,
+            "{} cache cleanup complete",
+            LOG_PREFIX
+        );
+    }
+
+    fn rewrite_persisted_signals(&self, signals: &[AltContractSignal]) -> std::io::Result<()> {
+        let _guard = self.persistence_lock.lock();
+        if signals.is_empty() {
+            match fs::remove_file(&self.persistence_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            return Ok(());
+        }
+        if let Some(parent) = self.persistence_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp_path = self.persistence_path.with_extension("jsonl.tmp");
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            for signal in signals {
+                let payload = serde_json::to_string(signal)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
+                writeln!(file, "{payload}")?;
+            }
+            file.flush()?;
+        }
+        let _ = fs::remove_file(&self.persistence_path);
+        fs::rename(tmp_path, &self.persistence_path)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1139,7 +1292,12 @@ struct RestoredAltContractSignals {
     seen_signal_ids: BTreeSet<String>,
 }
 
-fn load_persisted_signals(path: &PathBuf, limit: usize) -> RestoredAltContractSignals {
+fn load_persisted_signals(
+    path: &PathBuf,
+    limit: usize,
+    now: i64,
+    retention_ms: i64,
+) -> RestoredAltContractSignals {
     let Ok(text) = fs::read_to_string(path) else {
         return RestoredAltContractSignals::default();
     };
@@ -1147,6 +1305,7 @@ fn load_persisted_signals(path: &PathBuf, limit: usize) -> RestoredAltContractSi
         .lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<AltContractSignal>(line).ok())
+        .filter(|signal| !expired(signal.ts, now, retention_ms))
         .take(limit)
         .collect::<Vec<_>>();
     signals.reverse();
@@ -1155,6 +1314,20 @@ fn load_persisted_signals(path: &PathBuf, limit: usize) -> RestoredAltContractSi
         signals: VecDeque::from(signals),
         seen_signal_ids,
     }
+}
+
+fn retention_days_to_ms(days: u64) -> i64 {
+    i64::try_from(days.max(1))
+        .unwrap_or(i64::MAX / 86_400_000)
+        .saturating_mul(86_400_000)
+}
+
+fn expired(ts: i64, now: i64, retention_ms: i64) -> bool {
+    now.saturating_sub(ts) > retention_ms
+}
+
+fn prune_timestamp_map(map: &mut BTreeMap<String, i64>, now: i64, retention_ms: i64) {
+    map.retain(|_, seen_at| !expired(*seen_at, now, retention_ms));
 }
 
 fn summarized_exchange_statuses(
@@ -1570,6 +1743,9 @@ fn display_signal(
     signal: &AltContractSignal,
     config: &super::config::BinanceAltContractRuntimeConfig,
 ) -> bool {
+    if !is_legacy_impact_score(&signal.alt_impact_score) {
+        return impact_displayable(&signal.alt_impact_score);
+    }
     let threshold =
         if signal.display_threshold_usd.is_finite() && signal.display_threshold_usd > 0.0 {
             signal.display_threshold_usd

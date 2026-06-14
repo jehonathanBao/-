@@ -311,6 +311,7 @@ pub struct BinanceAltStorageConfig {
     pub hot_1s_retention_hours: u64,
     pub flow_1m_retention_days: u64,
     pub signals_retention_days: u64,
+    pub cleanup_interval_sec: u64,
 }
 
 impl Default for BinanceAltStorageConfig {
@@ -320,8 +321,9 @@ impl Default for BinanceAltStorageConfig {
             persist_all_1m: true,
             persist_hot_1s: true,
             hot_1s_retention_hours: 24,
-            flow_1m_retention_days: 14,
-            signals_retention_days: 180,
+            flow_1m_retention_days: 7,
+            signals_retention_days: 7,
+            cleanup_interval_sec: 3_600,
         }
     }
 }
@@ -739,6 +741,11 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.storage.signals_retention_days",
                 fallback.storage.signals_retention_days,
+            ),
+            cleanup_interval_sec: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.cleanup_interval_sec",
+                fallback.storage.cleanup_interval_sec,
             ),
         },
         display: BinanceAltDisplayConfig {

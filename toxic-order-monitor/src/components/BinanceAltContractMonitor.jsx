@@ -4,6 +4,7 @@ import {
   fetchBinanceAltContractHistory,
   fetchBinanceAltContractLatest,
   fetchBinanceAltContractSummary,
+  shouldDisplayByAltImpact,
 } from "../api/binanceAltContract.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
@@ -89,7 +90,13 @@ export default function BinanceAltContractMonitor() {
 
   const summary = state.summary || fallbackSummary();
   const visibleItems = useMemo(
-    () => state.items.filter((item) => Number(item.totalNotionalUsd || 0) >= displayThresholdForSignal(item, summary)),
+    () =>
+      state.items.filter(
+        (item) =>
+          shouldDisplayByAltImpact(item) ||
+          (!hasAltImpactSnapshot(item) &&
+            Number(item.totalNotionalUsd || 0) >= displayThresholdForSignal(item, summary)),
+      ),
     [summary, state.items],
   );
   const symbolOptions = useMemo(
@@ -123,8 +130,9 @@ export default function BinanceAltContractMonitor() {
       <SmafAuditCard report={summary.smafReport} />
       <SmllLearningCard report={summary.smllReport} />
       <AtcaAgentCard report={summary.atcaReport} />
+      <AmiosOsCard report={summary.amiosReport} />
       <p className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100">
-        分层展示门槛：Ultra Core {formatUsd(summary.displayThresholdsUsd?.ultraCore)}+ · Mainstream {formatUsd(summary.displayThresholdsUsd?.mainstream)}+ · Alt {formatUsd(summary.displayThresholdsUsd?.alt)}+；小额异常仍后台记录，不进入前端列表。
+        相对冲击展示：AIS ≥ 70 才进入列表，AIS ≥ 85 才进入 Discord gate，AIS ≥ 90 才允许 S 级；旧名义额门槛仅兼容历史信号。
       </p>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
@@ -175,7 +183,8 @@ export default function BinanceAltContractMonitor() {
                 <HeaderCell>建仓分</HeaderCell>
                 <HeaderCell>方向</HeaderCell>
                 <HeaderCell>1m 名义额</HeaderCell>
-                <HeaderCell>成交额门槛</HeaderCell>
+                <HeaderCell>AIS</HeaderCell>
+                <HeaderCell>市场冲击</HeaderCell>
                 <HeaderCell>异常倍数</HeaderCell>
                 <HeaderCell>OI</HeaderCell>
                 <HeaderCell>价格变化</HeaderCell>
@@ -238,7 +247,8 @@ export default function BinanceAltContractMonitor() {
                   <Cell>{item.buildScore}/100</Cell>
                   <Cell>{directionLabel(item.direction)} {signedNumber(item.directionBias)}</Cell>
                   <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
-                  <Cell>{formatUsd(displayThresholdForSignal(item, summary))}</Cell>
+                  <Cell>{formatImpactScore(item.altImpactScore)}</Cell>
+                  <Cell>{formatImpactRatio(item.altImpactScore?.marketImpactRatio)}</Cell>
                   <Cell>{item.dynamicMultiple ? `${item.dynamicMultiple.toFixed(1)}x` : "N/A"}</Cell>
                   <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
                   <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
@@ -451,6 +461,84 @@ function AtcaAgentCard({ report }) {
           ATCA 等待最新 signal；Agent 层只统一感知、解释、意图、预测和通知决策，不会执行交易。
         </p>
       )}
+    </div>
+  );
+}
+
+function AmiosOsCard({ report }) {
+  const item = report || {};
+  const processes = Array.isArray(item.activeProcesses) ? item.activeProcesses : [];
+  const states = Array.isArray(item.currentStates) ? item.currentStates : [];
+  return (
+    <div className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-slate-300">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="console-label text-emerald-300">AMIOS Market OS</p>
+          <p className="mt-1 text-sm font-bold text-white">
+            {amiosMarketStateLabel(item.marketState)} · Kernel Load {formatAuditScore(item.kernelLoad)}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 font-semibold text-emerald-100">
+            {item.readOnly === false ? "可执行 OS" : "只读 OS"}
+          </span>
+          <span className="rounded-full border border-slate-700 px-3 py-1 font-semibold text-slate-200">
+            {amiosStatusLabel(item.osStatus)}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-4 xl:grid-cols-6">
+        <MetricTile label="吞吐" value={amiosThroughputLabel(item.signalThroughput)} />
+        <MetricTile label="可信度" value={formatAuditScore(item.confidence)} />
+        <MetricTile label="调度" value={amiosDecisionLabel(item.schedulerDecision)} />
+        <MetricTile label="风险" value={amiosRiskLabel(item.risk)} />
+        <MetricTile label="Discord Gate" value={item.directDiscordGate ? "接管" : "不接管"} />
+        <MetricTile label="实时保护" value={item.protectedRealtime === false ? "关闭" : "开启"} />
+      </div>
+
+      {processes.length ? (
+        <div className="mt-3 grid gap-2 md:grid-cols-3 xl:grid-cols-5">
+          {processes.slice(0, 10).map((process) => (
+            <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3" key={`${process.layer}-${process.name}`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-bold text-white">{process.name}</p>
+                <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-300">
+                  {amiosLayerLabel(process.layer)}
+                </span>
+              </div>
+              <p className="mt-2 text-slate-300">{amiosProcessStatusLabel(process.status)}</p>
+              <p className="mt-1 text-slate-500">load {formatAuditScore(process.load)} · {process.role}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {states.length ? (
+        <div className="mt-3 grid gap-2 xl:grid-cols-2">
+          {states.slice(0, 4).map((state) => (
+            <div className="rounded-lg border border-emerald-400/20 bg-slate-950/50 p-3" key={state.symbol}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold text-white">{state.symbol}</p>
+                <span className="text-emerald-100">{amiosMarketStateLabel(state.marketState)}</span>
+              </div>
+              <p className="mt-2 text-slate-300">
+                {marketRegimeLabel(state.regime)} · {lifecycleStateLabel(state.lifecycleState)} → {lifecycleStateLabel(state.prediction)}
+              </p>
+              <p className="mt-1 text-slate-500">
+                confidence {formatAuditScore(state.confidence)} · risk {amiosRiskLabel(state.risk)} · {state.control}
+              </p>
+              <p className="mt-2 text-[11px] text-emerald-100">{state.explanation}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-slate-500">
+          AMIOS 等待最新 signal；它只把各层输出合成为 Market OS 视角，不改变 signal、Discord gate 或任何执行路径。
+        </p>
+      )}
+
+      <p className="mt-3 text-[11px] text-slate-500">{item.auditSummary}</p>
     </div>
   );
 }
@@ -673,7 +761,18 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="后续验证" value={postSignalStatusLabel(signal.postSignalStatus)} />
           <Detail label="Signal VWAP" value={formatPrice(signal.signalVwap)} />
           <Detail label="Market Tier" value={marketTierLabel(signal.marketTier)} />
-          <Detail label="展示门槛" value={formatUsd(displayThresholdForSignal(signal, summary))} />
+          <Detail label="AIS 展示门槛" value={`${formatImpactScore(signal.altImpactScore)} / ${signal.altImpactScore?.displayThreshold || 70}`} />
+          <Detail label="旧名义额门槛" value={formatUsd(displayThresholdForSignal(signal, summary))} />
+          <Detail label="市场冲击率" value={formatImpactRatio(signal.altImpactScore?.marketImpactRatio)} />
+          <Detail label="24h 参考量" value={`${formatUsd(signal.altImpactScore?.referenceVolume24hUsd || 0)} · ${impactReferenceLabel(signal.altImpactScore?.referenceSource)}`} />
+          <Detail
+            label="LME 盘口结构"
+            value={`${formatLms(signal.liquidityMicrostructure?.lmsScore)} · ${lmeBehaviorLabel(signal.liquidityMicrostructure?.behavior)}`}
+          />
+          <Detail
+            label="MCG 控制图谱"
+            value={`${formatCss(signal.marketControlGraph?.controlStrength)} · ${mcgControlTypeLabel(signal.marketControlGraph?.controlType)}`}
+          />
           <Detail
             label="MCSS"
             value={`${formatMcss(signal.masterCapitalStrength?.mcss)} · ${signal.masterCapitalStrength?.interpretation || "N/A"}`}
@@ -693,6 +792,10 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail
             label="Next Stage Prediction"
             value={`${lifecycleStateLabel(signal.smartMoneyPrediction?.nextState)} ${formatConfidence(signal.smartMoneyPrediction?.probability)} · ${predictionBiasLabel(signal.smartMoneyPrediction?.directionBias)} ${formatDirectionProbability(signal.smartMoneyPrediction?.directionProbability)}`}
+          />
+          <Detail
+            label="SCC 可信度"
+            value={`${formatSccScore(signal.signalConfidence?.confidenceScore)} · ${sccLevelLabel(signal.signalConfidence?.confidenceLevel)}`}
           />
           <Detail label="方向 Bias" value={signedNumber(signal.directionBias)} />
           <Detail label="Data Quality" value={`${signal.dataQuality}/100`} />
@@ -714,10 +817,14 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="最终判断" value={signal.finalResult} wide />
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
+          <AltImpactCard altImpactScore={signal.altImpactScore} />
+          <LiquidityMicrostructureCard microstructure={signal.liquidityMicrostructure} />
+          <MarketControlGraphCard graph={signal.marketControlGraph} />
           <McssCard masterCapitalStrength={signal.masterCapitalStrength} />
           <MarketRegimeCard marketRegime={signal.marketRegime} />
           <SmartMoneyLifecycleCard lifecycle={signal.smartMoneyLifecycle} />
           <SmartMoneyPredictionCard prediction={signal.smartMoneyPrediction} />
+          <SignalConfidenceCard confidence={signal.signalConfidence} />
           <BreakdownCard breakdown={signal.scoreBreakdown} />
           <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Active Source Snapshot</p>
@@ -843,6 +950,174 @@ function BreakdownCard({ breakdown }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function AltImpactCard({ altImpactScore }) {
+  const score = altImpactScore || {};
+  const rows = [
+    ["Market Impact", `${formatImpactRatio(score.marketImpactRatio)} · ${signedScore(score.marketImpactScore)}`],
+    ["Liquidity Pressure", signedScore(score.liquidityImpact)],
+    ["Cap Impact", score.capImpact ? signedScore(score.capImpact) : "N/A"],
+    ["Direction", `${formatImpactRatio(score.directionalStrength)} · ${signedScore(score.directionalScore)}`],
+    ["OI Confirmation", signedScore(score.oiConfirmation)],
+    ["24h Reference", `${formatUsd(score.referenceVolume24hUsd || 0)} · ${impactReferenceLabel(score.referenceSource)}`],
+  ];
+  return (
+    <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-amber-300">Alt Impact Score</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-2xl font-bold text-white">{formatImpactScore(score)}</p>
+          <p className="mt-1 text-xs text-amber-100">{score.interpretation || "暂无相对成交冲击解释"}</p>
+        </div>
+        <p className="rounded-full border border-amber-400/20 px-3 py-1 text-xs font-semibold text-amber-100">
+          AIS
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        AIS 用相对市场冲击代替固定 USD 门槛：展示 ≥70，Discord gate ≥85，S 级 ≥90。当前没有真实市值/盘口深度时，Cap Impact 会显示 N/A。
+      </p>
+    </div>
+  );
+}
+
+function LiquidityMicrostructureCard({ microstructure }) {
+  const lme = microstructure || {};
+  const tags = Array.isArray(lme.explanationTags) ? lme.explanationTags : [];
+  const rows = [
+    ["Order Flow Pressure", signedScore(lme.orderFlowPressure)],
+    ["Absorption", signedScore(lme.absorptionStrength)],
+    ["Imbalance", `${formatImpactRatio(Math.abs(Number(lme.imbalance || 0)))} · ${signedScore(lme.imbalanceScore)}`],
+    ["Spread Behavior", signedScore(lme.spreadBehavior)],
+    ["Spoofing", `${lmeSpoofingLabel(lme.spoofingState)} · ${signedScore(lme.spoofingPenalty)}`],
+    ["Discord", lme.directDiscordGate ? "direct gate enabled" : "enhancement only"],
+  ];
+  return (
+    <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-emerald-300">Liquidity Microstructure</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-2xl font-bold text-white">{formatLms(lme.lmsScore)}</p>
+          <p className="mt-1 text-xs text-emerald-100">{lme.interpretation || "暂无盘口结构解释"}</p>
+        </div>
+        <p className="rounded-full border border-emerald-400/20 px-3 py-1 text-xs font-semibold text-emerald-100">
+          {lmeBehaviorLabel(lme.behavior)}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        <div className="rounded-lg bg-slate-950/60 px-3 py-2">
+          <span className="text-slate-500">Market Control</span>
+          <p className="mt-1 font-semibold text-slate-100">{lmeControlLabel(lme.marketControl)}</p>
+        </div>
+        <div className="rounded-lg bg-slate-950/60 px-3 py-2">
+          <span className="text-slate-500">Spread</span>
+          <p className="mt-1 font-semibold text-slate-100">{lmeSpreadLabel(lme.spreadState)}</p>
+        </div>
+      </div>
+      {tags.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {tags.map((tag) => (
+            <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-emerald-100" key={tag}>
+              {lmeTagLabel(tag)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        LME 只解释盘口微观结构，例如扫单、吸收、撤单和虚假流动性；它不会直接触发 Discord，也不代表交易执行建议。
+      </p>
+    </div>
+  );
+}
+
+function MarketControlGraphCard({ graph }) {
+  const mcg = graph || {};
+  const nodes = Array.isArray(mcg.controlNodes) ? mcg.controlNodes : [];
+  const edges = Array.isArray(mcg.controlEdges) ? mcg.controlEdges : [];
+  const path = Array.isArray(mcg.controlPath) ? mcg.controlPath : [];
+  const rows = [
+    ["Dominant Side", mcgSideLabel(mcg.dominantSide)],
+    ["Control Type", mcgControlTypeLabel(mcg.controlType)],
+    ["Nodes", `${nodes.length}`],
+    ["Edges", `${edges.length}`],
+    ["Discord", mcg.directDiscordGate ? "direct gate enabled" : "enhancement only"],
+  ];
+  return (
+    <div className="rounded-xl border border-violet-400/20 bg-violet-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-violet-300">Market Control Graph</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-2xl font-bold text-white">{formatCss(mcg.controlStrength)}</p>
+          <p className="mt-1 text-xs text-violet-100">{mcg.interpretation || "暂无控制关系解释"}</p>
+        </div>
+        <p className="rounded-full border border-violet-400/20 px-3 py-1 text-xs font-semibold text-violet-100">
+          {mcgControlTypeLabel(mcg.controlType)}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      {path.length ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {path.map((step) => (
+            <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-3 py-1 text-violet-100" key={step}>
+              {mcgPathLabel(step)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        <div className="rounded-lg bg-slate-950/60 px-3 py-2">
+          <span className="text-slate-500">Control Nodes</span>
+          <div className="mt-2 space-y-1">
+            {nodes.length === 0 ? (
+              <p className="text-slate-400">暂无节点</p>
+            ) : nodes.slice(0, 4).map((node) => (
+              <p className="font-semibold text-slate-100" key={node.id || node.label}>
+                {node.label || node.id} · {mcgSideLabel(node.side)} · {formatCss(node.strength)}
+              </p>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg bg-slate-950/60 px-3 py-2">
+          <span className="text-slate-500">Control Edges</span>
+          <div className="mt-2 space-y-1">
+            {edges.length === 0 ? (
+              <p className="text-slate-400">暂无关系</p>
+            ) : edges.slice(0, 4).map((edge) => (
+              <p className="font-semibold text-slate-100" key={`${edge.from}-${edge.to}-${edge.relation}`}>
+                {mcgRelationLabel(edge.relation)} · {formatCss(edge.strength)}
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        MCG 是控制关系图谱，只解释谁在推价格、吸收、压制或诱导；它不直接触发 Discord，也不是交易建议。
+      </p>
     </div>
   );
 }
@@ -1044,11 +1319,89 @@ function SmartMoneyPredictionCard({ prediction }) {
   );
 }
 
+function SignalConfidenceCard({ confidence }) {
+  const scc = confidence || {};
+  const breakdown = scc.breakdown || {};
+  const reliabilityFactors = Array.isArray(scc.reliabilityFactors) ? scc.reliabilityFactors : [];
+  const riskFactors = Array.isArray(scc.riskFactors) ? scc.riskFactors : [];
+  const rows = [
+    ["BACM Signal Strength", `${Math.round(Number(breakdown.bacmSignalStrength || 0))}/100`],
+    ["MCSS Strength", `${Math.round(Number(breakdown.mcssStrength || 0))}/100`],
+    ["SMLE Stability", `${Math.round(Number(breakdown.smleStability || 0))}/100`],
+    ["SMP Alignment", `${Math.round(Number(breakdown.smpPredictionAlignment || 0))}/100`],
+    ["LME Support", `${Math.round(Number(breakdown.lmeMicrostructureSupport || 0))}/100`],
+    ["MCG Coherence", `${Math.round(Number(breakdown.mcgControlCoherence || 0))}/100`],
+    ["SMAF Risk Penalty", `-${Math.round(Number(breakdown.smafRiskPenalty || 0))}/100`],
+  ];
+  return (
+    <div className="rounded-xl border border-teal-400/20 bg-teal-400/10 p-4">
+      <p className="text-xs uppercase tracking-[0.22em] text-teal-300">Signal Confidence Calibration</p>
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-2xl font-bold text-white">{formatSccScore(scc.confidenceScore)}</p>
+          <p className="mt-1 text-xs leading-5 text-teal-100">
+            {scc.interpretation || "信号可信度不足或缺少多层确认"}
+          </p>
+        </div>
+        <p className="rounded-full border border-teal-400/20 px-3 py-1 text-xs font-semibold text-teal-100">
+          {sccLevelLabel(scc.confidenceLevel)}
+        </p>
+      </div>
+      <div className="mt-4 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div className="flex justify-between rounded-lg bg-slate-950/60 px-3 py-2" key={label}>
+            <span>{label}</span>
+            <span className="font-semibold text-slate-100">{value}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-3 text-xs md:grid-cols-2">
+        <div>
+          <p className="text-slate-500">Reliability Factors</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {reliabilityFactors.length === 0 ? (
+              <span className="text-slate-400">暂无可靠性加分因素</span>
+            ) : reliabilityFactors.map((factor) => (
+              <span className="rounded-full border border-teal-400/20 bg-teal-400/10 px-3 py-1 text-teal-100" key={factor}>
+                {sccFactorLabel(factor)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="text-slate-500">Risk Factors</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {riskFactors.length === 0 ? (
+              <span className="text-slate-400">暂无明显风险扣分</span>
+            ) : riskFactors.map((factor) => (
+              <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-3 py-1 text-rose-100" key={factor}>
+                {sccFactorLabel(factor)}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-400">
+        SCC 是最终可信度校准层，只回答“我有多信”；它不会改变 BACM 信号生成、Discord gate 或任何交易执行路径。
+      </p>
+    </div>
+  );
+}
+
 function Detail({ label, value, wide = false }) {
   return (
     <div className={`rounded-xl border border-slate-700/60 bg-slate-900/70 p-3 ${wide ? "md:col-span-3" : ""}`}>
       <p className="text-xs text-slate-500">{label}</p>
       <p className="mt-1 text-sm font-semibold text-slate-100">{value || "N/A"}</p>
+    </div>
+  );
+}
+
+function MetricTile({ label, value }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+      <p className="text-slate-500">{label}</p>
+      <p className="mt-1 font-semibold text-slate-100">{value}</p>
     </div>
   );
 }
@@ -1079,6 +1432,16 @@ function Cell({ children }) {
 
 function shouldUseHistory(filters) {
   return Object.entries(filters).some(([key, value]) => key !== "symbol" && value !== "all");
+}
+
+function hasAltImpactSnapshot(item) {
+  const score = item?.altImpactScore || {};
+  return Boolean(
+    Number(score.finalScore || 0) > 0 ||
+      Number(score.marketImpactRatio || 0) > 0 ||
+      Number(score.liquidityImpact || 0) > 0 ||
+      Number(score.directionalScore || 0) > 0,
+  );
 }
 
 function fallbackSummary() {
@@ -1148,6 +1511,22 @@ function fallbackSummary() {
         predictionCount: 0,
         decisionCount: 0,
         agents: [],
+      },
+      amiosReport: {
+        enabled: true,
+        protectedRealtime: true,
+        osStatus: "idle",
+        marketState: "CALM",
+        kernelLoad: 0,
+        signalThroughput: "quiet",
+        confidence: 0,
+        risk: "normal",
+        activeProcesses: [],
+        currentStates: [],
+        schedulerDecision: "standby",
+        auditSummary: "smaf=0 smll_samples=0 atca=waiting_for_signals read_only=true direct_discord_gate=false",
+        readOnly: true,
+        directDiscordGate: false,
       },
     },
   };
@@ -1242,6 +1621,84 @@ function atcaRiskLabel(value) {
     low: "低",
     liquidation_risk: "清算风险",
   }[String(value || "").toLowerCase()] || value || "低";
+}
+
+function amiosStatusLabel(value) {
+  return {
+    idle: "待机",
+    running: "运行中",
+    degraded: "降级",
+  }[String(value || "").toLowerCase()] || value || "未知";
+}
+
+function amiosMarketStateLabel(value) {
+  return {
+    calm: "CALM",
+    observation_mode: "观察模式",
+    behavior_process_mode: "行为进程模式",
+    active_control_mode: "主动控盘模式",
+    interrupt_liquidation_mode: "清算中断模式",
+  }[String(value || "").toLowerCase()] || value || "观察模式";
+}
+
+function amiosThroughputLabel(value) {
+  return {
+    quiet: "安静",
+    low: "低",
+    normal: "正常",
+    high: "高",
+  }[String(value || "").toLowerCase()] || value || "未知";
+}
+
+function amiosDecisionLabel(value) {
+  return {
+    standby: "待机",
+    observe_candidate: "观察候选",
+    monitor_high_confidence: "高置信观察",
+    interrupt_priority: "中断优先",
+  }[String(value || "").toLowerCase()] || value || "观察";
+}
+
+function amiosRiskLabel(value) {
+  return {
+    normal: "正常",
+    low: "低",
+    medium: "中",
+    high: "高",
+    market_risk: "市场风险",
+    high_market_risk: "高市场风险",
+    liquidation_interrupt: "清算中断",
+    liquidation_risk: "清算风险",
+    model_drift_watch: "模型漂移观察",
+    system_risk: "系统风险",
+  }[String(value || "").toLowerCase()] || value || "正常";
+}
+
+function amiosLayerLabel(value) {
+  return {
+    kernel: "Kernel",
+    process: "Process",
+    scheduler: "Scheduler",
+    audit: "Audit",
+    graph: "Graph",
+  }[String(value || "").toLowerCase()] || value || "Process";
+}
+
+function amiosProcessStatusLabel(value) {
+  return {
+    standby: "待机",
+    active: "运行",
+    interrupt: "中断",
+    stable: "稳定",
+    watch: "观察",
+    collecting: "采集",
+    observing: "观察中",
+    drift_watch: "漂移观察",
+    calibrated: "已校准",
+    active_cognition: "主动认知",
+    degraded_cognition: "降级认知",
+    waiting_for_signals: "等待信号",
+  }[String(value || "").toLowerCase()] || value || "运行";
 }
 
 function universeModeLabel(value) {
@@ -1411,6 +1868,7 @@ function discordReasonLabel(value) {
     extreme_impulse: "极端异常 gate 通过",
     liquidation_shock: "清算冲击 gate 通过",
     low_score: "评分或证据不足",
+    impact_score_low: "相对冲击 AIS 不足",
     medium_or_low: "Medium/Low 仅展示",
     display: "仅展示",
     low_display_notional: "低于展示名义额门槛",
@@ -1516,6 +1974,176 @@ function formatUsd(value) {
 function formatMcss(value) {
   const number = Number(value || 0);
   return `${Math.round(number)}/100`;
+}
+
+function formatLms(value) {
+  const number = Number(value || 0);
+  return `${Math.round(number)}/100`;
+}
+
+function formatCss(value) {
+  const number = Number(value || 0);
+  return `${Math.round(number)}/100`;
+}
+
+function formatSccScore(value) {
+  const number = Number(value || 0);
+  return `${Math.round(number)}/100`;
+}
+
+function sccLevelLabel(value) {
+  return {
+    very_high: "极高可信",
+    veryhigh: "极高可信",
+    high: "高可信",
+    medium: "中等可信",
+    weak: "弱信号",
+    noise: "噪音",
+  }[String(value || "noise").replace(/[\s-]/g, "").toLowerCase()] || value || "噪音";
+}
+
+function formatImpactScore(value) {
+  const score = typeof value === "number" ? value : Number(value?.finalScore || 0);
+  return `${Math.round(score)}/100`;
+}
+
+function formatImpactRatio(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  return `${(number * 100).toFixed(number >= 0.01 ? 2 : 3)}%`;
+}
+
+function impactReferenceLabel(value) {
+  return {
+    ticker_quote_volume_24h: "24h 成交量",
+    synthetic_tier_volume_proxy: "Tier 代理参考",
+    unavailable: "无参考源",
+  }[String(value || "unavailable").toLowerCase()] || value || "无参考源";
+}
+
+function lmeBehaviorLabel(value) {
+  return {
+    liquiditysweepup: "上扫流动性",
+    liquiditysweepdown: "下扫流动性",
+    absorption_buy: "下方吸收",
+    absorption_sell: "上方吸收",
+    absorption: "吸收",
+    spoofingdetected: "虚假挂单",
+    liquiditypullup: "上方撤单",
+    liquiditypulldown: "下方撤单",
+    bullishimbalance: "买盘失衡",
+    bearishimbalance: "卖盘失衡",
+    ordinaryflow: "普通流",
+  }[String(value || "ordinaryflow").replace(/[_\s-]/g, "").toLowerCase()] || value || "普通流";
+}
+
+function lmeControlLabel(value) {
+  return {
+    buyer_side_control: "买方控盘",
+    seller_side_control: "卖方控盘",
+    two_sided_absorption: "双边吸收",
+    fake_liquidity_control: "虚假流动性控制",
+    no_clear_control: "暂无明确控盘",
+  }[String(value || "no_clear_control").toLowerCase()] || value || "暂无明确控盘";
+}
+
+function lmeSpreadLabel(value) {
+  return {
+    widening: "价差扩大",
+    stable: "价差稳定",
+    unknown: "缺少 L2 上下文",
+  }[String(value || "unknown").toLowerCase()] || value || "缺少 L2 上下文";
+}
+
+function lmeSpoofingLabel(value) {
+  return {
+    detected: "已检测",
+    watch: "观察",
+    none: "未发现",
+  }[String(value || "none").toLowerCase()] || value || "未发现";
+}
+
+function lmeTagLabel(tag) {
+  return {
+    read_only_microstructure: "只读盘口解释",
+    liquidity_sweep: "流动性扫单",
+    absorption: "吸收",
+    spoofing_detected: "虚假挂单",
+    liquidity_pull: "撤单控盘",
+    bullish_imbalance: "买盘偏斜",
+    bearish_imbalance: "卖盘偏斜",
+    aggressive_buy_pressure: "主动买入压力",
+    aggressive_sell_pressure: "主动卖出压力",
+    depth_skew: "盘口偏斜",
+    spread_widening: "价差扩大",
+    fake_liquidity_watch: "虚假流动性观察",
+    price_absorption: "价格吸收",
+    aggressive_taker_flow: "主动吃单流",
+  }[String(tag || "").toLowerCase()] || tag;
+}
+
+function mcgControlTypeLabel(value) {
+  return {
+    controlaccumulation: "控制吸筹",
+    controldistribution: "控制派发",
+    controlmanipulation: "操控市场",
+    noclearcontrol: "未确认控盘",
+  }[String(value || "NoClearControl").replace(/[_\s-]/g, "").toLowerCase()] || value || "未确认控盘";
+}
+
+function mcgSideLabel(value) {
+  return {
+    buy: "买方",
+    sell: "卖方",
+    neutral: "中性",
+    absorption: "吸收",
+    suppression: "压制",
+  }[String(value || "neutral").toLowerCase()] || value || "中性";
+}
+
+function mcgRelationLabel(value) {
+  return {
+    control_relation: "控制关系",
+    absorption_relation: "吸收关系",
+    manipulation_relation: "操控关系",
+    liquidity_transfer: "流动性转移",
+    pressure_flow: "压力流",
+  }[String(value || "").toLowerCase()] || value || "控制关系";
+}
+
+function mcgPathLabel(value) {
+  return {
+    "Bid absorption": "买盘吸收",
+    "Price containment": "价格锁定",
+    "Potential markup preparation": "潜在拉升准备",
+    "Ask absorption": "卖盘吸收",
+    "Breakout suppression": "突破压制",
+    "Liquidity exit": "流动性出货",
+    "Liquidity shaping": "流动性塑形",
+    "Cognitive trap": "认知诱导",
+    "Sweep or revert risk": "扫单/回撤风险",
+    "No stable control path": "暂无稳定控盘路径",
+  }[String(value || "")] || value;
+}
+
+function sccFactorLabel(factor) {
+  return {
+    bacm_signal_strong: "BACM 信号强",
+    mcss_strong_money: "MCSS 资金强",
+    smle_stable_lifecycle: "SMLE 生命周期稳定",
+    smp_aligned: "SMP 预测一致",
+    lme_orderbook_support: "LME 盘口支持",
+    mcg_control_coherent: "MCG 控制一致",
+    dynamic_multiple_confirmed: "动态倍数确认",
+    data_quality_ok: "数据质量达标",
+    data_quality_low: "数据质量不足",
+    liquidation_interference: "清算干扰",
+    oi_contracting: "OI 收缩",
+    prediction_misaligned: "预测不一致",
+    spoofing_or_fake_liquidity: "虚假流动性风险",
+    control_manipulation_risk: "操控风险",
+    market_wide_noise: "全市场噪音",
+  }[String(factor || "").toLowerCase()] || factor;
 }
 
 function signedScore(value) {

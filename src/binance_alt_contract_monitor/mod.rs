@@ -5,14 +5,19 @@
 //! account state, or modifies exchange account state.
 
 pub mod aggregator;
+pub mod amios;
 pub mod atca;
 pub mod collector;
 pub mod config;
 pub mod context;
 pub mod detector;
 pub mod discord;
+pub mod impact;
+pub mod lme;
+pub mod mcg;
 pub mod mcss;
 pub mod regime;
+pub mod scc;
 pub mod scoring;
 pub mod service;
 pub mod smaf;

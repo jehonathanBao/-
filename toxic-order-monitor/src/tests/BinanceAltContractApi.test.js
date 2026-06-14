@@ -186,6 +186,50 @@ describe("binance alt contract api", () => {
               },
             ],
           },
+          amiosReport: {
+            enabled: true,
+            protectedRealtime: true,
+            osStatus: "running",
+            marketState: "ACTIVE_CONTROL_MODE",
+            kernelLoad: 78,
+            signalThroughput: "normal",
+            confidence: 84,
+            risk: "market_risk",
+            activeProcesses: [
+              {
+                name: "BACM",
+                layer: "kernel",
+                status: "interrupt",
+                load: 89,
+                role: "market_event_interrupts",
+              },
+              {
+                name: "MCG",
+                layer: "graph",
+                status: "active",
+                load: 82,
+                role: "control_graph",
+              },
+            ],
+            currentStates: [
+              {
+                symbol: "SOLUSDT",
+                marketState: "ACTIVE_CONTROL_MODE",
+                kernelLoad: 78,
+                confidence: 84,
+                regime: "Manipulation",
+                lifecycleState: "Markup",
+                prediction: "Distribution",
+                control: "buy:ControlManipulation",
+                risk: "market_risk",
+                explanation: "控制图谱显示 ControlManipulation，控制强度 82/100。",
+              },
+            ],
+            schedulerDecision: "monitor_high_confidence",
+            auditSummary: "smaf=90 smll_samples=8 atca=active_cognition read_only=true direct_discord_gate=false",
+            readOnly: true,
+            directDiscordGate: false,
+          },
         },
         items: [altSignal(), lowNotionalSignal()],
       },
@@ -288,6 +332,42 @@ describe("binance alt contract api", () => {
           },
         ],
       },
+      amiosReport: {
+        osStatus: "running",
+        marketState: "ACTIVE_CONTROL_MODE",
+        kernelLoad: 78,
+        signalThroughput: "normal",
+        confidence: 84,
+        risk: "market_risk",
+        protectedRealtime: true,
+        readOnly: true,
+        directDiscordGate: false,
+        schedulerDecision: "monitor_high_confidence",
+        activeProcesses: [
+          {
+            name: "BACM",
+            layer: "kernel",
+            status: "interrupt",
+            load: 89,
+            role: "market_event_interrupts",
+          },
+          {
+            name: "MCG",
+            layer: "graph",
+            status: "active",
+            load: 82,
+            role: "control_graph",
+          },
+        ],
+        currentStates: [
+          {
+            symbol: "SOLUSDT",
+            marketState: "ACTIVE_CONTROL_MODE",
+            confidence: 84,
+            control: "buy:ControlManipulation",
+          },
+        ],
+      },
     });
     expect(payload.items).toHaveLength(1);
     expect(payload.items[0]).toMatchObject({
@@ -305,6 +385,18 @@ describe("binance alt contract api", () => {
         tier: "Ultra Core",
         liquidityWeight: 0.6,
         interpretation: "疑似机构级别流入",
+      },
+      liquidityMicrostructure: {
+        lmsScore: 82,
+        behavior: "LiquiditySweepUp",
+        marketControl: "buyer_side_control",
+        directDiscordGate: false,
+      },
+      marketControlGraph: {
+        dominantSide: "buy",
+        controlStrength: 82,
+        controlType: "ControlManipulation",
+        directDiscordGate: false,
       },
       marketRegime: {
         regime: "Manipulation",
@@ -338,6 +430,22 @@ describe("binance alt contract api", () => {
         triggerFactors: ["oi_momentum_divergence", "efficiency_decay"],
         explanation: "拉升后默认观察是否进入派发阶段。",
       },
+      signalConfidence: {
+        confidenceScore: 87,
+        confidenceLevel: "high",
+        directDiscordGate: false,
+        reliabilityFactors: ["bacm_signal_strong", "mcss_strong_money", "lme_orderbook_support"],
+        riskFactors: ["prediction_misaligned"],
+        breakdown: {
+          bacmSignalStrength: 93,
+          mcssStrength: 88,
+          smleStability: 81,
+          smpPredictionAlignment: 68,
+          lmeMicrostructureSupport: 82,
+          mcgControlCoherence: 82,
+          smafRiskPenalty: 10,
+        },
+      },
       triggerPriceUsd: 175.5,
       discordWouldSend: true,
       discordSent: false,
@@ -362,6 +470,20 @@ describe("binance alt contract api", () => {
       probability: 76,
       directionBias: "BearishRisk",
       directionProbability: 0.62,
+    });
+    expect(payload.items[0].signalConfidence).toMatchObject({
+      confidenceScore: 87,
+      confidenceLevel: "high",
+      directDiscordGate: false,
+      breakdown: {
+        bacmSignalStrength: 93,
+        mcssStrength: 88,
+        smleStability: 81,
+        smpPredictionAlignment: 68,
+        lmeMicrostructureSupport: 82,
+        mcgControlCoherence: 82,
+        smafRiskPenalty: 10,
+      },
     });
   });
 
@@ -409,7 +531,7 @@ describe("binance alt contract api", () => {
     expect(signal.token).toBeUndefined();
   });
 
-  it("filters display signals by ultra core, mainstream, and alt thresholds", async () => {
+  it("filters new display signals by AIS and keeps legacy threshold fallback", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
         summary: {
@@ -420,12 +542,10 @@ describe("binance alt contract api", () => {
           },
         },
         items: [
-          { ...altSignal(), id: "btc-small", symbol: "BTC", productId: "BTCUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 400_000 },
-          { ...altSignal(), id: "eth-large", symbol: "ETH", productId: "ETHUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 800_000 },
-          { ...altSignal(), id: "xrp-small", symbol: "XRP", productId: "XRPUSDT", marketTier: "mainstream", displayThresholdUsd: 0, totalNotionalUsd: 400_000 },
-          { ...altSignal(), id: "ada-large", symbol: "ADA", productId: "ADAUSDT", marketTier: "mainstream", displayThresholdUsd: 0, totalNotionalUsd: 600_000 },
-          { ...altSignal(), id: "pepe-small", symbol: "PEPE", productId: "PEPEUSDT", marketTier: "alt", displayThresholdUsd: 0, totalNotionalUsd: 100_000 },
-          { ...altSignal(), id: "wif-large", symbol: "WIF", productId: "WIFUSDT", marketTier: "alt", displayThresholdUsd: 0, totalNotionalUsd: 200_000 },
+          { ...altSignal(), id: "wif-relative", symbol: "WIF", productId: "WIFUSDT", marketTier: "alt", displayThresholdUsd: 0, totalNotionalUsd: 200_000, altImpactScore: impactScore(82) },
+          { ...altSignal(), id: "btc-absolute-noise", symbol: "BTC", productId: "BTCUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 2_000_000, altImpactScore: impactScore(41) },
+          { ...altSignal(), id: "legacy-eth-large", symbol: "ETH", productId: "ETHUSDT", marketTier: "ultra_core", displayThresholdUsd: 0, totalNotionalUsd: 800_000, altImpactScore: undefined },
+          { ...altSignal(), id: "legacy-xrp-small", symbol: "XRP", productId: "XRPUSDT", marketTier: "mainstream", displayThresholdUsd: 0, totalNotionalUsd: 400_000, altImpactScore: undefined },
         ],
       },
     });
@@ -433,10 +553,9 @@ describe("binance alt contract api", () => {
     const payload = await fetchBinanceAltContractLatest(50);
     const ids = payload.items.map((item) => item.id);
 
-    expect(ids).toEqual(["eth-large", "ada-large", "wif-large"]);
-    expect(displayThresholdForSignal(payload.items[0], payload.summary)).toBe(750_000);
-    expect(displayThresholdForSignal(payload.items[1], payload.summary)).toBe(500_000);
-    expect(displayThresholdForSignal(payload.items[2], payload.summary)).toBe(150_000);
+    expect(ids).toEqual(["wif-relative", "legacy-eth-large"]);
+    expect(payload.items[0].altImpactScore.finalScore).toBe(82);
+    expect(displayThresholdForSignal(payload.items[1], payload.summary)).toBe(750_000);
   });
 
   it("falls back to disabled read-only summary on request failure", async () => {
@@ -486,6 +605,62 @@ function altSignal() {
       liquidationPenalty: 0,
       interpretation: "疑似机构级别流入",
     },
+    altImpactScore: impactScore(94),
+    liquidityMicrostructure: {
+      lmsScore: 82,
+      behavior: "LiquiditySweepUp",
+      marketControl: "buyer_side_control",
+      liquidityPressure: "HIGH",
+      imbalance: 0.62,
+      spreadState: "widening",
+      spoofingState: "none",
+      orderFlowPressure: 91,
+      absorptionStrength: 22,
+      imbalanceScore: 62,
+      spreadBehavior: 64,
+      spoofingPenalty: 0,
+      explanationTags: ["read_only_microstructure", "liquidity_sweep", "aggressive_buy_pressure"],
+      interpretation: "盘口微观结构显示强主力控盘迹象",
+      readOnly: true,
+      directDiscordGate: false,
+    },
+    marketControlGraph: {
+      symbol: "SOL",
+      controlNodes: [
+        {
+          id: "SOLUSDT:symbol",
+          nodeType: "Symbol",
+          label: "SOLUSDT",
+          side: "buy",
+          strength: 82,
+          price: 175.5,
+        },
+        {
+          id: "SOLUSDT:price-zone",
+          nodeType: "PriceLevel",
+          label: "control zone 175.500000",
+          side: "buy",
+          strength: 80,
+          price: 175.5,
+        },
+      ],
+      controlEdges: [
+        {
+          from: "SOLUSDT:symbol",
+          to: "SOLUSDT:price-zone",
+          relation: "manipulation_relation",
+          strength: 82,
+          evidence: ["LiquiditySweepUp"],
+        },
+      ],
+      dominantSide: "buy",
+      controlStrength: 82,
+      controlType: "ControlManipulation",
+      controlPath: ["Liquidity shaping", "Cognitive trap", "Sweep or revert risk"],
+      interpretation: "操控/诱导 · 强控盘 · MCSS 88/100 · LMS 82/100",
+      readOnly: true,
+      directDiscordGate: false,
+    },
     marketRegime: {
       regime: "Manipulation",
       subType: "Manipulation_UP",
@@ -523,6 +698,26 @@ function altSignal() {
       triggerFactors: ["oi_momentum_divergence", "efficiency_decay"],
       explanation: "拉升后默认观察是否进入派发阶段。",
     },
+    signalConfidence: {
+      symbol: "SOL",
+      signalType: "main_force_long_build",
+      confidenceScore: 87,
+      confidenceLevel: "high",
+      reliabilityFactors: ["bacm_signal_strong", "mcss_strong_money", "lme_orderbook_support"],
+      riskFactors: ["prediction_misaligned"],
+      breakdown: {
+        bacmSignalStrength: 93,
+        mcssStrength: 88,
+        smleStability: 81,
+        smpPredictionAlignment: 68,
+        lmeMicrostructureSupport: 82,
+        mcgControlCoherence: 82,
+        smafRiskPenalty: 10,
+      },
+      interpretation: "多层确认较强，属于高可信主力行为候选；SCC 不直接触发 Discord。",
+      readOnly: true,
+      directDiscordGate: false,
+    },
     triggerPriceUsd: 175.5,
     dominance: 0.74,
     priceMovePct: 2.4,
@@ -548,6 +743,25 @@ function altSignal() {
   };
 }
 
+function impactScore(finalScore) {
+  return {
+    marketImpactRatio: finalScore >= 70 ? 0.03 : 0.0008,
+    marketImpactScore: finalScore >= 70 ? 40 : 4,
+    liquidityImpact: finalScore >= 70 ? 24 : 6,
+    capImpact: 0,
+    directionalStrength: 0.74,
+    directionalScore: finalScore >= 70 ? 20 : 10,
+    oiConfirmation: finalScore >= 70 ? 10 : 0,
+    finalScore,
+    displayThreshold: 70,
+    discordThreshold: 85,
+    sThreshold: 90,
+    referenceVolume24hUsd: 4_797_000_000,
+    referenceSource: "ticker_quote_volume_24h",
+    interpretation: finalScore >= 70 ? "有效相对冲击，适合前端展示" : "相对市场冲击偏弱",
+  };
+}
+
 function lowNotionalSignal() {
   return {
     ...altSignal(),
@@ -559,5 +773,6 @@ function lowNotionalSignal() {
     totalVolumeBase: 1_000,
     totalNotionalUsd: 499_999,
     triggerPriceUsd: 0.2,
+    altImpactScore: impactScore(42),
   };
 }

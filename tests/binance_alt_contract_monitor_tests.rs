@@ -47,6 +47,7 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
         oi_updated_at: Some(stats.ts - 10_000),
         funding_rate: Some(0.0),
         persistence_windows: 3,
+        ticker_quote_volume_24h_usd: Some(4_000_000_000.0),
         ..AltContractContext::default()
     };
 
