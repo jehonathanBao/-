@@ -5,10 +5,10 @@ use std::{
 
 use btc_toxic_flow_monitor_rs::{
     api::contract_whale_routes::{
-        build_contract_whale_items_response, build_contract_whale_metrics_text,
-        build_contract_whale_response, build_contract_whale_response_with_runtime_and_baselines,
-        parse_history_query, ContractWhaleQualityBaseline, ContractWhaleQuery,
-        ContractWhaleResponseRuntime,
+        build_contract_whale_history_response, build_contract_whale_items_response,
+        build_contract_whale_metrics_text, build_contract_whale_response,
+        build_contract_whale_response_with_runtime_and_baselines, parse_history_query,
+        ContractWhaleQualityBaseline, ContractWhaleQuery, ContractWhaleResponseRuntime,
     },
     contract_whale_monitor::{
         config::{
@@ -570,6 +570,89 @@ fn contract_whale_latest_response_clamps_limit_and_keeps_persisted_items() {
     assert_eq!(response.items[0].market_type, ContractWhaleMarketType::Perp);
     assert_eq!(response.summary.latest_signal_at, Some(signal.ts));
     assert_eq!(response.filter.get("marketType"), Some(&"perp".to_string()));
+}
+
+#[test]
+fn contract_whale_history_response_clusters_same_intent_trajectory() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::High);
+    first.score = 82;
+    first.order_price_usd = Some(70_000.0);
+    first.current_market_price_usd = Some(70_000.0);
+    let mut second = first.clone();
+    second.id = "contract-whale:BTC:15:1700000075000:buy".to_string();
+    second.ts = 1_700_000_075_000;
+    second.score = 85;
+    second.order_price_usd = Some(70_080.0);
+    second.current_market_price_usd = Some(70_000.0);
+
+    let response = build_contract_whale_history_response(
+        vec![first.clone(), second.clone()],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    assert_eq!(response.items.len(), 2);
+    let latest = &response.items[0];
+    let earlier = &response.items[1];
+    assert_eq!(latest.id, second.id);
+    assert_eq!(latest.cluster.cluster_id, earlier.cluster.cluster_id);
+    assert_eq!(latest.cluster.signal_count, 2);
+    assert_eq!(latest.cluster.dominant_intent, "liquidity_probe_buy");
+    assert!(latest.cluster.duration_ms >= 45_000);
+    assert!(latest.cluster.price_range_pct.unwrap_or_default() < 0.3);
+    assert!(latest.persistence.persistence_score > 0.0);
+    assert!(latest.persistence.redundant_with_previous);
+    assert_eq!(
+        latest.persistence.redundant_reason,
+        "same_intent_within_60s"
+    );
+    assert_eq!(latest.whale_action.action_type, "aggressive_buy");
+    assert_eq!(latest.trajectory.actions.len(), 2);
+    assert_eq!(latest.trajectory.intent, "accumulation");
+    assert_eq!(
+        latest.trajectory.regime_path,
+        vec!["accumulation".to_string()]
+    );
+    assert!(latest.trajectory.stealth_profile.gamma > 0.0);
+    assert!(latest.trajectory.conclusion.contains("主力分批吸筹"));
+}
+
+#[test]
+fn contract_whale_history_response_keeps_wide_price_range_outside_cluster() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::High);
+    first.score = 82;
+    first.order_price_usd = Some(70_000.0);
+    first.current_market_price_usd = Some(70_000.0);
+    let mut second = first.clone();
+    second.id = "contract-whale:BTC:15:1700000075000:buy".to_string();
+    second.ts = 1_700_000_075_000;
+    second.score = 85;
+    second.order_price_usd = Some(70_700.0);
+    second.current_market_price_usd = Some(70_000.0);
+
+    let response = build_contract_whale_history_response(
+        vec![first, second],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    assert_eq!(response.items.len(), 2);
+    assert_ne!(
+        response.items[0].cluster.cluster_id,
+        response.items[1].cluster.cluster_id
+    );
+    assert_eq!(response.items[0].cluster.signal_count, 1);
+    assert_eq!(response.items[1].cluster.signal_count, 1);
 }
 
 #[test]

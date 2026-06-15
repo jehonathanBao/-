@@ -16,10 +16,12 @@ use crate::{
             historical_window_average_btc_with_min_samples, liquidation_context_for_window,
             market_context_from_snapshots, percentile_level_for_volume,
         },
+        cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         log_events,
         merge::merge_contract_whale_signals,
+        trajectory::apply_contract_whale_trajectories,
         types::{
             ContractWhaleDirection, ContractWhaleDiscordDryRunStats, ContractWhaleExchangeStatus,
             ContractWhaleLatestResponse, ContractWhaleLiquidationContext,
@@ -1095,6 +1097,8 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .toxic_order
             .max_price_deviation_pct,
     );
+    apply_contract_whale_signal_clusters(&mut items);
+    apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
         right
             .severity
@@ -1168,6 +1172,8 @@ pub fn build_contract_whale_history_response(
             .toxic_order
             .max_price_deviation_pct,
     );
+    apply_contract_whale_signal_clusters(&mut items);
+    apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
         right
             .ts
@@ -1222,6 +1228,8 @@ pub fn build_contract_whale_items_response(
             .toxic_order
             .max_price_deviation_pct,
     );
+    apply_contract_whale_signal_clusters(&mut items);
+    apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
         right
             .ts

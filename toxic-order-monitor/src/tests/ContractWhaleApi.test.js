@@ -220,6 +220,41 @@ describe("contract whale api", () => {
       mainForceScore: 87,
       spotScore: 81,
       contractScore: 94,
+      cluster: {
+        clusterId: "cwm-cluster:BTC:buy:14166666",
+        signalCount: 3,
+        dominantIntent: "liquidity_probe_buy",
+        durationMs: 90_000,
+        intensity: 0.91,
+        priceRangePct: 0.18,
+      },
+      persistence: {
+        persistenceScore: 0.82,
+        signalHalfLifeMs: 60_000,
+        regimeStability: 0.67,
+        redundantWithPrevious: true,
+        redundantReason: "same_intent_within_60s",
+      },
+      whaleAction: {
+        actionType: "aggressive_buy",
+        volume: 3260,
+        priceImpact: 0.31,
+        exchange: "binance",
+      },
+      trajectory: {
+        trajectoryId: "whale-trajectory:cwm-cluster:BTC:buy:14166666",
+        intent: "accumulation",
+        durationMs: 90_000,
+        regimePath: ["manipulation", "accumulation"],
+        stealthProfile: {
+          gamma: 0.73,
+          fragmentation: 0.66,
+          entropy: 0.82,
+          crossExchangeDispersion: 0.33,
+        },
+        aggressivenessCurve: [0.41, 0.94],
+        conclusion: "连续买方压力和承接行为占优，疑似主力分批吸筹。",
+      },
     });
     expect(payload.items[0].activeSources.contract).not.toEqual(
       expect.arrayContaining([
@@ -581,6 +616,88 @@ describe("contract whale api", () => {
     expect(signal.token).toBeUndefined();
   });
 
+  it("normalizes signal cluster and persistence metadata", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "clustered-signal",
+      symbol: "BTC",
+      cluster: {
+        clusterId: "cwm-cluster:BTC:buy:14166666",
+        signalCount: 4,
+        dominantIntent: "liquidity_probe_buy",
+        startedAt: 1_700_000_000_000,
+        updatedAt: 1_700_000_090_000,
+        durationMs: 90_000,
+        intensity: 0.91,
+        priceRangePct: 0.18,
+      },
+      persistence: {
+        persistenceScore: 0.82,
+        signalHalfLifeMs: 60_000,
+        regimeStability: 0.75,
+        redundantWithPrevious: true,
+        redundantReason: "same_intent_within_60s",
+      },
+      whaleAction: {
+        ts: 1_700_000_090_000,
+        symbol: "BTC",
+        actionType: "aggressive_buy",
+        volume: 2400,
+        priceImpact: 0.22,
+        exchange: "binance",
+      },
+      trajectory: {
+        trajectoryId: "whale-trajectory:cwm-cluster:BTC:buy:14166666",
+        startTs: 1_700_000_000_000,
+        endTs: 1_700_000_090_000,
+        durationMs: 90_000,
+        actions: [
+          { ts: 1_700_000_000_000, symbol: "BTC", actionType: "liquidity_probe", volume: 1000, priceImpact: 0.08, exchange: "binance" },
+          { ts: 1_700_000_090_000, symbol: "BTC", actionType: "aggressive_buy", volume: 2400, priceImpact: 0.22, exchange: "bitfinex" },
+        ],
+        intent: "accumulation",
+        regimePath: ["manipulation", "accumulation"],
+        stealthProfile: {
+          gamma: 0.73,
+          fragmentation: 0.66,
+          entropy: 0.82,
+          crossExchangeDispersion: 0.33,
+        },
+        aggressivenessCurve: [0.41, 0.94],
+        conclusion: "连续买方压力和承接行为占优，疑似主力分批吸筹。",
+      },
+    });
+
+    expect(signal.cluster).toMatchObject({
+      clusterId: "cwm-cluster:BTC:buy:14166666",
+      signalCount: 4,
+      dominantIntent: "liquidity_probe_buy",
+      durationMs: 90_000,
+      intensity: 0.91,
+      priceRangePct: 0.18,
+    });
+    expect(signal.persistence).toMatchObject({
+      persistenceScore: 0.82,
+      signalHalfLifeMs: 60_000,
+      regimeStability: 0.75,
+      redundantWithPrevious: true,
+      redundantReason: "same_intent_within_60s",
+    });
+    expect(signal.whaleAction).toMatchObject({
+      actionType: "aggressive_buy",
+      volume: 2400,
+      priceImpact: 0.22,
+      exchange: "binance",
+    });
+    expect(signal.trajectory).toMatchObject({
+      trajectoryId: "whale-trajectory:cwm-cluster:BTC:buy:14166666",
+      intent: "accumulation",
+      durationMs: 90_000,
+      regimePath: ["manipulation", "accumulation"],
+      stealthProfile: expect.objectContaining({ gamma: 0.73 }),
+      aggressivenessCurve: [0.41, 0.94],
+    });
+  });
+
   it("normalizes platform and market statuses without using flow volume as health", () => {
     expect(normalizePlatformStatus({ platformEnabled: false, status: "disabled" })).toMatchObject({
       key: "disabled",
@@ -713,6 +830,51 @@ function contractWhaleItem(overrides = {}) {
     discordReason: "critical_or_s_gate",
     finalResult: "多平台主动买入爆发，疑似主力合约拉盘",
     mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+    cluster: {
+      clusterId: "cwm-cluster:BTC:buy:14166666",
+      signalCount: 3,
+      dominantIntent: "liquidity_probe_buy",
+      startedAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_090_000,
+      durationMs: 90_000,
+      intensity: 0.91,
+      priceRangePct: 0.18,
+    },
+    persistence: {
+      persistenceScore: 0.82,
+      signalHalfLifeMs: 60_000,
+      regimeStability: 0.67,
+      redundantWithPrevious: true,
+      redundantReason: "same_intent_within_60s",
+    },
+    whaleAction: {
+      ts: 1_700_000_000_000,
+      symbol: "BTC",
+      actionType: "aggressive_buy",
+      volume: 3260,
+      priceImpact: 0.31,
+      exchange: "binance",
+    },
+    trajectory: {
+      trajectoryId: "whale-trajectory:cwm-cluster:BTC:buy:14166666",
+      startTs: 1_700_000_000_000,
+      endTs: 1_700_000_090_000,
+      durationMs: 90_000,
+      actions: [
+        { ts: 1_700_000_000_000, symbol: "BTC", actionType: "liquidity_probe", volume: 1000, priceImpact: 0.08, exchange: "binance" },
+        { ts: 1_700_000_090_000, symbol: "BTC", actionType: "aggressive_buy", volume: 3260, priceImpact: 0.31, exchange: "bitfinex" },
+      ],
+      intent: "accumulation",
+      regimePath: ["manipulation", "accumulation"],
+      stealthProfile: {
+        gamma: 0.73,
+        fragmentation: 0.66,
+        entropy: 0.82,
+        crossExchangeDispersion: 0.33,
+      },
+      aggressivenessCurve: [0.41, 0.94],
+      conclusion: "连续买方压力和承接行为占优，疑似主力分批吸筹。",
+    },
     ...overrides,
   };
 }

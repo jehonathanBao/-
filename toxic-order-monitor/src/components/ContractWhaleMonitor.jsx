@@ -261,6 +261,7 @@ export default function ContractWhaleMonitor() {
                 <HeaderCell>价格</HeaderCell>
                 <HeaderCell>价格偏离</HeaderCell>
                 <HeaderCell>主力评分</HeaderCell>
+                <HeaderCell>轨迹</HeaderCell>
                 <HeaderCell>现货 / 合约</HeaderCell>
                 <HeaderCell>净方向</HeaderCell>
                 <HeaderCell>方向占比</HeaderCell>
@@ -313,6 +314,7 @@ export default function ContractWhaleMonitor() {
                   <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
                   <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
                   <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
+                  <Cell>{clusterTableLabel(item)}</Cell>
                   <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
                   <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
                   <Cell>{formatPct(item.dominance * 100)}</Cell>
@@ -504,6 +506,64 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm leading-6 text-cyan-50">
             <p className="font-semibold text-slate-100">{signal.finalResult}</p>
             <p className="mt-1 text-xs text-cyan-100">{priceResponseNarrative(signal)}</p>
+            {signal.cluster?.signalCount > 1 ? (
+              <p className="mt-1 text-xs text-cyan-100">
+                {clusterTrajectoryNarrative(signal)}
+              </p>
+            ) : null}
+          </div>
+        </DetailSection>
+
+        <DetailSection title="Signal Cluster / Persistence" className="mt-4">
+          <DetailGrid
+            rows={[
+              ["Cluster ID", signal.cluster?.clusterId || "N/A"],
+              ["Dominant Intent", clusterIntentLabel(signal.cluster?.dominantIntent)],
+              ["Cluster Signals", `${signal.cluster?.signalCount || 1}`],
+              ["Cluster Duration", formatMsDuration(signal.cluster?.durationMs)],
+              ["Cluster Intensity", formatPct(Number(signal.cluster?.intensity || 0) * 100)],
+              ["Price Range", formatOptionalPct(signal.cluster?.priceRangePct)],
+              ["Persistence Score", formatPct(Number(signal.persistence?.persistenceScore || 0) * 100)],
+              ["Half Life", formatMsDuration(signal.persistence?.signalHalfLifeMs)],
+              ["Regime Stability", formatPct(Number(signal.persistence?.regimeStability || 0) * 100)],
+              ["Redundant Projection", signal.persistence?.redundantWithPrevious ? repetitionReasonLabel(signal.persistence?.redundantReason) : "否"],
+            ]}
+          />
+          <p className="mt-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs leading-6 text-cyan-100">
+            Cluster 表示同 symbol、同方向、120 秒内且价格区间小于 0.3% 的连续信号；它更像同一主力意图轨迹，不等同于多个独立机会。
+          </p>
+        </DetailSection>
+
+        <DetailSection title="Whale Trajectory" className="mt-4">
+          <DetailGrid
+            rows={[
+              ["Trajectory ID", signal.trajectory?.trajectoryId || "N/A"],
+              ["Intent", trajectoryIntentLabel(signal.trajectory?.intent)],
+              ["Duration", formatMsDuration(signal.trajectory?.durationMs)],
+              ["Regime Path", regimePathLabel(signal.trajectory?.regimePath)],
+              ["Stealth Gamma", formatPct(Number(signal.trajectory?.stealthProfile?.gamma || 0) * 100)],
+              ["Fragmentation", formatPct(Number(signal.trajectory?.stealthProfile?.fragmentation || 0) * 100)],
+              ["Entropy", formatPct(Number(signal.trajectory?.stealthProfile?.entropy || 0) * 100)],
+              ["Cross Exchange", formatPct(Number(signal.trajectory?.stealthProfile?.crossExchangeDispersion || 0) * 100)],
+            ]}
+          />
+          <div className="mt-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+            <p className="text-xs leading-6 text-cyan-100">
+              {signal.trajectory?.conclusion || "轨迹证据不足，保持观察。"}
+            </p>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {(signal.trajectory?.actions || []).map((action, index) => (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-xs text-slate-300" key={`${action.ts}-${index}`}>
+                  <p className="font-semibold text-slate-100">
+                    {index + 1}. {actionTypeLabel(action.actionType)}
+                  </p>
+                  <p className="mt-1">
+                    {formatTime(action.ts)} · {exchangeLabel(action.exchange)} · {formatBaseVolume(action.volume, action.symbol || signal.symbol)}
+                  </p>
+                  <p className="mt-1 text-slate-500">价格冲击 {formatSignedPct(action.priceImpact)}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </DetailSection>
 
@@ -1292,6 +1352,82 @@ function formatScore(value) {
 
 function formatScorePair(spotScore, contractScore) {
   return `S ${Math.round(Number(spotScore || 0))} / C ${Math.round(Number(contractScore || 0))}`;
+}
+
+function clusterTableLabel(item) {
+  const count = Number(item?.cluster?.signalCount || 1);
+  const persistence = Number(item?.persistence?.persistenceScore || 0);
+  if (count <= 1 && persistence <= 0) return "单点";
+  return `${count}条 · ${formatPct(persistence * 100)}`;
+}
+
+function clusterIntentLabel(value) {
+  const labels = {
+    liquidity_probe_buy: "买方流动性测试",
+    liquidity_probe_sell: "卖方流动性测试",
+    downside_absorption: "下方吸收",
+    upside_suppression: "上方压制",
+    single_signal: "单点信号",
+  };
+  return labels[value] || value || "N/A";
+}
+
+function clusterTrajectoryNarrative(signal) {
+  return `该 cluster 共 ${signal.cluster.signalCount} 条同向信号，持续 ${formatMsDuration(signal.cluster.durationMs)}，价格区间 ${formatOptionalPct(signal.cluster.priceRangePct)}，更接近同一主力意图的连续投影。`;
+}
+
+function repetitionReasonLabel(value) {
+  const labels = {
+    same_intent_within_60s: "是：60 秒内同意图重复投影",
+  };
+  return labels[value] || "是";
+}
+
+function trajectoryIntentLabel(value) {
+  const labels = {
+    accumulation: "隐蔽吸筹",
+    distribution: "分段派发",
+    liquidity_manipulation: "流动性操控",
+    stop_hunting: "扫损 / 清算猎取",
+    unknown: "证据不足",
+  };
+  return labels[value] || value || "N/A";
+}
+
+function actionTypeLabel(value) {
+  const labels = {
+    aggressive_buy: "主动买入",
+    aggressive_sell: "主动卖出",
+    passive_absorb: "被动吸收",
+    liquidity_probe: "流动性测试",
+    stop_hunt: "扫损/清算",
+    unknown: "未知动作",
+  };
+  return labels[value] || value || "N/A";
+}
+
+function regimePathLabel(path) {
+  if (!Array.isArray(path) || path.length === 0) return "N/A";
+  const labels = {
+    accumulation: "吸筹",
+    distribution: "派发",
+    manipulation: "操控",
+    unclear: "不明确",
+  };
+  return path.map((item) => labels[item] || item).join(" -> ");
+}
+
+function formatMsDuration(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0s";
+  if (number < 60_000) return `${Math.round(number / 1000)}s`;
+  return `${Math.floor(number / 60_000)}m ${Math.round((number % 60_000) / 1000)}s`;
+}
+
+function formatOptionalPct(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "N/A";
+  return formatPct(number);
 }
 
 function formatDeviation(value) {

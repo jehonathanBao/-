@@ -2,6 +2,7 @@
 //! blocks orders, transfers funds, or modifies exchange account state.
 
 pub mod aggregator;
+pub mod cluster;
 pub mod collector_binance;
 pub mod collector_bitfinex;
 pub mod collector_okx;
@@ -15,6 +16,7 @@ pub mod normalizer;
 pub mod persistence;
 pub mod replay;
 pub mod scoring;
+pub mod trajectory;
 pub mod types;
 
 pub const LOG_TARGET: &str = "contract_whale_monitor";

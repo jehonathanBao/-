@@ -315,6 +315,51 @@ vi.mock("../api/contractWhale.js", () => ({
           discordReason: "critical_or_s_gate",
           discordWouldSend: true,
           mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+          cluster: {
+            clusterId: "cwm-cluster:BTC:buy:14166666",
+            signalCount: 3,
+            dominantIntent: "liquidity_probe_buy",
+            startedAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_090_000,
+            durationMs: 90_000,
+            intensity: 0.91,
+            priceRangePct: 0.18,
+          },
+          persistence: {
+            persistenceScore: 0.82,
+            signalHalfLifeMs: 60_000,
+            regimeStability: 0.67,
+            redundantWithPrevious: true,
+            redundantReason: "same_intent_within_60s",
+          },
+          whaleAction: {
+            ts: 1_700_000_000_000,
+            symbol: "BTC",
+            actionType: "aggressive_buy",
+            volume: 3260,
+            priceImpact: 0.31,
+            exchange: "binance",
+          },
+          trajectory: {
+            trajectoryId: "whale-trajectory:cwm-cluster:BTC:buy:14166666",
+            startTs: 1_700_000_000_000,
+            endTs: 1_700_000_090_000,
+            durationMs: 90_000,
+            actions: [
+              { ts: 1_700_000_000_000, symbol: "BTC", actionType: "liquidity_probe", volume: 1000, priceImpact: 0.08, exchange: "binance" },
+              { ts: 1_700_000_090_000, symbol: "BTC", actionType: "aggressive_buy", volume: 3260, priceImpact: 0.31, exchange: "bitfinex" },
+            ],
+            intent: "accumulation",
+            regimePath: ["manipulation", "accumulation"],
+            stealthProfile: {
+              gamma: 0.73,
+              fragmentation: 0.66,
+              entropy: 0.82,
+              crossExchangeDispersion: 0.33,
+            },
+            aggressivenessCurve: [0.41, 0.94],
+            conclusion: "连续买方压力和承接行为占优，疑似主力分批吸筹。",
+          },
           exchanges: [
             {
               exchange: "binance",
@@ -827,6 +872,21 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("净流贡献：60.1%")).toBeInTheDocument();
     expect(screen.getByText("Dominant Venue")).toBeInTheDocument();
     expect(screen.getByText("Score Breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Signal Cluster / Persistence")).toBeInTheDocument();
+    expect(screen.getByText("cwm-cluster:BTC:buy:14166666")).toBeInTheDocument();
+    expect(screen.getByText("买方流动性测试")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getAllByText("1m 30s").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("82.0%").length).toBeGreaterThan(0);
+    expect(screen.getByText("是：60 秒内同意图重复投影")).toBeInTheDocument();
+    expect(screen.getByText(/同一主力意图轨迹/)).toBeInTheDocument();
+    expect(screen.getByText("Whale Trajectory")).toBeInTheDocument();
+    expect(screen.getByText("whale-trajectory:cwm-cluster:BTC:buy:14166666")).toBeInTheDocument();
+    expect(screen.getByText("隐蔽吸筹")).toBeInTheDocument();
+    expect(screen.getByText("操控 -> 吸筹")).toBeInTheDocument();
+    expect(screen.getByText("连续买方压力和承接行为占优，疑似主力分批吸筹。")).toBeInTheDocument();
+    expect(screen.getByText("1. 流动性测试")).toBeInTheDocument();
+    expect(screen.getByText("2. 主动买入")).toBeInTheDocument();
     expect(screen.getByText("Volume Strength")).toBeInTheDocument();
     expect(screen.getByText("Dynamic Baseline")).toBeInTheDocument();
     expect(screen.getByText("512 BTC")).toBeInTheDocument();

@@ -503,6 +503,165 @@ pub struct ContractWhaleScoreBreakdown {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleSignalCluster {
+    #[serde(default)]
+    pub cluster_id: String,
+    #[serde(default)]
+    pub signal_count: usize,
+    #[serde(default)]
+    pub dominant_intent: String,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub intensity: f64,
+    #[serde(default)]
+    pub price_range_pct: Option<f64>,
+}
+
+impl Default for ContractWhaleSignalCluster {
+    fn default() -> Self {
+        Self {
+            cluster_id: String::new(),
+            signal_count: 1,
+            dominant_intent: "single_signal".to_string(),
+            started_at: 0,
+            updated_at: 0,
+            duration_ms: 0,
+            intensity: 0.0,
+            price_range_pct: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhalePersistenceState {
+    #[serde(default)]
+    pub persistence_score: f64,
+    #[serde(default)]
+    pub signal_half_life_ms: u64,
+    #[serde(default)]
+    pub regime_stability: f64,
+    #[serde(default)]
+    pub redundant_with_previous: bool,
+    #[serde(default)]
+    pub redundant_reason: String,
+}
+
+impl Default for ContractWhalePersistenceState {
+    fn default() -> Self {
+        Self {
+            persistence_score: 0.0,
+            signal_half_life_ms: 60_000,
+            regime_stability: 1.0,
+            redundant_with_previous: false,
+            redundant_reason: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleAction {
+    #[serde(default)]
+    pub ts: i64,
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub action_type: String,
+    #[serde(default)]
+    pub volume: f64,
+    #[serde(default)]
+    pub price_impact: f64,
+    #[serde(default)]
+    pub exchange: String,
+}
+
+impl Default for ContractWhaleAction {
+    fn default() -> Self {
+        Self {
+            ts: 0,
+            symbol: String::new(),
+            action_type: "unknown".to_string(),
+            volume: 0.0,
+            price_impact: 0.0,
+            exchange: "unknown".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleStealthProfile {
+    #[serde(default)]
+    pub gamma: f64,
+    #[serde(default)]
+    pub fragmentation: f64,
+    #[serde(default)]
+    pub entropy: f64,
+    #[serde(default)]
+    pub cross_exchange_dispersion: f64,
+}
+
+impl Default for ContractWhaleStealthProfile {
+    fn default() -> Self {
+        Self {
+            gamma: 0.0,
+            fragmentation: 0.0,
+            entropy: 0.0,
+            cross_exchange_dispersion: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTrajectory {
+    #[serde(default)]
+    pub trajectory_id: String,
+    #[serde(default)]
+    pub start_ts: i64,
+    #[serde(default)]
+    pub end_ts: i64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub actions: Vec<ContractWhaleAction>,
+    #[serde(default)]
+    pub intent: String,
+    #[serde(default)]
+    pub regime_path: Vec<String>,
+    #[serde(default)]
+    pub stealth_profile: ContractWhaleStealthProfile,
+    #[serde(default)]
+    pub aggressiveness_curve: Vec<f64>,
+    #[serde(default)]
+    pub conclusion: String,
+}
+
+impl Default for ContractWhaleTrajectory {
+    fn default() -> Self {
+        Self {
+            trajectory_id: String::new(),
+            start_ts: 0,
+            end_ts: 0,
+            duration_ms: 0,
+            actions: Vec::new(),
+            intent: "unknown".to_string(),
+            regime_path: Vec::new(),
+            stealth_profile: ContractWhaleStealthProfile::default(),
+            aggressiveness_curve: Vec::new(),
+            conclusion: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignal {
     pub id: String,
     pub ts: i64,
@@ -613,6 +772,14 @@ pub struct ContractWhaleSignal {
     #[serde(default)]
     pub discord_would_send: bool,
     pub final_result: String,
+    #[serde(default)]
+    pub cluster: ContractWhaleSignalCluster,
+    #[serde(default)]
+    pub persistence: ContractWhalePersistenceState,
+    #[serde(default)]
+    pub whale_action: ContractWhaleAction,
+    #[serde(default)]
+    pub trajectory: ContractWhaleTrajectory,
     pub read_only: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,

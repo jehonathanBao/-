@@ -357,11 +357,86 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     discordWouldSend: Boolean(item.discordWouldSend),
     finalResult: item.finalResult || "contract whale flow candidate",
     mergedFrom: Array.isArray(item.mergedFrom) ? item.mergedFrom.filter(Boolean).map(String) : [],
+    cluster: normalizeSignalCluster(item.cluster),
+    persistence: normalizePersistenceState(item.persistence),
+    whaleAction: normalizeWhaleAction(item.whaleAction),
+    trajectory: normalizeWhaleTrajectory(item.trajectory),
   };
 }
 
 function isVisibleContractWhaleSignal(signal) {
   return !signal.priceDeviationFiltered;
+}
+
+function normalizeSignalCluster(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    clusterId: source.clusterId ? String(source.clusterId) : "",
+    signalCount: Math.max(1, Math.round(numberOrNull(source.signalCount) || 1)),
+    dominantIntent: source.dominantIntent ? String(source.dominantIntent) : "single_signal",
+    startedAt: numberOrNull(source.startedAt),
+    updatedAt: numberOrNull(source.updatedAt),
+    durationMs: Math.max(0, Math.round(numberOrNull(source.durationMs) || 0)),
+    intensity: clampRatio(numberOrNull(source.intensity) ?? 0),
+    priceRangePct: numberOrNull(source.priceRangePct),
+  };
+}
+
+function normalizePersistenceState(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    persistenceScore: clampRatio(numberOrNull(source.persistenceScore) ?? 0),
+    signalHalfLifeMs: Math.max(0, Math.round(numberOrNull(source.signalHalfLifeMs) || 0)),
+    regimeStability: clampRatio(numberOrNull(source.regimeStability) ?? 0),
+    redundantWithPrevious: Boolean(source.redundantWithPrevious),
+    redundantReason: source.redundantReason ? String(source.redundantReason) : "",
+  };
+}
+
+function normalizeWhaleAction(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ts: numberOrNull(source.ts),
+    symbol: source.symbol ? String(source.symbol) : "",
+    actionType: source.actionType ? String(source.actionType) : "unknown",
+    volume: numberOrNull(source.volume) ?? 0,
+    priceImpact: numberOrNull(source.priceImpact) ?? 0,
+    exchange: source.exchange ? String(source.exchange) : "unknown",
+  };
+}
+
+function normalizeWhaleTrajectory(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    trajectoryId: source.trajectoryId ? String(source.trajectoryId) : "",
+    startTs: numberOrNull(source.startTs),
+    endTs: numberOrNull(source.endTs),
+    durationMs: Math.max(0, Math.round(numberOrNull(source.durationMs) || 0)),
+    actions: Array.isArray(source.actions) ? source.actions.map(normalizeWhaleAction) : [],
+    intent: source.intent ? String(source.intent) : "unknown",
+    regimePath: Array.isArray(source.regimePath) ? source.regimePath.filter(Boolean).map(String) : [],
+    stealthProfile: normalizeStealthProfile(source.stealthProfile),
+    aggressivenessCurve: Array.isArray(source.aggressivenessCurve)
+      ? source.aggressivenessCurve.map((value) => clampRatio(numberOrNull(value) ?? 0))
+      : [],
+    conclusion: source.conclusion ? String(source.conclusion) : "",
+  };
+}
+
+function normalizeStealthProfile(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    gamma: clampRatio(numberOrNull(source.gamma) ?? 0),
+    fragmentation: clampRatio(numberOrNull(source.fragmentation) ?? 0),
+    entropy: clampRatio(numberOrNull(source.entropy) ?? 0),
+    crossExchangeDispersion: clampRatio(numberOrNull(source.crossExchangeDispersion) ?? 0),
+  };
+}
+
+function clampRatio(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
 }
 
 function computePriceDeviationPct(orderPrice, currentMarketPrice) {
