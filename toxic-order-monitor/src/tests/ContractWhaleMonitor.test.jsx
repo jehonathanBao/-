@@ -539,6 +539,13 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByTestId("platform-capability-coinbase")).not.toBeInTheDocument();
     expect(screen.queryByText("SPOT")).not.toBeInTheDocument();
     expect(screen.queryByText("FUNDING")).not.toBeInTheDocument();
+    expect(screen.getByText("Whale Behavior Timeline")).toBeInTheDocument();
+    expect(screen.getByText("主力行为轨迹")).toBeInTheDocument();
+    expect(screen.getByText("Whale Entity List")).toBeInTheDocument();
+    expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
+    expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
+    expect(screen.getByText("Hazard Curve (lambda proxy)")).toBeInTheDocument();
+    expect(screen.getByText("Raw Signals (debug)")).toBeInTheDocument();
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText((_, element) => {
@@ -874,19 +881,19 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Score Breakdown")).toBeInTheDocument();
     expect(screen.getByText("Signal Cluster / Persistence")).toBeInTheDocument();
     expect(screen.getByText("cwm-cluster:BTC:buy:14166666")).toBeInTheDocument();
-    expect(screen.getByText("买方流动性测试")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getAllByText("买方流动性测试").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1m 30s").length).toBeGreaterThan(0);
     expect(screen.getAllByText("82.0%").length).toBeGreaterThan(0);
     expect(screen.getByText("是：60 秒内同意图重复投影")).toBeInTheDocument();
     expect(screen.getByText(/同一主力意图轨迹/)).toBeInTheDocument();
     expect(screen.getByText("Whale Trajectory")).toBeInTheDocument();
     expect(screen.getByText("whale-trajectory:cwm-cluster:BTC:buy:14166666")).toBeInTheDocument();
-    expect(screen.getByText("隐蔽吸筹")).toBeInTheDocument();
-    expect(screen.getByText("操控 -> 吸筹")).toBeInTheDocument();
-    expect(screen.getByText("连续买方压力和承接行为占优，疑似主力分批吸筹。")).toBeInTheDocument();
-    expect(screen.getByText("1. 流动性测试")).toBeInTheDocument();
-    expect(screen.getByText("2. 主动买入")).toBeInTheDocument();
+    expect(screen.getAllByText("隐蔽吸筹").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("操控 -> 吸筹").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("连续买方压力和承接行为占优，疑似主力分批吸筹。").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1. 流动性测试").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2. 主动买入").length).toBeGreaterThan(0);
     expect(screen.getByText("Volume Strength")).toBeInTheDocument();
     expect(screen.getByText("Dynamic Baseline")).toBeInTheDocument();
     expect(screen.getByText("512 BTC")).toBeInTheDocument();

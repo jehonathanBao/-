@@ -170,7 +170,7 @@ describe("Dashboard interactions", () => {
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
-    expect(screen.getByText("主力合约监控未启用")).toBeInTheDocument();
+    expect(screen.getAllByText("主力合约监控未启用").length).toBeGreaterThan(0);
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
   });

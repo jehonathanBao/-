@@ -29,6 +29,7 @@ export default function ContractWhaleMonitor() {
     error: null,
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
+  const [selectedWhaleId, setSelectedWhaleId] = useState(null);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
 
   useEffect(() => {
@@ -105,6 +106,17 @@ export default function ContractWhaleMonitor() {
     }
   }, [selectedSignalId, state.items]);
 
+  useEffect(() => {
+    if (state.items.length === 0) {
+      if (selectedWhaleId) setSelectedWhaleId(null);
+      return;
+    }
+    const entities = buildWhaleEntities(state.items);
+    if (!selectedWhaleId || !entities.some((entity) => entity.id === selectedWhaleId)) {
+      setSelectedWhaleId(entities[0]?.id || null);
+    }
+  }, [selectedWhaleId, state.items]);
+
   const summary = state.summary || {
     status: "calm",
     healthStatus: "disabled",
@@ -180,6 +192,7 @@ export default function ContractWhaleMonitor() {
   };
   const platformCapabilities = summary.platforms || {};
   const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
+  const whaleEntities = buildWhaleEntities(state.items);
 
   return (
     <section className="console-panel mb-5 p-4 md:p-5">
@@ -231,6 +244,7 @@ export default function ContractWhaleMonitor() {
         filters={filters}
         onChange={(nextFilters) => {
           setSelectedSignalId(null);
+          setSelectedWhaleId(null);
           setFilters(nextFilters);
         }}
       />
@@ -238,113 +252,22 @@ export default function ContractWhaleMonitor() {
         已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；详情里可查看当前价格、信号价格和偏离比例。
       </p>
 
-      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/30">
-        {state.loading ? (
-          <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
-            主力合约监控载入中...
-          </p>
-        ) : state.items.length === 0 ? (
-          <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
-            {summary.enabled ? "暂无主力合约异动" : "主力合约监控未启用"}
-          </p>
-      ) : (
-          <table className="min-w-full table-fixed text-left text-xs">
-            <thead className="bg-slate-950/80 text-slate-400">
-              <tr>
-                <HeaderCell>时间</HeaderCell>
-                <HeaderCell>币种 / 价格</HeaderCell>
-                <HeaderCell>类型</HeaderCell>
-                <HeaderCell>等级</HeaderCell>
-                <HeaderCell>窗口</HeaderCell>
-                <HeaderCell>成交量</HeaderCell>
-                <HeaderCell>名义金额</HeaderCell>
-                <HeaderCell>价格</HeaderCell>
-                <HeaderCell>价格偏离</HeaderCell>
-                <HeaderCell>主力评分</HeaderCell>
-                <HeaderCell>轨迹</HeaderCell>
-                <HeaderCell>现货 / 合约</HeaderCell>
-                <HeaderCell>净方向</HeaderCell>
-                <HeaderCell>方向占比</HeaderCell>
-                <HeaderCell>异常倍数</HeaderCell>
-                <HeaderCell>历史分位</HeaderCell>
-                <HeaderCell>主导平台</HeaderCell>
-                <HeaderCell>价格变化</HeaderCell>
-                <HeaderCell>清算</HeaderCell>
-                <HeaderCell>OI</HeaderCell>
-                <HeaderCell>资金费率</HeaderCell>
-                <HeaderCell>Discord</HeaderCell>
-                <HeaderCell>详情</HeaderCell>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800 text-slate-300">
-              {state.items.map((item) => (
-                <tr
-                  className="console-row"
-                  data-testid={`contract-whale-row-${item.id}`}
-                  key={item.id}
-                  onClick={() => setSelectedSignalId(item.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedSignalId(item.id);
-                    }
-                  }}
-                  tabIndex={0}
-                >
-                  <Cell>{formatTime(item.ts)}</Cell>
-                  <Cell>
-                    <SymbolWithPrice item={item} />
-                  </Cell>
-                  <Cell>
-                    <span className="inline-flex items-center gap-1">
-                      <span className={signalTypeIconClass(item.signalType)} aria-hidden="true">
-                        {signalTypeIcon(item.signalType)}
-                      </span>
-                      {signalTypeLabel(item.signalType)}
-                    </span>
-                  </Cell>
-                  <Cell>
-                    <span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>
-                      {severityLabel(item.severity)}
-                    </span>
-                  </Cell>
-                  <Cell>{item.windowSec}s</Cell>
-                  <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
-                  <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
-                  <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
-                  <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
-                  <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
-                  <Cell>{clusterTableLabel(item)}</Cell>
-                  <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
-                  <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
-                  <Cell>{formatPct(item.dominance * 100)}</Cell>
-                  <Cell>{formatMultiple(item.dynamicMultiple)}</Cell>
-                  <Cell>{formatPercentile(item.percentileLevel)}</Cell>
-                  <Cell>{item.mainExchange}</Cell>
-                  <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
-                  <Cell>{liquidationStatus(item)}</Cell>
-                  <Cell>{oiStatus(item)}</Cell>
-                  <Cell>{fundingStatus(item)}</Cell>
-                  <Cell>{discordStatus(item)}</Cell>
-                  <Cell>
-                    <button
-                      aria-label={`查看主力合约信号详情 ${item.id}`}
-                      className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelectedSignalId(item.id);
-                      }}
-                      type="button"
-                    >
-                      详情
-                    </button>
-                  </Cell>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <WhaleTrajectoryDashboard
+        enabled={summary.enabled}
+        loading={state.loading}
+        onOpenSignal={setSelectedSignalId}
+        onSelectWhale={setSelectedWhaleId}
+        selectedWhaleId={selectedWhaleId}
+        symbol={filters.symbol}
+        whales={whaleEntities}
+      />
+
+      <RawSignalDebugSection
+        enabled={summary.enabled}
+        items={state.items}
+        loading={state.loading}
+        onOpenSignal={setSelectedSignalId}
+      />
 
       <MainForceEventsSection events={state.events} symbol={filters.symbol} />
 
@@ -357,6 +280,356 @@ export default function ContractWhaleMonitor() {
         />
       ) : null}
     </section>
+  );
+}
+
+function WhaleTrajectoryDashboard({
+  enabled,
+  loading,
+  onOpenSignal,
+  onSelectWhale,
+  selectedWhaleId,
+  symbol,
+  whales,
+}) {
+  const selectedWhale = whales.find((whale) => whale.id === selectedWhaleId) || whales[0] || null;
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="console-label text-cyan-300">Whale Behavior Timeline</p>
+          <h4 className="mt-1 text-base font-bold text-white">主力行为轨迹</h4>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
+            按同一 symbol、方向、价格区间和时间连续性把碎片信号合并成 whale entity，优先看主力意图轨迹，原始信号仅作为折叠调试证据。
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-xs text-slate-300">
+          <MiniInfoCard label="Whale Entities" value={`${whales.length}`} detail={`当前筛选 ${symbol}`} />
+          <MiniInfoCard label="Merged Signals" value={`${whales.reduce((sum, whale) => sum + whale.signalCount, 0)}`} detail="去重后的主力投影" />
+          <MiniInfoCard label="Focus" value={selectedWhale ? shortWhaleId(selectedWhale.id) : "N/A"} detail={selectedWhale ? trajectoryIntentLabel(selectedWhale.intent) : "等待数据"} />
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
+          主力轨迹载入中...
+        </p>
+      ) : whales.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
+          {enabled ? `暂无 ${symbol} 主力轨迹` : "主力合约监控未启用"}
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(240px,0.38fr)_minmax(0,1fr)]">
+          <aside className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="console-label">Whale Entity List</p>
+                <h5 className="mt-1 text-sm font-bold text-white">主力实体</h5>
+              </div>
+              <span className="rounded-full border border-cyan-500/30 px-2 py-1 text-[11px] font-semibold text-cyan-100">
+                {whales.length} active
+              </span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {whales.map((whale) => (
+                <WhaleEntityCard
+                  key={whale.id}
+                  onSelect={() => onSelectWhale(whale.id)}
+                  selected={whale.id === selectedWhale?.id}
+                  whale={whale}
+                />
+              ))}
+            </div>
+          </aside>
+
+          <TrajectoryFocusPanel onOpenSignal={onOpenSignal} whale={selectedWhale} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WhaleEntityCard({ onSelect, selected, whale }) {
+  return (
+    <button
+      className={`w-full rounded-xl border px-3 py-3 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-500/35 ${
+        selected
+          ? "border-cyan-400/70 bg-cyan-500/10 shadow-glow"
+          : "border-slate-800 bg-slate-900/55 hover:border-cyan-500/40 hover:bg-slate-900"
+      }`}
+      data-testid={`whale-entity-card-${whale.id}`}
+      onClick={onSelect}
+      type="button"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold text-slate-100">{shortWhaleId(whale.id)}</p>
+          <p className="mt-1 text-xs text-cyan-100">{trajectoryIntentLabel(whale.intent)}</p>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[11px] font-bold ${severityBadgeClass(whale.severity)}`}>
+          {severityLabel(whale.severity)}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+        <p>signals {whale.signalCount}</p>
+        <p>duration {formatMsDuration(whale.durationMs)}</p>
+        <p>stealth {formatPct(whale.stealthGamma * 100)}</p>
+        <p>λ proxy {formatPct(whale.hazardPeak * 100)}</p>
+      </div>
+      <p className="mt-2 truncate text-[11px] text-slate-500" title={regimePathLabel(whale.regimePath)}>
+        {regimePathLabel(whale.regimePath)}
+      </p>
+    </button>
+  );
+}
+
+function TrajectoryFocusPanel({ onOpenSignal, whale }) {
+  if (!whale) return null;
+  const primarySignal = whale.signals[0];
+  return (
+    <article className="rounded-xl border border-slate-800 bg-slate-950/45 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="console-label">Trajectory Overview</p>
+          <h5 className="mt-1 text-base font-bold text-white">
+            {primarySignal.symbol} · {trajectoryIntentLabel(whale.intent)}
+          </h5>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
+            {whale.conclusion || "轨迹证据不足，保持观察。"}
+          </p>
+        </div>
+        <button
+          className="rounded-lg border border-cyan-500/40 px-3 py-2 text-xs font-semibold text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
+          onClick={() => onOpenSignal(primarySignal.id)}
+          type="button"
+        >
+          查看代表信号
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-2 text-xs md:grid-cols-2 xl:grid-cols-4">
+        <MiniInfoCard label="Dominant Intent" value={trajectoryIntentLabel(whale.intent)} detail={clusterIntentLabel(whale.clusterIntent)} />
+        <MiniInfoCard label="Regime Path" value={regimePathLabel(whale.regimePath)} detail="phase path" />
+        <MiniInfoCard label="Persistence" value={formatPct(whale.persistenceScore * 100)} detail={`stability ${formatPct(whale.regimeStability * 100)}`} />
+        <MiniInfoCard label="Duration" value={formatMsDuration(whale.durationMs)} detail={`${whale.signalCount} signals merged`} />
+      </div>
+
+      <TrajectoryTimeline phases={whale.phases} />
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <PhaseBreakdown phases={whale.phases} />
+        <div className="grid gap-3">
+          <CurvePanel label="Stealth Curve (gamma)" points={whale.stealthCurve} tone="cyan" />
+          <CurvePanel label="Hazard Curve (lambda proxy)" points={whale.hazardCurve} tone="amber" />
+        </div>
+      </div>
+
+      <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-400">
+        <summary className="cursor-pointer select-none text-slate-300 outline-none transition hover:text-cyan-200 focus-visible:ring-2 focus-visible:ring-cyan-500/35">
+          Signals collapsed debug · {whale.signalCount} 条
+        </summary>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {whale.signals.map((signal) => (
+            <button
+              className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-left outline-none transition hover:border-cyan-500/40 hover:bg-cyan-500/5 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
+              key={signal.id}
+              onClick={() => onOpenSignal(signal.id)}
+              type="button"
+            >
+              <p className="font-semibold text-slate-100">{formatTime(signal.ts)} · {signalTypeLabel(signal.signalType)}</p>
+              <p className="mt-1 text-slate-400">
+                {formatBaseVolume(signal.totalVolumeBtc, signal.symbol)} · {netDirection(signal.netVolumeBtc, signal.symbol)}
+              </p>
+            </button>
+          ))}
+        </div>
+      </details>
+    </article>
+  );
+}
+
+function TrajectoryTimeline({ phases }) {
+  return (
+    <section className="mt-4">
+      <p className="console-label">Trajectory Timeline</p>
+      <div className="mt-3 grid gap-2 md:grid-cols-3">
+        {phases.map((phase, index) => (
+          <div className={`rounded-xl border px-3 py-3 ${phaseToneClass(phase.type)}`} key={`${phase.type}-${index}`}>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-bold text-slate-100">{index + 1}. {phaseLabel(phase.type)}</p>
+              <span className="text-[11px] text-slate-400">{formatTime(phase.ts)}</span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
+              <div
+                className={phaseBarClass(phase.type)}
+                style={{ width: `${Math.max(8, Math.min(100, phase.intensity * 100))}%` }}
+              />
+            </div>
+            <p className="mt-2 text-[11px] leading-5 text-slate-400">{phase.detail}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PhaseBreakdown({ phases }) {
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+      <p className="console-label">Phase Breakdown</p>
+      <div className="mt-3 space-y-2">
+        {phases.map((phase, index) => (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2" key={`${phase.type}-breakdown-${index}`}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold text-slate-100">{phaseLabel(phase.type)}</p>
+              <span className="text-[11px] text-cyan-100">{formatPct(phase.intensity * 100)}</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-5 text-slate-400">{phase.detail}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CurvePanel({ label, points, tone }) {
+  return (
+    <section className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="console-label">{label}</p>
+        <span className="text-xs font-semibold text-slate-100">{formatPct(Math.max(...points, 0) * 100)}</span>
+      </div>
+      <div className="mt-3 flex h-16 items-end gap-1">
+        {points.map((point, index) => (
+          <span
+            className={`flex-1 rounded-t ${curveBarClass(tone)}`}
+            key={`${label}-${index}`}
+            style={{ height: `${Math.max(8, Math.min(100, point * 100))}%` }}
+            title={formatPct(point * 100)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
+  return (
+    <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/30">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-200 outline-none transition hover:text-cyan-100 focus-visible:ring-2 focus-visible:ring-cyan-500/35">
+        <span>Raw Signals (debug)</span>
+        <span className="text-xs font-normal text-slate-500">{items.length} rows · 默认折叠</span>
+      </summary>
+      <div className="overflow-x-auto border-t border-slate-800">
+        {loading ? (
+          <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
+        ) : items.length === 0 ? (
+          <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
+        ) : (
+          <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} />
+        )}
+      </div>
+    </details>
+  );
+}
+
+function RawSignalDebugTable({ items, onOpenSignal }) {
+  return (
+    <table className="min-w-full table-fixed text-left text-xs" data-testid="raw-contract-whale-signals">
+      <thead className="bg-slate-950/80 text-slate-400">
+        <tr>
+          <HeaderCell>时间</HeaderCell>
+          <HeaderCell>币种 / 价格</HeaderCell>
+          <HeaderCell>类型</HeaderCell>
+          <HeaderCell>等级</HeaderCell>
+          <HeaderCell>窗口</HeaderCell>
+          <HeaderCell>成交量</HeaderCell>
+          <HeaderCell>名义金额</HeaderCell>
+          <HeaderCell>价格</HeaderCell>
+          <HeaderCell>价格偏离</HeaderCell>
+          <HeaderCell>主力评分</HeaderCell>
+          <HeaderCell>轨迹</HeaderCell>
+          <HeaderCell>现货 / 合约</HeaderCell>
+          <HeaderCell>净方向</HeaderCell>
+          <HeaderCell>方向占比</HeaderCell>
+          <HeaderCell>异常倍数</HeaderCell>
+          <HeaderCell>历史分位</HeaderCell>
+          <HeaderCell>主导平台</HeaderCell>
+          <HeaderCell>价格变化</HeaderCell>
+          <HeaderCell>清算</HeaderCell>
+          <HeaderCell>OI</HeaderCell>
+          <HeaderCell>资金费率</HeaderCell>
+          <HeaderCell>Discord</HeaderCell>
+          <HeaderCell>详情</HeaderCell>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-slate-800 text-slate-300">
+        {items.map((item) => (
+          <tr
+            className="console-row"
+            data-testid={`contract-whale-row-${item.id}`}
+            key={item.id}
+            onClick={() => onOpenSignal(item.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpenSignal(item.id);
+              }
+            }}
+            tabIndex={0}
+          >
+            <Cell>{formatTime(item.ts)}</Cell>
+            <Cell>
+              <SymbolWithPrice item={item} />
+            </Cell>
+            <Cell>
+              <span className="inline-flex items-center gap-1">
+                <span className={signalTypeIconClass(item.signalType)} aria-hidden="true">
+                  {signalTypeIcon(item.signalType)}
+                </span>
+                {signalTypeLabel(item.signalType)}
+              </span>
+            </Cell>
+            <Cell>
+              <span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>
+                {severityLabel(item.severity)}
+              </span>
+            </Cell>
+            <Cell>{item.windowSec}s</Cell>
+            <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
+            <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
+            <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
+            <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
+            <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
+            <Cell>{clusterTableLabel(item)}</Cell>
+            <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
+            <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
+            <Cell>{formatPct(item.dominance * 100)}</Cell>
+            <Cell>{formatMultiple(item.dynamicMultiple)}</Cell>
+            <Cell>{formatPercentile(item.percentileLevel)}</Cell>
+            <Cell>{item.mainExchange}</Cell>
+            <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
+            <Cell>{liquidationStatus(item)}</Cell>
+            <Cell>{oiStatus(item)}</Cell>
+            <Cell>{fundingStatus(item)}</Cell>
+            <Cell>{discordStatus(item)}</Cell>
+            <Cell>
+              <button
+                aria-label={`查看主力合约信号详情 ${item.id}`}
+                className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenSignal(item.id);
+                }}
+                type="button"
+              >
+                详情
+              </button>
+            </Cell>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -1285,6 +1558,220 @@ function marketLabel(value) {
 function sourceListLabel(value) {
   if (!Array.isArray(value) || value.length === 0) return "无";
   return value.map(exchangeLabel).join(", ");
+}
+
+function buildWhaleEntities(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const id = trajectoryKey(item);
+    const existing = groups.get(id) || {
+      id,
+      signals: [],
+      severity: item.severity,
+      score: 0,
+      startTs: item.ts,
+      endTs: item.ts,
+    };
+    existing.signals.push(item);
+    existing.severity = strongestSeverity(existing.severity, item.severity);
+    existing.score = Math.max(existing.score, Number(item.mainForceScore ?? item.score ?? 0));
+    existing.startTs = Math.min(existing.startTs, Number(item.ts || existing.startTs));
+    existing.endTs = Math.max(existing.endTs, Number(item.ts || existing.endTs));
+    groups.set(id, existing);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const signals = group.signals.sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+      const lead = signals[signals.length - 1] || signals[0];
+      const trajectory = lead?.trajectory || {};
+      const cluster = lead?.cluster || {};
+      const stealthProfile = trajectory.stealthProfile || {};
+      const actions = Array.isArray(trajectory.actions) ? trajectory.actions : [];
+      const signalCount = Math.max(
+        signals.length,
+        Number(cluster.signalCount || trajectory.signalCount || 0),
+        1,
+      );
+      const durationMs = Math.max(
+        Number(trajectory.durationMs || 0),
+        Number(cluster.durationMs || 0),
+        Math.max(0, group.endTs - group.startTs),
+      );
+      const regimePath = Array.isArray(trajectory.regimePath) && trajectory.regimePath.length
+        ? trajectory.regimePath
+        : inferRegimePath(lead);
+      const stealthGamma = clampRatio(stealthProfile.gamma || inferStealthGamma(signals));
+      const hazardCurve = buildHazardCurve(signals, actions);
+      return {
+        ...group,
+        actions,
+        clusterIntent: cluster.dominantIntent,
+        conclusion: trajectory.conclusion || clusterTrajectoryNarrativeSafe(lead),
+        durationMs,
+        hazardCurve,
+        hazardPeak: Math.max(...hazardCurve, 0),
+        intent: trajectory.intent || inferTrajectoryIntent(lead),
+        persistenceScore: clampRatio(lead?.persistence?.persistenceScore || signalCount / 6),
+        phases: deriveTrajectoryPhases(signals, actions, regimePath),
+        regimePath,
+        regimeStability: clampRatio(lead?.persistence?.regimeStability || lead?.cluster?.intensity || 0),
+        signalCount,
+        stealthCurve: buildStealthCurve(signals, stealthProfile),
+        stealthGamma,
+      };
+    })
+    .sort((a, b) => {
+      const severityDelta = severityRank(b.severity) - severityRank(a.severity);
+      if (severityDelta !== 0) return severityDelta;
+      return Number(b.endTs || 0) - Number(a.endTs || 0);
+    });
+}
+
+function trajectoryKey(item) {
+  if (item?.trajectory?.trajectoryId) return item.trajectory.trajectoryId;
+  if (item?.cluster?.clusterId) return `trajectory:${item.cluster.clusterId}`;
+  return `trajectory:${item?.symbol || "unknown"}:${item?.direction || "neutral"}:${Math.floor(Number(item?.ts || 0) / 120_000)}`;
+}
+
+function shortWhaleId(id) {
+  const text = String(id || "whale");
+  const suffix = text.split(":").filter(Boolean).pop() || text;
+  return `Whale #${suffix.slice(-6).toUpperCase()}`;
+}
+
+function strongestSeverity(a, b) {
+  return severityRank(b) > severityRank(a) ? b : a;
+}
+
+function severityRank(value) {
+  const ranks = { calm: 0, low: 1, medium: 2, high: 3, critical: 4, s: 5 };
+  return ranks[String(value || "calm").toLowerCase()] || 0;
+}
+
+function inferRegimePath(item) {
+  const type = String(item?.signalType || "");
+  if (type.includes("absorption")) return ["manipulation", "accumulation"];
+  if (type.includes("suppression")) return ["manipulation", "distribution"];
+  if (String(item?.direction || "") === "buy") return ["accumulation"];
+  if (String(item?.direction || "") === "sell") return ["distribution"];
+  return ["unclear"];
+}
+
+function inferTrajectoryIntent(item) {
+  const type = String(item?.signalType || "");
+  if (type.includes("absorption")) return "accumulation";
+  if (type.includes("suppression")) return "distribution";
+  if (String(item?.direction || "") === "buy") return "accumulation";
+  if (String(item?.direction || "") === "sell") return "distribution";
+  return "unknown";
+}
+
+function inferStealthGamma(signals) {
+  if (!Array.isArray(signals) || signals.length === 0) return 0;
+  const averagePersistence = signals.reduce((sum, item) => sum + Number(item?.persistence?.persistenceScore || 0), 0) / signals.length;
+  const averageIntensity = signals.reduce((sum, item) => sum + Number(item?.cluster?.intensity || 0), 0) / signals.length;
+  return Math.max(averagePersistence, averageIntensity);
+}
+
+function buildStealthCurve(signals, stealthProfile) {
+  const base = [
+    Number(stealthProfile.fragmentation || 0),
+    Number(stealthProfile.entropy || 0),
+    Number(stealthProfile.crossExchangeDispersion || 0),
+    Number(stealthProfile.gamma || 0),
+  ].map(clampRatio);
+  const signalValues = (signals || []).map((signal) => clampRatio(signal?.persistence?.persistenceScore || signal?.cluster?.intensity || 0));
+  const points = [...signalValues, ...base].filter((value) => value > 0);
+  return points.length ? points.slice(-8) : [0.12, 0.18, 0.16, 0.2];
+}
+
+function buildHazardCurve(signals, actions) {
+  const actionValues = (actions || []).map((action) => clampRatio(Math.abs(Number(action?.priceImpact || 0)) / 0.5));
+  const signalValues = (signals || []).map((signal) => {
+    const volume = clampRatio(Number(signal.totalVolumeBtc || 0) / 4_500);
+    const dominance = clampRatio(Number(signal.dominance || 0));
+    const priceMove = clampRatio(Math.abs(Number(signal.priceMovePct || 0)) / 0.35);
+    return clampRatio(volume * 0.45 + dominance * 0.35 + priceMove * 0.2);
+  });
+  const points = [...signalValues, ...actionValues].filter((value) => value > 0);
+  return points.length ? points.slice(-8) : [0.08, 0.1, 0.09, 0.12];
+}
+
+function deriveTrajectoryPhases(signals, actions, regimePath) {
+  if (Array.isArray(actions) && actions.length > 0) {
+    return actions.slice(0, 4).map((action) => ({
+      detail: `${exchangeLabel(action.exchange)} · ${formatBaseVolume(action.volume, action.symbol || signals?.[0]?.symbol)} · price impact ${formatSignedPct(action.priceImpact)}`,
+      intensity: clampRatio(Math.abs(Number(action.priceImpact || 0)) / 0.5 || Number(action.volume || 0) / 4_500),
+      ts: action.ts || signals?.[0]?.ts,
+      type: action.actionType || "unknown",
+    }));
+  }
+  const source = (signals || []).slice(-4);
+  if (source.length > 0) {
+    return source.map((signal) => ({
+      detail: `${signalTypeLabel(signal.signalType)} · ${netDirection(signal.netVolumeBtc, signal.symbol)} · ${formatUsd(signal.totalNotionalUsd)}`,
+      intensity: clampRatio(Math.max(Number(signal.dominance || 0), Number(signal?.cluster?.intensity || 0))),
+      ts: signal.ts,
+      type: signal.signalType || "unknown",
+    }));
+  }
+  return (regimePath || ["unclear"]).map((type) => ({
+    detail: "等待更多连续信号确认。",
+    intensity: 0.2,
+    ts: null,
+    type,
+  }));
+}
+
+function clusterTrajectoryNarrativeSafe(signal) {
+  if (signal?.cluster?.signalCount > 1) return clusterTrajectoryNarrative(signal);
+  return signal?.finalResult || "该信号暂未形成连续主力轨迹。";
+}
+
+function phaseLabel(value) {
+  const labels = {
+    accumulation: "吸筹阶段",
+    aggressive_buy: "主动拉盘",
+    aggressive_sell: "主动砸盘",
+    distribution: "派发阶段",
+    downside_absorption: "下方吸收",
+    liquidity_probe: "流动性测试",
+    manipulation: "操控试探",
+    passive_absorb: "被动吸收",
+    stop_hunt: "扫损/清算",
+    unknown: "证据不足",
+    upside_suppression: "上方压制",
+  };
+  return labels[value] || actionTypeLabel(value);
+}
+
+function phaseToneClass(value) {
+  const text = String(value || "");
+  if (text.includes("buy") || text.includes("accumulation") || text.includes("absorption")) {
+    return "border-emerald-500/20 bg-emerald-500/5";
+  }
+  if (text.includes("sell") || text.includes("distribution") || text.includes("suppression")) {
+    return "border-red-500/20 bg-red-500/5";
+  }
+  if (text.includes("hunt") || text.includes("manipulation")) {
+    return "border-amber-500/20 bg-amber-500/5";
+  }
+  return "border-slate-800 bg-slate-900/60";
+}
+
+function phaseBarClass(value) {
+  const text = String(value || "");
+  if (text.includes("buy") || text.includes("accumulation") || text.includes("absorption")) return "h-full rounded-full bg-emerald-400";
+  if (text.includes("sell") || text.includes("distribution") || text.includes("suppression")) return "h-full rounded-full bg-red-400";
+  if (text.includes("hunt") || text.includes("manipulation")) return "h-full rounded-full bg-amber-300";
+  return "h-full rounded-full bg-cyan-300";
+}
+
+function curveBarClass(tone) {
+  if (tone === "amber") return "bg-amber-300/80";
+  if (tone === "cyan") return "bg-cyan-300/80";
+  return "bg-slate-400";
 }
 
 function netDirection(value, symbol = "BTC") {
