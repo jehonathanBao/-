@@ -246,7 +246,13 @@ impl AppState {
         );
         tracing::info!(
             target: BACM_LOG_TARGET,
-            enabled_symbols = ?bacm_runtime_config.enabled_symbols(),
+            enabled_symbols = ?if bacm_runtime_config.enabled {
+                bacm_runtime_config.enabled_symbols()
+            } else {
+                Vec::new()
+            },
+            system_mode = config.system_mode.mode.as_str(),
+            altcoin_disabled_reason = ?config.system_mode.altcoin_disabled_reason(),
             "{} runtime {}",
             BACM_LOG_PREFIX,
             if bacm_runtime_config.enabled { "enabled" } else { "disabled" }

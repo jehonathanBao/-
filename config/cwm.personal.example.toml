@@ -10,6 +10,14 @@
 
 enable_bitfinex = true
 
+[system]
+mode = "bear_market"
+
+[features]
+altcoin_monitoring = false
+memecoin_tracking = false
+low_cap_scanner = false
+
 [toxicOrder]
 max_price_deviation_pct = 5.0
 enable_spot_score = true

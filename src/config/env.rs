@@ -4,6 +4,9 @@ use anyhow::{anyhow, Context};
 
 use crate::{
     config::{
+        system_mode::{
+            load_system_mode_config_from_settings, set_system_mode_config, SystemModeConfig,
+        },
         thresholds,
         venues::{VenueConfig, VenueConfigs},
     },
@@ -77,6 +80,7 @@ pub struct AppConfig {
     pub liq_hunt_watch_score: f64,
     pub book_stale_ms: i64,
     pub max_buffer_age_ms: i64,
+    pub system_mode: SystemModeConfig,
     pub contract_whale_monitor: ContractWhaleMonitorConfig,
     pub spot_whale_monitor: SpotWhaleMonitorConfig,
 }
@@ -94,6 +98,8 @@ impl AppConfig {
             .add_source(::config::File::with_name(config_file).required(false))
             .build()
             .context("failed to load config/default")?;
+        let system_mode = load_system_mode_config_from_settings(&settings);
+        set_system_mode_config(system_mode);
         crate::contract_whale_monitor::config::set_contract_whale_runtime_config(
             crate::contract_whale_monitor::config::load_contract_whale_runtime_config_from_settings(
                 &settings,
@@ -104,10 +110,13 @@ impl AppConfig {
                 &settings,
             ),
         );
-        crate::binance_alt_contract_monitor::config::set_binance_alt_contract_runtime_config(
+        let mut bacm_runtime_config =
             crate::binance_alt_contract_monitor::config::load_binance_alt_contract_runtime_config_from_settings(
                 &settings,
-            ),
+            );
+        bacm_runtime_config.apply_system_mode(system_mode);
+        crate::binance_alt_contract_monitor::config::set_binance_alt_contract_runtime_config(
+            bacm_runtime_config,
         );
         crate::runtime::score_config::set_score_runtime_config(
             crate::runtime::score_config::load_score_runtime_config_from_settings(&settings),
@@ -205,6 +214,7 @@ impl AppConfig {
             liq_hunt_watch_score: parse_f64("LIQ_HUNT_WATCH_SCORE", 30.0)?,
             book_stale_ms: parse_i64("BOOK_STALE_MS", 5000)?,
             max_buffer_age_ms: parse_i64("MAX_BUFFER_AGE_MS", 120000)?,
+            system_mode,
             contract_whale_monitor: ContractWhaleMonitorConfig {
                 enabled: bool_setting(
                     &settings,

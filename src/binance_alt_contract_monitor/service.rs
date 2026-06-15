@@ -152,12 +152,16 @@ impl BinanceAltContractService {
                 AltContractExchangeStatus::disabled()
             },
         );
-        let restored = load_persisted_signals(
-            &runtime_config.persistence_path,
-            MAX_SIGNALS,
-            now_ms(),
-            retention_days_to_ms(runtime_config.storage.signals_retention_days),
-        );
+        let restored = if enabled {
+            load_persisted_signals(
+                &runtime_config.persistence_path,
+                MAX_SIGNALS,
+                now_ms(),
+                retention_days_to_ms(runtime_config.storage.signals_retention_days),
+            )
+        } else {
+            RestoredAltContractSignals::default()
+        };
         Self {
             enabled,
             dry_run,
@@ -605,14 +609,28 @@ impl BinanceAltContractService {
         let config = binance_alt_contract_runtime_config();
         let now = now_ms();
         let state = self.state.read();
+        let empty_signals = VecDeque::new();
+        let empty_trades = VecDeque::new();
+        let signals = if self.enabled {
+            &state.signals
+        } else {
+            &empty_signals
+        };
+        let trades = if self.enabled {
+            &state.trades
+        } else {
+            &empty_trades
+        };
         let product_filter = symbol.map(product_id_for_symbol);
-        let latest = state.signals.iter().rev().find(|signal| {
+        let latest = signals.iter().rev().find(|signal| {
             product_filter
                 .as_ref()
                 .map(|item| &signal.product_id == item)
                 .unwrap_or(true)
         });
-        let all_monitored_symbols = if state.symbol_metas.is_empty() {
+        let all_monitored_symbols = if !self.enabled {
+            Vec::new()
+        } else if state.symbol_metas.is_empty() {
             config.enabled_symbols()
         } else {
             state.symbol_metas.keys().cloned().collect::<Vec<_>>()
@@ -633,30 +651,27 @@ impl BinanceAltContractService {
             .iter()
             .filter(|seen_at| now.saturating_sub(**seen_at) <= 60 * 60_000)
             .count();
-        let active_anomaly_count = state
-            .signals
+        let active_anomaly_count = signals
             .iter()
             .filter(|signal| now.saturating_sub(signal.ts) <= 15 * 60_000)
             .count();
-        let recent_critical_or_s_count = state
-            .signals
+        let recent_critical_or_s_count = signals
             .iter()
             .filter(|signal| now.saturating_sub(signal.ts) <= 60 * 60_000)
             .filter(|signal| signal.severity.rank() >= AltContractSeverity::Critical.rank())
             .count();
-        let dry_run_would_send_count = state
-            .signals
+        let dry_run_would_send_count = signals
             .iter()
             .filter(|signal| now.saturating_sub(signal.ts) <= 60 * 60_000)
             .filter(|signal| signal.discord_would_send)
             .count();
         let health_status = health_status(self.enabled, &exchanges);
-        let dry_run_stats = dry_run_stats(&state.signals, now);
+        let dry_run_stats = dry_run_stats(signals, now);
         let last_trade_at = exchanges
             .values()
             .filter_map(|status| status.last_trade_at)
             .max();
-        let top_active_symbols = top_active_symbols(&state.trades, now);
+        let top_active_symbols = top_active_symbols(trades, now);
         let monitored_symbols = summary_monitored_symbols(
             &all_monitored_symbols,
             &top_active_symbols,
@@ -680,23 +695,18 @@ impl BinanceAltContractService {
             enabled: self.enabled,
             now_ms: now,
             exchanges: &exchanges,
-            signals: &state.signals,
+            signals,
             last_oi_poll_at: state.last_oi_poll_at,
             last_force_order_at: state.last_force_order_at,
             last_mark_price_at: state.last_mark_price_at,
             last_ticker_at: state.last_ticker_at,
             errors1h,
         });
-        let smll_report = audit_self_learning_loop(now, &state.signals);
+        let smll_report = audit_self_learning_loop(now, signals);
         let atca_report =
             run_trading_cognition_agent(now, &state.signals, &smaf_report, &smll_report);
-        let amios_report = run_market_intelligence_os(
-            now,
-            &state.signals,
-            &smaf_report,
-            &smll_report,
-            &atca_report,
-        );
+        let amios_report =
+            run_market_intelligence_os(now, signals, &smaf_report, &smll_report, &atca_report);
         AltContractSummary {
             status: latest
                 .map(|signal| status_from_severity(signal.severity).to_string())
@@ -723,8 +733,7 @@ impl BinanceAltContractService {
                 .map(|signal| signal.severity)
                 .unwrap_or(AltContractSeverity::Calm),
             latest_signal_at: latest.map(|signal| signal.ts),
-            signal_count: state
-                .signals
+            signal_count: signals
                 .iter()
                 .filter(|signal| {
                     product_filter
@@ -743,10 +752,10 @@ impl BinanceAltContractService {
             dry_run: self.dry_run,
             read_only: true,
             symbol: symbol.map(|value| value.to_ascii_uppercase()),
-            trend60s: trend_for_symbol(&state.trades, &trend_product, now),
+            trend60s: trend_for_symbol(trades, &trend_product, now),
             exchanges,
             dry_run_stats,
-            symbol_universe: symbol_universe_summary(&config, &state.symbol_metas),
+            symbol_universe: symbol_universe_summary(&config, &state.symbol_metas, self.enabled),
             all_market_context,
             smaf_report,
             smll_report,
@@ -756,6 +765,13 @@ impl BinanceAltContractService {
     }
 
     pub fn latest(&self, symbol: Option<&str>, limit: usize) -> AltContractLatestResponse {
+        if !self.enabled {
+            return AltContractLatestResponse {
+                summary: self.summary(symbol),
+                items: Vec::new(),
+                limit: limit.clamp(1, 200),
+            };
+        }
         let config = binance_alt_contract_runtime_config();
         let limit = limit.clamp(1, 200);
         let product_filter = symbol.map(product_id_for_symbol);
@@ -783,6 +799,13 @@ impl BinanceAltContractService {
     }
 
     pub fn history(&self, query: BinanceAltContractQuery) -> AltContractLatestResponse {
+        if !self.enabled {
+            return AltContractLatestResponse {
+                summary: self.summary(query.symbol.as_deref()),
+                items: Vec::new(),
+                limit: query.limit.unwrap_or(50).clamp(1, 200),
+            };
+        }
         let config = binance_alt_contract_runtime_config();
         let limit = query.limit.unwrap_or(50).clamp(1, 200);
         let product_filter = query.symbol.as_deref().map(product_id_for_symbol);
@@ -1699,22 +1722,31 @@ fn push_summary_symbol(items: &mut Vec<String>, symbol: Option<&str>) {
 fn symbol_universe_summary(
     config: &super::config::BinanceAltContractRuntimeConfig,
     metas: &BTreeMap<String, AltContractSymbolMeta>,
+    enabled: bool,
 ) -> AltContractSymbolUniverseSummary {
     let mut tier_counts = BTreeMap::<String, usize>::new();
-    for meta in metas.values() {
-        let tier = match meta.tier {
-            AltContractSymbolTier::A => "A",
-            AltContractSymbolTier::B => "B",
-            AltContractSymbolTier::C => "C",
-            AltContractSymbolTier::D => "D",
-            AltContractSymbolTier::E => "E",
-        };
-        *tier_counts.entry(tier.to_string()).or_default() += 1;
+    if enabled {
+        for meta in metas.values() {
+            let tier = match meta.tier {
+                AltContractSymbolTier::A => "A",
+                AltContractSymbolTier::B => "B",
+                AltContractSymbolTier::C => "C",
+                AltContractSymbolTier::D => "D",
+                AltContractSymbolTier::E => "E",
+            };
+            *tier_counts.entry(tier.to_string()).or_default() += 1;
+        }
     }
     AltContractSymbolUniverseSummary {
-        mode: config.effective_universe_mode().as_str().to_string(),
+        mode: if enabled {
+            config.effective_universe_mode().as_str().to_string()
+        } else {
+            "disabled".to_string()
+        },
         limit: config.symbol_universe.symbol_limit,
-        monitored_count: if metas.is_empty() {
+        monitored_count: if !enabled {
+            0
+        } else if metas.is_empty() {
             config.enabled_symbols().len()
         } else {
             metas.len()

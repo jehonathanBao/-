@@ -336,12 +336,69 @@ fn disabled_summary_is_read_only_and_lists_configured_symbols() {
     assert!(!summary.enabled);
     assert!(summary.read_only);
     assert_eq!(summary.health_status, "disabled");
-    assert!(summary
-        .monitored_symbols
-        .iter()
-        .all(|symbol| symbol != "BTCUSDT" && symbol != "ETHUSDT"));
-    assert!(summary.monitored_symbols.len() <= 12);
-    assert!(summary.symbol_universe.monitored_count >= summary.monitored_symbols.len());
+    assert_eq!(
+        summary.health_reason,
+        "binance_alt_contract_monitor_disabled"
+    );
+    assert!(summary.monitored_symbols.is_empty());
+    assert_eq!(summary.signal_count, 0);
+    assert_eq!(summary.symbol_universe.mode, "disabled");
+    assert_eq!(summary.symbol_universe.monitored_count, 0);
+    assert!(summary.symbol_universe.tier_counts.is_empty());
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn disabled_service_does_not_restore_or_return_persisted_bacm_signals() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let path = temp_path("bacm-disabled-does-not-restore.jsonl");
+    let _ = fs::remove_file(&path);
+    let mut enabled_config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        dry_run: true,
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
+    set_binance_alt_contract_runtime_config(enabled_config.clone());
+
+    let enabled_service = BinanceAltContractService::new(true, true, 1_699_999_900_000);
+    let signal = detect_alt_contract_signal(
+        &stats("SOL", AltContractDirection::Buy),
+        &AltContractContext {
+            oi_change_1m_base: Some(100_000.0),
+            oi_change_pct: Some(1.5),
+            persistence_windows: 3,
+            ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ..AltContractContext::default()
+        },
+        &enabled_config,
+    )
+    .expect("signal");
+    assert!(enabled_service.insert_signal_for_tests(signal));
+    assert!(path.exists());
+
+    enabled_config.enabled = false;
+    set_binance_alt_contract_runtime_config(enabled_config);
+    let disabled_service = BinanceAltContractService::new(false, true, 1_699_999_900_000);
+
+    let latest = disabled_service.latest(None, 50);
+    assert!(!latest.summary.enabled);
+    assert!(latest.items.is_empty());
+    assert_eq!(latest.summary.signal_count, 0);
+
+    let history = disabled_service.history(BinanceAltContractQuery {
+        limit: Some(50),
+        ..BinanceAltContractQuery::default()
+    });
+    assert!(history.items.is_empty());
+    assert_eq!(history.summary.signal_count, 0);
+
+    let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();
 }
 

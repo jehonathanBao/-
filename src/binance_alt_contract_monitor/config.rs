@@ -8,6 +8,7 @@ use super::types::{
     AltContractDisplayThresholds, AltContractMarketTier, AltContractSeverity,
     AltContractSymbolTier, AltContractTierThresholds,
 };
+use crate::config::system_mode::SystemModeConfig;
 
 static GLOBAL_CONFIG: OnceLock<RwLock<BinanceAltContractRuntimeConfig>> = OnceLock::new();
 const DISABLED_NOTIONAL_USD: f64 = 999_999_999_999.0;
@@ -35,6 +36,18 @@ pub struct BinanceAltContractRuntimeConfig {
 }
 
 impl BinanceAltContractRuntimeConfig {
+    pub fn apply_system_mode(&mut self, system_mode: SystemModeConfig) {
+        if system_mode.altcoin_monitoring_enabled() {
+            return;
+        }
+        self.enabled = false;
+        self.dry_run = true;
+        self.exchange.binance_enabled = false;
+        self.oi_scheduler.enabled = false;
+        self.discord.enabled = false;
+        self.discord.dry_run = true;
+    }
+
     pub fn effective_universe_mode(&self) -> BinanceAltUniverseMode {
         if !self.symbol_universe.whitelist.is_empty() {
             BinanceAltUniverseMode::WhitelistOnly

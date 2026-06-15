@@ -21,6 +21,14 @@ toxic_compute_interval_ms = 250
 book_stale_ms = 5000
 max_buffer_age_ms = 120000
 
+[system]
+mode = "bear_market"
+
+[features]
+altcoin_monitoring = false
+memecoin_tracking = false
+low_cap_scanner = false
+
 [toxicOrder]
 max_price_deviation_pct = 5.0
 enable_spot_score = true
