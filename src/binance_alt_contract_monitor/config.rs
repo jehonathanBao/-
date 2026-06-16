@@ -740,23 +740,27 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
             persist_hot_1s: settings
                 .get_bool("binance_alt_contract_monitor.storage.persist_hot_1s")
                 .unwrap_or(fallback.storage.persist_hot_1s),
-            hot_1s_retention_hours: u64_setting(
+            hot_1s_retention_hours: u64_setting_with_env(
                 settings,
+                "BINANCE_ALT_CONTRACT_HOT_1S_RETENTION_HOURS",
                 "binance_alt_contract_monitor.storage.hot_1s_retention_hours",
                 fallback.storage.hot_1s_retention_hours,
             ),
-            flow_1m_retention_days: u64_setting(
+            flow_1m_retention_days: u64_setting_with_env(
                 settings,
+                "BINANCE_ALT_CONTRACT_FLOW_1M_RETENTION_DAYS",
                 "binance_alt_contract_monitor.storage.flow_1m_retention_days",
                 fallback.storage.flow_1m_retention_days,
             ),
-            signals_retention_days: u64_setting(
+            signals_retention_days: u64_setting_with_env(
                 settings,
+                "BINANCE_ALT_CONTRACT_SIGNALS_RETENTION_DAYS",
                 "binance_alt_contract_monitor.storage.signals_retention_days",
                 fallback.storage.signals_retention_days,
             ),
-            cleanup_interval_sec: u64_setting(
+            cleanup_interval_sec: u64_setting_with_env(
                 settings,
+                "BINANCE_ALT_CONTRACT_CLEANUP_INTERVAL_SEC",
                 "binance_alt_contract_monitor.storage.cleanup_interval_sec",
                 fallback.storage.cleanup_interval_sec,
             ),
@@ -1347,6 +1351,19 @@ fn u64_setting(settings: &::config::Config, path: &str, default: u64) -> u64 {
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+fn u64_setting_with_env(
+    settings: &::config::Config,
+    env_key: &str,
+    path: &str,
+    default: u64,
+) -> u64 {
+    std::env::var(env_key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| u64_setting(settings, path, default))
 }
 
 fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usize {

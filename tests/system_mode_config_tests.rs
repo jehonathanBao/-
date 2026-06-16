@@ -4,6 +4,12 @@ use btc_toxic_flow_monitor_rs::{
         load_system_mode_config_from_settings, MarketSystemMode, SystemModeConfig,
     },
 };
+use std::sync::{Mutex, OnceLock};
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
 
 fn settings_from_toml(input: &str) -> config::Config {
     config::Config::builder()
@@ -105,4 +111,51 @@ fn normal_mode_still_requires_explicit_altcoin_feature() {
         Some("altcoin_monitoring_feature_disabled")
     );
     assert!(!system_mode.altcoin_monitoring_enabled());
+}
+
+#[test]
+fn bacm_storage_retention_defaults_to_seven_days_and_allows_env_override() {
+    let _guard = env_guard();
+    for key in [
+        "BINANCE_ALT_CONTRACT_HOT_1S_RETENTION_HOURS",
+        "BINANCE_ALT_CONTRACT_FLOW_1M_RETENTION_DAYS",
+        "BINANCE_ALT_CONTRACT_SIGNALS_RETENTION_DAYS",
+        "BINANCE_ALT_CONTRACT_CLEANUP_INTERVAL_SEC",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    let settings = settings_from_toml(
+        r#"
+        [binance_alt_contract_monitor.storage]
+        hot_1s_retention_hours = 24
+        flow_1m_retention_days = 7
+        signals_retention_days = 7
+        cleanup_interval_sec = 3600
+        "#,
+    );
+    let config = load_binance_alt_contract_runtime_config_from_settings(&settings);
+    assert_eq!(config.storage.hot_1s_retention_hours, 24);
+    assert_eq!(config.storage.flow_1m_retention_days, 7);
+    assert_eq!(config.storage.signals_retention_days, 7);
+    assert_eq!(config.storage.cleanup_interval_sec, 3600);
+
+    std::env::set_var("BINANCE_ALT_CONTRACT_HOT_1S_RETENTION_HOURS", "12");
+    std::env::set_var("BINANCE_ALT_CONTRACT_FLOW_1M_RETENTION_DAYS", "3");
+    std::env::set_var("BINANCE_ALT_CONTRACT_SIGNALS_RETENTION_DAYS", "7");
+    std::env::set_var("BINANCE_ALT_CONTRACT_CLEANUP_INTERVAL_SEC", "900");
+    let overridden = load_binance_alt_contract_runtime_config_from_settings(&settings);
+    assert_eq!(overridden.storage.hot_1s_retention_hours, 12);
+    assert_eq!(overridden.storage.flow_1m_retention_days, 3);
+    assert_eq!(overridden.storage.signals_retention_days, 7);
+    assert_eq!(overridden.storage.cleanup_interval_sec, 900);
+
+    for key in [
+        "BINANCE_ALT_CONTRACT_HOT_1S_RETENTION_HOURS",
+        "BINANCE_ALT_CONTRACT_FLOW_1M_RETENTION_DAYS",
+        "BINANCE_ALT_CONTRACT_SIGNALS_RETENTION_DAYS",
+        "BINANCE_ALT_CONTRACT_CLEANUP_INTERVAL_SEC",
+    ] {
+        std::env::remove_var(key);
+    }
 }
