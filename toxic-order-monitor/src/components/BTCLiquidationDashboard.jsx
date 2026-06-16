@@ -2,7 +2,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchBtcLiquidationDashboard } from "../api/btcLiquidation.js";
 import { createForceFieldRenderer } from "../renderers/webgl/ForceFieldRenderer.js";
 
-const TIMEFRAMES = ["1m", "5m", "15m"];
+const TIMEFRAMES = [
+  { key: "15m", label: "15m" },
+  { key: "1h", label: "1h" },
+  { key: "4h", label: "4h" },
+];
+const TIMEFRAME_META = {
+  "15m": {
+    layer: "Micro Regime",
+    title: "短期挤压层",
+    description: "捕捉局部 squeeze、流动性扫荡和假突破触发点。",
+  },
+  "1h": {
+    layer: "Meso Regime",
+    title: "结构耦合层",
+    description: "观察 gamma wall、清算簇和流动性压缩的结构互动。",
+  },
+  "4h": {
+    layer: "Macro Regime",
+    title: "系统压力层",
+    description: "定位主要清算区、趋势骨架和宏观失衡区域。",
+  },
+};
 const OVERLAY_MODES = [
   { key: "all", label: "全部" },
   { key: "heat", label: "清算" },
@@ -13,7 +34,7 @@ const OVERLAY_MODES = [
 export default function BTCLiquidationDashboard() {
   const [dashboard, setDashboard] = useState(null);
   const [error, setError] = useState(null);
-  const [timeframe, setTimeframe] = useState("5m");
+  const [timeframe, setTimeframe] = useState("1h");
   const [overlayMode, setOverlayMode] = useState("all");
   const [heatIntensity, setHeatIntensity] = useState(78);
 
@@ -66,7 +87,13 @@ export default function BTCLiquidationDashboard() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <SegmentedControl items={TIMEFRAMES} value={timeframe} onChange={setTimeframe} />
+              <SegmentedControl
+                items={TIMEFRAMES}
+                value={timeframe}
+                onChange={setTimeframe}
+                valueKey="key"
+                labelKey="label"
+              />
               <SegmentedControl
                 items={OVERLAY_MODES}
                 value={overlayMode}
@@ -102,8 +129,9 @@ export default function BTCLiquidationDashboard() {
             heatIntensity={heatIntensity}
             model={chartModel}
             overlayMode={overlayMode}
+            timeframe={timeframe}
           />
-          <RightMetricsPanel data={data} />
+          <RightMetricsPanel data={data} timeframe={timeframe} />
         </div>
       </div>
 
@@ -120,35 +148,46 @@ export default function BTCLiquidationDashboard() {
   );
 }
 
-function ForceFieldView({ data, model, overlayMode, heatIntensity }) {
+function ForceFieldView({ data, model, overlayMode, heatIntensity, timeframe }) {
   const showHeat = overlayMode === "all" || overlayMode === "heat";
   const showGamma = overlayMode === "all" || overlayMode === "gamma";
   const showCascade = overlayMode === "all" || overlayMode === "cascade";
   const forceField = data.forceField || {};
   const squeeze = data.squeeze || {};
-  const instability = clampNumber(forceField.instabilityIndex);
+  const mtfModel = useMemo(() => buildMultiTimeframeModel(forceField, timeframe), [forceField, timeframe]);
+  const activeForceField = mtfModel.active;
+  const instability = clampNumber(activeForceField.instabilityIndex);
+  const coupling = fieldCouplingScore(activeForceField);
+  const selectedMeta = TIMEFRAME_META[timeframe] || TIMEFRAME_META["1h"];
 
   return (
     <div className="relative min-h-[620px] overflow-hidden bg-[#07111f]">
       <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:100%_54px,86px_100%]" />
       <div className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-950/55 px-4 py-3 backdrop-blur">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <ChartBadge label={`Stress ${formatPct(forceField.totalStress)}`} tone={Number(forceField.totalStress || 0) > 0.7 ? "red" : "cyan"} />
-          <ChartBadge label={`Cascade ${formatPct(forceField.cascadeProbability)}`} tone={Number(forceField.cascadeProbability || 0) > 0.65 ? "red" : "yellow"} />
-          <ChartBadge label={`Gamma ${formatPct(forceField.gammaField)}`} tone="purple" />
-          <ChartBadge label={`Bias ${forceBiasLabel(forceField.nextMoveBias)}`} tone="cyan" />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <ChartBadge label={`${timeframe} ${selectedMeta.layer}`} tone="cyan" />
+            <ChartBadge label={`Stress ${formatPct(forceField.totalStress)}`} tone={Number(forceField.totalStress || 0) > 0.7 ? "red" : "cyan"} />
+            <ChartBadge label={`Cascade ${formatPct(forceField.cascadeProbability)}`} tone={Number(forceField.cascadeProbability || 0) > 0.65 ? "red" : "yellow"} />
+            <ChartBadge label={`Gamma ${formatPct(forceField.gammaField)}`} tone="purple" />
+            <ChartBadge label={`Coupling ${formatPct(coupling)}`} tone={coupling > 0.72 ? "red" : "cyan"} />
+            <ChartBadge label={`Bias ${forceBiasLabel(forceField.nextMoveBias)}`} tone="cyan" />
+          </div>
+          <p className="mt-2 max-w-3xl truncate text-xs text-slate-400">
+            {selectedMeta.title} · {selectedMeta.description}
+          </p>
         </div>
         <div className="font-mono text-xs text-slate-400">
           {data.live ? "LIVE" : "WAITING"} · {data.dataStatus || "unknown"}
         </div>
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 top-[58px]">
+      <div className="absolute inset-x-0 bottom-0 top-[82px]">
         <HeatFieldCanvas
           cascadePoints={showCascade ? model.cascadePoints : []}
           gammaBands={showGamma ? model.gammaBands : []}
           heatCells={showHeat ? model.heatCells : []}
-          fieldState={forceField}
+          fieldState={activeForceField}
           intensity={heatIntensity}
         />
 
@@ -156,13 +195,15 @@ function ForceFieldView({ data, model, overlayMode, heatIntensity }) {
         <GammaWallOverlay bands={showGamma ? model.gammaBands : []} />
         <LiquidationDensityOverlay bands={showHeat ? model.heatBands : []} />
         <CascadeVectorOverlay points={showCascade ? model.cascadePoints : []} />
-        <ForceVectorOverlay model={model} forceField={forceField} />
+        <ForceVectorOverlay model={{ ...model, forceVectors: buildForceVectors(activeForceField, timeframe) }} forceField={activeForceField} />
 
         <div className="absolute bottom-4 left-4 z-20 grid gap-2 text-xs text-slate-400 sm:grid-cols-3">
-          <Info label="力场偏向" value={forceBiasLabel(forceField.nextMoveBias)} />
-          <Info label="挤压概率" value={formatPct(forceField.squeezeProbability || Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0))} />
-          <Info label="预测状态" value={regimeLabel(forceField.predictedRegime)} />
+          <Info label="力场偏向" value={forceBiasLabel(activeForceField.nextMoveBias)} />
+          <Info label="挤压概率" value={formatPct(activeForceField.squeezeProbability || Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0))} />
+          <Info label="耦合矩阵" value={`4h→1h ${formatPct(mtfModel.matrix.macroToMid)} / 1h→15m ${formatPct(mtfModel.matrix.midToMicro)}`} />
         </div>
+
+        <TimeframeLayerStrip active={timeframe} mtfModel={mtfModel} />
 
         <div className="absolute bottom-0 right-0 top-0 z-20 w-[74px] border-l border-slate-800/80 bg-slate-950/45">
           {model.axisLabels.map((label) => (
@@ -180,25 +221,31 @@ function ForceFieldView({ data, model, overlayMode, heatIntensity }) {
   );
 }
 
-function RightMetricsPanel({ data }) {
+function RightMetricsPanel({ data, timeframe }) {
   const forceField = data.forceField || {};
   const squeeze = data.squeeze || {};
+  const mtfModel = buildMultiTimeframeModel(forceField, timeframe);
+  const activeForceField = mtfModel.active;
+  const adaptiveState = buildAdaptiveControllerState(mtfModel, squeeze, timeframe);
   return (
     <aside className="border-t border-slate-800/80 bg-slate-950/80 p-4 xl:border-l xl:border-t-0">
       <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Liquidation Status</p>
       <h4 className="mt-2 text-lg font-bold text-white">BTC 清算状态</h4>
       <div className="mt-4 grid gap-3">
-        <Metric label="Total Stress" value={formatPct(forceField.totalStress)} tone="cyan" />
-        <Metric label="Instability" value={formatPct(forceField.instabilityIndex)} tone="orange" />
-        <Metric label="Squeeze Probability" value={formatPct(forceField.squeezeProbability)} tone="emerald" />
-        <Metric label="Cascade Probability" value={formatPct(forceField.cascadeProbability)} tone="yellow" />
+        <Metric label="Total Stress" value={formatPct(activeForceField.totalStress)} tone="cyan" />
+        <Metric label="Field Coupling" value={formatPct(fieldCouplingScore(activeForceField))} tone="purple" />
+        <Metric label="MTF Coupling" value={formatPct(mtfModel.overallCoupling)} tone="orange" />
+        <Metric label="Squeeze Probability" value={formatPct(activeForceField.squeezeProbability)} tone="emerald" />
+        <Metric label="Cascade Probability" value={formatPct(activeForceField.cascadeProbability)} tone="yellow" />
       </div>
       <div className="mt-4 grid gap-3">
-        <Info label="Next Bias" value={forceBiasLabel(forceField.nextMoveBias)} />
-        <Info label="Regime" value={regimeLabel(forceField.predictedRegime)} />
+        <Info label="Active Layer" value={`${timeframe} · ${(TIMEFRAME_META[timeframe] || TIMEFRAME_META["1h"]).title}`} />
+        <Info label="Next Bias" value={forceBiasLabel(activeForceField.nextMoveBias)} />
+        <Info label="Regime" value={regimeLabel(activeForceField.predictedRegime)} />
         <Info label="Net Liq Bias" value={formatSigned(squeeze.netLiquidationBias)} />
       </div>
-      <ForceFieldRadar forceField={forceField} squeeze={squeeze} />
+      <ForceFieldRadar forceField={activeForceField} squeeze={squeeze} />
+      <AdaptiveControllerPanel state={adaptiveState} />
       <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-3 text-xs leading-5 text-cyan-100">
         Force Field 是研究/预测视图，只表达结构压力与清算物理层，不代表交易建议。
       </div>
@@ -390,6 +437,39 @@ function CascadeVectorOverlay({ points }) {
   );
 }
 
+function TimeframeLayerStrip({ active, mtfModel }) {
+  return (
+    <div className="pointer-events-none absolute left-4 right-[90px] top-4 z-20 grid gap-2 text-xs md:grid-cols-3">
+      {TIMEFRAMES.map((item) => {
+        const meta = TIMEFRAME_META[item.key];
+        const isActive = item.key === active;
+        const state = mtfModel?.states?.[item.key] || {};
+        const coupling = fieldCouplingScore(state);
+        return (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 backdrop-blur",
+              isActive
+                ? "border-cyan-300/35 bg-cyan-300/12 text-cyan-50"
+                : "border-slate-700/50 bg-slate-950/35 text-slate-500",
+            ].join(" ")}
+            key={item.key}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono font-black">{item.label}</span>
+              <span className="uppercase tracking-[0.16em]">{meta.layer}</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[11px]">
+              <p className="truncate">{meta.title}</p>
+              <span className="shrink-0 font-mono text-cyan-200/80">C {formatPct(coupling)}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fieldState, intensity }) {
   const ctx = canvas?.getContext?.("2d");
   if (!canvas || !ctx) return;
@@ -408,21 +488,28 @@ function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fiel
   const heatScale = Math.max(0.2, Number(intensity || 78) / 100);
   const stress = clampNumber(fieldState?.totalStress);
   const instability = clampNumber(fieldState?.instabilityIndex);
+  const coupling = fieldCouplingScore(fieldState);
+  const gammaPressure = clampNumber(fieldState?.gammaField);
+  const liquidityPressure = clampNumber(fieldState?.liquidityField);
+  const liquidationPressure = clampNumber(fieldState?.liquidationField);
+  const liquidityCoupled = Math.max(0, liquidityPressure * (1 - 0.6 * gammaPressure));
+  const fragility = clampNumber(1 - liquidityCoupled);
+  const heatBoost = 1 + fragility * 0.45 + liquidationPressure * 0.36 + coupling * 0.25;
   const background = ctx.createLinearGradient(0, 0, rect.width, rect.height);
-  background.addColorStop(0, `rgba(8, 47, 73, ${0.20 + stress * 0.18})`);
+  background.addColorStop(0, `rgba(8, 47, 73, ${0.20 + stress * 0.18 + coupling * 0.08})`);
   background.addColorStop(0.52, "rgba(15, 23, 42, 0.08)");
-  background.addColorStop(1, `rgba(76, 29, 149, ${0.15 + instability * 0.22})`);
+  background.addColorStop(1, `rgba(76, 29, 149, ${0.15 + instability * 0.22 + gammaPressure * 0.10})`);
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, rect.width, rect.height);
 
   heatCells.forEach((cell) => {
     const y = rect.height * (cell.y / 100);
     const hot = cell.side === "above" ? "251, 146, 60" : "248, 113, 113";
-    const height = (8 + cell.intensity * 28) * heatScale;
+    const height = (8 + cell.intensity * 28) * heatScale * heatBoost;
     const gradient = ctx.createLinearGradient(0, y, rect.width, y);
-    gradient.addColorStop(0, `rgba(${hot}, ${0.10 * cell.intensity * heatScale})`);
-    gradient.addColorStop(0.45, `rgba(${hot}, ${0.42 * cell.intensity * heatScale})`);
-    gradient.addColorStop(1, `rgba(${hot}, ${0.16 * cell.intensity * heatScale})`);
+    gradient.addColorStop(0, `rgba(${hot}, ${0.10 * cell.intensity * heatScale * heatBoost})`);
+    gradient.addColorStop(0.45, `rgba(${hot}, ${0.42 * cell.intensity * heatScale * heatBoost})`);
+    gradient.addColorStop(1, `rgba(${hot}, ${0.16 * cell.intensity * heatScale * heatBoost})`);
     ctx.fillStyle = gradient;
     ctx.fillRect(0, y - height / 2, rect.width, height);
   });
@@ -495,6 +582,67 @@ function ForceFieldRadar({ forceField, squeeze }) {
         <polygon fill="rgba(34,211,238,0.20)" points={points} stroke="rgba(34,211,238,0.85)" strokeWidth="2" />
         <circle cx="70" cy="70" fill="#22d3ee" r="3" />
       </svg>
+    </div>
+  );
+}
+
+function AdaptiveControllerPanel({ state }) {
+  const rows = [
+    ["γ stealth", state.parameters.gammaWeight, state.deltas.gamma],
+    ["λ liquidation", state.parameters.lambdaWeight, state.deltas.lambda],
+    ["GEX weight", state.parameters.gexWeight, state.deltas.gex],
+    ["GLCE gate", state.parameters.glceThreshold, state.deltas.glce],
+  ];
+
+  return (
+    <div className="mt-4 rounded-xl border border-purple-300/20 bg-purple-300/10 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-purple-200">Adaptive Controller</p>
+          <h5 className="mt-1 text-sm font-black text-white">影子自适应调参</h5>
+        </div>
+        <span className="rounded-full border border-purple-200/25 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-purple-100">
+          read-only
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <Info label="Feedback Error" value={formatPct(state.feedbackError)} />
+        <Info label="System Fit" value={formatPct(state.evaluation.systemFit)} />
+        <Info label="Regime Stability" value={formatPct(state.evaluation.regimeStability)} />
+        <Info label="Squeeze Align" value={formatPct(state.evaluation.squeezeAlignment)} />
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {rows.map(([label, value, delta]) => (
+          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2 text-xs" key={label}>
+            <span className="text-slate-400">{label}</span>
+            <span className="font-mono text-slate-100">{formatWeight(value)}</span>
+            <span className={["font-mono", delta >= 0 ? "text-emerald-200" : "text-red-200"].join(" ")}>
+              {formatDelta(delta)}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 rounded-lg border border-slate-700/70 bg-slate-950/45 p-2 text-[11px] leading-5 text-slate-300">
+        <div className="flex items-center justify-between gap-2">
+          <span>4h→1h</span>
+          <span className="font-mono text-cyan-100">{formatPct(state.proposedMatrix.macroToMid)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span>1h→15m</span>
+          <span className="font-mono text-cyan-100">{formatPct(state.proposedMatrix.midToMicro)}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span>15m feedback</span>
+          <span className="font-mono text-cyan-100">{formatPct(state.proposedMatrix.microToMid)}</span>
+        </div>
+      </div>
+
+      <p className="mt-3 text-[11px] leading-5 text-purple-100/80">
+        {state.statusText}；仅作为下一轮参数校准参考，不写入配置、不改变告警、不触发交易。
+      </p>
     </div>
   );
 }
@@ -706,7 +854,8 @@ function buildChartModel(data, heatmap, gammaWalls, timeframe) {
   const allPrices = [current, ...heatPrices, ...gammaPrices, ...cascadePrices];
   const minObserved = Math.min(...allPrices);
   const maxObserved = Math.max(...allPrices);
-  const pad = Math.max(current * 0.006, (maxObserved - minObserved) * 0.25, 350);
+  const scalePad = timeframe === "4h" ? 1.7 : timeframe === "15m" ? 0.82 : 1.12;
+  const pad = Math.max(current * 0.006, (maxObserved - minObserved) * 0.25, 350) * scalePad;
   const min = minObserved - pad;
   const max = maxObserved + pad;
   const priceToY = (price) => 92 - ((price - min) / (max - min || 1)) * 78;
@@ -784,26 +933,204 @@ function buildForceVectors(forceField, timeframe) {
   const bias = String(forceField.nextMoveBias || "neutral");
   const stress = clampNumber(forceField.totalStress);
   const instability = clampNumber(forceField.instabilityIndex);
-  const count = timeframe === "1m" ? 8 : timeframe === "15m" ? 12 : 10;
+  const count = timeframe === "15m" ? 8 : timeframe === "4h" ? 12 : 10;
   const upward = bias.includes("up");
   const downward = bias.includes("down");
   const neutralSwing = !upward && !downward;
-  const length = 44 + stress * 86;
+  const timeframeScale = timeframe === "15m" ? 0.78 : timeframe === "4h" ? 1.28 : 1.0;
+  const length = (44 + stress * 86) * timeframeScale;
 
   return Array.from({ length: count }, (_, index) => {
     const x = 92 + index * (820 / Math.max(1, count - 1));
-    const yBase = 268 + Math.sin(index * 0.9) * (neutralSwing ? 34 : 20);
+    const yBase = 268 + Math.sin(index * 0.9) * (neutralSwing ? 34 : 20) * timeframeScale;
     const direction = neutralSwing ? (index % 2 === 0 ? -1 : 1) : upward ? -1 : 1;
-    const jitter = Math.cos(index * 1.33) * 16 * instability;
+    const jitter = Math.cos(index * 1.33) * 16 * instability * (timeframe === "15m" ? 1.25 : 0.82);
     return {
       key: `force-vector-${index}`,
       x1: x,
       y1: yBase + jitter,
-      x2: x + 28 + stress * 28,
+      x2: x + (28 + stress * 28) * timeframeScale,
       y2: yBase + direction * length + jitter,
       intensity: Math.max(0.22, stress * 0.72 + instability * 0.28),
     };
   });
+}
+
+function buildMultiTimeframeModel(forceField = {}, activeTimeframe = "1h") {
+  const tf4hRaw = deriveTimeframeState(forceField, "4h");
+  const tf1hRaw = deriveTimeframeState(forceField, "1h");
+  const tf15mRaw = deriveTimeframeState(forceField, "15m");
+
+  const matrix = {
+    macroToMid: clampNumber(tf4hRaw.liquidityField * 0.26 + tf4hRaw.gammaField * 0.22 + tf4hRaw.totalStress * 0.18),
+    midToMicro: clampNumber(tf1hRaw.gammaField * 0.35 + tf1hRaw.liquidationField * 0.22 + tf1hRaw.cascadeField * 0.18),
+    microToMid: clampNumber(tf15mRaw.liquidationField * 0.30 + tf15mRaw.instabilityIndex * 0.25 + tf15mRaw.cascadeField * 0.20),
+    midToMacro: clampNumber(tf1hRaw.totalStress * 0.20 + tf1hRaw.cascadeField * 0.18),
+  };
+
+  const tf1h = {
+    ...tf1hRaw,
+    liquidityField: clampNumber(tf1hRaw.liquidityField * (1 - matrix.macroToMid * 0.24)),
+    gammaField: clampNumber(tf1hRaw.gammaField + tf4hRaw.gammaField * 0.18 + matrix.macroToMid * 0.08),
+    liquidationField: clampNumber(tf1hRaw.liquidationField + tf15mRaw.liquidationField * matrix.microToMid * 0.10),
+    cascadeField: clampNumber(tf1hRaw.cascadeField + tf15mRaw.cascadeField * matrix.microToMid * 0.08),
+    totalStress: clampNumber(tf1hRaw.totalStress + matrix.macroToMid * 0.12 + matrix.microToMid * 0.08),
+    instabilityIndex: clampNumber(tf1hRaw.instabilityIndex * (0.88 + matrix.microToMid * 0.16)),
+  };
+
+  const tf15m = {
+    ...tf15mRaw,
+    liquidationField: clampNumber(tf15mRaw.liquidationField + tf1h.gammaField * 0.24 + matrix.midToMicro * 0.10),
+    cascadeField: clampNumber(tf15mRaw.cascadeField + tf1h.cascadeField * 0.16 + matrix.midToMicro * 0.12),
+    cascadeProbability: clampNumber(tf15mRaw.cascadeProbability + tf1h.cascadeProbability * 0.12 + matrix.midToMicro * 0.10),
+    squeezeProbability: clampNumber(tf15mRaw.squeezeProbability + tf1h.gammaField * 0.14 + matrix.midToMicro * 0.12),
+    totalStress: clampNumber(tf15mRaw.totalStress + matrix.midToMicro * 0.14),
+    instabilityIndex: clampNumber(tf15mRaw.instabilityIndex + tf1h.instabilityIndex * 0.12),
+  };
+
+  const tf4h = {
+    ...tf4hRaw,
+    totalStress: clampNumber(tf4hRaw.totalStress + tf1h.totalStress * matrix.midToMacro * 0.07),
+    liquidationField: clampNumber(tf4hRaw.liquidationField + tf1h.liquidationField * matrix.midToMacro * 0.08),
+    cascadeField: clampNumber(tf4hRaw.cascadeField + tf1h.cascadeField * matrix.midToMacro * 0.05),
+    cascadeProbability: clampNumber(tf4hRaw.cascadeProbability + tf1h.cascadeProbability * matrix.midToMacro * 0.06),
+  };
+
+  const states = {
+    "15m": tf15m,
+    "1h": tf1h,
+    "4h": tf4h,
+  };
+
+  return {
+    active: states[activeTimeframe] || states["1h"],
+    matrix,
+    overallCoupling: clampNumber((matrix.macroToMid + matrix.midToMicro + matrix.microToMid + matrix.midToMacro) / 4),
+    states,
+  };
+}
+
+function buildAdaptiveControllerState(mtfModel, squeeze = {}, activeTimeframe = "1h") {
+  const active = mtfModel?.active || {};
+  const states = mtfModel?.states || {};
+  const tf15m = states["15m"] || {};
+  const tf1h = states["1h"] || {};
+  const tf4h = states["4h"] || {};
+  const matrix = mtfModel?.matrix || {};
+  const squeezeReference = Math.max(clampNumber(squeeze.upProbability), clampNumber(squeeze.downProbability));
+  const stressSpread = Math.max(
+    Math.abs(clampNumber(tf15m.totalStress) - clampNumber(tf1h.totalStress)),
+    Math.abs(clampNumber(tf1h.totalStress) - clampNumber(tf4h.totalStress)),
+  );
+  const fieldAgreement = 1 - Math.min(1, Math.abs(clampNumber(active.gammaField) - clampNumber(active.liquidationField)));
+  const squeezeAlignment = 1 - Math.min(1, Math.abs(clampNumber(active.squeezeProbability) - squeezeReference));
+  const regimeStability = clampNumber(1 - stressSpread * 0.62 - clampNumber(active.instabilityIndex) * 0.24);
+  const structuralConsistency = clampNumber(fieldAgreement * 0.48 + squeezeAlignment * 0.32 + clampNumber(mtfModel?.overallCoupling) * 0.20);
+  const falsePositivePressure = clampNumber((1 - structuralConsistency) * 0.48 + clampNumber(active.instabilityIndex) * 0.32);
+  const falseNegativePressure = clampNumber(clampNumber(active.cascadeProbability) * (1 - clampNumber(mtfModel?.overallCoupling)) * 0.58);
+  const systemFit = clampNumber(regimeStability * 0.32 + structuralConsistency * 0.34 + squeezeAlignment * 0.22 + (1 - falsePositivePressure) * 0.12);
+  const feedbackError = clampNumber((1 - systemFit) * 0.50 + falsePositivePressure * 0.30 + falseNegativePressure * 0.20);
+
+  const gammaDelta = (falseNegativePressure - falsePositivePressure) * 0.10 - (1 - regimeStability) * 0.035;
+  const lambdaDelta = falseNegativePressure * 0.09 - falsePositivePressure * 0.055 + clampNumber(active.liquidationField) * 0.025;
+  const gexDelta = clampNumber(active.gammaField) * 0.055 - (1 - structuralConsistency) * 0.065;
+  const glceDelta = falsePositivePressure * 0.060 - falseNegativePressure * 0.045 + (1 - squeezeAlignment) * 0.025;
+
+  return {
+    activeTimeframe,
+    deltas: {
+      gamma: gammaDelta,
+      lambda: lambdaDelta,
+      gex: gexDelta,
+      glce: glceDelta,
+    },
+    evaluation: {
+      falseNegativePressure,
+      falsePositivePressure,
+      regimeStability,
+      squeezeAlignment,
+      structuralConsistency,
+      systemFit,
+    },
+    feedbackError,
+    parameters: {
+      gammaWeight: clampNumber(1 + gammaDelta, 0.5, 1.5),
+      lambdaWeight: clampNumber(1 + lambdaDelta, 0.5, 1.5),
+      gexWeight: clampNumber(0.25 + gexDelta, 0.05, 0.45),
+      glceThreshold: clampNumber(0.60 + glceDelta, 0.35, 0.85),
+    },
+    proposedMatrix: {
+      macroToMid: clampNumber(clampNumber(matrix.macroToMid) * (0.88 + structuralConsistency * 0.22)),
+      midToMicro: clampNumber(clampNumber(matrix.midToMicro) * (0.88 + squeezeAlignment * 0.22 + falseNegativePressure * 0.10)),
+      microToMid: clampNumber(clampNumber(matrix.microToMid) * (0.86 + clampNumber(active.instabilityIndex) * 0.28)),
+      midToMacro: clampNumber(clampNumber(matrix.midToMacro) * (0.90 + regimeStability * 0.18)),
+    },
+    statusText: feedbackError > 0.42
+      ? "模型建议进入校准观察"
+      : feedbackError > 0.25
+        ? "模型存在轻微漂移"
+        : "模型耦合稳定",
+  };
+}
+
+function deriveTimeframeState(forceField = {}, timeframe = "1h") {
+  const base = normalizeForceFields(forceField);
+
+  if (timeframe === "15m") {
+    return {
+      ...base,
+      totalStress: clampNumber(base.totalStress * 1.08 + 0.03),
+      instabilityIndex: clampNumber(base.instabilityIndex * 1.20 + 0.02),
+      liquidityField: clampNumber(base.liquidityField * 0.84),
+      gammaField: clampNumber(base.gammaField * 0.86),
+      liquidationField: clampNumber(base.liquidationField * 1.16),
+      cascadeField: clampNumber(base.cascadeField * 1.18),
+      cascadeProbability: clampNumber(base.cascadeProbability * 1.12),
+      squeezeProbability: clampNumber(base.squeezeProbability * 1.16),
+    };
+  }
+
+  if (timeframe === "4h") {
+    return {
+      ...base,
+      totalStress: clampNumber(base.totalStress * 0.90),
+      instabilityIndex: clampNumber(base.instabilityIndex * 0.72),
+      liquidityField: clampNumber(base.liquidityField * 1.18),
+      gammaField: clampNumber(base.gammaField * 1.14),
+      liquidationField: clampNumber(base.liquidationField * 0.92),
+      cascadeField: clampNumber(base.cascadeField * 0.86),
+      cascadeProbability: clampNumber(base.cascadeProbability * 0.86),
+      squeezeProbability: clampNumber(base.squeezeProbability * 0.82),
+    };
+  }
+
+  return base;
+}
+
+function normalizeForceFields(forceField = {}) {
+  const cascade = forceField.cascadeField ?? forceField.cascadeProbability;
+  return {
+    ...forceField,
+    totalStress: clampNumber(forceField.totalStress),
+    instabilityIndex: clampNumber(forceField.instabilityIndex),
+    liquidityField: clampNumber(forceField.liquidityField),
+    gammaField: clampNumber(forceField.gammaField),
+    liquidationField: clampNumber(forceField.liquidationField),
+    cascadeField: clampNumber(cascade),
+    cascadeProbability: clampNumber(forceField.cascadeProbability ?? cascade),
+    squeezeProbability: clampNumber(forceField.squeezeProbability),
+  };
+}
+
+function fieldCouplingScore(forceField = {}) {
+  const gamma = clampNumber(forceField.gammaField);
+  const liquidity = clampNumber(forceField.liquidityField);
+  const liquidation = clampNumber(forceField.liquidationField);
+  const cascade = clampNumber(forceField.cascadeField || forceField.cascadeProbability);
+  const stress = clampNumber(forceField.totalStress);
+  const liquidityAfterGamma = Math.max(0, liquidity * (1 - gamma * 0.6));
+  const fragility = clampNumber(1 - liquidityAfterGamma);
+  return clampNumber(gamma * 0.28 + fragility * 0.24 + liquidation * 0.24 + cascade * 0.14 + stress * 0.10);
 }
 
 function topByRisk(items, limit) {
@@ -817,6 +1144,17 @@ function topByAbs(items, key, limit) {
 function formatPct(value) {
   const number = Number(value || 0);
   return `${Math.round(number * 100)}%`;
+}
+
+function formatWeight(value) {
+  const number = Number(value || 0);
+  return number.toFixed(2);
+}
+
+function formatDelta(value) {
+  const number = Number(value || 0);
+  const sign = number >= 0 ? "+" : "";
+  return `${sign}${number.toFixed(2)}`;
 }
 
 function clampNumber(value, min = 0, max = 1) {

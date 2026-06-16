@@ -50,19 +50,22 @@ float noise(vec2 p) {
   return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
 }
 
-vec3 heatPalette(float heat, float gamma, float cascade, float voidField) {
+vec3 coupledFieldPalette(float liquidity, float gamma, float liquidation, float cascade, float fragility) {
   vec3 voidBlue = vec3(0.01, 0.035, 0.075);
-  vec3 cold = vec3(0.02, 0.16, 0.28);
+  vec3 liquidityBlue = vec3(0.04, 0.32, 0.56);
   vec3 mid = vec3(0.95, 0.42, 0.12);
   vec3 hot = vec3(1.0, 0.08, 0.16);
   vec3 gammaColor = vec3(0.45, 0.16, 0.95);
   vec3 cascadeColor = vec3(1.0, 0.78, 0.18);
+  vec3 feedbackColor = vec3(0.90, 0.18, 0.62);
 
-  vec3 color = mix(voidBlue, cold, 0.35 + voidField * 0.35);
-  color = mix(color, mid, smoothstep(0.08, 0.45, heat));
-  color = mix(color, hot, smoothstep(0.42, 1.12, heat));
-  color += gammaColor * gamma * 0.72;
-  color += cascadeColor * cascade * 0.70;
+  vec3 color = mix(voidBlue, liquidityBlue, smoothstep(0.12, 0.86, liquidity) * 0.52);
+  color = mix(color, mid, smoothstep(0.08, 0.52, liquidation));
+  color = mix(color, hot, smoothstep(0.55, 1.22, liquidation));
+  color += gammaColor * gamma * 0.78;
+  color += cascadeColor * cascade * 0.74;
+  color += feedbackColor * gamma * liquidation * 0.34;
+  color *= 0.74 + fragility * 0.34;
   return color;
 }
 
@@ -127,19 +130,58 @@ void main() {
     cascade += (spine * reach + arrowHead * 0.50) * strength;
   }
 
-  heat += u_liquidityField * (0.14 + wave * 0.18) + u_liquidationField * 0.18;
-  gamma += u_gammaField * (0.16 + fineNoise * 0.08);
-  cascade += u_cascadeField * (0.18 + wave * 0.12);
+  float liquidationRaw = clamp(
+    heat * (0.64 + wave * 0.22 + fineNoise * 0.10 + u_totalStress * 0.18)
+      + u_liquidationField * (0.18 + wave * 0.08),
+    0.0,
+    1.8
+  );
+  float gammaRaw = clamp(gamma + u_gammaField * (0.16 + fineNoise * 0.08), 0.0, 1.2);
+  float cascadeRaw = clamp(cascade + u_cascadeField * (0.18 + wave * 0.12), 0.0, 1.1);
+  float liquidityRaw = clamp(
+    0.26
+      + u_liquidityField * 0.48
+      + (1.0 - clamp(voidField + wave * 0.12, 0.0, 1.0)) * 0.24
+      - liquidationRaw * 0.10,
+    0.0,
+    1.0
+  );
 
-  heat = clamp(heat * (0.64 + wave * 0.22 + fineNoise * 0.10 + u_totalStress * 0.18), 0.0, 1.8);
-  gamma = clamp(gamma, 0.0, 1.2);
-  cascade = clamp(cascade, 0.0, 1.1);
+  // Coupled market physics:
+  // G up compresses L, fragile L amplifies Q, and Q feeds back into G.
+  float gammaCompression = clamp(gammaRaw * (0.52 + u_totalStress * 0.24), 0.0, 0.86);
+  float liquidityCoupled = clamp(liquidityRaw * (1.0 - gammaCompression), 0.0, 1.0);
+  float fragility = clamp(1.0 - liquidityCoupled, 0.0, 1.0);
+  float liquidationCoupled = clamp(
+    liquidationRaw + fragility * (0.28 + u_instability * 0.34) + cascadeRaw * 0.10,
+    0.0,
+    1.9
+  );
+  float gammaCoupled = clamp(
+    gammaRaw + liquidationCoupled * (0.18 + u_totalStress * 0.12),
+    0.0,
+    1.35
+  );
+  float cascadeCoupled = clamp(
+    cascadeRaw + liquidationCoupled * fragility * (0.16 + u_cascadeField * 0.24),
+    0.0,
+    1.25
+  );
 
-  vec3 color = heatPalette(heat, gamma, cascade, clamp(voidField + wave * 0.18, 0.0, 1.0));
+  vec3 color = coupledFieldPalette(liquidityCoupled, gammaCoupled, liquidationCoupled, cascadeCoupled, fragility);
   color += vec3(1.0, 0.16, 0.20) * u_instability * 0.16;
   float vignette = smoothstep(0.92, 0.18, distance(fieldUv, vec2(0.52, 0.52)));
   color *= 0.62 + vignette * 0.66;
-  float alpha = clamp(0.42 + heat * 0.34 + gamma * 0.26 + cascade * 0.32 + u_totalStress * 0.08, 0.34, 0.94);
+  float alpha = clamp(
+    0.40
+      + liquidationCoupled * 0.30
+      + gammaCoupled * 0.24
+      + cascadeCoupled * 0.28
+      + fragility * 0.12
+      + u_totalStress * 0.08,
+    0.34,
+    0.96
+  );
 
   fragColor = vec4(color, alpha);
 }
