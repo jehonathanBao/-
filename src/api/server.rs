@@ -5,8 +5,8 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, binance_alt_contract_routes, btc_liquidation_routes,
-        calibration_routes, contract_whale_routes, dev_alert_routes, discord_notification_routes,
+        active_trade_toxicity_routes, binance_alt_contract_routes, calibration_routes,
+        contract_whale_routes, dev_alert_routes, discord_notification_routes,
         durable_archive_dryrun_routes, durable_archive_write_audit_routes,
         durable_archive_write_routes, liquidation_toxicity_routes, main_force_event_routes,
         manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
@@ -38,7 +38,6 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(routes::readyz))
         .route("/dashboard", get(static_files::spa))
         .route("/alt-contract-monitor", get(static_files::spa))
-        .route("/btc-liquidation", get(static_files::spa))
         .route("/contract-whale", get(static_files::spa))
         .route("/spot-monitor", get(static_files::spa))
         .route("/spot-whale", get(static_files::spa))
@@ -119,10 +118,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/binance-alt-contract/history",
             get(binance_alt_contract_routes::binance_alt_contract_history_route),
-        )
-        .route(
-            "/api/btc-liquidation/dashboard",
-            get(btc_liquidation_routes::btc_liquidation_dashboard_route),
         )
         .route(
             "/api/spot-whale/summary",

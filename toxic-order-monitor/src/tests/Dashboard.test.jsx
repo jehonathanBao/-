@@ -168,6 +168,7 @@ describe("Dashboard interactions", () => {
     expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
     expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor");
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
+    expect(screen.queryByRole("link", { name: "BTC 清算监控" })).not.toBeInTheDocument();
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getAllByText("主力合约监控未启用").length).toBeGreaterThan(0);

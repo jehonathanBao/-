@@ -7,7 +7,6 @@
 
 pub mod adaptive;
 pub mod btc_liquidation;
-pub mod btc_liquidation_dashboard;
 pub mod enrichment;
 pub mod evaluation;
 pub mod feature_builder;
@@ -31,11 +30,6 @@ pub use adaptive::{
     AdaptiveAdjustment, AdaptiveController, AdaptiveEngine, AdaptiveParameters, FeedbackSignal,
 };
 pub use btc_liquidation::{BTCLiquidationEngine, BTCLiquidationState};
-pub use btc_liquidation_dashboard::{
-    build_btc_liquidation_dashboard, BTCLiquidationDashboard, CascadeTimelinePoint,
-    DashboardDataSources, DashboardForceFieldState, DashboardGammaWall, DashboardLiquidityLevel,
-    LiqLevel, MarketStressOverview, SqueezeDirectionPanel,
-};
 pub use enrichment::{enrich_signal, ToxicV3SignalInput};
 pub use evaluation::{
     EvaluationEngine, SystemEvaluationSample, SystemEvaluationState, SystemEvaluationVerdict,
