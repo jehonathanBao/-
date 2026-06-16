@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 
-use super::signal::SignalEvent;
+use super::{
+    adaptive::{AdaptiveAdjustment, AdaptiveEngine, AdaptiveParameters},
+    evaluation::{EvaluationEngine, SystemEvaluationState, SystemHistory},
+    signal::SignalEvent,
+};
 
 pub trait SignalStore {
     fn record(&mut self, signal: &SignalEvent);
@@ -24,6 +28,17 @@ impl InMemorySignalStore {
             max_signals: max_signals.max(1),
             signals: VecDeque::new(),
         }
+    }
+
+    pub fn evaluate_system(&self) -> SystemEvaluationState {
+        let signals = self.signals.iter().cloned().collect::<Vec<_>>();
+        let history = SystemHistory::from_signals(&signals);
+        EvaluationEngine::evaluate(&history)
+    }
+
+    pub fn propose_adaptation(&self, parameters: &AdaptiveParameters) -> AdaptiveAdjustment {
+        let evaluation = self.evaluate_system();
+        AdaptiveEngine::step(&evaluation, parameters)
     }
 }
 

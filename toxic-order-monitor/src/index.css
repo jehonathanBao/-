@@ -69,6 +69,77 @@ select {
   }
 }
 
+@keyframes btcHeatFlow {
+  0% {
+    opacity: 0.18;
+    transform: translateX(-1.2%) scaleX(0.985);
+    filter: blur(2px);
+  }
+  50% {
+    opacity: 0.88;
+    transform: translateX(1.2%) scaleX(1.018);
+    filter: blur(5px);
+  }
+  100% {
+    opacity: 0.22;
+    transform: translateX(-1.2%) scaleX(0.985);
+    filter: blur(2px);
+  }
+}
+
+@keyframes btcGammaWallBreath {
+  0% {
+    transform: scaleX(0.985);
+    filter: blur(0.5px);
+  }
+  50% {
+    transform: scaleX(1.015);
+    filter: blur(2px);
+  }
+  100% {
+    transform: scaleX(0.985);
+    filter: blur(0.5px);
+  }
+}
+
+@keyframes btcCascadeRipple {
+  0% {
+    transform: translate(-50%, -50%) scale(0.45);
+    opacity: 0.75;
+  }
+  70% {
+    transform: translate(-50%, -50%) scale(1.65);
+    opacity: 0.18;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.1);
+    opacity: 0;
+  }
+}
+
+.btc-heat-wave {
+  animation: btcHeatFlow 3.2s ease-in-out infinite;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.btc-gamma-wall {
+  animation: btcGammaWallBreath 4.6s ease-in-out infinite;
+  border-radius: 999px;
+  box-shadow: 0 0 30px rgb(168 85 247 / 0.28);
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.btc-cascade-ripple {
+  animation: btcCascadeRipple 2.8s ease-out infinite;
+  border: 1px solid rgb(226 232 240 / 0.72);
+  border-radius: 999px;
+  box-shadow: 0 0 32px rgb(226 232 240 / 0.28);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

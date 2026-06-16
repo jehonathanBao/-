@@ -1,11 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
+    btc_liquidation::{BTCLiquidationEngine, BTCLiquidationState},
     enrichment::{enrich_signal, ToxicV3SignalInput},
     feature_store::FeatureVector,
     flow_reality::directional_strength,
+    gex::{GEXEngine, GammaExposureState},
+    glce::{GLCEEngine, GLCEState},
     hazard::HazardEngine,
     intent::IntentEngine,
+    lhcs::{LHCSEngine, LHCSState},
+    mff::{MarketForceField, MarketForceFieldEngine},
     stealth::StealthEngine,
     types::{
         clamp100, Direction, HazardState, IntentState, IntentType, MarketFlowTick, SignalSource,
@@ -90,6 +95,11 @@ pub struct SignalEvent {
     pub direction: Direction,
     pub confidence: f64,
     pub data_quality: f64,
+    pub glce_state: GLCEState,
+    pub lhcs_state: LHCSState,
+    pub gex_state: GammaExposureState,
+    pub market_force_field: MarketForceField,
+    pub btc_liquidation_state: Option<BTCLiquidationState>,
     pub should_alert: bool,
     pub external_dispatch_enabled: bool,
     pub enrichment: ToxicV3Enrichment,
@@ -107,14 +117,22 @@ impl SignalAggregator {
         let direction = direction_from_tick(tick);
         let stealth = StealthEngine::analyze(tick);
         let hazard = HazardEngine::compute(tick, &stealth);
+        let glce = GLCEEngine::compute(tick, &stealth);
+        let lhcs = LHCSEngine::compute(tick, &glce);
+        let gex = GEXEngine::compute_from_tick(tick, &glce, &lhcs);
+        let mff = MarketForceFieldEngine::compute(tick, &glce, &lhcs, &gex);
         let intent = IntentEngine::infer(tick, direction, &stealth, &hazard);
-        Self::evaluate(
+        Self::evaluate_with_market_field(
             tick,
             source,
             data_quality,
             direction,
             &stealth,
             &hazard,
+            &glce,
+            &lhcs,
+            &gex,
+            &mff,
             &intent,
             decision,
         )
@@ -129,14 +147,22 @@ impl SignalAggregator {
         let direction = direction_from_tick(&vector.tick);
         let stealth = StealthEngine::analyze_vector(vector);
         let hazard = HazardEngine::compute_vector(vector, &stealth);
+        let glce = GLCEEngine::compute_vector(vector, &stealth);
+        let lhcs = LHCSEngine::compute(&vector.tick, &glce);
+        let gex = GEXEngine::compute_from_tick(&vector.tick, &glce, &lhcs);
+        let mff = MarketForceFieldEngine::compute(&vector.tick, &glce, &lhcs, &gex);
         let intent = IntentEngine::infer_vector(vector, direction, &stealth, &hazard);
-        Self::evaluate(
+        Self::evaluate_with_market_field(
             &vector.tick,
             source,
             data_quality,
             direction,
             &stealth,
             &hazard,
+            &glce,
+            &lhcs,
+            &gex,
+            &mff,
             &intent,
             decision,
         )
@@ -153,6 +179,134 @@ impl SignalAggregator {
         intent: &IntentState,
         decision: &DecisionEngine,
     ) -> SignalEvent {
+        let glce = GLCEEngine::compute(tick, stealth);
+        let lhcs = LHCSEngine::compute(tick, &glce);
+        let gex = GEXEngine::compute_from_tick(tick, &glce, &lhcs);
+        let mff = MarketForceFieldEngine::compute(tick, &glce, &lhcs, &gex);
+        Self::evaluate_with_market_field(
+            tick,
+            source,
+            data_quality,
+            direction,
+            stealth,
+            hazard,
+            &glce,
+            &lhcs,
+            &gex,
+            &mff,
+            intent,
+            decision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_glce(
+        tick: &MarketFlowTick,
+        source: SignalSource,
+        data_quality: f64,
+        direction: Direction,
+        stealth: &StealthState,
+        hazard: &HazardState,
+        glce: &GLCEState,
+        intent: &IntentState,
+        decision: &DecisionEngine,
+    ) -> SignalEvent {
+        let lhcs = LHCSEngine::compute(tick, glce);
+        let gex = GEXEngine::compute_from_tick(tick, glce, &lhcs);
+        let mff = MarketForceFieldEngine::compute(tick, glce, &lhcs, &gex);
+        Self::evaluate_with_market_field(
+            tick,
+            source,
+            data_quality,
+            direction,
+            stealth,
+            hazard,
+            glce,
+            &lhcs,
+            &gex,
+            &mff,
+            intent,
+            decision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_physics(
+        tick: &MarketFlowTick,
+        source: SignalSource,
+        data_quality: f64,
+        direction: Direction,
+        stealth: &StealthState,
+        hazard: &HazardState,
+        glce: &GLCEState,
+        lhcs: &LHCSState,
+        intent: &IntentState,
+        decision: &DecisionEngine,
+    ) -> SignalEvent {
+        let gex = GEXEngine::compute_from_tick(tick, glce, lhcs);
+        let mff = MarketForceFieldEngine::compute(tick, glce, lhcs, &gex);
+        Self::evaluate_with_market_field(
+            tick,
+            source,
+            data_quality,
+            direction,
+            stealth,
+            hazard,
+            glce,
+            lhcs,
+            &gex,
+            &mff,
+            intent,
+            decision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_force_layers(
+        tick: &MarketFlowTick,
+        source: SignalSource,
+        data_quality: f64,
+        direction: Direction,
+        stealth: &StealthState,
+        hazard: &HazardState,
+        glce: &GLCEState,
+        lhcs: &LHCSState,
+        gex: &GammaExposureState,
+        intent: &IntentState,
+        decision: &DecisionEngine,
+    ) -> SignalEvent {
+        let mff = MarketForceFieldEngine::compute(tick, glce, lhcs, gex);
+        Self::evaluate_with_market_field(
+            tick,
+            source,
+            data_quality,
+            direction,
+            stealth,
+            hazard,
+            glce,
+            lhcs,
+            gex,
+            &mff,
+            intent,
+            decision,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_market_field(
+        tick: &MarketFlowTick,
+        source: SignalSource,
+        data_quality: f64,
+        direction: Direction,
+        stealth: &StealthState,
+        hazard: &HazardState,
+        glce: &GLCEState,
+        lhcs: &LHCSState,
+        gex: &GammaExposureState,
+        mff: &MarketForceField,
+        intent: &IntentState,
+        decision: &DecisionEngine,
+    ) -> SignalEvent {
         let confidence = confidence_from_intent(&intent, data_quality);
         let risk_score = decision.risk_score(
             hazard.lambda_t,
@@ -160,6 +314,7 @@ impl SignalAggregator {
             intent.aggression_level,
         );
         let signal_type = classify_signal(&intent, tick);
+        let btc_liquidation_state = BTCLiquidationEngine::compute(tick, glce, lhcs, gex);
         let enrichment = enrich_signal(&ToxicV3SignalInput {
             source,
             direction,
@@ -179,6 +334,11 @@ impl SignalAggregator {
             direction,
             confidence,
             data_quality,
+            glce_state: glce.clone(),
+            lhcs_state: lhcs.clone(),
+            gex_state: gex.clone(),
+            market_force_field: mff.clone(),
+            btc_liquidation_state,
             should_alert: false,
             external_dispatch_enabled: decision.external_dispatch_enabled,
             enrichment,

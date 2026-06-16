@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"] },
   { label: "BTC/ETH 合约监控", path: "/contract-whale" },
+  { label: "BTC 清算监控", path: "/btc-liquidation" },
   { label: "BTC/ETH 现货监控", path: "/spot-monitor", aliases: ["/spot-whale"] },
   { label: "山寨合约异常", path: "/alt-contract-monitor" },
   { label: "异常信号", path: "/signals" },
