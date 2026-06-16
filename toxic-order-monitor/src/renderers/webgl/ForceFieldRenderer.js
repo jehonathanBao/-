@@ -23,6 +23,12 @@ uniform float u_intensity;
 uniform int u_heatCount;
 uniform int u_gammaCount;
 uniform int u_cascadeCount;
+uniform float u_totalStress;
+uniform float u_instability;
+uniform float u_liquidityField;
+uniform float u_gammaField;
+uniform float u_liquidationField;
+uniform float u_cascadeField;
 uniform vec4 u_heatCells[MAX_HEAT_CELLS];
 uniform vec4 u_gammaBands[MAX_GAMMA_BANDS];
 uniform vec4 u_cascadePoints[MAX_CASCADE_POINTS];
@@ -115,14 +121,19 @@ void main() {
     cascade += (ring + vector * 0.18) * strength;
   }
 
-  heat = clamp(heat * (0.68 + wave * 0.22 + fineNoise * 0.10), 0.0, 1.8);
+  heat += u_liquidityField * (0.14 + wave * 0.18) + u_liquidationField * 0.18;
+  gamma += u_gammaField * (0.16 + fineNoise * 0.08);
+  cascade += u_cascadeField * (0.18 + wave * 0.12);
+
+  heat = clamp(heat * (0.64 + wave * 0.22 + fineNoise * 0.10 + u_totalStress * 0.18), 0.0, 1.8);
   gamma = clamp(gamma, 0.0, 1.2);
   cascade = clamp(cascade, 0.0, 1.1);
 
   vec3 color = heatPalette(heat, gamma, cascade, clamp(voidField + wave * 0.18, 0.0, 1.0));
+  color += vec3(1.0, 0.16, 0.20) * u_instability * 0.16;
   float vignette = smoothstep(0.92, 0.18, distance(fieldUv, vec2(0.52, 0.52)));
   color *= 0.62 + vignette * 0.66;
-  float alpha = clamp(0.42 + heat * 0.34 + gamma * 0.26 + cascade * 0.32, 0.34, 0.94);
+  float alpha = clamp(0.42 + heat * 0.34 + gamma * 0.26 + cascade * 0.32 + u_totalStress * 0.08, 0.34, 0.94);
 
   fragColor = vec4(color, alpha);
 }
@@ -157,6 +168,12 @@ export function createForceFieldRenderer(canvas) {
     heatCount: gl.getUniformLocation(program, "u_heatCount"),
     gammaCount: gl.getUniformLocation(program, "u_gammaCount"),
     cascadeCount: gl.getUniformLocation(program, "u_cascadeCount"),
+    totalStress: gl.getUniformLocation(program, "u_totalStress"),
+    instability: gl.getUniformLocation(program, "u_instability"),
+    liquidityField: gl.getUniformLocation(program, "u_liquidityField"),
+    gammaField: gl.getUniformLocation(program, "u_gammaField"),
+    liquidationField: gl.getUniformLocation(program, "u_liquidationField"),
+    cascadeField: gl.getUniformLocation(program, "u_cascadeField"),
     heatCells: gl.getUniformLocation(program, "u_heatCells[0]"),
     gammaBands: gl.getUniformLocation(program, "u_gammaBands[0]"),
     cascadePoints: gl.getUniformLocation(program, "u_cascadePoints[0]"),
@@ -179,6 +196,13 @@ export function createForceFieldRenderer(canvas) {
       gl.uniform2f(uniforms.resolution, canvas.width, canvas.height);
       gl.uniform1f(uniforms.time, Number(input.time || 0));
       gl.uniform1f(uniforms.intensity, clamp01(Number(input.intensity || 0.78)));
+      const fieldState = normalizeFieldState(input.fieldState);
+      gl.uniform1f(uniforms.totalStress, fieldState.totalStress);
+      gl.uniform1f(uniforms.instability, fieldState.instabilityIndex);
+      gl.uniform1f(uniforms.liquidityField, fieldState.liquidityField);
+      gl.uniform1f(uniforms.gammaField, fieldState.gammaField);
+      gl.uniform1f(uniforms.liquidationField, fieldState.liquidationField);
+      gl.uniform1f(uniforms.cascadeField, fieldState.cascadeField);
 
       const heatCells = packHeatCells(input.heatCells);
       const gammaBands = packGammaBands(input.gammaBands);
@@ -198,6 +222,17 @@ export function createForceFieldRenderer(canvas) {
       gl.deleteBuffer(positionBuffer);
       gl.deleteProgram(program);
     },
+  };
+}
+
+function normalizeFieldState(fieldState = {}) {
+  return {
+    totalStress: clamp01(Number(fieldState.totalStress || 0)),
+    instabilityIndex: clamp01(Number(fieldState.instabilityIndex || 0)),
+    liquidityField: clamp01(Number(fieldState.liquidityField || 0)),
+    gammaField: clamp01(Number(fieldState.gammaField || 0)),
+    liquidationField: clamp01(Number(fieldState.liquidationField || 0)),
+    cascadeField: clamp01(Number(fieldState.cascadeField || 0)),
   };
 }
 

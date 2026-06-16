@@ -19,6 +19,20 @@ const fallbackDashboard = {
     cascadeRisk: 0,
     gammaPressure: 0,
   },
+  forceField: {
+    ts: null,
+    symbol: "BTC",
+    liquidityField: 0,
+    gammaField: 0,
+    liquidationField: 0,
+    cascadeField: 0,
+    totalStress: 0,
+    instabilityIndex: 0,
+    nextMoveBias: "neutral",
+    squeezeProbability: 0,
+    cascadeProbability: 0,
+    predictedRegime: "unknown",
+  },
   liquidationHeatmap: [],
   gammaWalls: [],
   squeeze: {
@@ -70,6 +84,7 @@ export function normalizeBtcLiquidationDashboard(payload) {
       ...fallbackDashboard.marketStress,
       ...(data.marketStress || {}),
     },
+    forceField: normalizeForceField(data.forceField, data.marketStress),
     liquidationHeatmap: Array.isArray(data.liquidationHeatmap)
       ? data.liquidationHeatmap.map(normalizeHeatmapLevel)
       : [],
@@ -89,6 +104,27 @@ export function normalizeBtcLiquidationDashboard(payload) {
       ...(data.sources || {}),
     },
     notes: Array.isArray(data.notes) ? data.notes.map(String) : fallbackDashboard.notes,
+  };
+}
+
+function normalizeForceField(forceField, marketStress) {
+  const source = forceField && typeof forceField === "object" ? forceField : {};
+  const stress = marketStress && typeof marketStress === "object" ? marketStress : {};
+  return {
+    ...fallbackDashboard.forceField,
+    ...source,
+    ts: numberOrNull(source.ts),
+    symbol: String(source.symbol || "BTC").toUpperCase(),
+    liquidityField: Number(source.liquidityField ?? stress.liquidityField ?? 0),
+    gammaField: Number(source.gammaField ?? stress.gammaField ?? 0),
+    liquidationField: Number(source.liquidationField ?? stress.liquidationField ?? 0),
+    cascadeField: Number(source.cascadeField ?? stress.cascadeField ?? 0),
+    totalStress: Number(source.totalStress ?? stress.stressScore ?? 0),
+    instabilityIndex: Number(source.instabilityIndex ?? stress.instabilityIndex ?? 0),
+    nextMoveBias: String(source.nextMoveBias || stress.directionalBias || "neutral"),
+    squeezeProbability: Number(source.squeezeProbability ?? 0),
+    cascadeProbability: Number(source.cascadeProbability ?? stress.cascadeRisk ?? 0),
+    predictedRegime: String(source.predictedRegime || stress.regime || "unknown"),
   };
 }
 

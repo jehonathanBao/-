@@ -62,7 +62,7 @@ export default function BTCLiquidationDashboard() {
                 <StatusDot live={data.live} />
               </div>
               <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-400">
-                TradingView 风格热力主屏，展示清算簇、Gamma 墙、级联路径和流动性真空区。只读分析，不下单。
+                WebGL Market Physics 视图，展示清算簇、Gamma 墙、级联路径、流动性真空区和下一步力场偏向。只读分析，不下单。
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -97,7 +97,7 @@ export default function BTCLiquidationDashboard() {
         </div>
 
         <div className="grid min-h-[620px] grid-cols-1 xl:grid-cols-[minmax(0,1fr)_330px]">
-          <TradingChart
+          <ForceFieldView
             data={data}
             heatIntensity={heatIntensity}
             model={chartModel}
@@ -120,21 +120,23 @@ export default function BTCLiquidationDashboard() {
   );
 }
 
-function TradingChart({ data, model, overlayMode, heatIntensity }) {
+function ForceFieldView({ data, model, overlayMode, heatIntensity }) {
   const showHeat = overlayMode === "all" || overlayMode === "heat";
   const showGamma = overlayMode === "all" || overlayMode === "gamma";
   const showCascade = overlayMode === "all" || overlayMode === "cascade";
-  const stress = data.marketStress || {};
+  const forceField = data.forceField || {};
   const squeeze = data.squeeze || {};
+  const instability = clampNumber(forceField.instabilityIndex);
 
   return (
     <div className="relative min-h-[620px] overflow-hidden bg-[#07111f]">
       <div className="absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.06)_1px,transparent_1px)] bg-[size:100%_54px,86px_100%]" />
       <div className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-950/55 px-4 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <ChartBadge label={`Stress ${formatPct(stress.stressScore)}`} tone={Number(stress.stressScore || 0) > 0.7 ? "red" : "cyan"} />
-          <ChartBadge label={`Cascade ${formatPct(stress.cascadeRisk)}`} tone={Number(stress.cascadeRisk || 0) > 0.65 ? "red" : "yellow"} />
-          <ChartBadge label={`Gamma ${formatPct(stress.gammaPressure)}`} tone="purple" />
+          <ChartBadge label={`Stress ${formatPct(forceField.totalStress)}`} tone={Number(forceField.totalStress || 0) > 0.7 ? "red" : "cyan"} />
+          <ChartBadge label={`Cascade ${formatPct(forceField.cascadeProbability)}`} tone={Number(forceField.cascadeProbability || 0) > 0.65 ? "red" : "yellow"} />
+          <ChartBadge label={`Gamma ${formatPct(forceField.gammaField)}`} tone="purple" />
+          <ChartBadge label={`Bias ${forceBiasLabel(forceField.nextMoveBias)}`} tone="cyan" />
         </div>
         <div className="font-mono text-xs text-slate-400">
           {data.live ? "LIVE" : "WAITING"} · {data.dataStatus || "unknown"}
@@ -146,47 +148,17 @@ function TradingChart({ data, model, overlayMode, heatIntensity }) {
           cascadePoints={showCascade ? model.cascadePoints : []}
           gammaBands={showGamma ? model.gammaBands : []}
           heatCells={showHeat ? model.heatCells : []}
+          fieldState={forceField}
           intensity={heatIntensity}
         />
 
-        <svg className="absolute inset-0 z-10 h-full w-full" preserveAspectRatio="none" viewBox="0 0 1000 520">
-          <defs>
-            <linearGradient id="btcForceLine" x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.55" />
-              <stop offset="50%" stopColor="#e2e8f0" stopOpacity="0.85" />
-              <stop offset="100%" stopColor="#fb7185" stopOpacity="0.55" />
-            </linearGradient>
-          </defs>
-          <path d={model.areaPath} fill="url(#btcForceLine)" opacity="0.035" />
-          <path d={model.linePath} fill="none" stroke="url(#btcForceLine)" strokeLinecap="round" strokeWidth="1.8" />
-          {model.candles.map((candle) => (
-            <g key={candle.key}>
-              <line
-                stroke={candle.up ? "#34d399" : "#fb7185"}
-                strokeOpacity="0.34"
-                strokeWidth="1"
-                x1={candle.x}
-                x2={candle.x}
-                y1={candle.high}
-                y2={candle.low}
-              />
-              <rect
-                fill={candle.up ? "#34d399" : "#fb7185"}
-                fillOpacity="0.38"
-                height={Math.max(3, Math.abs(candle.close - candle.open))}
-                rx="1.2"
-                width="9"
-                x={candle.x - 4.5}
-                y={Math.min(candle.open, candle.close)}
-              />
-            </g>
-          ))}
-        </svg>
+        <InstabilityGlow value={instability} />
+        <ForceVectorOverlay model={model} forceField={forceField} />
 
         <div className="absolute bottom-4 left-4 z-20 grid gap-2 text-xs text-slate-400 sm:grid-cols-3">
-          <Info label="向上挤压" value={formatPct(squeeze.upProbability)} />
-          <Info label="向下挤压" value={formatPct(squeeze.downProbability)} />
-          <Info label="主方向" value={squeezeDirectionLabel(squeeze.dominantDirection)} />
+          <Info label="力场偏向" value={forceBiasLabel(forceField.nextMoveBias)} />
+          <Info label="挤压概率" value={formatPct(forceField.squeezeProbability || Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0))} />
+          <Info label="预测状态" value={regimeLabel(forceField.predictedRegime)} />
         </div>
 
         <div className="absolute bottom-0 right-0 top-0 z-20 w-[74px] border-l border-slate-800/80 bg-slate-950/45">
@@ -206,32 +178,32 @@ function TradingChart({ data, model, overlayMode, heatIntensity }) {
 }
 
 function RightMetricsPanel({ data }) {
-  const stress = data.marketStress || {};
+  const forceField = data.forceField || {};
   const squeeze = data.squeeze || {};
   return (
     <aside className="border-t border-slate-800/80 bg-slate-950/80 p-4 xl:border-l xl:border-t-0">
       <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Liquidation Status</p>
       <h4 className="mt-2 text-lg font-bold text-white">BTC 清算状态</h4>
       <div className="mt-4 grid gap-3">
-        <Metric label="Squeeze Up" value={formatPct(squeeze.upProbability)} tone="emerald" />
-        <Metric label="Squeeze Down" value={formatPct(squeeze.downProbability)} tone="red" />
-        <Metric label="Cascade Risk" value={formatPct(stress.cascadeRisk)} tone="yellow" />
-        <Metric label="Gamma Pressure" value={formatPct(stress.gammaPressure)} tone="purple" />
+        <Metric label="Total Stress" value={formatPct(forceField.totalStress)} tone="cyan" />
+        <Metric label="Instability" value={formatPct(forceField.instabilityIndex)} tone="orange" />
+        <Metric label="Squeeze Probability" value={formatPct(forceField.squeezeProbability)} tone="emerald" />
+        <Metric label="Cascade Probability" value={formatPct(forceField.cascadeProbability)} tone="yellow" />
       </div>
       <div className="mt-4 grid gap-3">
-        <Info label="Bias" value={squeezeDirectionLabel(squeeze.dominantDirection)} />
-        <Info label="Regime" value={regimeLabel(stress.regime)} />
+        <Info label="Next Bias" value={forceBiasLabel(forceField.nextMoveBias)} />
+        <Info label="Regime" value={regimeLabel(forceField.predictedRegime)} />
         <Info label="Net Liq Bias" value={formatSigned(squeeze.netLiquidationBias)} />
       </div>
-      <ForceFieldRadar stress={stress} squeeze={squeeze} />
+      <ForceFieldRadar forceField={forceField} squeeze={squeeze} />
       <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-3 text-xs leading-5 text-cyan-100">
-        Heat layer 是当前 flow proxy，可用于看结构压力，不代表交易建议。
+        Force Field 是研究/预测视图，只表达结构压力与清算物理层，不代表交易建议。
       </div>
     </aside>
   );
 }
 
-function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, intensity }) {
+function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, fieldState, intensity }) {
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
 
@@ -248,13 +220,14 @@ function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, intensity }) {
       if (renderer) {
         renderer.render({
           cascadePoints,
+          fieldState,
           gammaBands,
           heatCells,
           intensity: Number(intensity || 78) / 100,
           time: (now - startedAt) / 1000,
         });
       } else {
-        drawCanvasFallback(canvas, { cascadePoints, gammaBands, heatCells, intensity });
+        drawCanvasFallback(canvas, { cascadePoints, fieldState, gammaBands, heatCells, intensity });
       }
       animationFrame = window.requestAnimationFrame(draw);
     };
@@ -265,7 +238,7 @@ function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, intensity }) {
       rendererRef.current?.dispose?.();
       rendererRef.current = null;
     };
-  }, [cascadePoints, gammaBands, heatCells, intensity]);
+  }, [cascadePoints, fieldState, gammaBands, heatCells, intensity]);
 
   return (
     <canvas
@@ -277,7 +250,52 @@ function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, intensity }) {
   );
 }
 
-function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, intensity }) {
+function InstabilityGlow({ value }) {
+  const intensity = clampNumber(value);
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 z-[2]"
+      style={{
+        background: `radial-gradient(circle at 52% 48%, rgba(251, 113, 133, ${0.08 + intensity * 0.16}), transparent ${34 + intensity * 20}%), radial-gradient(circle at 22% 72%, rgba(34, 211, 238, ${0.06 + intensity * 0.10}), transparent 34%)`,
+        boxShadow: `inset 0 0 ${40 + intensity * 120}px rgba(251, 113, 133, ${0.05 + intensity * 0.14})`,
+      }}
+    />
+  );
+}
+
+function ForceVectorOverlay({ model, forceField }) {
+  const bias = String(forceField?.nextMoveBias || "neutral");
+  const tone = bias.includes("down") ? "#fb7185" : bias.includes("up") ? "#34d399" : "#22d3ee";
+  const opacity = 0.18 + clampNumber(forceField?.totalStress) * 0.52;
+
+  return (
+    <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full" preserveAspectRatio="none" viewBox="0 0 1000 520">
+      <defs>
+        <marker id="btcForceArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+          <path d="M0,0 L8,4 L0,8 Z" fill={tone} opacity={opacity} />
+        </marker>
+      </defs>
+      {(model.forceVectors || []).map((vector) => (
+        <g key={vector.key} opacity={opacity * vector.intensity}>
+          <line
+            markerEnd="url(#btcForceArrow)"
+            stroke={tone}
+            strokeLinecap="round"
+            strokeWidth={1.2 + vector.intensity * 3.2}
+            x1={vector.x1}
+            x2={vector.x2}
+            y1={vector.y1}
+            y2={vector.y2}
+          />
+          <circle cx={vector.x1} cy={vector.y1} fill={tone} opacity="0.45" r={2 + vector.intensity * 3} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fieldState, intensity }) {
   const ctx = canvas?.getContext?.("2d");
   if (!canvas || !ctx) return;
 
@@ -293,10 +311,12 @@ function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, inte
   ctx.clearRect(0, 0, rect.width, rect.height);
 
   const heatScale = Math.max(0.2, Number(intensity || 78) / 100);
+  const stress = clampNumber(fieldState?.totalStress);
+  const instability = clampNumber(fieldState?.instabilityIndex);
   const background = ctx.createLinearGradient(0, 0, rect.width, rect.height);
-  background.addColorStop(0, "rgba(8, 47, 73, 0.24)");
+  background.addColorStop(0, `rgba(8, 47, 73, ${0.20 + stress * 0.18})`);
   background.addColorStop(0.52, "rgba(15, 23, 42, 0.08)");
-  background.addColorStop(1, "rgba(76, 29, 149, 0.18)");
+  background.addColorStop(1, `rgba(76, 29, 149, ${0.15 + instability * 0.22})`);
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, rect.width, rect.height);
 
@@ -342,12 +362,12 @@ function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, inte
   });
 }
 
-function ForceFieldRadar({ stress, squeeze }) {
+function ForceFieldRadar({ forceField, squeeze }) {
   const axes = [
-    { label: "LIQ", value: stress.liquidationField || squeeze.longLiquidationPressure || 0, angle: -90 },
-    { label: "GEX", value: stress.gammaPressure || stress.gammaField || 0, angle: 0 },
-    { label: "SQZ", value: Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0), angle: 90 },
-    { label: "CAS", value: stress.cascadeRisk || stress.cascadeField || 0, angle: 180 },
+    { label: "LIQ", value: forceField.liquidationField || squeeze.longLiquidationPressure || 0, angle: -90 },
+    { label: "GEX", value: forceField.gammaField || 0, angle: 0 },
+    { label: "SQZ", value: forceField.squeezeProbability || Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0), angle: 90 },
+    { label: "CAS", value: forceField.cascadeProbability || forceField.cascadeField || 0, angle: 180 },
   ];
   const points = axes
     .map((axis) => {
@@ -598,14 +618,8 @@ function buildChartModel(data, heatmap, gammaWalls, timeframe) {
   const min = minObserved - pad;
   const max = maxObserved + pad;
   const priceToY = (price) => 92 - ((price - min) / (max - min || 1)) * 78;
-  const candles = buildCandles(current, min, max, timeframe);
-  const linePath = candles.map((candle, index) => `${index === 0 ? "M" : "L"} ${candle.x} ${candle.close}`).join(" ");
-  const areaPath = `${linePath} L ${candles.at(-1)?.x || 960} 520 L ${candles[0]?.x || 40} 520 Z`;
 
   return {
-    candles,
-    linePath,
-    areaPath,
     axisLabels: [max, (max + current) / 2, current, (min + current) / 2, min].map((value) => ({
       value,
       y: priceToY(value),
@@ -635,6 +649,7 @@ function buildChartModel(data, heatmap, gammaWalls, timeframe) {
       intensity: Math.min(1, Number(item.impactAmplification || 1) / 3.5),
       delay: index * 0.28,
     })),
+    forceVectors: buildForceVectors(data.forceField || {}, timeframe),
   };
 }
 
@@ -697,6 +712,32 @@ function buildCandles(current, min, max, timeframe) {
   });
 }
 
+function buildForceVectors(forceField, timeframe) {
+  const bias = String(forceField.nextMoveBias || "neutral");
+  const stress = clampNumber(forceField.totalStress);
+  const instability = clampNumber(forceField.instabilityIndex);
+  const count = timeframe === "1m" ? 8 : timeframe === "15m" ? 12 : 10;
+  const upward = bias.includes("up");
+  const downward = bias.includes("down");
+  const neutralSwing = !upward && !downward;
+  const length = 44 + stress * 86;
+
+  return Array.from({ length: count }, (_, index) => {
+    const x = 92 + index * (820 / Math.max(1, count - 1));
+    const yBase = 268 + Math.sin(index * 0.9) * (neutralSwing ? 34 : 20);
+    const direction = neutralSwing ? (index % 2 === 0 ? -1 : 1) : upward ? -1 : 1;
+    const jitter = Math.cos(index * 1.33) * 16 * instability;
+    return {
+      key: `force-vector-${index}`,
+      x1: x,
+      y1: yBase + jitter,
+      x2: x + 28 + stress * 28,
+      y2: yBase + direction * length + jitter,
+      intensity: Math.max(0.22, stress * 0.72 + instability * 0.28),
+    };
+  });
+}
+
 function topByRisk(items, limit) {
   return [...(items || [])].sort((a, b) => Number(b.riskScore || 0) - Number(a.riskScore || 0)).slice(0, limit);
 }
@@ -755,6 +796,14 @@ function regimeLabel(value) {
 function squeezeDirectionLabel(value) {
   if (value === "up") return "向上";
   if (value === "down") return "向下";
+  return "中性";
+}
+
+function forceBiasLabel(value) {
+  if (value === "upward_squeeze" || value === "up") return "向上挤压";
+  if (value === "downward_squeeze" || value === "down") return "向下挤压";
+  if (value === "buy") return "买方压力";
+  if (value === "sell") return "卖方压力";
   return "中性";
 }
 

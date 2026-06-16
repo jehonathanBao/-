@@ -13,7 +13,7 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::{BinanceAltContractQuery, BinanceAltContractService},
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractImpactScore, AltContractMarketTier, AltContractSymbolTier,
+        AltContractImpactScore, AltContractMarketTier, AltContractSeverity, AltContractSymbolTier,
         AltContractWindowStats,
     },
 };
@@ -170,24 +170,44 @@ fn service_prunes_bacm_signal_cache_to_seven_days_and_compacts_persistence() {
     let mut old = recent.clone();
     old.id = "old-bacm-cache-signal".to_string();
     old.ts = now - 8 * 86_400_000;
+    old.severity = AltContractSeverity::Medium;
+    let mut old_s = recent.clone();
+    old_s.id = "old-s-bacm-cache-signal".to_string();
+    old_s.ts = now - 8 * 86_400_000;
+    old_s.severity = AltContractSeverity::S;
 
     assert!(service.insert_signal_for_tests(old.clone()));
+    assert!(service.insert_signal_for_tests(old_s.clone()));
     assert!(service.insert_signal_for_tests(recent.clone()));
-    assert_eq!(service.latest(Some("SOL"), 50).items.len(), 2);
+    assert_eq!(service.latest(Some("SOL"), 50).items.len(), 3);
 
     service.prune_expired_cache_for_tests(now);
 
     let latest = service.latest(Some("SOL"), 50);
-    assert_eq!(latest.items.len(), 1);
-    assert_eq!(latest.items[0].id, recent.id);
+    let latest_ids = latest
+        .items
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(latest_ids.len(), 2);
+    assert!(latest_ids.contains(&recent.id.as_str()));
+    assert!(latest_ids.contains(&old_s.id.as_str()));
+    assert!(!latest_ids.contains(&old.id.as_str()));
     let persisted = fs::read_to_string(&path).expect("compacted persistence file");
     assert!(!persisted.contains(&old.id));
+    assert!(persisted.contains(&old_s.id));
     assert!(persisted.contains(&recent.id));
 
     let restored = BinanceAltContractService::new(true, true, now - 120_000);
     let restored_latest = restored.latest(Some("SOL"), 50);
-    assert_eq!(restored_latest.items.len(), 1);
-    assert_eq!(restored_latest.items[0].id, recent.id);
+    let restored_ids = restored_latest
+        .items
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(restored_ids.len(), 2);
+    assert!(restored_ids.contains(&recent.id.as_str()));
+    assert!(restored_ids.contains(&old_s.id.as_str()));
 
     let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();

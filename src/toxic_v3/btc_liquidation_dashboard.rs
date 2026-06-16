@@ -27,6 +27,7 @@ pub struct BTCLiquidationDashboard {
     pub data_status: String,
     pub read_only: bool,
     pub live: bool,
+    pub force_field: DashboardForceFieldState,
     pub market_stress: MarketStressOverview,
     pub liquidation_heatmap: Vec<LiqLevel>,
     pub gamma_walls: Vec<DashboardGammaWall>,
@@ -50,6 +51,23 @@ pub struct MarketStressOverview {
     pub regime: String,
     pub cascade_risk: f64,
     pub gamma_pressure: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardForceFieldState {
+    pub ts: i64,
+    pub symbol: String,
+    pub liquidity_field: f64,
+    pub gamma_field: f64,
+    pub liquidation_field: f64,
+    pub cascade_field: f64,
+    pub total_stress: f64,
+    pub instability_index: f64,
+    pub next_move_bias: String,
+    pub squeeze_probability: f64,
+    pub cascade_probability: f64,
+    pub predicted_regime: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -135,6 +153,10 @@ impl Default for BTCLiquidationDashboard {
             data_status: "unavailable".to_string(),
             read_only: true,
             live: false,
+            force_field: DashboardForceFieldState {
+                symbol: "BTC".to_string(),
+                ..Default::default()
+            },
             market_stress: MarketStressOverview::default(),
             liquidation_heatmap: Vec::new(),
             gamma_walls: Vec::new(),
@@ -199,6 +221,7 @@ pub fn build_btc_liquidation_dashboard(
         data_status,
         read_only: true,
         live,
+        force_field: force_field_state(&force, &btc_liq),
         market_stress: market_stress(&force, btc_liq.cascade_risk, btc_liq.gamma_pressure),
         liquidation_heatmap: lhcs
             .liquidation_heatmap
@@ -358,6 +381,45 @@ fn market_stress(
         regime: format!("{:?}", force.regime_state).to_ascii_lowercase(),
         cascade_risk: round(cascade_risk, 4),
         gamma_pressure: round(gamma_pressure, 4),
+    }
+}
+
+fn force_field_state(
+    force: &MarketForceField,
+    btc_liq: &super::btc_liquidation::BTCLiquidationState,
+) -> DashboardForceFieldState {
+    DashboardForceFieldState {
+        ts: btc_liq.ts,
+        symbol: "BTC".to_string(),
+        liquidity_field: round(force.liquidity_field, 4),
+        gamma_field: round(force.gamma_field, 4),
+        liquidation_field: round(force.liquidation_field, 4),
+        cascade_field: round(force.cascade_field, 4),
+        total_stress: round(force.total_stress, 4),
+        instability_index: round(force.instability_index, 4),
+        next_move_bias: force_next_move_bias(btc_liq),
+        squeeze_probability: round(
+            btc_liq
+                .squeeze_up_probability
+                .max(btc_liq.squeeze_down_probability),
+            4,
+        ),
+        cascade_probability: round(btc_liq.cascade_risk, 4),
+        predicted_regime: format!("{:?}", force.regime_state).to_ascii_lowercase(),
+    }
+}
+
+fn force_next_move_bias(btc_liq: &super::btc_liquidation::BTCLiquidationState) -> String {
+    if btc_liq.squeeze_up_probability > btc_liq.squeeze_down_probability * 1.10
+        && btc_liq.squeeze_up_probability >= 0.35
+    {
+        "upward_squeeze".to_string()
+    } else if btc_liq.squeeze_down_probability > btc_liq.squeeze_up_probability * 1.10
+        && btc_liq.squeeze_down_probability >= 0.35
+    {
+        "downward_squeeze".to_string()
+    } else {
+        "neutral".to_string()
     }
 }
 

@@ -888,11 +888,12 @@ impl BinanceAltContractService {
         merge_event_state(&mut state, &mut signal);
         state.seen_signal_ids.insert(signal.id.clone());
         state.signals.push_back(signal.clone());
-        while state.signals.len() > MAX_SIGNALS {
-            if let Some(old) = state.signals.pop_front() {
-                state.seen_signal_ids.remove(&old.id);
-            }
-        }
+        prune_non_protected_signal_limit(&mut state.signals, MAX_SIGNALS);
+        state.seen_signal_ids = state
+            .signals
+            .iter()
+            .map(|signal| signal.id.clone())
+            .collect();
         drop(state);
         self.persist_signal(&signal);
         true
@@ -1204,16 +1205,10 @@ impl BinanceAltContractService {
         let events_before = state.events.len();
         let oi_symbols_before = state.oi_snapshots.len();
 
-        while state
+        state
             .signals
-            .front()
-            .is_some_and(|signal| expired(signal.ts, now, signal_retention_ms))
-        {
-            state.signals.pop_front();
-        }
-        while state.signals.len() > MAX_SIGNALS {
-            state.signals.pop_front();
-        }
+            .retain(|signal| signal_survives_retention(signal, now, signal_retention_ms));
+        prune_non_protected_signal_limit(&mut state.signals, MAX_SIGNALS);
         state.seen_signal_ids = state
             .signals
             .iter()
@@ -1328,8 +1323,17 @@ fn load_persisted_signals(
         .lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<AltContractSignal>(line).ok())
-        .filter(|signal| !expired(signal.ts, now, retention_ms))
-        .take(limit)
+        .scan(0usize, |retained_non_protected, signal| {
+            if is_protected_signal(&signal) {
+                return Some(Some(signal));
+            }
+            if expired(signal.ts, now, retention_ms) || *retained_non_protected >= limit {
+                return Some(None);
+            }
+            *retained_non_protected += 1;
+            Some(Some(signal))
+        })
+        .flatten()
         .collect::<Vec<_>>();
     signals.reverse();
     let seen_signal_ids = signals.iter().map(|signal| signal.id.clone()).collect();
@@ -1343,6 +1347,31 @@ fn retention_days_to_ms(days: u64) -> i64 {
     i64::try_from(days.max(1))
         .unwrap_or(i64::MAX / 86_400_000)
         .saturating_mul(86_400_000)
+}
+
+fn is_protected_signal(signal: &AltContractSignal) -> bool {
+    signal.severity == AltContractSeverity::S
+}
+
+fn signal_survives_retention(signal: &AltContractSignal, now: i64, retention_ms: i64) -> bool {
+    is_protected_signal(signal) || !expired(signal.ts, now, retention_ms)
+}
+
+fn prune_non_protected_signal_limit(signals: &mut VecDeque<AltContractSignal>, limit: usize) {
+    while signals
+        .iter()
+        .filter(|signal| !is_protected_signal(signal))
+        .count()
+        > limit
+    {
+        let Some(index) = signals
+            .iter()
+            .position(|signal| !is_protected_signal(signal))
+        else {
+            break;
+        };
+        signals.remove(index);
+    }
 }
 
 fn expired(ts: i64, now: i64, retention_ms: i64) -> bool {

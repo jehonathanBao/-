@@ -16,6 +16,13 @@ fn btc_dashboard_builds_read_only_snapshot_from_btc_flow() {
     assert!(!dashboard.liquidation_heatmap.is_empty());
     assert!(dashboard.market_stress.cascade_risk > 0.0);
     assert!(dashboard.market_stress.gamma_pressure > 0.0);
+    assert_eq!(dashboard.force_field.symbol, "BTC");
+    assert_eq!(dashboard.force_field.ts, 1_700_000);
+    assert!(dashboard.force_field.total_stress > 0.0);
+    assert!(dashboard.force_field.liquidity_field > 0.0);
+    assert!(dashboard.force_field.squeeze_probability > 0.0);
+    assert!(dashboard.force_field.cascade_probability > 0.0);
+    assert_ne!(dashboard.force_field.predicted_regime, "");
     assert!(dashboard.squeeze.up_probability > 0.0);
     assert!(dashboard.squeeze.down_probability > 0.0);
     assert!(dashboard.sources.liquidation.contains("proxy"));
@@ -50,6 +57,8 @@ fn btc_dashboard_ignores_non_btc_flow() {
     assert_eq!(dashboard.data_status, "non_btc_flow_ignored");
     assert!(!dashboard.live);
     assert!(dashboard.liquidation_heatmap.is_empty());
+    assert_eq!(dashboard.force_field.symbol, "BTC");
+    assert_eq!(dashboard.force_field.total_stress, 0.0);
 }
 
 fn flow_state(symbol: &str, buy_btc: f64, sell_btc: f64) -> FlowState {
