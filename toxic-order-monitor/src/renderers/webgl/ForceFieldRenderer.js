@@ -81,16 +81,19 @@ void main() {
       break;
     }
     vec4 cell = u_heatCells[i];
-    vec2 center = cell.xy;
+    float phase = cell.x;
+    float priceY = cell.y;
     float strength = clamp(cell.z, 0.0, 1.0);
     float side = cell.w;
-    float aspect = u_resolution.x / max(u_resolution.y, 1.0);
-    vec2 delta = vec2((fieldUv.x - center.x) * aspect, fieldUv.y - center.y);
-    float radius = mix(0.055, 0.175, strength) * mix(0.75, 1.35, u_intensity);
-    float blob = exp(-dot(delta, delta) / max(radius * radius, 0.0001));
-    float directionalTint = side > 0.0 ? 1.04 : 0.92;
-    heat += blob * strength * directionalTint;
-    voidField += (1.0 - smoothstep(0.0, radius * 1.55, length(delta))) * (1.0 - strength) * 0.16;
+    float bandWidth = mix(0.006, 0.026, strength) * mix(0.82, 1.28, u_intensity);
+    float distanceToPrice = abs(fieldUv.y - priceY);
+    float priceStrip = exp(-(distanceToPrice * distanceToPrice) / max(bandWidth * bandWidth, 0.00001));
+    float timeTexture = 0.68
+      + 0.20 * sin(fieldUv.x * 34.0 + phase * 6.283 + u_time * (0.42 + strength))
+      + 0.12 * noise(vec2(fieldUv.x * 18.0 + phase * 4.0, priceY * 19.0 + u_time * 0.06));
+    float directionalTint = side > 0.0 ? 1.06 : 0.96;
+    heat += priceStrip * strength * timeTexture * directionalTint;
+    voidField += smoothstep(bandWidth * 2.8, bandWidth * 0.75, distanceToPrice) * (1.0 - strength) * 0.12;
   }
 
   for (int i = 0; i < MAX_GAMMA_BANDS; i++) {
@@ -114,11 +117,14 @@ void main() {
     vec4 point = u_cascadePoints[i];
     vec2 center = point.xy;
     float strength = clamp(point.z, 0.0, 1.0);
-    float radius = 0.026 + point.w * 0.090 + sin(u_time * 1.8 + float(i)) * 0.006;
-    float d = distance(fieldUv, center);
-    float ring = smoothstep(0.014, 0.0, abs(d - radius));
-    float vector = smoothstep(0.05, 0.0, abs(fieldUv.x - center.x)) * smoothstep(0.22, 0.0, abs(fieldUv.y - center.y));
-    cascade += (ring + vector * 0.18) * strength;
+    float vectorWidth = 0.010 + point.w * 0.018;
+    float vectorLength = 0.18 + point.w * 0.32;
+    float diagonal = (fieldUv.y - center.y) - (fieldUv.x - center.x) * 0.22;
+    float spine = exp(-(diagonal * diagonal) / max(vectorWidth * vectorWidth, 0.00001));
+    float reach = smoothstep(vectorLength, 0.0, abs(fieldUv.x - center.x));
+    float arrowHead = smoothstep(0.040, 0.0, abs(fieldUv.x - center.x - vectorLength * 0.42))
+      * smoothstep(0.055, 0.0, abs(diagonal));
+    cascade += (spine * reach + arrowHead * 0.50) * strength;
   }
 
   heat += u_liquidityField * (0.14 + wave * 0.18) + u_liquidationField * 0.18;

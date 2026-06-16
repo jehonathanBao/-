@@ -153,6 +153,9 @@ function ForceFieldView({ data, model, overlayMode, heatIntensity }) {
         />
 
         <InstabilityGlow value={instability} />
+        <GammaWallOverlay bands={showGamma ? model.gammaBands : []} />
+        <LiquidationDensityOverlay bands={showHeat ? model.heatBands : []} />
+        <CascadeVectorOverlay points={showCascade ? model.cascadePoints : []} />
         <ForceVectorOverlay model={model} forceField={forceField} />
 
         <div className="absolute bottom-4 left-4 z-20 grid gap-2 text-xs text-slate-400 sm:grid-cols-3">
@@ -257,8 +260,8 @@ function InstabilityGlow({ value }) {
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 z-[2]"
       style={{
-        background: `radial-gradient(circle at 52% 48%, rgba(251, 113, 133, ${0.08 + intensity * 0.16}), transparent ${34 + intensity * 20}%), radial-gradient(circle at 22% 72%, rgba(34, 211, 238, ${0.06 + intensity * 0.10}), transparent 34%)`,
-        boxShadow: `inset 0 0 ${40 + intensity * 120}px rgba(251, 113, 133, ${0.05 + intensity * 0.14})`,
+        background: `linear-gradient(180deg, rgba(251, 113, 133, ${0.04 + intensity * 0.11}), transparent 24%, rgba(34, 211, 238, ${0.03 + intensity * 0.08}) 50%, transparent 74%, rgba(251, 191, 36, ${0.03 + intensity * 0.08})), linear-gradient(90deg, transparent, rgba(34, 211, 238, ${0.02 + intensity * 0.05}) 50%, transparent)`,
+        boxShadow: `inset 0 0 0 1px rgba(148, 163, 184, ${0.04 + intensity * 0.08})`,
       }}
     />
   );
@@ -295,6 +298,98 @@ function ForceVectorOverlay({ model, forceField }) {
   );
 }
 
+function GammaWallOverlay({ bands }) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[8]">
+      {bands.map((band) => (
+        <div
+          className={[
+            "absolute left-0 right-[74px] border-y",
+            band.role === "support"
+              ? "border-cyan-300/35 bg-cyan-300/10"
+              : "border-fuchsia-300/35 bg-fuchsia-300/10",
+          ].join(" ")}
+          key={band.key}
+          style={{
+            height: `${Math.max(6, band.height)}px`,
+            top: `${band.y}%`,
+            transform: "translateY(-50%)",
+          }}
+        >
+          <span
+            className={[
+              "absolute right-3 top-1/2 -translate-y-1/2 rounded border bg-slate-950/75 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em]",
+              band.role === "support" ? "border-cyan-300/30 text-cyan-100" : "border-fuchsia-300/30 text-fuchsia-100",
+            ].join(" ")}
+          >
+            {band.role === "support" ? "GEX SUPPORT" : "GEX RESIST"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LiquidationDensityOverlay({ bands }) {
+  return (
+    <div className="pointer-events-none absolute inset-y-0 left-0 z-[7] w-8 border-r border-slate-700/60 bg-slate-950/30">
+      {bands.map((band) => (
+        <div
+          className={["absolute left-1 right-1 rounded-full", band.side === "above" ? "bg-orange-300" : band.side === "below" ? "bg-red-300" : "bg-cyan-300"].join(" ")}
+          key={band.key}
+          style={{
+            height: `${Math.max(3, band.height * 0.5)}px`,
+            opacity: 0.22 + clampNumber(band.intensity) * 0.68,
+            top: `${band.y}%`,
+            transform: "translateY(-50%)",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function CascadeVectorOverlay({ points }) {
+  if (!points.length) return null;
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x * 10} ${point.y * 5.2}`)
+    .join(" ");
+
+  return (
+    <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full" preserveAspectRatio="none" viewBox="0 0 1000 520">
+      <defs>
+        <marker id="btcCascadeArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#fbbf24" opacity="0.78" />
+        </marker>
+      </defs>
+      <path
+        d={path}
+        fill="none"
+        markerEnd="url(#btcCascadeArrow)"
+        stroke="#fbbf24"
+        strokeDasharray="8 10"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeOpacity="0.55"
+        strokeWidth="2.5"
+      />
+      {points.map((point) => (
+        <line
+          key={point.key}
+          opacity={0.26 + clampNumber(point.intensity) * 0.54}
+          stroke="#fbbf24"
+          strokeLinecap="round"
+          strokeWidth={1.8 + clampNumber(point.intensity) * 3.2}
+          x1={point.x * 10 - 14}
+          x2={point.x * 10 + 14}
+          y1={point.y * 5.2}
+          y2={point.y * 5.2}
+        />
+      ))}
+    </svg>
+  );
+}
+
 function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fieldState, intensity }) {
   const ctx = canvas?.getContext?.("2d");
   if (!canvas || !ctx) return;
@@ -321,18 +416,15 @@ function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fiel
   ctx.fillRect(0, 0, rect.width, rect.height);
 
   heatCells.forEach((cell) => {
-    const x = rect.width * (cell.x / 100);
     const y = rect.height * (cell.y / 100);
-    const radius = (54 + cell.intensity * 118) * heatScale;
-    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
     const hot = cell.side === "above" ? "251, 146, 60" : "248, 113, 113";
-    gradient.addColorStop(0, `rgba(${hot}, ${0.54 * cell.intensity * heatScale})`);
-    gradient.addColorStop(0.42, `rgba(${hot}, ${0.22 * cell.intensity * heatScale})`);
-    gradient.addColorStop(1, "rgba(15, 23, 42, 0)");
+    const height = (8 + cell.intensity * 28) * heatScale;
+    const gradient = ctx.createLinearGradient(0, y, rect.width, y);
+    gradient.addColorStop(0, `rgba(${hot}, ${0.10 * cell.intensity * heatScale})`);
+    gradient.addColorStop(0.45, `rgba(${hot}, ${0.42 * cell.intensity * heatScale})`);
+    gradient.addColorStop(1, `rgba(${hot}, ${0.16 * cell.intensity * heatScale})`);
     ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillRect(0, y - height / 2, rect.width, height);
   });
 
   gammaBands.forEach((band) => {
@@ -353,11 +445,11 @@ function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, fiel
     ctx.strokeStyle = `rgba(251, 191, 36, ${0.34 + point.intensity * 0.46})`;
     ctx.lineWidth = 1.4 + point.intensity * 2.2;
     ctx.beginPath();
-    ctx.arc(x, y, size, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x - size * 1.4, y);
-    ctx.lineTo(x + size * 1.4, y);
+    ctx.moveTo(x - size * 1.2, y);
+    ctx.lineTo(x + size * 1.2, y - size * 0.22);
+    ctx.lineTo(x + size * 0.74, y - size * 0.54);
+    ctx.moveTo(x + size * 1.2, y - size * 0.22);
+    ctx.lineTo(x + size * 0.70, y + size * 0.16);
     ctx.stroke();
   });
 }
@@ -657,17 +749,17 @@ function buildHeatCells(heatmap, gammaWalls, data, priceToY, current) {
   const heat = (heatmap || []).flatMap((item, index) => {
     const baseY = priceToY(Number(item.priceUsd) || current);
     const intensity = clampNumber(item.riskScore);
-    return [18, 38, 58, 78].map((xOffset, cellIndex) => ({
-      key: `liq-${index}-${cellIndex}`,
-      x: xOffset + ((index + cellIndex) % 3) * 3,
-      y: baseY + Math.sin((index + cellIndex) * 1.7) * 2.5,
+    return [0.08, 0.32, 0.56, 0.80].map((phase, cellIndex) => ({
+      key: `liq-strip-${index}-${cellIndex}`,
+      x: phase * 100,
+      y: baseY,
       intensity,
       side: item.side,
     }));
   });
   const gamma = (gammaWalls || []).map((wall, index) => ({
     key: `gamma-cell-${index}`,
-    x: 62 + index * 5,
+    x: (0.18 + index * 0.11) * 100,
     y: priceToY(Number(wall.strikeUsd) || current),
     intensity: Math.min(1, Math.abs(Number(wall.gammaExposure || 0)) / 6),
     side: wall.role === "support" ? "below" : "above",
@@ -686,30 +778,6 @@ function buildHeatCells(heatmap, gammaWalls, data, priceToY, current) {
     : [];
 
   return [...heat, ...gamma, ...squeezeCells].filter((cell) => cell.intensity > 0.01);
-}
-
-function buildCandles(current, min, max, timeframe) {
-  const count = timeframe === "1m" ? 30 : timeframe === "15m" ? 40 : 34;
-  const volatility = timeframe === "15m" ? 0.006 : timeframe === "1m" ? 0.0025 : 0.004;
-  const priceToY = (price) => 500 - ((price - min) / (max - min || 1)) * 460;
-  let previous = current * (1 - volatility * 0.7);
-  return Array.from({ length: count }, (_, index) => {
-    const drift = Math.sin(index / 3.2) * current * volatility;
-    const openPrice = previous;
-    const closePrice = current + drift + Math.cos(index / 4.4) * current * volatility * 0.35;
-    const highPrice = Math.max(openPrice, closePrice) + current * volatility * (0.35 + (index % 3) * 0.08);
-    const lowPrice = Math.min(openPrice, closePrice) - current * volatility * (0.32 + (index % 4) * 0.06);
-    previous = closePrice;
-    return {
-      key: `candle-${index}`,
-      x: 42 + index * (900 / Math.max(1, count - 1)),
-      open: priceToY(openPrice),
-      close: priceToY(closePrice),
-      high: priceToY(highPrice),
-      low: priceToY(lowPrice),
-      up: closePrice >= openPrice,
-    };
-  });
 }
 
 function buildForceVectors(forceField, timeframe) {
@@ -791,12 +859,6 @@ function regimeLabel(value) {
     unknown: "未知",
   };
   return labels[String(value || "").replaceAll("_", "").toLowerCase()] || value || "未知";
-}
-
-function squeezeDirectionLabel(value) {
-  if (value === "up") return "向上";
-  if (value === "down") return "向下";
-  return "中性";
 }
 
 function forceBiasLabel(value) {
