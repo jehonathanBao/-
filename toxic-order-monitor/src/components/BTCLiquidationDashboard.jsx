@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchBtcLiquidationDashboard } from "../api/btcLiquidation.js";
+import { createForceFieldRenderer } from "../renderers/webgl/ForceFieldRenderer.js";
 
 const TIMEFRAMES = ["1m", "5m", "15m"];
 const OVERLAY_MODES = [
@@ -141,61 +142,12 @@ function TradingChart({ data, model, overlayMode, heatIntensity }) {
       </div>
 
       <div className="absolute inset-x-0 bottom-0 top-[58px]">
-        {showHeat
-          ? model.heatBands.map((band) => (
-              <div
-                className="btc-heat-wave absolute left-0 right-[74px] rounded-full"
-                key={`heat-${band.key}`}
-                style={{
-                  top: `${band.y}%`,
-                  height: `${Math.max(18, band.height)}px`,
-                  opacity: Math.min(0.88, band.intensity * (heatIntensity / 100)),
-                  background:
-                    band.side === "above"
-                      ? "linear-gradient(90deg, rgba(248,113,113,0.04), rgba(251,146,60,0.55), rgba(248,113,113,0.08))"
-                      : "linear-gradient(90deg, rgba(14,165,233,0.04), rgba(248,113,113,0.62), rgba(14,165,233,0.04))",
-                  boxShadow: `0 0 ${24 + band.intensity * 42}px rgba(248,113,113,${0.18 + band.intensity * 0.35})`,
-                  animationDelay: `${band.delay}s`,
-                }}
-              />
-            ))
-          : null}
-
-        {showGamma
-          ? model.gammaBands.map((band) => (
-              <div
-                className="btc-gamma-wall absolute left-8 right-[82px]"
-                key={`gamma-${band.key}`}
-                style={{
-                  top: `${band.y}%`,
-                  height: `${Math.max(6, band.height)}px`,
-                  opacity: 0.35 + band.intensity * 0.55,
-                  background:
-                    band.role === "support"
-                      ? "linear-gradient(90deg, transparent, rgba(168,85,247,0.65), rgba(34,211,238,0.35), transparent)"
-                      : "linear-gradient(90deg, transparent, rgba(217,70,239,0.70), rgba(248,113,113,0.35), transparent)",
-                  animationDelay: `${band.delay}s`,
-                }}
-              />
-            ))
-          : null}
-
-        {showCascade
-          ? model.cascadePoints.map((point) => (
-              <div
-                className="btc-cascade-ripple absolute"
-                key={`cascade-${point.key}`}
-                style={{
-                  left: `${point.x}%`,
-                  top: `${point.y}%`,
-                  width: `${point.size}px`,
-                  height: `${point.size}px`,
-                  opacity: 0.35 + point.intensity * 0.55,
-                  animationDelay: `${point.delay}s`,
-                }}
-              />
-            ))
-          : null}
+        <HeatFieldCanvas
+          cascadePoints={showCascade ? model.cascadePoints : []}
+          gammaBands={showGamma ? model.gammaBands : []}
+          heatCells={showHeat ? model.heatCells : []}
+          intensity={heatIntensity}
+        />
 
         <svg className="absolute inset-0 z-10 h-full w-full" preserveAspectRatio="none" viewBox="0 0 1000 520">
           <defs>
@@ -205,14 +157,14 @@ function TradingChart({ data, model, overlayMode, heatIntensity }) {
               <stop offset="100%" stopColor="#fb7185" stopOpacity="0.55" />
             </linearGradient>
           </defs>
-          <path d={model.areaPath} fill="url(#btcForceLine)" opacity="0.05" />
-          <path d={model.linePath} fill="none" stroke="url(#btcForceLine)" strokeLinecap="round" strokeWidth="2.4" />
+          <path d={model.areaPath} fill="url(#btcForceLine)" opacity="0.035" />
+          <path d={model.linePath} fill="none" stroke="url(#btcForceLine)" strokeLinecap="round" strokeWidth="1.8" />
           {model.candles.map((candle) => (
             <g key={candle.key}>
               <line
                 stroke={candle.up ? "#34d399" : "#fb7185"}
-                strokeOpacity="0.75"
-                strokeWidth="1.2"
+                strokeOpacity="0.34"
+                strokeWidth="1"
                 x1={candle.x}
                 x2={candle.x}
                 y1={candle.high}
@@ -220,7 +172,7 @@ function TradingChart({ data, model, overlayMode, heatIntensity }) {
               />
               <rect
                 fill={candle.up ? "#34d399" : "#fb7185"}
-                fillOpacity="0.9"
+                fillOpacity="0.38"
                 height={Math.max(3, Math.abs(candle.close - candle.open))}
                 rx="1.2"
                 width="9"
@@ -271,10 +223,167 @@ function RightMetricsPanel({ data }) {
         <Info label="Regime" value={regimeLabel(stress.regime)} />
         <Info label="Net Liq Bias" value={formatSigned(squeeze.netLiquidationBias)} />
       </div>
+      <ForceFieldRadar stress={stress} squeeze={squeeze} />
       <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/10 p-3 text-xs leading-5 text-cyan-100">
         Heat layer 是当前 flow proxy，可用于看结构压力，不代表交易建议。
       </div>
     </aside>
+  );
+}
+
+function HeatFieldCanvas({ heatCells, gammaBands, cascadePoints, intensity }) {
+  const canvasRef = useRef(null);
+  const rendererRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    rendererRef.current = createForceFieldRenderer(canvas);
+    let animationFrame = 0;
+    const startedAt = performance.now();
+
+    const draw = (now) => {
+      const renderer = rendererRef.current;
+      if (renderer) {
+        renderer.render({
+          cascadePoints,
+          gammaBands,
+          heatCells,
+          intensity: Number(intensity || 78) / 100,
+          time: (now - startedAt) / 1000,
+        });
+      } else {
+        drawCanvasFallback(canvas, { cascadePoints, gammaBands, heatCells, intensity });
+      }
+      animationFrame = window.requestAnimationFrame(draw);
+    };
+
+    animationFrame = window.requestAnimationFrame(draw);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      rendererRef.current?.dispose?.();
+      rendererRef.current = null;
+    };
+  }, [cascadePoints, gammaBands, heatCells, intensity]);
+
+  return (
+    <canvas
+      aria-hidden="true"
+      className="absolute inset-0 z-[1] h-full w-full"
+      data-renderer="webgl-market-force-field"
+      ref={canvasRef}
+    />
+  );
+}
+
+function drawCanvasFallback(canvas, { heatCells, gammaBands, cascadePoints, intensity }) {
+  const ctx = canvas?.getContext?.("2d");
+  if (!canvas || !ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const heatScale = Math.max(0.2, Number(intensity || 78) / 100);
+  const background = ctx.createLinearGradient(0, 0, rect.width, rect.height);
+  background.addColorStop(0, "rgba(8, 47, 73, 0.24)");
+  background.addColorStop(0.52, "rgba(15, 23, 42, 0.08)");
+  background.addColorStop(1, "rgba(76, 29, 149, 0.18)");
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, rect.width, rect.height);
+
+  heatCells.forEach((cell) => {
+    const x = rect.width * (cell.x / 100);
+    const y = rect.height * (cell.y / 100);
+    const radius = (54 + cell.intensity * 118) * heatScale;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    const hot = cell.side === "above" ? "251, 146, 60" : "248, 113, 113";
+    gradient.addColorStop(0, `rgba(${hot}, ${0.54 * cell.intensity * heatScale})`);
+    gradient.addColorStop(0.42, `rgba(${hot}, ${0.22 * cell.intensity * heatScale})`);
+    gradient.addColorStop(1, "rgba(15, 23, 42, 0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  gammaBands.forEach((band) => {
+    const y = rect.height * (band.y / 100);
+    const gradient = ctx.createLinearGradient(0, y, rect.width, y);
+    const color = band.role === "support" ? "34, 211, 238" : "217, 70, 239";
+    gradient.addColorStop(0, "rgba(15, 23, 42, 0)");
+    gradient.addColorStop(0.5, `rgba(${color}, ${0.28 + band.intensity * 0.42})`);
+    gradient.addColorStop(1, "rgba(15, 23, 42, 0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, y - 10 - band.intensity * 11, rect.width, 20 + band.intensity * 22);
+  });
+
+  cascadePoints.forEach((point) => {
+    const x = rect.width * (point.x / 100);
+    const y = rect.height * (point.y / 100);
+    const size = point.size * 0.72;
+    ctx.strokeStyle = `rgba(251, 191, 36, ${0.34 + point.intensity * 0.46})`;
+    ctx.lineWidth = 1.4 + point.intensity * 2.2;
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - size * 1.4, y);
+    ctx.lineTo(x + size * 1.4, y);
+    ctx.stroke();
+  });
+}
+
+function ForceFieldRadar({ stress, squeeze }) {
+  const axes = [
+    { label: "LIQ", value: stress.liquidationField || squeeze.longLiquidationPressure || 0, angle: -90 },
+    { label: "GEX", value: stress.gammaPressure || stress.gammaField || 0, angle: 0 },
+    { label: "SQZ", value: Math.max(squeeze.upProbability || 0, squeeze.downProbability || 0), angle: 90 },
+    { label: "CAS", value: stress.cascadeRisk || stress.cascadeField || 0, angle: 180 },
+  ];
+  const points = axes
+    .map((axis) => {
+      const radius = 16 + clampNumber(axis.value) * 52;
+      const rad = (axis.angle * Math.PI) / 180;
+      return `${70 + Math.cos(rad) * radius},${70 + Math.sin(rad) * radius}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-700/70 bg-slate-950/65 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Force Field Radar</p>
+        <span className="font-mono text-xs text-slate-500">read-only</span>
+      </div>
+      <svg className="mt-3 h-40 w-full" viewBox="0 0 140 140">
+        <circle cx="70" cy="70" fill="none" r="24" stroke="rgba(148,163,184,0.18)" />
+        <circle cx="70" cy="70" fill="none" r="46" stroke="rgba(148,163,184,0.14)" />
+        <circle cx="70" cy="70" fill="none" r="68" stroke="rgba(148,163,184,0.10)" />
+        {axes.map((axis) => {
+          const rad = (axis.angle * Math.PI) / 180;
+          const x = 70 + Math.cos(rad) * 66;
+          const y = 70 + Math.sin(rad) * 66;
+          return (
+            <g key={axis.label}>
+              <line stroke="rgba(148,163,184,0.18)" x1="70" x2={x} y1="70" y2={y} />
+              <text fill="#94a3b8" fontSize="9" fontWeight="700" textAnchor="middle" x={x} y={y + 3}>
+                {axis.label}
+              </text>
+            </g>
+          );
+        })}
+        <polygon fill="rgba(34,211,238,0.20)" points={points} stroke="rgba(34,211,238,0.85)" strokeWidth="2" />
+        <circle cx="70" cy="70" fill="#22d3ee" r="3" />
+      </svg>
+    </div>
   );
 }
 
@@ -509,6 +618,7 @@ function buildChartModel(data, heatmap, gammaWalls, timeframe) {
       side: item.side,
       delay: index * 0.16,
     })),
+    heatCells: buildHeatCells(heatmap, gammaWalls, data, priceToY, current),
     gammaBands: gammaWalls.map((item, index) => ({
       key: `${item.normalizedStrike}-${index}`,
       y: priceToY(Number(item.strikeUsd) || current),
@@ -526,6 +636,41 @@ function buildChartModel(data, heatmap, gammaWalls, timeframe) {
       delay: index * 0.28,
     })),
   };
+}
+
+function buildHeatCells(heatmap, gammaWalls, data, priceToY, current) {
+  const heat = (heatmap || []).flatMap((item, index) => {
+    const baseY = priceToY(Number(item.priceUsd) || current);
+    const intensity = clampNumber(item.riskScore);
+    return [18, 38, 58, 78].map((xOffset, cellIndex) => ({
+      key: `liq-${index}-${cellIndex}`,
+      x: xOffset + ((index + cellIndex) % 3) * 3,
+      y: baseY + Math.sin((index + cellIndex) * 1.7) * 2.5,
+      intensity,
+      side: item.side,
+    }));
+  });
+  const gamma = (gammaWalls || []).map((wall, index) => ({
+    key: `gamma-cell-${index}`,
+    x: 62 + index * 5,
+    y: priceToY(Number(wall.strikeUsd) || current),
+    intensity: Math.min(1, Math.abs(Number(wall.gammaExposure || 0)) / 6),
+    side: wall.role === "support" ? "below" : "above",
+  }));
+  const squeeze = data?.squeeze || {};
+  const dominant = squeeze.dominantDirection === "down" ? "below" : "above";
+  const squeezeIntensity = Math.max(clampNumber(squeeze.upProbability), clampNumber(squeeze.downProbability));
+  const squeezeCells = squeezeIntensity > 0
+    ? Array.from({ length: 5 }, (_, index) => ({
+        key: `squeeze-${index}`,
+        x: 24 + index * 13,
+        y: dominant === "above" ? 28 + index * 1.6 : 76 - index * 1.6,
+        intensity: squeezeIntensity,
+        side: dominant,
+      }))
+    : [];
+
+  return [...heat, ...gamma, ...squeezeCells].filter((cell) => cell.intensity > 0.01);
 }
 
 function buildCandles(current, min, max, timeframe) {
@@ -563,6 +708,12 @@ function topByAbs(items, key, limit) {
 function formatPct(value) {
   const number = Number(value || 0);
   return `${Math.round(number * 100)}%`;
+}
+
+function clampNumber(value, min = 0, max = 1) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
 }
 
 function formatUsd(value) {

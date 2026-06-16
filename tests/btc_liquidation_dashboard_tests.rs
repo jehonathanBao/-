@@ -14,7 +14,22 @@ fn btc_dashboard_builds_read_only_snapshot_from_btc_flow() {
     assert!(dashboard.live);
     assert_eq!(dashboard.current_price_usd, Some(62_000.0));
     assert!(!dashboard.liquidation_heatmap.is_empty());
+    assert!(dashboard.market_stress.cascade_risk > 0.0);
+    assert!(dashboard.market_stress.gamma_pressure > 0.0);
+    assert!(dashboard.squeeze.up_probability > 0.0);
+    assert!(dashboard.squeeze.down_probability > 0.0);
     assert!(dashboard.sources.liquidation.contains("proxy"));
+}
+
+#[test]
+fn btc_dashboard_accepts_exchange_btc_symbols() {
+    let dashboard =
+        build_btc_liquidation_dashboard(&flow_state("BTCUSDT", 650.0, 350.0), 1_700_000);
+
+    assert_eq!(dashboard.symbol, "BTC");
+    assert!(dashboard.live);
+    assert_ne!(dashboard.data_status, "non_btc_flow_ignored");
+    assert_eq!(dashboard.current_price_usd, Some(62_000.0));
 }
 
 #[test]
