@@ -33,6 +33,17 @@ fn btc_dashboard_accepts_exchange_btc_symbols() {
 }
 
 #[test]
+fn btc_dashboard_accepts_perp_alias_symbols() {
+    let dashboard =
+        build_btc_liquidation_dashboard(&flow_state("BTC-PERP", 650.0, 350.0), 1_700_000);
+
+    assert_eq!(dashboard.symbol, "BTC");
+    assert!(dashboard.live);
+    assert_ne!(dashboard.data_status, "non_btc_flow_ignored");
+    assert_eq!(dashboard.current_price_usd, Some(62_000.0));
+}
+
+#[test]
 fn btc_dashboard_ignores_non_btc_flow() {
     let dashboard = build_btc_liquidation_dashboard(&flow_state("ETH", 900.0, 100.0), 1_700_000);
 

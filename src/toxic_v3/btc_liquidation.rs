@@ -88,7 +88,18 @@ pub fn is_btc_symbol(symbol: &str) -> bool {
         .to_ascii_uppercase();
     matches!(
         normalized.as_str(),
-        "BTC" | "BTCUSDT" | "BTCUSD" | "BTCUSDC" | "XBT" | "XBTUSD" | "XBTUSDT"
+        "BTC"
+            | "BTCPERP"
+            | "BTCSWAP"
+            | "BTCFUTURES"
+            | "BTCUSDT"
+            | "BTCUSD"
+            | "BTCUSDC"
+            | "BTCF0USTF0"
+            | "XBT"
+            | "XBTPERP"
+            | "XBTUSDT"
+            | "XBTUSD"
     )
 }
 
