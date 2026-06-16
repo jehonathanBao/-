@@ -252,6 +252,13 @@ export default function ContractWhaleMonitor() {
         已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；详情里可查看当前价格、信号价格和偏离比例。
       </p>
 
+      <RawSignalDebugSection
+        enabled={summary.enabled}
+        items={state.items}
+        loading={state.loading}
+        onOpenSignal={setSelectedSignalId}
+      />
+
       <WhaleTrajectoryDashboard
         enabled={summary.enabled}
         loading={state.loading}
@@ -260,13 +267,6 @@ export default function ContractWhaleMonitor() {
         selectedWhaleId={selectedWhaleId}
         symbol={filters.symbol}
         whales={whaleEntities}
-      />
-
-      <RawSignalDebugSection
-        enabled={summary.enabled}
-        items={state.items}
-        loading={state.loading}
-        onOpenSignal={setSelectedSignalId}
       />
 
       <MainForceEventsSection events={state.events} symbol={filters.symbol} />
@@ -298,9 +298,9 @@ function WhaleTrajectoryDashboard({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="console-label text-cyan-300">Whale Behavior Timeline</p>
-          <h4 className="mt-1 text-base font-bold text-white">主力行为轨迹</h4>
+          <h4 className="mt-1 text-base font-bold text-white">主力行为轨迹（辅助）</h4>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-            按同一 symbol、方向、价格区间和时间连续性把碎片信号合并成 whale entity，优先看主力意图轨迹，原始信号仅作为折叠调试证据。
+            按同一 symbol、方向、价格区间和时间连续性把碎片信号合并成 whale entity，用于复盘连续主力意图；上方逐条合约信号表保留每一次检测结果。
           </p>
         </div>
         <div className="grid grid-cols-3 gap-2 text-xs text-slate-300">
@@ -515,11 +515,19 @@ function CurvePanel({ label, points, tone }) {
 
 function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
   return (
-    <details className="mt-4 rounded-xl border border-slate-800 bg-slate-950/30">
-      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-slate-200 outline-none transition hover:text-cyan-100 focus-visible:ring-2 focus-visible:ring-cyan-500/35">
-        <span>Raw Signals (debug)</span>
-        <span className="text-xs font-normal text-slate-500">{items.length} rows · 默认折叠</span>
-      </summary>
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
+      <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="console-label text-cyan-300">Contract Signal Feed</p>
+          <h4 className="mt-1 text-base font-bold text-white">逐条合约信号</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            每一次 CWM 检测到的合约信号都会在这里展示；下方主力行为轨迹只是辅助聚合，不会替代原始信号列表。
+          </p>
+        </div>
+        <span className="rounded-full border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100">
+          {items.length} rows
+        </span>
+      </div>
       <div className="overflow-x-auto border-t border-slate-800">
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
@@ -529,7 +537,7 @@ function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
           <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} />
         )}
       </div>
-    </details>
+    </section>
   );
 }
 
