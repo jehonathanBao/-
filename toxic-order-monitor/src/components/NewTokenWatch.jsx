@@ -14,6 +14,7 @@ const timeframeOptions = [
   { value: "5m", label: "5m 行为窗口" },
   { value: "15m", label: "15m 结构窗口" },
   { value: "1h", label: "1h 周期窗口" },
+  { value: "4h", label: "4h 周期窗口" },
 ];
 
 const phaseLabels = {

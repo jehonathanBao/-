@@ -744,7 +744,7 @@ fn build_capital_structure(
 }
 
 fn build_behavior_windows(ticks: &[ContractTick]) -> Vec<BehaviorWindowMetrics> {
-    [60_u64, 300, 900, 3600]
+    [60_u64, 300, 900, 3600, 14_400]
         .into_iter()
         .map(|window_sec| build_behavior_window(ticks, window_sec))
         .collect()

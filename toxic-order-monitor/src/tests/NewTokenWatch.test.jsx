@@ -365,6 +365,7 @@ describe("NewTokenWatch", () => {
   });
 
   it("renders active token behavior signals", async () => {
+    const user = userEvent.setup();
     render(<NewTokenWatch />);
 
     expect(await screen.findByText("智能资金仓位重建引擎")).toBeInTheDocument();
@@ -383,6 +384,13 @@ describe("NewTokenWatch", () => {
     expect(fetchNewTokenReconstruction).toHaveBeenCalledWith("ABCUSDT", "15m");
     expect(fetchNewTokenChart).toHaveBeenCalledWith("ABCUSDT", "15m");
     expect(screen.getByText("1/10")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("行为窗口"), "4h");
+
+    await waitFor(() => {
+      expect(fetchNewTokenReconstruction).toHaveBeenCalledWith("ABCUSDT", "4h");
+      expect(fetchNewTokenChart).toHaveBeenCalledWith("ABCUSDT", "4h");
+    });
   });
 
   it("adds and stops token watches", async () => {

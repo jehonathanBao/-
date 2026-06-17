@@ -214,7 +214,7 @@ fn build_chart_response(item: &TokenWatchItem, timeframe: &str) -> SmartMoneyCha
 
 fn normalize_timeframe(timeframe: &str) -> String {
     match timeframe {
-        "1m" | "5m" | "15m" | "1h" => timeframe.to_string(),
+        "1m" | "5m" | "15m" | "1h" | "4h" => timeframe.to_string(),
         _ => "15m".to_string(),
     }
 }

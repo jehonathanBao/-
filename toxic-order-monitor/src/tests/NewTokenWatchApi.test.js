@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import axios from "axios";
 import {
   addNewTokenWatch,
+  fetchNewTokenChart,
+  fetchNewTokenReconstruction,
   fetchNewTokenWatchList,
   normalizeNewTokenWatchItem,
   removeNewTokenWatch,
@@ -181,6 +183,40 @@ describe("newTokenWatch API", () => {
     axios.post.mockResolvedValueOnce({ data: { ok: true, items: [], item: { symbol: "ABCUSDT" } } });
     await removeNewTokenWatch("ABCUSDT");
     expect(axios.post).toHaveBeenCalledWith("/api/new-token-watch/remove", { symbol: "ABCUSDT" });
+  });
+
+  it("passes the selected 4h behavior window to reconstruction and chart routes", async () => {
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          symbol: "ABCUSDT",
+          timeframe: "4h",
+          currentPhase: "accumulation",
+          readOnly: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          symbol: "ABCUSDT",
+          timeframe: "4h",
+          points: [],
+          phaseSegments: [],
+          markers: [],
+          readOnly: true,
+        },
+      });
+
+    const reconstruction = await fetchNewTokenReconstruction("ABCUSDT", "4h");
+    const chart = await fetchNewTokenChart("ABCUSDT", "4h");
+
+    expect(axios.get).toHaveBeenNthCalledWith(1, "/api/new-token-watch/reconstruction", {
+      params: { symbol: "ABCUSDT", tf: "4h" },
+    });
+    expect(axios.get).toHaveBeenNthCalledWith(2, "/api/new-token-watch/chart", {
+      params: { symbol: "ABCUSDT", tf: "4h" },
+    });
+    expect(reconstruction.timeframe).toBe("4h");
+    expect(chart.timeframe).toBe("4h");
   });
 
   it("normalizes missing signal fields safely", () => {

@@ -39,10 +39,16 @@ fn manager_add_remove_and_capacity_limit() {
     assert!(!reconstruction.phase_timeline.is_empty());
     assert!(!reconstruction.cost_distribution.is_empty());
     assert!(!reconstruction.smart_levels.is_empty());
+    let reconstruction_4h = manager
+        .get_reconstruction("ABCUSDT", "4h")
+        .expect("4h reconstruction response");
+    assert_eq!(reconstruction_4h.timeframe, "4h");
     let chart = manager.get_chart("abc", "bad_tf").expect("chart response");
     assert_eq!(chart.timeframe, "15m");
     assert!(chart.read_only);
     assert!(!chart.points.is_empty());
+    let chart_4h = manager.get_chart("abc", "4h").expect("4h chart response");
+    assert_eq!(chart_4h.timeframe, "4h");
 
     for idx in 0..(MAX_ACTIVE_TOKENS - 1) {
         manager
@@ -94,7 +100,12 @@ fn engine_detects_accumulation_distribution_and_building() {
         accumulation.len()
     );
     assert!(signal.position_reconstruction.confidence > 0.35);
-    assert_eq!(signal.capital_structure.behavior_windows.len(), 4);
+    assert_eq!(signal.capital_structure.behavior_windows.len(), 5);
+    assert!(signal
+        .capital_structure
+        .behavior_windows
+        .iter()
+        .any(|window| window.window_sec == 14_400));
     assert!(signal.capital_structure.phase_confidence > 0.45);
     assert!(
         signal.capital_structure.cost_basis.lower
