@@ -112,6 +112,61 @@ fn manager_add_remove_and_capacity_limit() {
     );
     assert_eq!(market_reconstruction.price_fallback_reason, None);
     assert_eq!(market_reconstruction.change_24h_pct, Some(1.2));
+    assert!(
+        ((market_reconstruction.analysis_price - 123.45) / 123.45).abs() < 0.05,
+        "analysis price must stay anchored to the market price, got {}",
+        market_reconstruction.analysis_price
+    );
+    assert!(market_reconstruction.cost_basis_low > 100.0);
+    assert!(market_reconstruction.cost_basis_high < 130.0);
+    let small_market_reconstruction = manager
+        .get_reconstruction_with_market(
+            "ABCUSDT",
+            "15m",
+            Some(MarketPriceSnapshot {
+                price: 0.7215,
+                source: PriceSource::MarketPerp,
+                updated_at_ms: 2,
+                change_24h_pct: Some(-0.4),
+                volume_24h_usd: Some(1_500_000.0),
+                high_24h: Some(0.75),
+                low_24h: Some(0.69),
+                stale: false,
+                fallback_reason: None,
+            }),
+        )
+        .expect("small-token market-backed reconstruction response");
+    assert_eq!(small_market_reconstruction.market_price, 0.7215);
+    assert!(
+        small_market_reconstruction.analysis_price < 1.0,
+        "small-token analysis price must not fall back to the hash-derived mock price"
+    );
+    assert!(small_market_reconstruction.cost_basis_low < 1.0);
+    assert!(small_market_reconstruction.cost_basis_high < 1.0);
+    let small_market_chart = manager
+        .get_chart_with_market(
+            "ABCUSDT",
+            "15m",
+            Some(MarketPriceSnapshot {
+                price: 0.7215,
+                source: PriceSource::MarketPerp,
+                updated_at_ms: 3,
+                change_24h_pct: None,
+                volume_24h_usd: None,
+                high_24h: None,
+                low_24h: None,
+                stale: false,
+                fallback_reason: None,
+            }),
+        )
+        .expect("small-token market-backed chart response");
+    assert!(
+        small_market_chart
+            .points
+            .iter()
+            .all(|point| point.price > 0.0 && point.price < 1.0),
+        "small-token chart points must be market-anchored"
+    );
     let chart = manager.get_chart("abc", "bad_tf").expect("chart response");
     assert_eq!(chart.timeframe, "15m");
     assert_eq!(chart.market_price_source, PriceSource::Reconstructed);

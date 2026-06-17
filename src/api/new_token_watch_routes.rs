@@ -67,15 +67,21 @@ pub async fn new_token_watch_add_route(
     Json(request): Json<NewTokenWatchRequest>,
 ) -> impl IntoResponse {
     match global_new_token_watch_manager().add_token(&request.symbol) {
-        Ok(item) => Json(NewTokenWatchMutationResponse {
-            ok: true,
-            item: Some(item),
-            items: global_new_token_watch_manager().list_active_tokens().items,
-            error: None,
-            max_active_tokens: MAX_ACTIVE_TOKENS,
-            read_only: true,
-        })
-        .into_response(),
+        Ok(item) => {
+            let market_price = fetch_market_price_snapshot(&item.symbol).await;
+            let anchored_item = global_new_token_watch_manager()
+                .refresh_token_with_market(&item.symbol, market_price)
+                .unwrap_or(item);
+            Json(NewTokenWatchMutationResponse {
+                ok: true,
+                item: Some(anchored_item),
+                items: global_new_token_watch_manager().list_active_tokens().items,
+                error: None,
+                max_active_tokens: MAX_ACTIVE_TOKENS,
+                read_only: true,
+            })
+            .into_response()
+        }
         Err(error) => error_response(error),
     }
 }

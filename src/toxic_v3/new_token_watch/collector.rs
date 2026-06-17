@@ -4,9 +4,19 @@ pub struct ContractFlowCollector;
 
 impl ContractFlowCollector {
     pub fn deterministic_probe_ticks(symbol: &str, now: u64) -> Vec<ContractTick> {
+        Self::deterministic_probe_ticks_with_price(symbol, now, None)
+    }
+
+    pub fn deterministic_probe_ticks_with_price(
+        symbol: &str,
+        now: u64,
+        market_price: Option<f64>,
+    ) -> Vec<ContractTick> {
         let hash = symbol_hash(symbol);
         let regime = ((hash + now / 15_000) % 4) as u8;
-        let base_price = 0.5 + (hash % 20_000) as f64 / 100.0;
+        let base_price = market_price
+            .filter(|price| price.is_finite() && *price > 0.0)
+            .unwrap_or_else(|| deterministic_base_price(hash));
         (0..12)
             .map(|idx| {
                 let step = idx as f64;
@@ -35,6 +45,10 @@ impl ContractFlowCollector {
             })
             .collect()
     }
+}
+
+fn deterministic_base_price(hash: u64) -> f64 {
+    0.5 + (hash % 20_000) as f64 / 100.0
 }
 
 fn symbol_hash(symbol: &str) -> u64 {

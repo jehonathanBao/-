@@ -305,6 +305,7 @@ export default function NewTokenWatch() {
                   busy={busySymbol === item.symbol}
                   item={item}
                   key={item.symbol}
+                  reconstruction={item.symbol === reconstruction?.symbol ? reconstruction : null}
                   onRemove={() => handleRemove(item)}
                   onSelect={() => setSelectedSymbol(item.symbol)}
                 />
@@ -1207,9 +1208,17 @@ function ProgressRow({ label, value, detail }) {
   );
 }
 
-function WatchListItem({ item, active, busy, onSelect, onRemove }) {
+function WatchListItem({ item, active, busy, onSelect, onRemove, reconstruction }) {
   const capital = item.lastSignal?.capitalStructure || {};
-  const phase = capital.phase || "neutral";
+  const phase = reconstruction?.currentPhase || capital.phase || "neutral";
+  const costBasis = reconstruction
+    ? {
+        lower: reconstruction.costBasisLow,
+        upper: reconstruction.costBasisHigh,
+        vwapAnchor: reconstruction.vwapAnchor,
+      }
+    : capital.costBasis;
+  const confidence = reconstruction?.confidence ?? capital.phaseConfidence;
   return (
     <div className={`rounded-xl border p-3 ${active ? "border-cyan-400/70 bg-cyan-400/10" : "border-slate-800 bg-slate-950/70"}`}>
       <button className="block w-full text-left" onClick={onSelect} type="button">
@@ -1220,7 +1229,7 @@ function WatchListItem({ item, active, busy, onSelect, onRemove }) {
           </span>
         </div>
         <p className="mt-2 text-xs text-slate-400">
-          成本 {costBasisRange(capital.costBasis)} · Conf {percent(capital.phaseConfidence)}
+          成本 {costBasisRange(costBasis)} · Conf {percent(confidence)}
         </p>
       </button>
       <button

@@ -68,13 +68,7 @@ impl TokenWatchManager {
     }
 
     pub fn list_active_tokens(&self) -> TokenWatchListResponse {
-        let now = now_ms();
-        let mut guard = self.items.write();
-        for item in guard.values_mut() {
-            let ticks = ContractFlowCollector::deterministic_probe_ticks(&item.symbol, now as u64);
-            item.last_signal = NewTokenFlowEngine::analyze_ticks(&item.symbol, &ticks);
-            item.stream_status = "read_only_probe".to_string();
-        }
+        let guard = self.items.read();
         let items = guard.values().cloned().collect::<Vec<_>>();
         TokenWatchListResponse {
             active_count: items.len(),
@@ -109,7 +103,7 @@ impl TokenWatchManager {
         timeframe: &str,
         market_price: Option<MarketPriceSnapshot>,
     ) -> Result<SmartMoneyReconstructionResponse, TokenWatchError> {
-        let item = self.refresh_item(raw_symbol)?;
+        let item = self.refresh_item_with_market(raw_symbol, market_price.as_ref())?;
         Ok(build_reconstruction_response(
             &item,
             timeframe,
@@ -131,18 +125,39 @@ impl TokenWatchManager {
         timeframe: &str,
         market_price: Option<MarketPriceSnapshot>,
     ) -> Result<SmartMoneyChartResponse, TokenWatchError> {
-        let item = self.refresh_item(raw_symbol)?;
+        let item = self.refresh_item_with_market(raw_symbol, market_price.as_ref())?;
         Ok(build_chart_response(&item, timeframe, market_price))
     }
 
-    fn refresh_item(&self, raw_symbol: &str) -> Result<TokenWatchItem, TokenWatchError> {
+    pub fn refresh_token_with_market(
+        &self,
+        raw_symbol: &str,
+        market_price: Option<MarketPriceSnapshot>,
+    ) -> Result<TokenWatchItem, TokenWatchError> {
+        self.refresh_item_with_market(raw_symbol, market_price.as_ref())
+    }
+
+    fn refresh_item_with_market(
+        &self,
+        raw_symbol: &str,
+        market_price: Option<&MarketPriceSnapshot>,
+    ) -> Result<TokenWatchItem, TokenWatchError> {
         let symbol = normalize_symbol(raw_symbol)?;
         let now = now_ms();
         let mut guard = self.items.write();
         let item = guard
             .get_mut(&symbol)
             .ok_or(TokenWatchError::TokenNotFound)?;
-        let ticks = ContractFlowCollector::deterministic_probe_ticks(&item.symbol, now as u64);
+        let anchor_price = market_price
+            .filter(|snapshot| {
+                snapshot.price.is_finite() && snapshot.price > 0.0 && !snapshot.stale
+            })
+            .map(|snapshot| snapshot.price);
+        let ticks = ContractFlowCollector::deterministic_probe_ticks_with_price(
+            &item.symbol,
+            now as u64,
+            anchor_price,
+        );
         item.last_signal = NewTokenFlowEngine::analyze_ticks(&item.symbol, &ticks);
         item.stream_status = "read_only_probe".to_string();
         Ok(item.clone())
