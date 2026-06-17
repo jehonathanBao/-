@@ -2,10 +2,10 @@ use super::types::{
     AdvisoryDirection, BehaviorWindowMetrics, CapitalPhase, CapitalStructureView, ContractTick,
     ContractTickSide, CostBasisEstimate, DistributionRisk, EstimatedPositionSize, ExpectedHoldTime,
     FlowActorRegime, ImpactResponse, LastAccumulationNode, LatentPositionPoint, LiquidityDepletion,
-    OfiWindowMetrics, PositionPathSegment, PositionSmoothing, PositionValidityGate,
+    OfiWindowMetrics, PositionPathSegment, PositionSmoothing, PositionValidityGate, RegimeState,
     SignalCompressionState, SmartMoneyDecomposition, SmartMoneyPositionReconstruction,
-    StabilityRegime, TimeHorizonInference, TokenFlowRegime, TokenFlowSignal, TradeSignalAdvisory,
-    TradingStabilityKernel,
+    StabilityRegime, StableSignals, TimeHorizonInference, TokenFlowRegime, TokenFlowSignal,
+    TradeSignalAdvisory, TradingStabilityKernel,
 };
 use crate::normalizers::trade::now_ms;
 
@@ -92,6 +92,7 @@ impl NewTokenFlowEngine {
             price_change,
             price_range,
             flow_persistence,
+            &ofi_windows,
             &impact_response,
             &liquidity_depletion,
             &actor_decomposition,
@@ -456,6 +457,7 @@ fn build_signal_compression(
     price_change: f64,
     price_range: f64,
     flow_persistence: f64,
+    ofi_windows: &[OfiWindowMetrics],
     impact: &ImpactResponse,
     depletion: &LiquidityDepletion,
     actor: &SmartMoneyDecomposition,
@@ -515,35 +517,50 @@ fn build_signal_compression(
         clamp01(depletion.replenishment_rate * 0.36 + impact.absorption_score * 0.24);
     let liquidity_stress_manipulation = clamp_signed(stress - stable_liquidity * 0.55);
 
+    let stable_signals = build_stable_signals(
+        smart_money_pressure,
+        momentum_flow_exhaustion,
+        liquidity_stress_manipulation,
+        ofi_windows,
+    );
+    let smp_stable = stable_signals.smp_stable;
+    let mfe_stable = stable_signals.mfe_stable;
+    let lsm_stable = stable_signals.lsm_stable;
+
     let mut tags = Vec::new();
-    if smart_money_pressure > 0.35 {
+    if smp_stable > 0.35 {
         tags.push("smart_money_accumulation_pressure".to_string());
-    } else if smart_money_pressure < -0.35 {
+    } else if smp_stable < -0.35 {
         tags.push("smart_money_distribution_pressure".to_string());
     } else {
         tags.push("smart_money_pressure_neutral".to_string());
     }
-    if momentum_flow_exhaustion > 0.35 {
+    if mfe_stable > 0.35 {
         tags.push("momentum_continuation".to_string());
-    } else if momentum_flow_exhaustion < -0.35 {
+    } else if mfe_stable < -0.35 {
         tags.push("momentum_exhaustion_or_divergence".to_string());
     }
-    if liquidity_stress_manipulation > 0.50 {
+    if lsm_stable > 0.50 {
         tags.push("liquidity_stress_high".to_string());
-    } else if liquidity_stress_manipulation < -0.20 {
+    } else if lsm_stable < -0.20 {
         tags.push("stable_liquidity_environment".to_string());
+    }
+    if stable_signals.stability_score >= 0.62 {
+        tags.push("temporal_stability_confirmed".to_string());
+    } else {
+        tags.push("temporal_stability_waiting".to_string());
     }
 
     let risk_score = clamp01(
-        liquidity_stress_manipulation.max(0.0) * 0.52
-            + (-momentum_flow_exhaustion).max(0.0) * 0.28
-            + (-smart_money_pressure).max(0.0) * momentum_flow_exhaustion.max(0.0) * 0.20,
+        lsm_stable.max(0.0) * 0.52
+            + (-mfe_stable).max(0.0) * 0.28
+            + (-smp_stable).max(0.0) * mfe_stable.max(0.0) * 0.20,
     );
     let (trade_permission, position_size_multiplier, reason) =
-        if liquidity_stress_manipulation > 0.70 && momentum_flow_exhaustion < -0.50 {
+        if lsm_stable > 0.70 && mfe_stable < -0.50 {
             tags.push("pvg_block_manipulation_risk_too_high".to_string());
             (false, 0.0, "manipulation_risk_too_high")
-        } else if smart_money_pressure < -0.25 && momentum_flow_exhaustion > 0.25 {
+        } else if smp_stable < -0.25 && mfe_stable > 0.25 {
             tags.push("pvg_block_distribution_against_momentum".to_string());
             (false, 0.0, "distribution_against_momentum")
         } else if risk_score >= 0.72 {
@@ -560,18 +577,28 @@ fn build_signal_compression(
         reason: reason.to_string(),
         advisory_only: true,
     };
-    let stability_kernel = build_trading_stability_kernel(
-        smart_money_pressure,
-        momentum_flow_exhaustion,
-        liquidity_stress_manipulation,
+    let regime_state = build_regime_state(
+        smp_stable,
+        mfe_stable,
+        lsm_stable,
         price_range,
+        &stable_signals,
+    );
+    let stability_kernel = build_trading_stability_kernel(
+        smp_stable,
+        mfe_stable,
+        lsm_stable,
+        price_range,
+        &regime_state,
         &position_validity_gate,
     );
 
     SignalCompressionState {
-        smart_money_pressure,
-        momentum_flow_exhaustion,
-        liquidity_stress_manipulation,
+        smart_money_pressure: smp_stable,
+        momentum_flow_exhaustion: mfe_stable,
+        liquidity_stress_manipulation: lsm_stable,
+        stable_signals,
+        regime_state,
         position_validity_gate,
         stability_kernel,
         explanation_tags: tags,
@@ -584,10 +611,12 @@ fn build_trading_stability_kernel(
     mfe: f64,
     lsm: f64,
     price_range: f64,
+    regime_state: &RegimeState,
     gate: &PositionValidityGate,
 ) -> TradingStabilityKernel {
-    let regime = classify_stability_regime(smp, mfe, lsm);
-    let regime_quality = regime_quality(regime, smp, mfe, lsm);
+    let regime = regime_state.current;
+    let regime_quality =
+        clamp01(regime_quality(regime, smp, mfe, lsm) * 0.55 + regime_state.stability * 0.45);
     let volatility_adjustment = clamp01(1.0 - price_range / 0.08);
     let drawdown_adjustment = 1.0;
     let confidence = clamp01(
@@ -665,6 +694,107 @@ fn build_trading_stability_kernel(
             reason: "confidence_x_regime_quality_x_volatility_x_pvg".to_string(),
         },
         read_only: true,
+    }
+}
+
+fn build_stable_signals(
+    smp: f64,
+    mfe: f64,
+    lsm: f64,
+    ofi_windows: &[OfiWindowMetrics],
+) -> StableSignals {
+    let alpha = 0.30;
+    let mut smp_ema = smp;
+    let mut mfe_ema = mfe;
+    let mut lsm_ema = lsm;
+    let mut previous_sign = 0_i8;
+    let mut flips = 0_u32;
+    let mut persistent = 0_u32;
+    let mut persistence_sum = 0.0;
+
+    for window in ofi_windows {
+        let direction = sign_bucket(window.decay_weighted_ofi);
+        if previous_sign != 0 && direction != 0 && direction != previous_sign {
+            flips += 1;
+        }
+        if direction != 0 {
+            previous_sign = direction;
+        }
+        if direction == sign_bucket(smp) && window.persistence >= 0.25 {
+            persistent += 1;
+        }
+        persistence_sum += window.persistence;
+
+        let smp_observed = clamp_signed(
+            window.normalized_ofi * (0.50 + window.persistence * 0.35)
+                + window.decay_weighted_ofi * 0.15,
+        );
+        let mfe_observed =
+            clamp_signed(window.decay_weighted_ofi * 0.65 + window.normalized_ofi * 0.35);
+        let lsm_observed =
+            clamp_signed((1.0 - window.persistence).max(0.0) * window.normalized_ofi.abs() * 0.65);
+
+        smp_ema = ema(smp_ema, smp_observed, alpha);
+        mfe_ema = ema(mfe_ema, mfe_observed, alpha);
+        lsm_ema = ema(lsm_ema, lsm_observed, alpha);
+    }
+
+    let total_windows = ofi_windows.len().max(1) as f64;
+    let avg_persistence = persistence_sum / total_windows;
+    let persistence_ratio = persistent as f64 / total_windows;
+    let flip_penalty = flips as f64 / total_windows;
+    let stability_score =
+        clamp01(avg_persistence * 0.45 + persistence_ratio * 0.40 + (1.0 - flip_penalty) * 0.15);
+    let stability_weight = 0.55 + stability_score * 0.45;
+
+    StableSignals {
+        smp_stable: clamp_signed(smp_ema * stability_weight),
+        mfe_stable: clamp_signed(mfe_ema * stability_weight),
+        lsm_stable: clamp_signed(lsm_ema * (0.70 + (1.0 - flip_penalty) * 0.30)),
+        stability_score,
+        persistence_windows: persistent,
+        flip_penalty,
+    }
+}
+
+fn build_regime_state(
+    smp: f64,
+    mfe: f64,
+    lsm: f64,
+    price_range: f64,
+    stable: &StableSignals,
+) -> RegimeState {
+    let raw = classify_stability_regime(smp, mfe, lsm, price_range);
+    let raw_quality = regime_quality(raw, smp, mfe, lsm);
+    let inertia = stable.stability_score;
+    let confidence = clamp01(raw_quality * 0.62 + inertia * 0.38);
+    let transition_risk = if stable.flip_penalty >= 0.50 || inertia < 0.35 {
+        "high"
+    } else if stable.flip_penalty >= 0.25 || inertia < 0.55 {
+        "medium"
+    } else {
+        "low"
+    };
+
+    RegimeState {
+        current: raw,
+        confidence,
+        stability: inertia,
+        transition_risk: transition_risk.to_string(),
+    }
+}
+
+fn ema(previous: f64, observed: f64, alpha: f64) -> f64 {
+    previous * (1.0 - alpha) + observed * alpha
+}
+
+fn sign_bucket(value: f64) -> i8 {
+    if value > 0.08 {
+        1
+    } else if value < -0.08 {
+        -1
+    } else {
+        0
     }
 }
 
@@ -843,6 +973,19 @@ fn estimate_cost_basis(
         })
         .collect::<Vec<_>>();
 
+    let mut density_peak = 0.0;
+    let mut best_density = -1.0_f64;
+    for window in windows {
+        let density = window.volume.max(0.0)
+            * (0.35 + window.absorption_score * 0.30)
+            * (0.35 + window.normalized_ofi.max(0.0) * 0.25)
+            * (1.0 - window.volatility_pct.min(0.08) / 0.08).max(0.05);
+        if density > best_density && window.vwap > 0.0 {
+            best_density = density;
+            density_peak = window.vwap;
+        }
+    }
+
     let (weighted_vwap, weighted_volume, avg_volatility) = if selected.is_empty() {
         let mut volume = 0.0;
         let mut price_volume = 0.0;
@@ -881,20 +1024,29 @@ fn estimate_cost_basis(
     } else {
         fallback_price
     };
+    let density_peak = if density_peak > 0.0 {
+        density_peak
+    } else {
+        anchor
+    };
     let mut min_price = f64::MAX;
     let mut max_price = 0.0_f64;
     for tick in ticks {
         min_price = min_price.min(tick.price);
         max_price = max_price.max(tick.price);
     }
-    let band_pct = avg_volatility.clamp(0.0015, 0.025);
+    let density_quality = (best_density / 500.0).clamp(0.0, 1.0);
+    let band_pct = (avg_volatility * (1.0 - density_quality * 0.35)).clamp(0.0012, 0.022);
     let lower = (anchor * (1.0 - band_pct)).min(min_price);
     let upper = (anchor * (1.0 + band_pct)).max(max_price);
     CostBasisEstimate {
         lower,
         upper,
         vwap_anchor: anchor,
-        confidence: clamp01(phase_confidence * 0.72 + (weighted_volume / 500.0).min(0.28)),
+        density_peak,
+        confidence: clamp01(
+            phase_confidence * 0.62 + (weighted_volume / 500.0).min(0.22) + density_quality * 0.16,
+        ),
     }
 }
 
@@ -1437,15 +1589,17 @@ fn segment_label(phase: CapitalPhase, idx: usize) -> &'static str {
     }
 }
 
-fn classify_stability_regime(smp: f64, mfe: f64, lsm: f64) -> StabilityRegime {
+fn classify_stability_regime(smp: f64, mfe: f64, lsm: f64, price_range: f64) -> StabilityRegime {
     if lsm > 0.70 && mfe < -0.35 {
         StabilityRegime::Manipulation
     } else if lsm > 0.50 {
         StabilityRegime::LiquidityStress
+    } else if mfe > 0.35 && price_range >= 0.015 {
+        StabilityRegime::Trend
+    } else if smp.abs() > 0.40 && lsm < 0.45 && smp.abs() >= mfe.abs() * 0.75 {
+        StabilityRegime::LiquidityExpansion
     } else if mfe > 0.35 {
         StabilityRegime::Trend
-    } else if smp.abs() > 0.40 && lsm < 0.45 {
-        StabilityRegime::LiquidityExpansion
     } else if smp.abs() < 0.25 && mfe.abs() < 0.25 {
         StabilityRegime::Chop
     } else {

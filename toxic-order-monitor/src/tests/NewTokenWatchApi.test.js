@@ -42,6 +42,20 @@ describe("newTokenWatch API", () => {
                 smartMoneyPressure: 0.62,
                 momentumFlowExhaustion: -0.12,
                 liquidityStressManipulation: 0.18,
+                stableSignals: {
+                  smpStable: 0.55,
+                  mfeStable: -0.08,
+                  lsmStable: 0.12,
+                  stabilityScore: 0.72,
+                  persistenceWindows: 3,
+                  flipPenalty: 0.1,
+                },
+                regimeState: {
+                  current: "liquidity_expansion",
+                  confidence: 0.74,
+                  stability: 0.72,
+                  transitionRisk: "low",
+                },
                 positionValidityGate: {
                   riskScore: 0.22,
                   tradePermission: true,
@@ -88,7 +102,7 @@ describe("newTokenWatch API", () => {
                     bidReplenishmentScore: 0.69,
                   },
                 ],
-                costBasis: { lower: 1.92, upper: 1.97, vwapAnchor: 1.94, confidence: 0.78 },
+                costBasis: { lower: 1.92, upper: 1.97, vwapAnchor: 1.94, densityPeak: 1.93, confidence: 0.78 },
                 estimatedPosition: { lowerUsd: 3200000, upperUsd: 5800000, confidence: 0.73 },
                 horizon: { minMinutes: 18, maxMinutes: 42, detectedMinutes: 24 },
                 distributionRisk: {
@@ -157,6 +171,10 @@ describe("newTokenWatch API", () => {
     expect(result.items[0].lastSignal.actorDecomposition.dominantActor).toBe("smart_money");
     expect(result.items[0].lastSignal.actorDecomposition.smartMoneyProbability).toBe(0.64);
     expect(result.items[0].lastSignal.signalCompression.smartMoneyPressure).toBe(0.62);
+    expect(result.items[0].lastSignal.signalCompression.stableSignals.smpStable).toBe(0.55);
+    expect(result.items[0].lastSignal.signalCompression.stableSignals.stabilityScore).toBe(0.72);
+    expect(result.items[0].lastSignal.signalCompression.regimeState.current).toBe("liquidity_expansion");
+    expect(result.items[0].lastSignal.signalCompression.regimeState.transitionRisk).toBe("low");
     expect(result.items[0].lastSignal.signalCompression.positionValidityGate.tradePermission).toBe(true);
     expect(result.items[0].lastSignal.signalCompression.positionValidityGate.advisoryOnly).toBe(true);
     expect(result.items[0].lastSignal.signalCompression.stabilityKernel.regime).toBe("liquidity_expansion");
@@ -166,6 +184,7 @@ describe("newTokenWatch API", () => {
     expect(result.items[0].lastSignal.capitalStructure.phaseConfidence).toBe(0.78);
     expect(result.items[0].lastSignal.capitalStructure.behaviorWindows[0].windowSec).toBe(300);
     expect(result.items[0].lastSignal.capitalStructure.costBasis.vwapAnchor).toBe(1.94);
+    expect(result.items[0].lastSignal.capitalStructure.costBasis.densityPeak).toBe(1.93);
     expect(result.items[0].lastSignal.capitalStructure.estimatedPosition.upperUsd).toBe(5800000);
     expect(result.items[0].lastSignal.capitalStructure.distributionRisk.level).toBe("low");
     expect(result.items[0].lastSignal.positionReconstruction.regimeLabel).toBe("accumulation_trajectory");
@@ -192,6 +211,142 @@ describe("newTokenWatch API", () => {
           symbol: "ABCUSDT",
           timeframe: "4h",
           currentPhase: "accumulation",
+          densityPeak: 1.93,
+          capitalTimeline: {
+            dominantPhase: "accumulation",
+            totalDurationSec: 420,
+            narrative: "dominant_accumulation_phase",
+            phases: [
+              {
+                phase: "accumulation",
+                label: "silent_accumulation",
+                startMs: 1,
+                endMs: 181000,
+                durationSec: 180,
+                netFlowUsd: 1200000,
+                transitionReason: "low volatility absorption",
+              },
+            ],
+          },
+          positionFlowCurve: {
+            latestPositionUsd: 76050,
+            accumulationSlopeUsdPerMin: 320000,
+            distributionSlopeUsdPerMin: 0,
+            points: [{ ts: 1, positionUsd: 36000, speedUsdPerMin: 120000 }],
+          },
+          liquidityReactionMap: {
+            impactEfficiency: 0.42,
+            absorptionRatio: 0.78,
+            liquidityResponse: "absorption_dominant",
+            vacuumZones: [{ lower: 1.88, upper: 1.9, intensity: 0.36, reason: "thin liquidity around current price" }],
+            evidence: ["impact_efficiency=0.42"],
+          },
+          marketDynamics: {
+            stateVector: {
+              smp: 0.55,
+              mfe: -0.08,
+              lsm: 0.12,
+              regime: "liquidity_expansion",
+              positionUsd: 76050,
+              costBasis: 1.94,
+              liquidity: 0.78,
+            },
+            stateVelocity: {
+              flowAcceleration: 0.24,
+              liquidityShiftRate: 0.36,
+              regimeTransitionSpeed: 0.14,
+              positionVelocityUsdPerMin: 320000,
+            },
+            transitionMatrix: [
+              {
+                from: "accumulation",
+                to: "markup",
+                probability: 0.62,
+                reason: "flow acceleration plus stable liquidity",
+              },
+            ],
+            marketEnergy: {
+              score: 0.31,
+              level: "medium",
+              flowStrength: 0.55,
+              liquidityAvailability: 0.78,
+              regimeStability: 0.72,
+            },
+            trajectorySummary: "accumulation_energy_expanding",
+            readOnly: true,
+          },
+          liquidityForce: {
+            liquidationZones: [
+              {
+                side: "long_liquidation",
+                lower: 1.83,
+                upper: 1.86,
+                intensity: 0.42,
+                leverageDensity: 0.5,
+                reason: "downside stop-loss and long liquidation proxy",
+              },
+              {
+                side: "short_liquidation",
+                lower: 2.02,
+                upper: 2.06,
+                intensity: 0.67,
+                leverageDensity: 0.58,
+                reason: "upside stop-loss and short liquidation proxy",
+              },
+            ],
+            stopLossCascade: {
+              stopHuntProbability: 0.52,
+              cascadeIntensity: 0.61,
+              sweepDirection: "long",
+              liquiditySweep: "upside_short_sweep",
+            },
+            forcedFlowAttribution: {
+              whalePct: 0.35,
+              retailPct: 0.22,
+              liquidationPct: 0.43,
+              dominantDriver: "liquidation_cascade",
+            },
+            priceImpactDecomposition: {
+              whaleImpact: 0.3,
+              liquidationCascade: 0.26,
+              stopLossSweep: 0.52,
+              passiveAbsorption: 0.78,
+            },
+            primaryDriver: "liquidation_cascade",
+            activeZone: "short_squeeze_zone",
+            readOnly: true,
+          },
+          tradingDecision: {
+            direction: "long",
+            entry: {
+              orderType: "limit",
+              zoneLow: 1.91,
+              zoneHigh: 1.95,
+              timing: "wait",
+              condition: "enter_near_cost_basis_when_smp_regime_liquidity_align",
+            },
+            exit: {
+              zoneLow: 1.97,
+              zoneHigh: 2.02,
+              condition: "exit_on_distribution_transition_or_mfe_exhaustion",
+              timing: "wait",
+            },
+            positionSize: {
+              pct: 34,
+              multiplier: 0.34,
+              reason: "confidence_x_regime_stability_x_liquidity_x_market_energy_x_pvg",
+            },
+            invalidation: {
+              active: false,
+              priceLevel: 1.88,
+              regimeCondition: "regime_flip_against_direction",
+              flowCondition: "smp_reversal_against_direction",
+              liquidityCondition: "liquidity_collapse_or_vacuum_expansion",
+            },
+            confidence: 0.68,
+            advisoryOnly: true,
+            readOnly: true,
+          },
           readOnly: true,
         },
       })
@@ -216,6 +371,25 @@ describe("newTokenWatch API", () => {
       params: { symbol: "ABCUSDT", tf: "4h" },
     });
     expect(reconstruction.timeframe).toBe("4h");
+    expect(reconstruction.densityPeak).toBe(1.93);
+    expect(reconstruction.capitalTimeline.phases[0].netFlowUsd).toBe(1200000);
+    expect(reconstruction.capitalTimeline.phases[0].transitionReason).toBe("low volatility absorption");
+    expect(reconstruction.positionFlowCurve.latestPositionUsd).toBe(76050);
+    expect(reconstruction.positionFlowCurve.points[0].speedUsdPerMin).toBe(120000);
+    expect(reconstruction.liquidityReactionMap.liquidityResponse).toBe("absorption_dominant");
+    expect(reconstruction.liquidityReactionMap.vacuumZones[0].intensity).toBe(0.36);
+    expect(reconstruction.marketDynamics.stateVector.regime).toBe("liquidity_expansion");
+    expect(reconstruction.marketDynamics.stateVelocity.positionVelocityUsdPerMin).toBe(320000);
+    expect(reconstruction.marketDynamics.transitionMatrix[0].to).toBe("markup");
+    expect(reconstruction.marketDynamics.marketEnergy.level).toBe("medium");
+    expect(reconstruction.liquidityForce.liquidationZones[0].side).toBe("long_liquidation");
+    expect(reconstruction.liquidityForce.stopLossCascade.sweepDirection).toBe("long");
+    expect(reconstruction.liquidityForce.forcedFlowAttribution.dominantDriver).toBe("liquidation_cascade");
+    expect(reconstruction.liquidityForce.priceImpactDecomposition.stopLossSweep).toBe(0.52);
+    expect(reconstruction.tradingDecision.direction).toBe("long");
+    expect(reconstruction.tradingDecision.entry.orderType).toBe("limit");
+    expect(reconstruction.tradingDecision.positionSize.pct).toBe(34);
+    expect(reconstruction.tradingDecision.invalidation.active).toBe(false);
     expect(chart.timeframe).toBe("4h");
   });
 
@@ -229,16 +403,48 @@ describe("newTokenWatch API", () => {
     expect(item.lastSignal.impactResponse.classification).toBe("unknown");
     expect(item.lastSignal.actorDecomposition.dominantActor).toBe("unknown");
     expect(item.lastSignal.signalCompression.smartMoneyPressure).toBe(0);
+    expect(item.lastSignal.signalCompression.stableSignals.stabilityScore).toBe(0);
+    expect(item.lastSignal.signalCompression.regimeState.current).toBe("neutral");
     expect(item.lastSignal.signalCompression.positionValidityGate.reason).toBe("no_signal");
     expect(item.lastSignal.signalCompression.stabilityKernel.regime).toBe("neutral");
     expect(item.lastSignal.signalCompression.stabilityKernel.tradeSignal.direction).toBe("no_trade");
     expect(item.lastSignal.capitalStructure.phase).toBe("neutral");
     expect(item.lastSignal.capitalStructure.behaviorWindows).toEqual([]);
     expect(item.lastSignal.capitalStructure.costBasis.vwapAnchor).toBe(0);
+    expect(item.lastSignal.capitalStructure.costBasis.densityPeak).toBe(0);
     expect(item.lastSignal.capitalStructure.distributionRisk.level).toBe("low");
     expect(item.lastSignal.positionReconstruction.accumulationPath).toEqual([]);
     expect(item.lastSignal.positionReconstruction.lastAccumulationNode).toBeNull();
     expect(item.lastSignal.positionReconstruction.regimeLabel).toBe("neutral");
     expect(item.readOnly).toBe(true);
+  });
+
+  it("normalizes institutional reconstruction layers with empty defaults", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        symbol: "XYZUSDT",
+        timeframe: "15m",
+        readOnly: true,
+      },
+    });
+
+    const reconstruction = await fetchNewTokenReconstruction("XYZUSDT", "15m");
+
+    expect(reconstruction.capitalTimeline.phases).toEqual([]);
+    expect(reconstruction.capitalTimeline.dominantPhase).toBe("neutral");
+    expect(reconstruction.positionFlowCurve.points).toEqual([]);
+    expect(reconstruction.positionFlowCurve.latestPositionUsd).toBe(0);
+    expect(reconstruction.liquidityReactionMap.liquidityResponse).toBe("unknown");
+    expect(reconstruction.liquidityReactionMap.vacuumZones).toEqual([]);
+    expect(reconstruction.marketDynamics.stateVector.regime).toBe("neutral");
+    expect(reconstruction.marketDynamics.transitionMatrix).toEqual([]);
+    expect(reconstruction.marketDynamics.marketEnergy.level).toBe("low");
+    expect(reconstruction.liquidityForce.liquidationZones).toEqual([]);
+    expect(reconstruction.liquidityForce.activeZone).toBe("neutral_zone");
+    expect(reconstruction.liquidityForce.stopLossCascade.sweepDirection).toBe("no_trade");
+    expect(reconstruction.tradingDecision.direction).toBe("no_trade");
+    expect(reconstruction.tradingDecision.entry.orderType).toBe("none");
+    expect(reconstruction.tradingDecision.positionSize.pct).toBe(0);
+    expect(reconstruction.tradingDecision.invalidation.active).toBe(true);
   });
 });

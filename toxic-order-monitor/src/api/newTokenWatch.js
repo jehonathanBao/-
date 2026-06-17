@@ -98,6 +98,7 @@ export function normalizeNewTokenReconstruction(payload = {}) {
     costBasisLow: Number(payload.costBasisLow || 0),
     costBasisHigh: Number(payload.costBasisHigh || 0),
     vwapAnchor: Number(payload.vwapAnchor || 0),
+    densityPeak: Number(payload.densityPeak || payload.vwapAnchor || 0),
     estimatedTotalPositionUsdtLow: Number(payload.estimatedTotalPositionUsdtLow || 0),
     estimatedTotalPositionUsdtHigh: Number(payload.estimatedTotalPositionUsdtHigh || 0),
     estimatedNetPositionUsdt: Number(payload.estimatedNetPositionUsdt || 0),
@@ -117,6 +118,15 @@ export function normalizeNewTokenReconstruction(payload = {}) {
     shortTermBehaviorProbabilities: normalizeBehaviorProbabilities(
       payload.shortTermBehaviorProbabilities
     ),
+    behaviorWindows: Array.isArray(payload.behaviorWindows)
+      ? payload.behaviorWindows.map(normalizeBehaviorWindow)
+      : [],
+    capitalTimeline: normalizeCapitalTimeline(payload.capitalTimeline),
+    positionFlowCurve: normalizePositionFlowCurve(payload.positionFlowCurve),
+    liquidityReactionMap: normalizeLiquidityReactionMap(payload.liquidityReactionMap),
+    marketDynamics: normalizeMarketDynamics(payload.marketDynamics),
+    liquidityForce: normalizeLiquidityForce(payload.liquidityForce),
+    tradingDecision: normalizeTradingDecision(payload.tradingDecision),
     phaseTimeline: Array.isArray(payload.phaseTimeline)
       ? payload.phaseTimeline.map(normalizePhaseTimelineSegment)
       : [],
@@ -154,6 +164,222 @@ function normalizeBehaviorProbabilities(probabilities = {}) {
     rangeConsolidation: Number(probabilities.rangeConsolidation || 0),
     reboundMarkup: Number(probabilities.reboundMarkup || 0),
     secondaryAccumulation: Number(probabilities.secondaryAccumulation || 0),
+  };
+}
+
+function normalizeCapitalTimeline(timeline = {}) {
+  return {
+    phases: Array.isArray(timeline.phases)
+      ? timeline.phases.map(normalizeCapitalTimelinePhase)
+      : [],
+    dominantPhase: timeline.dominantPhase || "neutral",
+    totalDurationSec: Number(timeline.totalDurationSec || 0),
+    narrative: timeline.narrative || "awaiting_capital_timeline",
+  };
+}
+
+function normalizeCapitalTimelinePhase(phase = {}) {
+  return {
+    phase: phase.phase || "neutral",
+    label: phase.label || phase.phase || "neutral",
+    startMs: Number(phase.startMs || 0),
+    endMs: Number(phase.endMs || 0),
+    durationSec: Number(phase.durationSec || 0),
+    netFlowUsd: Number(phase.netFlowUsd || 0),
+    transitionReason: phase.transitionReason || "mixed flow",
+  };
+}
+
+function normalizePositionFlowCurve(curve = {}) {
+  return {
+    points: Array.isArray(curve.points) ? curve.points.map(normalizePositionFlowPoint) : [],
+    accumulationSlopeUsdPerMin: Number(curve.accumulationSlopeUsdPerMin || 0),
+    distributionSlopeUsdPerMin: Number(curve.distributionSlopeUsdPerMin || 0),
+    latestPositionUsd: Number(curve.latestPositionUsd || 0),
+  };
+}
+
+function normalizePositionFlowPoint(point = {}) {
+  return {
+    ts: Number(point.ts || 0),
+    positionUsd: Number(point.positionUsd || 0),
+    speedUsdPerMin: Number(point.speedUsdPerMin || 0),
+  };
+}
+
+function normalizeLiquidityReactionMap(map = {}) {
+  return {
+    impactEfficiency: Number(map.impactEfficiency || 0),
+    absorptionRatio: Number(map.absorptionRatio || 0),
+    liquidityResponse: map.liquidityResponse || "unknown",
+    vacuumZones: Array.isArray(map.vacuumZones)
+      ? map.vacuumZones.map(normalizeLiquidityVacuumZone)
+      : [],
+    evidence: Array.isArray(map.evidence) ? map.evidence : [],
+  };
+}
+
+function normalizeLiquidityVacuumZone(zone = {}) {
+  return {
+    lower: Number(zone.lower || 0),
+    upper: Number(zone.upper || 0),
+    intensity: Number(zone.intensity || 0),
+    reason: zone.reason || "liquidity vacuum",
+  };
+}
+
+function normalizeMarketDynamics(dynamics = {}) {
+  return {
+    stateVector: normalizeMarketStateVector(dynamics.stateVector),
+    stateVelocity: normalizeMarketStateVelocity(dynamics.stateVelocity),
+    transitionMatrix: Array.isArray(dynamics.transitionMatrix)
+      ? dynamics.transitionMatrix.map(normalizeRegimeTransitionProbability)
+      : [],
+    marketEnergy: normalizeMarketEnergy(dynamics.marketEnergy),
+    trajectorySummary: dynamics.trajectorySummary || "awaiting_market_dynamics",
+    readOnly: dynamics.readOnly !== false,
+  };
+}
+
+function normalizeMarketStateVector(vector = {}) {
+  return {
+    smp: Number(vector.smp || 0),
+    mfe: Number(vector.mfe || 0),
+    lsm: Number(vector.lsm || 0),
+    regime: vector.regime || "neutral",
+    positionUsd: Number(vector.positionUsd || 0),
+    costBasis: Number(vector.costBasis || 0),
+    liquidity: Number(vector.liquidity || 0),
+  };
+}
+
+function normalizeMarketStateVelocity(velocity = {}) {
+  return {
+    flowAcceleration: Number(velocity.flowAcceleration || 0),
+    liquidityShiftRate: Number(velocity.liquidityShiftRate || 0),
+    regimeTransitionSpeed: Number(velocity.regimeTransitionSpeed || 0),
+    positionVelocityUsdPerMin: Number(velocity.positionVelocityUsdPerMin || 0),
+  };
+}
+
+function normalizeRegimeTransitionProbability(transition = {}) {
+  return {
+    from: transition.from || "neutral",
+    to: transition.to || "neutral",
+    probability: Number(transition.probability || 0),
+    reason: transition.reason || "mixed flow",
+  };
+}
+
+function normalizeMarketEnergy(energy = {}) {
+  return {
+    score: Number(energy.score || 0),
+    level: energy.level || "low",
+    flowStrength: Number(energy.flowStrength || 0),
+    liquidityAvailability: Number(energy.liquidityAvailability || 0),
+    regimeStability: Number(energy.regimeStability || 0),
+  };
+}
+
+function normalizeLiquidityForce(force = {}) {
+  return {
+    liquidationZones: Array.isArray(force.liquidationZones)
+      ? force.liquidationZones.map(normalizeLiquidationZone)
+      : [],
+    stopLossCascade: normalizeStopLossCascade(force.stopLossCascade),
+    forcedFlowAttribution: normalizeForcedFlowAttribution(force.forcedFlowAttribution),
+    priceImpactDecomposition: normalizePriceImpactDecomposition(force.priceImpactDecomposition),
+    primaryDriver: force.primaryDriver || "unknown",
+    activeZone: force.activeZone || "neutral_zone",
+    readOnly: force.readOnly !== false,
+  };
+}
+
+function normalizeLiquidationZone(zone = {}) {
+  return {
+    side: zone.side || "unknown",
+    lower: Number(zone.lower || 0),
+    upper: Number(zone.upper || 0),
+    intensity: Number(zone.intensity || 0),
+    leverageDensity: Number(zone.leverageDensity || 0),
+    reason: zone.reason || "liquidation proxy",
+  };
+}
+
+function normalizeStopLossCascade(cascade = {}) {
+  return {
+    stopHuntProbability: Number(cascade.stopHuntProbability || 0),
+    cascadeIntensity: Number(cascade.cascadeIntensity || 0),
+    sweepDirection: cascade.sweepDirection || "no_trade",
+    liquiditySweep: cascade.liquiditySweep || "none",
+  };
+}
+
+function normalizeForcedFlowAttribution(attribution = {}) {
+  return {
+    whalePct: Number(attribution.whalePct || 0),
+    retailPct: Number(attribution.retailPct || 0),
+    liquidationPct: Number(attribution.liquidationPct || 0),
+    dominantDriver: attribution.dominantDriver || "unknown",
+  };
+}
+
+function normalizePriceImpactDecomposition(decomposition = {}) {
+  return {
+    whaleImpact: Number(decomposition.whaleImpact || 0),
+    liquidationCascade: Number(decomposition.liquidationCascade || 0),
+    stopLossSweep: Number(decomposition.stopLossSweep || 0),
+    passiveAbsorption: Number(decomposition.passiveAbsorption || 0),
+  };
+}
+
+function normalizeTradingDecision(decision = {}) {
+  return {
+    direction: decision.direction || "no_trade",
+    entry: normalizeTradingDecisionEntry(decision.entry),
+    exit: normalizeTradingDecisionExit(decision.exit),
+    positionSize: normalizeTradingPositionSize(decision.positionSize),
+    invalidation: normalizeTradingInvalidation(decision.invalidation),
+    confidence: Number(decision.confidence || 0),
+    advisoryOnly: decision.advisoryOnly !== false,
+    readOnly: decision.readOnly !== false,
+  };
+}
+
+function normalizeTradingDecisionEntry(entry = {}) {
+  return {
+    orderType: entry.orderType || "none",
+    zoneLow: Number(entry.zoneLow || 0),
+    zoneHigh: Number(entry.zoneHigh || 0),
+    timing: entry.timing || "invalid",
+    condition: entry.condition || "no_entry",
+  };
+}
+
+function normalizeTradingDecisionExit(exit = {}) {
+  return {
+    zoneLow: Number(exit.zoneLow || 0),
+    zoneHigh: Number(exit.zoneHigh || 0),
+    condition: exit.condition || "no_exit",
+    timing: exit.timing || "invalid",
+  };
+}
+
+function normalizeTradingPositionSize(size = {}) {
+  return {
+    pct: Number(size.pct || 0),
+    multiplier: Number(size.multiplier || 0),
+    reason: size.reason || "no_trade",
+  };
+}
+
+function normalizeTradingInvalidation(invalidation = {}) {
+  return {
+    active: invalidation.active !== false,
+    priceLevel: Number(invalidation.priceLevel || 0),
+    regimeCondition: invalidation.regimeCondition || "no_regime_confirmation",
+    flowCondition: invalidation.flowCondition || "no_flow_confirmation",
+    liquidityCondition: invalidation.liquidityCondition || "no_liquidity_confirmation",
   };
 }
 
@@ -297,6 +523,7 @@ function normalizeCostBasis(cost = {}) {
     lower: Number(cost.lower || 0),
     upper: Number(cost.upper || 0),
     vwapAnchor: Number(cost.vwapAnchor || 0),
+    densityPeak: Number(cost.densityPeak || cost.vwapAnchor || 0),
     confidence: Number(cost.confidence || 0),
   };
 }
@@ -344,10 +571,32 @@ function normalizeSignalCompression(compression = {}) {
     smartMoneyPressure: Number(compression.smartMoneyPressure || 0),
     momentumFlowExhaustion: Number(compression.momentumFlowExhaustion || 0),
     liquidityStressManipulation: Number(compression.liquidityStressManipulation || 0),
+    stableSignals: normalizeStableSignals(compression.stableSignals),
+    regimeState: normalizeRegimeState(compression.regimeState),
     positionValidityGate: normalizePositionValidityGate(compression.positionValidityGate),
     stabilityKernel: normalizeStabilityKernel(compression.stabilityKernel),
     explanationTags: Array.isArray(compression.explanationTags) ? compression.explanationTags : [],
     readOnly: compression.readOnly !== false,
+  };
+}
+
+function normalizeStableSignals(stable = {}) {
+  return {
+    smpStable: Number(stable.smpStable || 0),
+    mfeStable: Number(stable.mfeStable || 0),
+    lsmStable: Number(stable.lsmStable || 0),
+    stabilityScore: Number(stable.stabilityScore || 0),
+    persistenceWindows: Number(stable.persistenceWindows || 0),
+    flipPenalty: Number(stable.flipPenalty || 0),
+  };
+}
+
+function normalizeRegimeState(regime = {}) {
+  return {
+    current: regime.current || "neutral",
+    confidence: Number(regime.confidence || 0),
+    stability: Number(regime.stability || 0),
+    transitionRisk: regime.transitionRisk || "low",
   };
 }
 

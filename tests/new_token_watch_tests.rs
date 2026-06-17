@@ -36,6 +36,41 @@ fn manager_add_remove_and_capacity_limit() {
     assert!(reconstruction.read_only);
     assert!(reconstruction.cost_basis_low <= reconstruction.vwap_anchor);
     assert!(reconstruction.vwap_anchor <= reconstruction.cost_basis_high);
+    assert!(!reconstruction.capital_timeline.phases.is_empty());
+    assert!(reconstruction.capital_timeline.total_duration_sec > 0);
+    assert!(!reconstruction.position_flow_curve.points.is_empty());
+    assert!(
+        reconstruction
+            .position_flow_curve
+            .accumulation_slope_usd_per_min
+            >= 0.0
+    );
+    assert!(reconstruction.liquidity_reaction_map.absorption_ratio >= 0.0);
+    assert!(reconstruction.market_dynamics.market_energy.score >= 0.0);
+    assert!(reconstruction.market_dynamics.market_energy.score <= 1.0);
+    assert!(!reconstruction.market_dynamics.transition_matrix.is_empty());
+    assert!(reconstruction.market_dynamics.state_vector.liquidity >= 0.0);
+    assert!(reconstruction.market_dynamics.read_only);
+    assert!(reconstruction.liquidity_force.read_only);
+    assert_eq!(reconstruction.liquidity_force.liquidation_zones.len(), 2);
+    assert!(
+        reconstruction
+            .liquidity_force
+            .forced_flow_attribution
+            .liquidation_pct
+            >= 0.0
+    );
+    assert!(
+        reconstruction
+            .liquidity_force
+            .stop_loss_cascade
+            .cascade_intensity
+            >= 0.0
+    );
+    assert!(reconstruction.trading_decision.read_only);
+    assert!(reconstruction.trading_decision.advisory_only);
+    assert!((0.0..=1.0).contains(&reconstruction.trading_decision.confidence));
+    assert!((0.0..=100.0).contains(&reconstruction.trading_decision.position_size.pct));
     assert!(!reconstruction.phase_timeline.is_empty());
     assert!(!reconstruction.cost_distribution.is_empty());
     assert!(!reconstruction.smart_levels.is_empty());
