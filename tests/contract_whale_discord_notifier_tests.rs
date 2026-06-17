@@ -75,9 +75,9 @@ fn cwm_discord_cooldown_blocks_same_direction_without_upgrade() {
     cooldown.record_sent(&signal, now);
     let mut repeated = signal.clone();
     repeated.id = "contract-whale:BTC:15:1700000060000:buy-repeat".to_string();
-    repeated.ts = now + 60_000;
+    repeated.ts = now + 10_000;
     let second =
-        evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, now + 60_000);
+        evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, now + 10_000);
 
     assert!(!second.allowed);
     assert_eq!(second.reason, "cooldown");
@@ -323,7 +323,7 @@ async fn cwm_discord_dry_run_and_cooldown_outcomes_have_clear_operator_copy() {
     cooldown.record_sent(&dry_run_signal, dry_run_signal.ts);
     let mut repeated = dry_run_signal.clone();
     repeated.id = "contract-whale:BTC:15:1700000020000:buy-repeat".to_string();
-    repeated.ts = dry_run_signal.ts + 30_000;
+    repeated.ts = dry_run_signal.ts + 10_000;
 
     let decision =
         evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, repeated.ts);

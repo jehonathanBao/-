@@ -24,7 +24,7 @@ use crate::{
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MAX_ATTEMPTS: usize = 2;
-const DEFAULT_COOLDOWN_SEC: i64 = 180;
+const DEFAULT_COOLDOWN_SEC: i64 = 30;
 
 static GLOBAL_COOLDOWN_STORE: OnceLock<ContractWhaleDiscordCooldownStore> = OnceLock::new();
 
