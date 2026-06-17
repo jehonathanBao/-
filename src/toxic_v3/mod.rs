@@ -18,6 +18,7 @@ pub mod hazard;
 pub mod intent;
 pub mod lhcs;
 pub mod mff;
+pub mod new_token_watch;
 pub mod pipeline;
 pub mod runtime;
 pub mod signal;
@@ -46,6 +47,11 @@ pub use lhcs::{
     PriceBin, PriceLevelTrigger, PriceZone,
 };
 pub use mff::{MarketForceField, MarketForceFieldEngine, MarketRegime};
+pub use new_token_watch::{
+    ContractFlowCollector, FlowActorRegime, NewTokenFlowEngine, NewTokenSignalAdapter,
+    SmartMoneyDecomposition, TokenFlowRegime, TokenFlowSignal, TokenWatchManager,
+    MAX_ACTIVE_TOKENS,
+};
 pub use pipeline::{InferenceBus, ProductionFlowPipeline, RecordingProductionFlowPipeline};
 pub use runtime::{inference_loop, ExecutionRouter, FlowInferenceEngine};
 pub use signal::{DecisionEngine, SignalAggregator, SignalEvent, SignalType};

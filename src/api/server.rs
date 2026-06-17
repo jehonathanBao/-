@@ -13,10 +13,10 @@ use crate::{
         manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
         manual_evidence_freshness_routes, manual_governance_index_routes,
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
-        orderbook_wall_interpretation_routes, orderbook_wall_lifecycle_routes,
-        parameter_patch_diff_routes, parameter_review_routes, routes, runtime_control_routes,
-        scan_log_routes, score_routes, security, spot_whale_routes, static_files,
-        structural_toxicity_routes, toxic_governance_ledger_routes,
+        new_token_watch_routes, orderbook_wall_interpretation_routes,
+        orderbook_wall_lifecycle_routes, parameter_patch_diff_routes, parameter_review_routes,
+        routes, runtime_control_routes, scan_log_routes, score_routes, security, spot_whale_routes,
+        static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
         toxic_governance_proposal_routes, toxic_governance_review_pack_routes,
         toxic_governance_signoff_pack_routes, toxic_markout_routes, toxic_quality_scorecard_routes,
         toxic_replay_routes, toxic_signal_alert_preview_routes, toxic_signal_detail_routes,
@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         .route("/usage-guide", get(static_files::spa))
         .route("/discord", get(static_files::spa))
         .route("/settings", get(static_files::spa))
+        .route("/new-token-watch", get(static_files::spa))
         .route("/web/app.js", get(static_files::app_js))
         .route("/web/styles.css", get(static_files::styles_css))
         .route("/api/status", get(routes::status))
@@ -130,6 +131,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/spot-whale/history",
             get(spot_whale_routes::spot_whale_history_route),
+        )
+        .route(
+            "/api/new-token-watch/list",
+            get(new_token_watch_routes::new_token_watch_list_route),
+        )
+        .route(
+            "/api/new-token-watch/add",
+            axum::routing::post(new_token_watch_routes::new_token_watch_add_route),
+        )
+        .route(
+            "/api/new-token-watch/remove",
+            axum::routing::post(new_token_watch_routes::new_token_watch_remove_route),
+        )
+        .route(
+            "/ws/new-token-flow",
+            get(new_token_watch_routes::new_token_watch_ws_route),
         )
         .route(
             "/api/runtime/start",

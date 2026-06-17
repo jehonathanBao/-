@@ -4,6 +4,7 @@ const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"] },
   { label: "BTC/ETH 合约监控", path: "/contract-whale" },
   { label: "BTC/ETH 现货监控", path: "/spot-monitor", aliases: ["/spot-whale"] },
+  { label: "新币合约监控", path: "/new-token-watch" },
   { label: "山寨合约异常", path: "/alt-contract-monitor" },
   { label: "异常信号", path: "/signals" },
   { label: "信号历史", path: "/history" },

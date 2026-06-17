@@ -6,6 +6,7 @@ import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
 import BinanceAltContractMonitor from "../components/BinanceAltContractMonitor.jsx";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
+import NewTokenWatch from "../components/NewTokenWatch.jsx";
 import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
 import RiskCharts from "../components/RiskCharts.jsx";
@@ -31,6 +32,7 @@ export default function Dashboard() {
   const isContractWhaleView = viewMode === "contract-whale";
   const isSpotWhaleView = viewMode === "spot-whale";
   const isAltContractView = viewMode === "alt-contract-monitor";
+  const isNewTokenWatchView = viewMode === "new-token-watch";
   const isUsageGuideView = viewMode === "usage-guide";
   const {
     rawInboxSignals,
@@ -56,7 +58,7 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView || isSpotWhaleView || isAltContractView || isUsageGuideView) {
+    if (isContractWhaleView || isSpotWhaleView || isAltContractView || isNewTokenWatchView || isUsageGuideView) {
       return;
     }
     fetchSignals().then((items) => {
@@ -68,7 +70,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isAltContractView, isContractWhaleView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
+  }, [isAltContractView, isContractWhaleView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -90,7 +92,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView && !isSpotWhaleView && !isAltContractView && !isUsageGuideView,
+    enabled: !isContractWhaleView && !isSpotWhaleView && !isAltContractView && !isNewTokenWatchView && !isUsageGuideView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -281,6 +283,8 @@ export default function Dashboard() {
           <SpotWhalePage />
         ) : isAltContractView ? (
           <AltContractPage />
+        ) : isNewTokenWatchView ? (
+          <NewTokenWatchPage />
         ) : isUsageGuideView ? (
           <UsageGuidePage />
         ) : (
@@ -460,6 +464,26 @@ function AltContractPage() {
   );
 }
 
+function NewTokenWatchPage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">New Token Contract Flow</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">新币合约监控</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            最多选择 10 个 USDT 合约 symbol，独立观察吸筹、建仓、出货和中性订单流候选。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          只读提醒 · 不下单 · 外部观测扩展
+        </div>
+      </div>
+      <NewTokenWatch />
+    </>
+  );
+}
+
 function UsageGuidePage() {
   return (
     <>
@@ -557,6 +581,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
   if (pathname === "/alt-contract-monitor") return "alt-contract-monitor";
+  if (pathname === "/new-token-watch") return "new-token-watch";
   if (pathname === "/spot-whale" || pathname === "/spot-monitor") return "spot-whale";
   if (pathname === "/usage-guide") return "usage-guide";
   if (pathname === "/signals") return "signals";

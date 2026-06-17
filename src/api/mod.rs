@@ -19,6 +19,7 @@ pub mod manual_governance_index_routes;
 pub mod manual_parameter_export_routes;
 pub mod manual_signoff_routes;
 pub mod manual_startup_routes;
+pub mod new_token_watch_routes;
 pub mod orderbook_wall_interpretation_routes;
 pub mod orderbook_wall_lifecycle_routes;
 pub mod parameter_patch_diff_routes;
