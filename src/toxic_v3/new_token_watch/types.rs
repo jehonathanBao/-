@@ -20,6 +20,16 @@ pub enum TokenFlowRegime {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CapitalPhase {
+    Accumulation,
+    Markup,
+    Distribution,
+    Breakdown,
+    Neutral,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FlowActorRegime {
     LiquidityProvider,
     MomentumChaser,
@@ -81,10 +91,296 @@ pub struct TokenFlowSignal {
     pub liquidity_depletion: LiquidityDepletion,
     pub actor_decomposition: SmartMoneyDecomposition,
     pub signal_compression: SignalCompressionState,
+    pub capital_structure: CapitalStructureView,
+    pub position_reconstruction: SmartMoneyPositionReconstruction,
     pub evidence: Vec<String>,
     pub read_only: bool,
     pub detector: String,
     pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapitalStructureView {
+    pub phase: CapitalPhase,
+    pub phase_label: String,
+    pub phase_confidence: f64,
+    pub behavior_windows: Vec<BehaviorWindowMetrics>,
+    pub cost_basis: CostBasisEstimate,
+    pub estimated_position: EstimatedPositionSize,
+    pub horizon: TimeHorizonInference,
+    pub distribution_risk: DistributionRisk,
+    pub evidence: Vec<String>,
+    pub read_only: bool,
+}
+
+impl Default for CapitalStructureView {
+    fn default() -> Self {
+        Self {
+            phase: CapitalPhase::Neutral,
+            phase_label: "neutral".to_string(),
+            phase_confidence: 0.0,
+            behavior_windows: vec![],
+            cost_basis: CostBasisEstimate::default(),
+            estimated_position: EstimatedPositionSize::default(),
+            horizon: TimeHorizonInference::default(),
+            distribution_risk: DistributionRisk::default(),
+            evidence: vec!["no_capital_structure_evidence".to_string()],
+            read_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorWindowMetrics {
+    pub window_sec: u64,
+    pub cumulative_delta: f64,
+    pub normalized_ofi: f64,
+    pub vwap: f64,
+    pub volume: f64,
+    pub price_drift_pct: f64,
+    pub volatility_pct: f64,
+    pub absorption_score: f64,
+    pub bid_replenishment_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostBasisEstimate {
+    pub lower: f64,
+    pub upper: f64,
+    pub vwap_anchor: f64,
+    pub confidence: f64,
+}
+
+impl Default for CostBasisEstimate {
+    fn default() -> Self {
+        Self {
+            lower: 0.0,
+            upper: 0.0,
+            vwap_anchor: 0.0,
+            confidence: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstimatedPositionSize {
+    pub lower_usd: f64,
+    pub upper_usd: f64,
+    pub confidence: f64,
+}
+
+impl Default for EstimatedPositionSize {
+    fn default() -> Self {
+        Self {
+            lower_usd: 0.0,
+            upper_usd: 0.0,
+            confidence: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeHorizonInference {
+    pub min_minutes: f64,
+    pub max_minutes: f64,
+    pub detected_minutes: f64,
+}
+
+impl Default for TimeHorizonInference {
+    fn default() -> Self {
+        Self {
+            min_minutes: 0.0,
+            max_minutes: 0.0,
+            detected_minutes: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DistributionRisk {
+    pub score: f64,
+    pub level: String,
+    pub reasons: Vec<String>,
+}
+
+impl Default for DistributionRisk {
+    fn default() -> Self {
+        Self {
+            score: 0.0,
+            level: "low".to_string(),
+            reasons: vec!["no_distribution_evidence".to_string()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartMoneyPositionReconstruction {
+    pub accumulation_path: Vec<PositionPathSegment>,
+    pub last_accumulation_node: Option<LastAccumulationNode>,
+    pub distribution_path: Vec<PositionPathSegment>,
+    pub latent_position: Vec<LatentPositionPoint>,
+    pub confidence: f64,
+    pub regime_label: String,
+    pub evidence: Vec<String>,
+    pub read_only: bool,
+}
+
+impl Default for SmartMoneyPositionReconstruction {
+    fn default() -> Self {
+        Self {
+            accumulation_path: vec![],
+            last_accumulation_node: None,
+            distribution_path: vec![],
+            latent_position: vec![],
+            confidence: 0.0,
+            regime_label: "neutral".to_string(),
+            evidence: vec!["no_reconstruction_evidence".to_string()],
+            read_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionPathSegment {
+    pub phase: CapitalPhase,
+    pub label: String,
+    pub start_price: f64,
+    pub end_price: f64,
+    pub volume: f64,
+    pub cumulative_delta: f64,
+    pub impact: f64,
+    pub duration_sec: u64,
+    pub confidence: f64,
+    pub characteristics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastAccumulationNode {
+    pub lower: f64,
+    pub upper: f64,
+    pub duration_sec: u64,
+    pub volatility_pct: f64,
+    pub absorption_efficiency: f64,
+    pub confidence: f64,
+    pub characteristics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatentPositionPoint {
+    pub timestamp: u64,
+    pub price: f64,
+    pub estimated_position: f64,
+    pub impact_adjusted_position: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorProbabilities {
+    pub continue_distribution: f64,
+    pub range_consolidation: f64,
+    pub rebound_markup: f64,
+    pub secondary_accumulation: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseTimelineSegment {
+    pub phase: CapitalPhase,
+    pub label: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub duration_sec: u64,
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostDistributionBand {
+    pub label: String,
+    pub lower: f64,
+    pub upper: f64,
+    pub pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartLevel {
+    pub label: String,
+    pub price: f64,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartMoneyReconstructionResponse {
+    pub symbol: String,
+    pub timeframe: String,
+    pub current_phase: CapitalPhase,
+    pub current_price: f64,
+    pub change_24h_pct: Option<f64>,
+    pub volume_24h_usd: Option<f64>,
+    pub high_24h: Option<f64>,
+    pub low_24h: Option<f64>,
+    pub market_cap_usd: Option<f64>,
+    pub cost_basis_low: f64,
+    pub cost_basis_high: f64,
+    pub vwap_anchor: f64,
+    pub estimated_total_position_usdt_low: f64,
+    pub estimated_total_position_usdt_high: f64,
+    pub estimated_net_position_usdt: f64,
+    pub floating_pnl_low_pct: f64,
+    pub floating_pnl_high_pct: f64,
+    pub accumulation_path: Vec<PositionPathSegment>,
+    pub last_accumulation_node: Option<LastAccumulationNode>,
+    pub distribution_path: Vec<PositionPathSegment>,
+    pub distribution_completion_pct: f64,
+    pub distribution_intensity_score: f64,
+    pub short_term_behavior_probabilities: BehaviorProbabilities,
+    pub phase_timeline: Vec<PhaseTimelineSegment>,
+    pub cost_distribution: Vec<CostDistributionBand>,
+    pub smart_levels: Vec<SmartLevel>,
+    pub confidence: f64,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenChartPoint {
+    pub ts: u64,
+    pub price: f64,
+    pub volume: f64,
+    pub net_position: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenChartMarker {
+    pub ts: u64,
+    pub price: f64,
+    pub label: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartMoneyChartResponse {
+    pub symbol: String,
+    pub timeframe: String,
+    pub points: Vec<TokenChartPoint>,
+    pub phase_segments: Vec<PhaseTimelineSegment>,
+    pub markers: Vec<TokenChartMarker>,
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

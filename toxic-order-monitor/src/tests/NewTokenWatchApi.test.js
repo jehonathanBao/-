@@ -69,6 +69,72 @@ describe("newTokenWatch API", () => {
                 explanationTags: ["pvg_advisory_allowed"],
                 readOnly: true,
               },
+              capitalStructure: {
+                phase: "accumulation",
+                phaseLabel: "accumulation",
+                phaseConfidence: 0.78,
+                behaviorWindows: [
+                  {
+                    windowSec: 300,
+                    cumulativeDelta: 120,
+                    normalizedOfi: 0.62,
+                    vwap: 1.94,
+                    volume: 250,
+                    priceDriftPct: 0.002,
+                    volatilityPct: 0.01,
+                    absorptionScore: 0.74,
+                    bidReplenishmentScore: 0.69,
+                  },
+                ],
+                costBasis: { lower: 1.92, upper: 1.97, vwapAnchor: 1.94, confidence: 0.78 },
+                estimatedPosition: { lowerUsd: 3200000, upperUsd: 5800000, confidence: 0.73 },
+                horizon: { minMinutes: 18, maxMinutes: 42, detectedMinutes: 24 },
+                distributionRisk: {
+                  score: 0.27,
+                  level: "low",
+                  reasons: ["no_distribution_pressure_confirmed"],
+                },
+                evidence: ["phase=accumulation"],
+                readOnly: true,
+              },
+              positionReconstruction: {
+                accumulationPath: [
+                  {
+                    phase: "accumulation",
+                    label: "silent_accumulation",
+                    startPrice: 1.82,
+                    endPrice: 1.86,
+                    volume: 120,
+                    cumulativeDelta: 86,
+                    impact: 0.0001,
+                    durationSec: 180,
+                    confidence: 0.71,
+                    characteristics: ["minimal_impact_flow"],
+                  },
+                ],
+                lastAccumulationNode: {
+                  lower: 1.88,
+                  upper: 1.9,
+                  durationSec: 402,
+                  volatilityPct: 0.004,
+                  absorptionEfficiency: 0.84,
+                  confidence: 0.84,
+                  characteristics: ["volume_without_breakout"],
+                },
+                distributionPath: [],
+                latentPosition: [
+                  {
+                    timestamp: 1,
+                    price: 1.86,
+                    estimatedPosition: 20,
+                    impactAdjustedPosition: 18,
+                  },
+                ],
+                confidence: 0.82,
+                regimeLabel: "accumulation_trajectory",
+                evidence: ["last_accumulation_node_detected"],
+                readOnly: true,
+              },
             },
           },
         ],
@@ -94,6 +160,16 @@ describe("newTokenWatch API", () => {
     expect(result.items[0].lastSignal.signalCompression.stabilityKernel.regime).toBe("liquidity_expansion");
     expect(result.items[0].lastSignal.signalCompression.stabilityKernel.tradeSignal.direction).toBe("long");
     expect(result.items[0].lastSignal.signalCompression.stabilityKernel.positionSmoothing.suggestedSizeMultiplier).toBe(0.54);
+    expect(result.items[0].lastSignal.capitalStructure.phase).toBe("accumulation");
+    expect(result.items[0].lastSignal.capitalStructure.phaseConfidence).toBe(0.78);
+    expect(result.items[0].lastSignal.capitalStructure.behaviorWindows[0].windowSec).toBe(300);
+    expect(result.items[0].lastSignal.capitalStructure.costBasis.vwapAnchor).toBe(1.94);
+    expect(result.items[0].lastSignal.capitalStructure.estimatedPosition.upperUsd).toBe(5800000);
+    expect(result.items[0].lastSignal.capitalStructure.distributionRisk.level).toBe("low");
+    expect(result.items[0].lastSignal.positionReconstruction.regimeLabel).toBe("accumulation_trajectory");
+    expect(result.items[0].lastSignal.positionReconstruction.accumulationPath[0].label).toBe("silent_accumulation");
+    expect(result.items[0].lastSignal.positionReconstruction.lastAccumulationNode.confidence).toBe(0.84);
+    expect(result.items[0].lastSignal.positionReconstruction.latentPosition[0].impactAdjustedPosition).toBe(18);
     expect(result.maxActiveTokens).toBe(10);
   });
 
@@ -120,6 +196,13 @@ describe("newTokenWatch API", () => {
     expect(item.lastSignal.signalCompression.positionValidityGate.reason).toBe("no_signal");
     expect(item.lastSignal.signalCompression.stabilityKernel.regime).toBe("neutral");
     expect(item.lastSignal.signalCompression.stabilityKernel.tradeSignal.direction).toBe("no_trade");
+    expect(item.lastSignal.capitalStructure.phase).toBe("neutral");
+    expect(item.lastSignal.capitalStructure.behaviorWindows).toEqual([]);
+    expect(item.lastSignal.capitalStructure.costBasis.vwapAnchor).toBe(0);
+    expect(item.lastSignal.capitalStructure.distributionRisk.level).toBe("low");
+    expect(item.lastSignal.positionReconstruction.accumulationPath).toEqual([]);
+    expect(item.lastSignal.positionReconstruction.lastAccumulationNode).toBeNull();
+    expect(item.lastSignal.positionReconstruction.regimeLabel).toBe("neutral");
     expect(item.readOnly).toBe(true);
   });
 });

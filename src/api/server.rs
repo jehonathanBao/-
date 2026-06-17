@@ -137,6 +137,14 @@ pub fn router(state: AppState) -> Router {
             get(new_token_watch_routes::new_token_watch_list_route),
         )
         .route(
+            "/api/new-token-watch/reconstruction",
+            get(new_token_watch_routes::new_token_watch_reconstruction_route),
+        )
+        .route(
+            "/api/new-token-watch/chart",
+            get(new_token_watch_routes::new_token_watch_chart_route),
+        )
+        .route(
             "/api/new-token-watch/add",
             axum::routing::post(new_token_watch_routes::new_token_watch_add_route),
         )
@@ -147,6 +155,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/ws/new-token-flow",
             get(new_token_watch_routes::new_token_watch_ws_route),
+        )
+        .route(
+            "/ws/new-token-reconstruction",
+            get(new_token_watch_routes::new_token_reconstruction_ws_route),
         )
         .route(
             "/api/runtime/start",

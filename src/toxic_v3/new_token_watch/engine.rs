@@ -1,8 +1,11 @@
 use super::types::{
-    AdvisoryDirection, ContractTick, ContractTickSide, ExpectedHoldTime, FlowActorRegime,
-    ImpactResponse, LiquidityDepletion, OfiWindowMetrics, PositionSmoothing, PositionValidityGate,
-    SignalCompressionState, SmartMoneyDecomposition, StabilityRegime, TokenFlowRegime,
-    TokenFlowSignal, TradeSignalAdvisory, TradingStabilityKernel,
+    AdvisoryDirection, BehaviorWindowMetrics, CapitalPhase, CapitalStructureView, ContractTick,
+    ContractTickSide, CostBasisEstimate, DistributionRisk, EstimatedPositionSize, ExpectedHoldTime,
+    FlowActorRegime, ImpactResponse, LastAccumulationNode, LatentPositionPoint, LiquidityDepletion,
+    OfiWindowMetrics, PositionPathSegment, PositionSmoothing, PositionValidityGate,
+    SignalCompressionState, SmartMoneyDecomposition, SmartMoneyPositionReconstruction,
+    StabilityRegime, TimeHorizonInference, TokenFlowRegime, TokenFlowSignal, TradeSignalAdvisory,
+    TradingStabilityKernel,
 };
 use crate::normalizers::trade::now_ms;
 
@@ -22,6 +25,8 @@ impl NewTokenFlowEngine {
                 liquidity_depletion: LiquidityDepletion::default(),
                 actor_decomposition: SmartMoneyDecomposition::default(),
                 signal_compression: SignalCompressionState::default(),
+                capital_structure: CapitalStructureView::default(),
+                position_reconstruction: SmartMoneyPositionReconstruction::default(),
                 evidence: vec!["no_contract_flow_observed".to_string()],
                 read_only: true,
                 detector: "new_token_flow_engine_v1".to_string(),
@@ -91,6 +96,23 @@ impl NewTokenFlowEngine {
             &liquidity_depletion,
             &actor_decomposition,
             avg_imbalance,
+        );
+        let capital_structure = build_capital_structure(
+            ticks,
+            net_ratio,
+            price_change,
+            price_range,
+            flow_persistence,
+            &impact_response,
+            &liquidity_depletion,
+            &signal_compression,
+        );
+        let position_reconstruction = build_position_reconstruction(
+            ticks,
+            &capital_structure,
+            &impact_response,
+            &liquidity_depletion,
+            &signal_compression,
         );
 
         let (regime, strength, confidence, mut evidence) = if net_ratio > 0.18
@@ -186,6 +208,15 @@ impl NewTokenFlowEngine {
             signal_compression.momentum_flow_exhaustion,
             signal_compression.liquidity_stress_manipulation
         ));
+        evidence.push(format!("capital_phase={:?}", capital_structure.phase));
+        evidence.push(format!(
+            "cost_basis_vwap={:.6}",
+            capital_structure.cost_basis.vwap_anchor
+        ));
+        evidence.push(format!(
+            "reconstruction_confidence={:.2}",
+            position_reconstruction.confidence
+        ));
 
         TokenFlowSignal {
             symbol: symbol.to_string(),
@@ -198,6 +229,8 @@ impl NewTokenFlowEngine {
             liquidity_depletion,
             actor_decomposition,
             signal_compression,
+            capital_structure,
+            position_reconstruction,
             evidence,
             read_only: true,
             detector: "new_token_flow_engine_v1".to_string(),
@@ -632,6 +665,775 @@ fn build_trading_stability_kernel(
             reason: "confidence_x_regime_quality_x_volatility_x_pvg".to_string(),
         },
         read_only: true,
+    }
+}
+
+fn build_capital_structure(
+    ticks: &[ContractTick],
+    net_ratio: f64,
+    price_change: f64,
+    price_range: f64,
+    flow_persistence: f64,
+    impact: &ImpactResponse,
+    depletion: &LiquidityDepletion,
+    compression: &SignalCompressionState,
+) -> CapitalStructureView {
+    let behavior_windows = build_behavior_windows(ticks);
+    let distribution_risk = build_distribution_risk(
+        net_ratio,
+        price_change,
+        price_range,
+        flow_persistence,
+        impact,
+        depletion,
+        compression,
+        &behavior_windows,
+    );
+    let (phase, phase_confidence) = classify_capital_phase(
+        net_ratio,
+        price_change,
+        price_range,
+        flow_persistence,
+        impact,
+        depletion,
+        compression,
+        distribution_risk.score,
+        &behavior_windows,
+    );
+    let cost_basis = estimate_cost_basis(ticks, &behavior_windows, phase_confidence);
+    let estimated_position = estimate_position_size(
+        ticks,
+        &behavior_windows,
+        &cost_basis,
+        phase,
+        phase_confidence,
+    );
+    let horizon = infer_time_horizon(ticks, phase, phase_confidence, &behavior_windows);
+
+    let mut evidence = vec![
+        format!("phase={}", phase_label(phase)),
+        format!("phase_confidence={:.2}", phase_confidence),
+        format!("cost_vwap={:.6}", cost_basis.vwap_anchor),
+        format!("distribution_risk={:.2}", distribution_risk.score),
+    ];
+    if matches!(phase, CapitalPhase::Accumulation) {
+        evidence.push("sustained_buy_pressure_with_low_price_drift".to_string());
+    }
+    if matches!(phase, CapitalPhase::Distribution) {
+        evidence.push("volume_expansion_with_delta_divergence".to_string());
+    }
+    if matches!(phase, CapitalPhase::Markup) {
+        evidence.push("directional_flow_with_price_expansion".to_string());
+    }
+    if matches!(phase, CapitalPhase::Breakdown) {
+        evidence.push("sell_pressure_with_downside_structure".to_string());
+    }
+
+    CapitalStructureView {
+        phase,
+        phase_label: phase_label(phase).to_string(),
+        phase_confidence,
+        behavior_windows,
+        cost_basis,
+        estimated_position,
+        horizon,
+        distribution_risk,
+        evidence,
+        read_only: true,
+    }
+}
+
+fn build_behavior_windows(ticks: &[ContractTick]) -> Vec<BehaviorWindowMetrics> {
+    [60_u64, 300, 900, 3600]
+        .into_iter()
+        .map(|window_sec| build_behavior_window(ticks, window_sec))
+        .collect()
+}
+
+fn build_behavior_window(ticks: &[ContractTick], window_sec: u64) -> BehaviorWindowMetrics {
+    let latest_ts = ticks
+        .iter()
+        .map(|tick| tick.timestamp)
+        .max()
+        .unwrap_or_default();
+    let window_ms = window_sec.saturating_mul(1000);
+    let scoped = ticks
+        .iter()
+        .filter(|tick| {
+            latest_ts < window_ms || tick.timestamp >= latest_ts.saturating_sub(window_ms)
+        })
+        .collect::<Vec<_>>();
+    let selected = if scoped.is_empty() {
+        ticks.iter().collect::<Vec<_>>()
+    } else {
+        scoped
+    };
+
+    let mut buy_pressure = 0.0;
+    let mut sell_pressure = 0.0;
+    let mut volume = 0.0;
+    let mut price_volume = 0.0;
+    let mut imbalance_sum = 0.0;
+    let mut min_price = f64::MAX;
+    let mut max_price = 0.0_f64;
+
+    for tick in selected.iter().copied() {
+        let size = tick.size.max(0.0);
+        let pressure = size * tick.aggression.clamp(0.0, 1.0);
+        match tick.side {
+            ContractTickSide::Buy => buy_pressure += pressure,
+            ContractTickSide::Sell => sell_pressure += pressure,
+        }
+        volume += size;
+        price_volume += tick.price.max(0.0) * size;
+        imbalance_sum += tick.orderbook_imbalance.clamp(-1.0, 1.0);
+        min_price = min_price.min(tick.price);
+        max_price = max_price.max(tick.price);
+    }
+
+    let first_price = selected.first().map(|tick| tick.price).unwrap_or_default();
+    let last_price = selected.last().map(|tick| tick.price).unwrap_or_default();
+    let pressure_total = (buy_pressure + sell_pressure).max(0.000_001);
+    let cumulative_delta = buy_pressure - sell_pressure;
+    let normalized_ofi = cumulative_delta / pressure_total;
+    let vwap = price_volume / volume.max(0.000_001);
+    let price_drift_pct = if first_price > 0.0 {
+        (last_price - first_price) / first_price
+    } else {
+        0.0
+    };
+    let volatility_pct = if first_price > 0.0 {
+        (max_price - min_price).abs() / first_price
+    } else {
+        0.0
+    };
+    let avg_imbalance = imbalance_sum / selected.len().max(1) as f64;
+    let volume_intensity = clamp01(volume / 240.0);
+    let low_drift = clamp01((0.012 - price_drift_pct.abs()).max(0.0) / 0.012);
+    let low_volatility = clamp01((0.045 - volatility_pct).max(0.0) / 0.045);
+    let absorption_score =
+        clamp01(volume_intensity * 0.36 + low_drift * 0.34 + low_volatility * 0.30);
+    let bid_replenishment_score =
+        clamp01(avg_imbalance.max(0.0) * 1.7 + low_volatility * 0.28 + absorption_score * 0.18);
+
+    BehaviorWindowMetrics {
+        window_sec,
+        cumulative_delta,
+        normalized_ofi,
+        vwap,
+        volume,
+        price_drift_pct,
+        volatility_pct,
+        absorption_score,
+        bid_replenishment_score,
+    }
+}
+
+fn estimate_cost_basis(
+    ticks: &[ContractTick],
+    windows: &[BehaviorWindowMetrics],
+    phase_confidence: f64,
+) -> CostBasisEstimate {
+    let selected = windows
+        .iter()
+        .filter(|window| {
+            window.normalized_ofi > 0.12
+                && window.volatility_pct < 0.05
+                && window.absorption_score > 0.40
+        })
+        .collect::<Vec<_>>();
+
+    let (weighted_vwap, weighted_volume, avg_volatility) = if selected.is_empty() {
+        let mut volume = 0.0;
+        let mut price_volume = 0.0;
+        let mut volatility_sum = 0.0;
+        for window in windows {
+            volume += window.volume.max(0.0);
+            price_volume += window.vwap * window.volume.max(0.0);
+            volatility_sum += window.volatility_pct;
+        }
+        (
+            price_volume / volume.max(0.000_001),
+            volume,
+            volatility_sum / windows.len().max(1) as f64,
+        )
+    } else {
+        let mut volume = 0.0;
+        let mut price_volume = 0.0;
+        let mut volatility_sum = 0.0;
+        for window in selected {
+            let weight = window.volume.max(0.0)
+                * (0.50 + window.absorption_score * 0.30 + window.normalized_ofi.max(0.0) * 0.20);
+            volume += weight;
+            price_volume += window.vwap * weight;
+            volatility_sum += window.volatility_pct;
+        }
+        (
+            price_volume / volume.max(0.000_001),
+            volume,
+            volatility_sum / windows.len().max(1) as f64,
+        )
+    };
+
+    let fallback_price = ticks.last().map(|tick| tick.price).unwrap_or_default();
+    let anchor = if weighted_vwap > 0.0 {
+        weighted_vwap
+    } else {
+        fallback_price
+    };
+    let mut min_price = f64::MAX;
+    let mut max_price = 0.0_f64;
+    for tick in ticks {
+        min_price = min_price.min(tick.price);
+        max_price = max_price.max(tick.price);
+    }
+    let band_pct = avg_volatility.clamp(0.0015, 0.025);
+    let lower = (anchor * (1.0 - band_pct)).min(min_price);
+    let upper = (anchor * (1.0 + band_pct)).max(max_price);
+    CostBasisEstimate {
+        lower,
+        upper,
+        vwap_anchor: anchor,
+        confidence: clamp01(phase_confidence * 0.72 + (weighted_volume / 500.0).min(0.28)),
+    }
+}
+
+fn estimate_position_size(
+    ticks: &[ContractTick],
+    windows: &[BehaviorWindowMetrics],
+    cost_basis: &CostBasisEstimate,
+    phase: CapitalPhase,
+    phase_confidence: f64,
+) -> EstimatedPositionSize {
+    let latest_price = ticks
+        .last()
+        .map(|tick| tick.price)
+        .unwrap_or(cost_basis.vwap_anchor);
+    let structural_volume = windows
+        .iter()
+        .filter(|window| match phase {
+            CapitalPhase::Accumulation | CapitalPhase::Markup => window.normalized_ofi > 0.05,
+            CapitalPhase::Distribution | CapitalPhase::Breakdown => window.normalized_ofi < -0.05,
+            CapitalPhase::Neutral => true,
+        })
+        .map(|window| window.volume.max(0.0) * (0.35 + window.normalized_ofi.abs().min(1.0) * 0.65))
+        .sum::<f64>();
+    let notional = structural_volume * latest_price.max(cost_basis.vwap_anchor).max(0.0);
+    let pressure = match phase {
+        CapitalPhase::Neutral => phase_confidence * 0.45,
+        _ => phase_confidence,
+    };
+    EstimatedPositionSize {
+        lower_usd: notional * pressure * 0.28,
+        upper_usd: notional * pressure * 0.82,
+        confidence: clamp01(phase_confidence * 0.80 + structural_volume.min(250.0) / 1250.0),
+    }
+}
+
+fn infer_time_horizon(
+    ticks: &[ContractTick],
+    phase: CapitalPhase,
+    phase_confidence: f64,
+    windows: &[BehaviorWindowMetrics],
+) -> TimeHorizonInference {
+    let first_ts = ticks
+        .iter()
+        .map(|tick| tick.timestamp)
+        .min()
+        .unwrap_or_default();
+    let last_ts = ticks
+        .iter()
+        .map(|tick| tick.timestamp)
+        .max()
+        .unwrap_or_default();
+    let raw_span = last_ts.saturating_sub(first_ts);
+    let detected_minutes = if raw_span >= 1000 {
+        raw_span as f64 / 60_000.0
+    } else {
+        ticks.len() as f64 * 5.0 / 60.0
+    };
+    let confirmed_windows = windows
+        .iter()
+        .filter(|window| match phase {
+            CapitalPhase::Accumulation => {
+                window.normalized_ofi > 0.10 && window.absorption_score > 0.35
+            }
+            CapitalPhase::Markup => window.normalized_ofi > 0.18 && window.price_drift_pct > 0.0,
+            CapitalPhase::Distribution => window.normalized_ofi < -0.10,
+            CapitalPhase::Breakdown => {
+                window.normalized_ofi < -0.10 && window.price_drift_pct < 0.0
+            }
+            CapitalPhase::Neutral => false,
+        })
+        .count() as f64;
+    let stability_multiplier = 1.0 + confirmed_windows * 0.45 + phase_confidence * 0.80;
+    TimeHorizonInference {
+        min_minutes: (detected_minutes * 0.75).max(if matches!(phase, CapitalPhase::Neutral) {
+            0.0
+        } else {
+            1.0
+        }),
+        max_minutes: (detected_minutes * stability_multiplier + 8.0 * confirmed_windows)
+            .max(detected_minutes),
+        detected_minutes,
+    }
+}
+
+fn build_distribution_risk(
+    net_ratio: f64,
+    price_change: f64,
+    price_range: f64,
+    flow_persistence: f64,
+    impact: &ImpactResponse,
+    depletion: &LiquidityDepletion,
+    compression: &SignalCompressionState,
+    windows: &[BehaviorWindowMetrics],
+) -> DistributionRisk {
+    let primary_window = windows
+        .iter()
+        .find(|window| window.window_sec == 300)
+        .or_else(|| windows.first());
+    let window_ofi = primary_window
+        .map(|window| window.normalized_ofi)
+        .unwrap_or(net_ratio);
+    let sell_pressure = (-net_ratio).max(0.0).max((-window_ofi).max(0.0));
+    let price_fail = if price_change >= -0.002 {
+        clamp01((price_range + impact.absorption_score * 0.01) / 0.04)
+    } else {
+        clamp01(price_change.abs() / 0.08)
+    };
+    let delta_divergence = if price_change > 0.0 && net_ratio < 0.0 {
+        net_ratio.abs()
+    } else {
+        0.0
+    };
+    let score = clamp01(
+        sell_pressure * 0.32
+            + depletion.bid_depletion_rate * 0.20
+            + compression.liquidity_stress_manipulation.max(0.0) * 0.18
+            + price_fail * 0.12
+            + delta_divergence * 0.10
+            + flow_persistence * sell_pressure * 0.08,
+    );
+    let level = if score >= 0.66 {
+        "high"
+    } else if score >= 0.33 {
+        "medium"
+    } else {
+        "low"
+    };
+    let mut reasons = Vec::new();
+    if sell_pressure > 0.20 {
+        reasons.push("sell_pressure_persistent".to_string());
+    }
+    if depletion.bid_depletion_rate > depletion.replenishment_rate {
+        reasons.push("bid_depletion_exceeds_replenishment".to_string());
+    }
+    if delta_divergence > 0.10 {
+        reasons.push("price_up_delta_down_divergence".to_string());
+    }
+    if reasons.is_empty() {
+        reasons.push("no_distribution_pressure_confirmed".to_string());
+    }
+    DistributionRisk {
+        score,
+        level: level.to_string(),
+        reasons,
+    }
+}
+
+fn classify_capital_phase(
+    net_ratio: f64,
+    price_change: f64,
+    price_range: f64,
+    flow_persistence: f64,
+    impact: &ImpactResponse,
+    depletion: &LiquidityDepletion,
+    compression: &SignalCompressionState,
+    distribution_risk: f64,
+    windows: &[BehaviorWindowMetrics],
+) -> (CapitalPhase, f64) {
+    let w5m = windows
+        .iter()
+        .find(|window| window.window_sec == 300)
+        .or_else(|| windows.first());
+    let w15m = windows
+        .iter()
+        .find(|window| window.window_sec == 900)
+        .or(w5m);
+    let w5m_ofi = w5m.map(|window| window.normalized_ofi).unwrap_or(net_ratio);
+    let w15m_ofi = w15m
+        .map(|window| window.normalized_ofi)
+        .unwrap_or(net_ratio);
+    let w5m_absorption = w5m
+        .map(|window| window.absorption_score)
+        .unwrap_or(impact.absorption_score);
+    let w5m_bid_replenishment = w5m
+        .map(|window| window.bid_replenishment_score)
+        .unwrap_or(depletion.replenishment_rate);
+    let low_drift = clamp01((0.018 - price_change.abs()).max(0.0) / 0.018);
+    let low_range = clamp01((0.05 - price_range).max(0.0) / 0.05);
+
+    let accumulation_score = clamp01(
+        w5m_ofi.max(0.0) * 0.25
+            + w15m_ofi.max(0.0) * 0.15
+            + w5m_absorption * 0.20
+            + w5m_bid_replenishment * 0.16
+            + low_drift * 0.14
+            + flow_persistence * 0.10,
+    );
+    let markup_score = clamp01(
+        net_ratio.max(0.0) * 0.24
+            + price_change.max(0.0).min(0.08) * 4.0 * 0.24
+            + compression.momentum_flow_exhaustion.max(0.0) * 0.20
+            + impact.thin_liquidity_score * 0.18
+            + flow_persistence * 0.14,
+    );
+    let distribution_score = clamp01(
+        distribution_risk * 0.45
+            + (-w5m_ofi).max(0.0) * 0.20
+            + impact.absorption_score * (-net_ratio).max(0.0) * 0.14
+            + low_range * 0.10
+            + compression.smart_money_pressure.min(0.0).abs() * 0.11,
+    );
+    let breakdown_score = clamp01(
+        (-net_ratio).max(0.0) * 0.24
+            + (-price_change).max(0.0).min(0.08) * 4.0 * 0.24
+            + depletion.bid_depletion_rate * 0.20
+            + compression.liquidity_stress_manipulation.max(0.0) * 0.16
+            + flow_persistence * 0.16,
+    );
+
+    let mut ranked = [
+        (CapitalPhase::Accumulation, accumulation_score),
+        (CapitalPhase::Markup, markup_score),
+        (CapitalPhase::Distribution, distribution_score),
+        (CapitalPhase::Breakdown, breakdown_score),
+        (CapitalPhase::Neutral, 0.24 + low_range * 0.12),
+    ];
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let (phase, score) = ranked[0];
+    if score < 0.36 {
+        (CapitalPhase::Neutral, clamp01(score))
+    } else {
+        (phase, clamp01(score))
+    }
+}
+
+fn phase_label(phase: CapitalPhase) -> &'static str {
+    match phase {
+        CapitalPhase::Accumulation => "accumulation",
+        CapitalPhase::Markup => "markup",
+        CapitalPhase::Distribution => "distribution",
+        CapitalPhase::Breakdown => "breakdown",
+        CapitalPhase::Neutral => "neutral",
+    }
+}
+
+fn build_position_reconstruction(
+    ticks: &[ContractTick],
+    capital: &CapitalStructureView,
+    impact: &ImpactResponse,
+    depletion: &LiquidityDepletion,
+    compression: &SignalCompressionState,
+) -> SmartMoneyPositionReconstruction {
+    if ticks.is_empty() {
+        return SmartMoneyPositionReconstruction::default();
+    }
+
+    let segments = build_position_segments(ticks);
+    let accumulation_path = segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment.phase,
+                CapitalPhase::Accumulation | CapitalPhase::Markup
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let distribution_path = segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment.phase,
+                CapitalPhase::Distribution | CapitalPhase::Breakdown
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let last_accumulation_node =
+        select_last_accumulation_node(&segments, capital, impact, compression);
+    let latent_position = build_latent_position(ticks, impact);
+
+    let accumulation_confidence = accumulation_path
+        .iter()
+        .map(|segment| segment.confidence)
+        .fold(0.0_f64, f64::max);
+    let distribution_confidence = distribution_path
+        .iter()
+        .map(|segment| segment.confidence)
+        .fold(0.0_f64, f64::max);
+    let node_confidence = last_accumulation_node
+        .as_ref()
+        .map(|node| node.confidence)
+        .unwrap_or_default();
+    let confidence = clamp01(
+        capital.phase_confidence * 0.34
+            + accumulation_confidence * 0.22
+            + distribution_confidence * 0.18
+            + node_confidence * 0.16
+            + compression.stability_kernel.regime_quality * 0.10,
+    );
+
+    let regime_label = if distribution_confidence > accumulation_confidence + 0.10 {
+        "distribution_trajectory"
+    } else if accumulation_confidence > 0.45 {
+        "accumulation_trajectory"
+    } else if matches!(capital.phase, CapitalPhase::Markup) {
+        "markup_after_accumulation"
+    } else {
+        "neutral_reconstruction"
+    };
+    let mut evidence = vec![
+        format!("segments={}", segments.len()),
+        format!("accumulation_segments={}", accumulation_path.len()),
+        format!("distribution_segments={}", distribution_path.len()),
+        format!("latent_points={}", latent_position.len()),
+    ];
+    if last_accumulation_node.is_some() {
+        evidence.push("last_accumulation_node_detected".to_string());
+    }
+    if depletion.bid_depletion_rate > depletion.replenishment_rate {
+        evidence.push("distribution_path_bid_depletion".to_string());
+    }
+    if impact.absorption_score > 0.60 {
+        evidence.push("low_impact_absorption_supports_reconstruction".to_string());
+    }
+
+    SmartMoneyPositionReconstruction {
+        accumulation_path,
+        last_accumulation_node,
+        distribution_path,
+        latent_position,
+        confidence,
+        regime_label: regime_label.to_string(),
+        evidence,
+        read_only: true,
+    }
+}
+
+fn build_position_segments(ticks: &[ContractTick]) -> Vec<PositionPathSegment> {
+    let segment_count = ticks.len().clamp(1, 3);
+    let chunk_size = ticks.len().div_ceil(segment_count);
+    ticks
+        .chunks(chunk_size)
+        .enumerate()
+        .map(|(idx, chunk)| build_position_segment(chunk, idx))
+        .collect()
+}
+
+fn build_position_segment(ticks: &[ContractTick], idx: usize) -> PositionPathSegment {
+    let start_price = ticks.first().map(|tick| tick.price).unwrap_or_default();
+    let end_price = ticks.last().map(|tick| tick.price).unwrap_or_default();
+    let first_ts = ticks.first().map(|tick| tick.timestamp).unwrap_or_default();
+    let last_ts = ticks.last().map(|tick| tick.timestamp).unwrap_or(first_ts);
+    let duration_ms_or_ticks = last_ts.saturating_sub(first_ts);
+    let duration_sec = if duration_ms_or_ticks >= 1000 {
+        duration_ms_or_ticks / 1000
+    } else {
+        ticks.len() as u64 * 5
+    };
+
+    let mut buy_pressure = 0.0;
+    let mut sell_pressure = 0.0;
+    let mut volume = 0.0;
+    let mut min_price = f64::MAX;
+    let mut max_price = 0.0_f64;
+    let mut imbalance_sum = 0.0;
+    for tick in ticks {
+        let size = tick.size.max(0.0);
+        let pressure = size * tick.aggression.clamp(0.0, 1.0);
+        match tick.side {
+            ContractTickSide::Buy => buy_pressure += pressure,
+            ContractTickSide::Sell => sell_pressure += pressure,
+        }
+        volume += size;
+        min_price = min_price.min(tick.price);
+        max_price = max_price.max(tick.price);
+        imbalance_sum += tick.orderbook_imbalance.clamp(-1.0, 1.0);
+    }
+
+    let pressure_total = (buy_pressure + sell_pressure).max(0.000_001);
+    let cumulative_delta = buy_pressure - sell_pressure;
+    let normalized_delta = cumulative_delta / pressure_total;
+    let price_drift = if start_price > 0.0 {
+        (end_price - start_price) / start_price
+    } else {
+        0.0
+    };
+    let volatility = if start_price > 0.0 {
+        (max_price - min_price).abs() / start_price
+    } else {
+        0.0
+    };
+    let impact_value = price_drift.abs() / volume.max(0.000_001);
+    let avg_imbalance = imbalance_sum / ticks.len().max(1) as f64;
+    let low_volatility = clamp01((0.035 - volatility).max(0.0) / 0.035);
+    let low_impact = clamp01((0.000_8 - impact_value).max(0.0) / 0.000_8);
+    let phase = if normalized_delta > 0.16 && price_drift > 0.006 {
+        CapitalPhase::Markup
+    } else if normalized_delta > 0.16 && low_volatility > 0.35 && avg_imbalance > -0.05 {
+        CapitalPhase::Accumulation
+    } else if normalized_delta < -0.16 && price_drift > -0.010 {
+        CapitalPhase::Distribution
+    } else if normalized_delta < -0.16 && price_drift <= -0.010 {
+        CapitalPhase::Breakdown
+    } else {
+        CapitalPhase::Neutral
+    };
+    let label = segment_label(phase, idx);
+    let mut characteristics = Vec::new();
+    if low_impact > 0.55 && volume > 0.0 {
+        characteristics.push("minimal_impact_flow".to_string());
+    }
+    if low_volatility > 0.55 {
+        characteristics.push("volatility_compression".to_string());
+    }
+    if normalized_delta > 0.20 {
+        characteristics.push("positive_delta".to_string());
+    } else if normalized_delta < -0.20 {
+        characteristics.push("negative_delta".to_string());
+    }
+    if avg_imbalance > 0.10 {
+        characteristics.push("bid_replenishment".to_string());
+    } else if avg_imbalance < -0.10 {
+        characteristics.push("bid_liquidity_depletion".to_string());
+    }
+    if characteristics.is_empty() {
+        characteristics.push("mixed_flow".to_string());
+    }
+
+    PositionPathSegment {
+        phase,
+        label: label.to_string(),
+        start_price,
+        end_price,
+        volume,
+        cumulative_delta,
+        impact: impact_value,
+        duration_sec,
+        confidence: clamp01(
+            normalized_delta.abs() * 0.30
+                + low_volatility * 0.22
+                + low_impact * 0.18
+                + avg_imbalance.abs().min(1.0) * 0.12
+                + (volume / 250.0).min(0.18),
+        ),
+        characteristics,
+    }
+}
+
+fn select_last_accumulation_node(
+    segments: &[PositionPathSegment],
+    capital: &CapitalStructureView,
+    impact: &ImpactResponse,
+    compression: &SignalCompressionState,
+) -> Option<LastAccumulationNode> {
+    let candidate = segments
+        .iter()
+        .filter(|segment| matches!(segment.phase, CapitalPhase::Accumulation))
+        .max_by(|left, right| {
+            let left_score = left.confidence + (1.0 - left.impact.min(1.0)) * 0.20;
+            let right_score = right.confidence + (1.0 - right.impact.min(1.0)) * 0.20;
+            left_score.total_cmp(&right_score)
+        });
+
+    let segment = candidate.or_else(|| {
+        if matches!(
+            capital.phase,
+            CapitalPhase::Accumulation | CapitalPhase::Markup
+        ) {
+            segments
+                .iter()
+                .max_by(|left, right| left.confidence.total_cmp(&right.confidence))
+        } else {
+            None
+        }
+    })?;
+
+    let lower = segment
+        .start_price
+        .min(segment.end_price)
+        .min(capital.cost_basis.lower);
+    let upper = segment
+        .start_price
+        .max(segment.end_price)
+        .max(capital.cost_basis.upper);
+    let absorption_efficiency = clamp01(
+        impact.absorption_score * 0.42
+            + capital.cost_basis.confidence * 0.22
+            + compression.smart_money_pressure.max(0.0) * 0.20
+            + segment.confidence * 0.16,
+    );
+    let mut characteristics = vec![
+        "lowest_volatility_or_highest_absorption_window".to_string(),
+        "volume_without_breakout".to_string(),
+    ];
+    if compression.smart_money_pressure > 0.30 {
+        characteristics.push("smart_money_pressure_positive".to_string());
+    }
+    Some(LastAccumulationNode {
+        lower,
+        upper,
+        duration_sec: segment.duration_sec,
+        volatility_pct: (segment.end_price - segment.start_price).abs()
+            / segment.start_price.max(0.000_001),
+        absorption_efficiency,
+        confidence: clamp01(absorption_efficiency * 0.70 + segment.confidence * 0.30),
+        characteristics,
+    })
+}
+
+fn build_latent_position(
+    ticks: &[ContractTick],
+    impact: &ImpactResponse,
+) -> Vec<LatentPositionPoint> {
+    let mut position = 0.0;
+    let impact_decay = clamp01(1.0 - impact.thin_liquidity_score * 0.45);
+    ticks
+        .iter()
+        .map(|tick| {
+            let signed = match tick.side {
+                ContractTickSide::Buy => tick.size.max(0.0),
+                ContractTickSide::Sell => -tick.size.max(0.0),
+            };
+            position += signed * tick.aggression.clamp(0.0, 1.0);
+            LatentPositionPoint {
+                timestamp: tick.timestamp,
+                price: tick.price,
+                estimated_position: position,
+                impact_adjusted_position: position * impact_decay,
+            }
+        })
+        .collect()
+}
+
+fn segment_label(phase: CapitalPhase, idx: usize) -> &'static str {
+    match phase {
+        CapitalPhase::Accumulation => match idx {
+            0 => "silent_accumulation",
+            1 => "absorption_zone",
+            _ => "final_accumulation",
+        },
+        CapitalPhase::Markup => "markup_expansion",
+        CapitalPhase::Distribution => match idx {
+            0 => "hidden_distribution",
+            1 => "retail_absorption",
+            _ => "exit_preparation",
+        },
+        CapitalPhase::Breakdown => "exit_acceleration",
+        CapitalPhase::Neutral => "neutral_segment",
     }
 }
 
