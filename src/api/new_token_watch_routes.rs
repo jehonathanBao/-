@@ -13,8 +13,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::toxic_v3::new_token_watch::{
-    NewTokenWatchMutationResponse, NewTokenWatchRequest, TokenWatchError, TokenWatchManager,
-    MAX_ACTIVE_TOKENS,
+    fetch_market_price_snapshot, NewTokenWatchMutationResponse, NewTokenWatchRequest,
+    TokenWatchError, TokenWatchManager, MAX_ACTIVE_TOKENS,
 };
 
 static NEW_TOKEN_WATCH_MANAGER: OnceLock<TokenWatchManager> = OnceLock::new();
@@ -37,7 +37,12 @@ pub async fn new_token_watch_reconstruction_route(
     Query(query): Query<NewTokenReconstructionQuery>,
 ) -> impl IntoResponse {
     let timeframe = query.tf.as_deref().unwrap_or("15m");
-    match global_new_token_watch_manager().get_reconstruction(&query.symbol, timeframe) {
+    let market_price = fetch_market_price_snapshot(&query.symbol).await;
+    match global_new_token_watch_manager().get_reconstruction_with_market(
+        &query.symbol,
+        timeframe,
+        market_price,
+    ) {
         Ok(response) => Json(response).into_response(),
         Err(error) => token_error_response(error),
     }
@@ -47,7 +52,12 @@ pub async fn new_token_watch_chart_route(
     Query(query): Query<NewTokenReconstructionQuery>,
 ) -> impl IntoResponse {
     let timeframe = query.tf.as_deref().unwrap_or("15m");
-    match global_new_token_watch_manager().get_chart(&query.symbol, timeframe) {
+    let market_price = fetch_market_price_snapshot(&query.symbol).await;
+    match global_new_token_watch_manager().get_chart_with_market(
+        &query.symbol,
+        timeframe,
+        market_price,
+    ) {
         Ok(response) => Json(response).into_response(),
         Err(error) => token_error_response(error),
     }

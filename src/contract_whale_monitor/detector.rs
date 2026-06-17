@@ -7,7 +7,10 @@ use super::{
     scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
     types::{
         ContractWhaleActiveSourceEntry, ContractWhaleActiveSources, ContractWhaleDirection,
-        ContractWhaleMarketType, ContractWhalePriceResponseType, ContractWhaleSeverity,
+        ContractWhaleForcedFlowAttribution, ContractWhaleLiquidationForce,
+        ContractWhaleLiquidationZone, ContractWhaleMarketDriver,
+        ContractWhaleMarketDriverComponent, ContractWhaleMarketType,
+        ContractWhalePriceImpactAttribution, ContractWhalePriceResponseType, ContractWhaleSeverity,
         ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleThresholds,
         ContractWhaleWindowStats,
     },
@@ -71,6 +74,15 @@ pub fn detect_contract_whale_signal_with_config(
         discord_reason = "warmup_collect_only".to_string();
     }
     let direction = direction_for(signal_type);
+    let liquidation_force =
+        build_liquidation_force(&scoring_stats, liquidation_suspected, signal_type);
+    let market_driver = build_market_driver(
+        &scoring_stats,
+        score,
+        signal_type,
+        price_response_type,
+        &liquidation_force,
+    );
 
     let active_sources = active_source_snapshot(&scoring_stats, config, &resolution);
     let base_asset = contract_base_asset(&stats.symbol);
@@ -173,6 +185,8 @@ pub fn detect_contract_whale_signal_with_config(
         persistence: Default::default(),
         whale_action: Default::default(),
         trajectory: Default::default(),
+        liquidation_force,
+        market_driver,
         read_only: true,
         analysis_only: true,
         execution_enabled: false,
@@ -203,6 +217,332 @@ fn signal_price_usd(stats: &ContractWhaleWindowStats) -> Option<f64> {
     (stats.total_volume_btc > f64::EPSILON && stats.total_notional_usd > 0.0)
         .then(|| stats.total_notional_usd / stats.total_volume_btc)
         .filter(|price| price.is_finite() && *price > 0.0)
+}
+
+fn build_liquidation_force(
+    stats: &ContractWhaleWindowStats,
+    liquidation_suspected: bool,
+    signal_type: ContractWhaleSignalType,
+) -> ContractWhaleLiquidationForce {
+    let long_liq = stats.liquidation_context.long_liq_btc.max(0.0);
+    let short_liq = stats.liquidation_context.short_liq_btc.max(0.0);
+    let total_liq = stats
+        .liquidation_context
+        .total_liq_btc
+        .max(long_liq + short_liq);
+    let liq_ratio = stats
+        .liquidation_context
+        .liq_to_volume_ratio
+        .unwrap_or(0.0)
+        .max(0.0);
+    let price_move = stats.price_move_pct.unwrap_or(0.0);
+    let abs_price_move = price_move.abs();
+    let reversal = stats.price_reversal_ratio.unwrap_or(0.0).max(0.0);
+    let dominance = stats.dominance.clamp(0.0, 1.0);
+    let oi_falling = stats
+        .market_context
+        .oi_change_pct
+        .is_some_and(|value| value <= -0.10);
+
+    let long_liq_pressure = pressure_score(
+        share(long_liq, total_liq) * 0.45
+            + liq_ratio.min(1.0) * 0.35
+            + (price_move < 0.0) as u8 as f64 * 0.10
+            + oi_falling as u8 as f64 * 0.10,
+    );
+    let short_squeeze_pressure = pressure_score(
+        share(short_liq, total_liq) * 0.45
+            + liq_ratio.min(1.0) * 0.35
+            + (price_move > 0.0) as u8 as f64 * 0.10
+            + oi_falling as u8 as f64 * 0.10,
+    );
+    let shape_pressure = if liquidation_suspected { 0.35 } else { 0.0 }
+        + (abs_price_move / 0.5).clamp(0.0, 1.0) * 0.30
+        + reversal.min(1.0) * 0.20
+        + dominance * 0.15;
+    let cascade_intensity = pressure_score((liq_ratio.min(1.0) * 0.55) + shape_pressure * 0.45);
+    let stop_hunt_probability = pressure_score(
+        (reversal.min(1.0) * 0.45)
+            + (abs_price_move / 0.35).clamp(0.0, 1.0) * 0.30
+            + (stats.dynamic_multiple.unwrap_or(0.0) / 10.0).clamp(0.0, 1.0) * 0.25,
+    );
+    let forced_pct =
+        (liq_ratio * 1.35 + (liquidation_suspected as u8 as f64) * 0.15).clamp(0.0, 0.80);
+    let retail_pct = ((1.0 - forced_pct) * (1.0 - dominance) * 0.45).clamp(0.0, 0.35);
+    let whale_pct = (1.0 - forced_pct - retail_pct).clamp(0.0, 1.0);
+    let dominant_driver = if forced_pct >= whale_pct && forced_pct >= retail_pct {
+        "liquidation_cascade"
+    } else if retail_pct > whale_pct {
+        "retail_follow_flow"
+    } else {
+        "whale_initiated_flow"
+    }
+    .to_string();
+
+    let active_zone = if long_liq_pressure >= 60 && long_liq_pressure >= short_squeeze_pressure {
+        "long_liquidation_zone"
+    } else if short_squeeze_pressure >= 60 {
+        "short_squeeze_zone"
+    } else if stop_hunt_probability >= 65 {
+        "stop_loss_sweep_zone"
+    } else {
+        "neutral"
+    }
+    .to_string();
+
+    let mut zones = Vec::new();
+    if long_liq > 0.0 || price_move < 0.0 {
+        zones.push(liquidation_zone(
+            "long_liquidation",
+            stats,
+            -1.0,
+            long_liq_pressure,
+            stats.liquidation_context.liq_notional_usd * share(long_liq, total_liq),
+            "downside stop-loss and long liquidation cluster",
+        ));
+    }
+    if short_liq > 0.0 || price_move > 0.0 {
+        zones.push(liquidation_zone(
+            "short_liquidation",
+            stats,
+            1.0,
+            short_squeeze_pressure,
+            stats.liquidation_context.liq_notional_usd * share(short_liq, total_liq),
+            "upside stop-loss and short liquidation cluster",
+        ));
+    }
+
+    let signed_move = if price_move.abs() > f64::EPSILON {
+        price_move.signum()
+    } else {
+        match signal_type {
+            ContractWhaleSignalType::AggressiveBuy => 1.0,
+            ContractWhaleSignalType::AggressiveSell => -1.0,
+            ContractWhaleSignalType::DownsideAbsorption
+            | ContractWhaleSignalType::UpsideSuppression => 0.0,
+        }
+    };
+    let whale_impact = signed_move * whale_pct * abs_price_move;
+    let liquidation_cascade = signed_move * forced_pct * abs_price_move;
+    let stop_loss_sweep = signed_move * (stop_hunt_probability as f64 / 100.0) * abs_price_move;
+    let passive_absorption = match signal_type {
+        ContractWhaleSignalType::DownsideAbsorption
+        | ContractWhaleSignalType::UpsideSuppression => {
+            -signed_move * (1.0 - dominance) * abs_price_move
+        }
+        _ => 0.0,
+    };
+
+    ContractWhaleLiquidationForce {
+        active_zone,
+        primary_driver: dominant_driver.clone(),
+        long_liquidation_pressure: long_liq_pressure,
+        short_squeeze_pressure,
+        stop_hunt_probability,
+        cascade_intensity,
+        estimated_forced_size_usd: round(stats.liquidation_context.liq_notional_usd, 2),
+        zones,
+        flow_attribution: ContractWhaleForcedFlowAttribution {
+            whale_pct: round(whale_pct, 4),
+            retail_pct: round(retail_pct, 4),
+            liquidation_pct: round(forced_pct, 4),
+            dominant_driver,
+        },
+        price_impact: ContractWhalePriceImpactAttribution {
+            whale_impact: round(whale_impact, 4),
+            liquidation_cascade: round(liquidation_cascade, 4),
+            stop_loss_sweep: round(stop_loss_sweep, 4),
+            passive_absorption: round(passive_absorption, 4),
+        },
+    }
+}
+
+fn build_market_driver(
+    stats: &ContractWhaleWindowStats,
+    score: u8,
+    signal_type: ContractWhaleSignalType,
+    price_response_type: ContractWhalePriceResponseType,
+    liquidation_force: &ContractWhaleLiquidationForce,
+) -> ContractWhaleMarketDriver {
+    let flow_liq_pct = liquidation_force
+        .flow_attribution
+        .liquidation_pct
+        .clamp(0.0, 1.0);
+    let price_move_abs = stats.price_move_pct.unwrap_or(0.0).abs();
+    let dynamic = (stats.dynamic_multiple.unwrap_or(0.0) / 10.0).clamp(0.0, 1.0);
+    let max_forced_pressure = liquidation_force
+        .long_liquidation_pressure
+        .max(liquidation_force.short_squeeze_pressure) as f64
+        / 100.0;
+    let oi_pressure = stats
+        .market_context
+        .oi_change_pct
+        .map(|value| (value.abs() / 2.0).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    let funding_pressure = stats
+        .market_context
+        .funding_rate
+        .map(|value| (value.abs() / 0.0005).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    let absorption = matches!(
+        price_response_type,
+        ContractWhalePriceResponseType::DownsideAbsorption
+            | ContractWhalePriceResponseType::UpsideResistance
+    );
+    let trend_follow = matches!(
+        price_response_type,
+        ContractWhalePriceResponseType::TrendFollowUp
+            | ContractWhalePriceResponseType::TrendFollowDown
+    );
+
+    let whale_raw = (score as f64 / 100.0) * 0.35
+        + stats.dominance.clamp(0.0, 1.0) * 0.30
+        + (1.0 - flow_liq_pct) * 0.20
+        + (stats.multi_exchange_confirmed as u8 as f64) * 0.10
+        + (matches!(
+            signal_type,
+            ContractWhaleSignalType::AggressiveBuy | ContractWhaleSignalType::AggressiveSell
+        ) as u8 as f64)
+            * 0.05;
+    let liquidity_raw = (liquidation_force.stop_hunt_probability as f64 / 100.0) * 0.30
+        + (liquidation_force.cascade_intensity as f64 / 100.0) * 0.20
+        + (absorption as u8 as f64) * 0.25
+        + (1.0 - stats.dominance.clamp(0.0, 1.0)) * 0.15
+        + (price_move_abs / 0.35).clamp(0.0, 1.0) * 0.10;
+    let derivatives_raw = flow_liq_pct * 0.45
+        + max_forced_pressure * 0.25
+        + oi_pressure * 0.20
+        + funding_pressure * 0.05
+        + (stats.liquidation_driven as u8 as f64) * 0.15;
+    let reflexivity_raw = dynamic * 0.25
+        + (price_move_abs / 0.5).clamp(0.0, 1.0) * 0.20
+        + (trend_follow as u8 as f64) * 0.15
+        + stats.dominance.clamp(0.0, 1.0) * 0.10;
+
+    let total = (whale_raw + liquidity_raw + derivatives_raw + reflexivity_raw).max(0.0001);
+    let whale_pct = whale_raw / total;
+    let liquidity_pct = liquidity_raw / total;
+    let derivatives_pct = derivatives_raw / total;
+    let reflexivity_pct = reflexivity_raw / total;
+    let drivers = [
+        ("whale_intent", whale_pct, whale_raw),
+        ("liquidity_forcing", liquidity_pct, liquidity_raw),
+        ("derivatives_pressure", derivatives_pct, derivatives_raw),
+        ("reflexivity_feedback", reflexivity_pct, reflexivity_raw),
+    ];
+    let (primary_driver, _, _) = drivers
+        .iter()
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
+        .unwrap_or(("whale_intent", whale_pct, whale_raw));
+    let market_state = market_driver_state(primary_driver, liquidation_force, stats);
+    let components = drivers
+        .into_iter()
+        .map(|(key, pct, raw)| ContractWhaleMarketDriverComponent {
+            key: key.to_string(),
+            score: pressure_score(raw.clamp(0.0, 1.0)),
+            weight_pct: round(pct, 4),
+        })
+        .collect();
+
+    ContractWhaleMarketDriver {
+        primary_driver: primary_driver.to_string(),
+        market_state: market_state.to_string(),
+        whale_intent_pct: round(whale_pct, 4),
+        liquidity_forcing_pct: round(liquidity_pct, 4),
+        derivatives_pressure_pct: round(derivatives_pct, 4),
+        reflexivity_pct: round(reflexivity_pct, 4),
+        components,
+        interpretation: market_driver_interpretation(primary_driver, market_state),
+    }
+}
+
+fn market_driver_state(
+    primary_driver: &str,
+    liquidation_force: &ContractWhaleLiquidationForce,
+    stats: &ContractWhaleWindowStats,
+) -> &'static str {
+    match primary_driver {
+        "liquidity_forcing" => "liquidity_squeeze_regime",
+        "derivatives_pressure" => match liquidation_force.active_zone.as_str() {
+            "long_liquidation_zone" => "liquidation_cascade_regime",
+            "short_squeeze_zone" => "short_squeeze_regime",
+            "stop_loss_sweep_zone" => "stop_hunt_regime",
+            _ => "derivatives_pressure_regime",
+        },
+        "reflexivity_feedback" => "reflexive_trend_phase",
+        _ if stats.net_volume_btc < 0.0 => "whale_led_distribution",
+        _ => "whale_led_expansion",
+    }
+}
+
+fn market_driver_interpretation(primary_driver: &str, market_state: &str) -> String {
+    match primary_driver {
+        "liquidity_forcing" => {
+            "价格主要受流动性真空、止损扫单或吸收结构推动，不宜只按主动买卖解释。".to_string()
+        }
+        "derivatives_pressure" => {
+            "价格主要受清算、OI/funding 或衍生品强制流推动，当前更像被迫交易而非纯主力主动流。"
+                .to_string()
+        }
+        "reflexivity_feedback" => {
+            "价格移动已进入反馈放大阶段，趋势、成交和参与者反应正在互相强化。".to_string()
+        }
+        _ if market_state == "whale_led_distribution" => {
+            "价格主要由主动卖方资金推动，当前更接近鲸鱼主导的派发/砸盘。".to_string()
+        }
+        _ => "价格主要由主动鲸鱼资金推动，清算和反馈因素为辅助。".to_string(),
+    }
+}
+
+fn liquidation_zone(
+    side: &str,
+    stats: &ContractWhaleWindowStats,
+    direction: f64,
+    intensity: u8,
+    estimated_size_usd: f64,
+    reason: &str,
+) -> ContractWhaleLiquidationZone {
+    let anchor = signal_price_usd(stats);
+    let band_pct = ((stats.price_move_pct.unwrap_or(0.0).abs() / 100.0).max(0.0015)).min(0.012);
+    let low_price_usd = anchor.map(|price| {
+        if direction < 0.0 {
+            price * (1.0 - band_pct * 2.0)
+        } else {
+            price * (1.0 + band_pct)
+        }
+    });
+    let high_price_usd = anchor.map(|price| {
+        if direction < 0.0 {
+            price * (1.0 - band_pct)
+        } else {
+            price * (1.0 + band_pct * 2.0)
+        }
+    });
+    ContractWhaleLiquidationZone {
+        side: side.to_string(),
+        low_price_usd: low_price_usd.map(|value| round(value, 2)),
+        high_price_usd: high_price_usd.map(|value| round(value, 2)),
+        estimated_size_usd: round(estimated_size_usd.max(0.0), 2),
+        intensity,
+        reason: reason.to_string(),
+    }
+}
+
+fn pressure_score(value: f64) -> u8 {
+    (value * 100.0).round().clamp(0.0, 100.0) as u8
+}
+
+fn share(part: f64, total: f64) -> f64 {
+    if total <= f64::EPSILON {
+        0.0
+    } else {
+        (part / total).clamp(0.0, 1.0)
+    }
 }
 
 fn classify_signal_type(

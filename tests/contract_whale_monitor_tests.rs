@@ -846,6 +846,23 @@ fn detector_marks_liquidation_suspected_and_reduces_master_confidence() {
 
     assert!(signal.liquidation_suspected);
     assert_eq!(signal.liquidation_long_btc, 1_200.0);
+    assert_eq!(
+        signal.liquidation_force.primary_driver,
+        "liquidation_cascade"
+    );
+    assert_eq!(
+        signal.liquidation_force.active_zone,
+        "long_liquidation_zone"
+    );
+    assert_eq!(signal.market_driver.primary_driver, "derivatives_pressure");
+    assert_eq!(
+        signal.market_driver.market_state,
+        "liquidation_cascade_regime"
+    );
+    assert!(signal.market_driver.derivatives_pressure_pct > signal.market_driver.whale_intent_pct);
+    assert!(signal.market_driver.interpretation.contains("强制流"));
+    assert!(signal.liquidation_force.long_liquidation_pressure >= 60);
+    assert!(signal.liquidation_force.flow_attribution.liquidation_pct > 0.40);
     assert_eq!(signal.oi_bias.as_deref(), Some("falling"));
     assert_eq!(signal.funding_bias.as_deref(), Some("long"));
     assert!(signal.score < 90);

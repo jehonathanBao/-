@@ -756,14 +756,19 @@ function MarketHeader({ reconstruction, loading }) {
           </div>
           <p className="mt-2 text-sm text-slate-400">资金行为重建终端，不展示 tick 级噪声。</p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <MetricPill label="Price" value={formatPrice(reconstruction.currentPrice)} tone="cyan" />
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <MetricPill label="Market Price" value={formatPrice(reconstruction.marketPrice || reconstruction.currentPrice)} tone="cyan" />
+          <MetricPill label="Price Source" value={priceSourceLabel(reconstruction.marketPriceSource)} tone={priceSourceTone(reconstruction.marketPriceSource)} />
           <MetricPill label="24h Change" value={formatPctOrNA(reconstruction.change24hPct)} tone={Number(reconstruction.change24hPct || 0) >= 0 ? "emerald" : "yellow"} />
           <MetricPill label="24h Volume" value={formatOptionalUsd(reconstruction.volume24hUsd)} />
           <MetricPill label="Liquidity" value={liquidityCondition(reconstruction)} tone="cyan" />
           <MetricPill label="Regime" value={marketRegime(reconstruction)} tone="yellow" />
         </div>
       </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Analysis price: {formatPrice(reconstruction.analysisPrice || reconstruction.vwapAnchor)} · Source {priceSourceLabel(reconstruction.analysisPriceSource)}
+        {reconstruction.priceFallbackReason ? ` · Fallback: ${priceFallbackReasonLabel(reconstruction.priceFallbackReason)}` : ""}
+      </p>
     </div>
   );
 }
@@ -952,10 +957,10 @@ function StructureChart({ chart, reconstruction }) {
     <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Price + Capital Reconstruction Chart</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Market Price + Capital Reconstruction Chart</p>
           <h5 className="mt-1 text-lg font-black text-white">价格路径、成本带与净仓位曲线</h5>
         </div>
-        <span className="text-xs text-slate-500">背景色代表资金阶段</span>
+        <span className="text-xs text-slate-500">价格路径使用 {priceSourceLabel(chart?.marketPriceSource || reconstruction.marketPriceSource)}</span>
       </div>
       <div className="relative h-80 overflow-hidden rounded-xl border border-slate-800 bg-[#050b18]">
         <svg className="h-full w-full" preserveAspectRatio="none" viewBox="0 0 100 100" role="img" aria-label="主力成本结构重建图">
@@ -1010,7 +1015,7 @@ function StructureChart({ chart, reconstruction }) {
           ))}
         </svg>
         <div className="absolute bottom-3 left-4 flex gap-3 text-xs text-slate-400">
-          <span className="text-cyan-200">价格</span>
+          <span className="text-cyan-200">市场价路径</span>
           <span className="text-yellow-200">净仓位</span>
           <span className="text-emerald-200">成本带</span>
           <span className="text-emerald-200">成交量柱</span>
@@ -1656,6 +1661,28 @@ function formatOptionalUsd(value) {
 function formatPctOrNA(value) {
   if (value === null || value === undefined) return "N/A";
   return `${signed(value)}%`;
+}
+
+function priceSourceLabel(value) {
+  if (value === "market_perp") return "PERP";
+  if (value === "market_spot") return "SPOT";
+  if (value === "mark_price") return "MARK";
+  if (value === "vwap") return "VWAP";
+  if (value === "reconstructed") return "MODEL";
+  return "UNKNOWN";
+}
+
+function priceSourceTone(value) {
+  if (value === "market_perp" || value === "market_spot") return "emerald";
+  if (value === "mark_price") return "yellow";
+  if (value === "vwap") return "cyan";
+  return "yellow";
+}
+
+function priceFallbackReasonLabel(value) {
+  if (value === "market_price_unavailable_using_analysis_vwap") return "market unavailable, using VWAP/model";
+  if (value === "perp_last_price_unavailable_using_mark_price") return "perp unavailable, using mark price";
+  return value;
 }
 
 function formatUsd(value) {

@@ -211,6 +211,11 @@ describe("newTokenWatch API", () => {
           symbol: "ABCUSDT",
           timeframe: "4h",
           currentPhase: "accumulation",
+          currentPrice: 1.96,
+          marketPrice: 1.96,
+          marketPriceSource: "market_perp",
+          analysisPrice: 1.94,
+          analysisPriceSource: "vwap",
           densityPeak: 1.93,
           capitalTimeline: {
             dominantPhase: "accumulation",
@@ -354,6 +359,10 @@ describe("newTokenWatch API", () => {
         data: {
           symbol: "ABCUSDT",
           timeframe: "4h",
+          marketPrice: 1.96,
+          marketPriceSource: "market_perp",
+          analysisPrice: 1.94,
+          analysisPriceSource: "vwap",
           points: [],
           phaseSegments: [],
           markers: [],
@@ -371,6 +380,11 @@ describe("newTokenWatch API", () => {
       params: { symbol: "ABCUSDT", tf: "4h" },
     });
     expect(reconstruction.timeframe).toBe("4h");
+    expect(reconstruction.currentPrice).toBe(1.96);
+    expect(reconstruction.marketPrice).toBe(1.96);
+    expect(reconstruction.marketPriceSource).toBe("market_perp");
+    expect(reconstruction.analysisPrice).toBe(1.94);
+    expect(reconstruction.analysisPriceSource).toBe("vwap");
     expect(reconstruction.densityPeak).toBe(1.93);
     expect(reconstruction.capitalTimeline.phases[0].netFlowUsd).toBe(1200000);
     expect(reconstruction.capitalTimeline.phases[0].transitionReason).toBe("low volatility absorption");
@@ -430,6 +444,9 @@ describe("newTokenWatch API", () => {
 
     const reconstruction = await fetchNewTokenReconstruction("XYZUSDT", "15m");
 
+    expect(reconstruction.marketPriceSource).toBe("reconstructed");
+    expect(reconstruction.analysisPriceSource).toBe("vwap");
+    expect(reconstruction.priceFallbackReason).toBeNull();
     expect(reconstruction.capitalTimeline.phases).toEqual([]);
     expect(reconstruction.capitalTimeline.dominantPhase).toBe("neutral");
     expect(reconstruction.positionFlowCurve.points).toEqual([]);

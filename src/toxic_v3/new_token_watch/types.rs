@@ -66,6 +66,30 @@ pub enum ExpectedHoldTime {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSource {
+    MarketSpot,
+    MarketPerp,
+    MarkPrice,
+    Vwap,
+    Reconstructed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketPriceSnapshot {
+    pub price: f64,
+    pub source: PriceSource,
+    pub updated_at_ms: i64,
+    pub change_24h_pct: Option<f64>,
+    pub volume_24h_usd: Option<f64>,
+    pub high_24h: Option<f64>,
+    pub low_24h: Option<f64>,
+    pub stale: bool,
+    pub fallback_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractTick {
@@ -330,6 +354,11 @@ pub struct SmartMoneyReconstructionResponse {
     pub timeframe: String,
     pub current_phase: CapitalPhase,
     pub current_price: f64,
+    pub market_price: f64,
+    pub market_price_source: PriceSource,
+    pub analysis_price: f64,
+    pub analysis_price_source: PriceSource,
+    pub price_fallback_reason: Option<String>,
     pub change_24h_pct: Option<f64>,
     pub volume_24h_usd: Option<f64>,
     pub high_24h: Option<f64>,
@@ -802,6 +831,10 @@ pub struct TokenChartMarker {
 pub struct SmartMoneyChartResponse {
     pub symbol: String,
     pub timeframe: String,
+    pub market_price: f64,
+    pub market_price_source: PriceSource,
+    pub analysis_price: f64,
+    pub analysis_price_source: PriceSource,
     pub points: Vec<TokenChartPoint>,
     pub phase_segments: Vec<PhaseTimelineSegment>,
     pub markers: Vec<TokenChartMarker>,

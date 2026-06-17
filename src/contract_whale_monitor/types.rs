@@ -662,6 +662,183 @@ impl Default for ContractWhaleTrajectory {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleLiquidationZone {
+    #[serde(default)]
+    pub side: String,
+    #[serde(default)]
+    pub low_price_usd: Option<f64>,
+    #[serde(default)]
+    pub high_price_usd: Option<f64>,
+    #[serde(default)]
+    pub estimated_size_usd: f64,
+    #[serde(default)]
+    pub intensity: u8,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl Default for ContractWhaleLiquidationZone {
+    fn default() -> Self {
+        Self {
+            side: "neutral".to_string(),
+            low_price_usd: None,
+            high_price_usd: None,
+            estimated_size_usd: 0.0,
+            intensity: 0,
+            reason: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleForcedFlowAttribution {
+    #[serde(default)]
+    pub whale_pct: f64,
+    #[serde(default)]
+    pub retail_pct: f64,
+    #[serde(default)]
+    pub liquidation_pct: f64,
+    #[serde(default)]
+    pub dominant_driver: String,
+}
+
+impl Default for ContractWhaleForcedFlowAttribution {
+    fn default() -> Self {
+        Self {
+            whale_pct: 1.0,
+            retail_pct: 0.0,
+            liquidation_pct: 0.0,
+            dominant_driver: "whale_initiated_flow".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhalePriceImpactAttribution {
+    #[serde(default)]
+    pub whale_impact: f64,
+    #[serde(default)]
+    pub liquidation_cascade: f64,
+    #[serde(default)]
+    pub stop_loss_sweep: f64,
+    #[serde(default)]
+    pub passive_absorption: f64,
+}
+
+impl Default for ContractWhalePriceImpactAttribution {
+    fn default() -> Self {
+        Self {
+            whale_impact: 0.0,
+            liquidation_cascade: 0.0,
+            stop_loss_sweep: 0.0,
+            passive_absorption: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleLiquidationForce {
+    #[serde(default)]
+    pub active_zone: String,
+    #[serde(default)]
+    pub primary_driver: String,
+    #[serde(default)]
+    pub long_liquidation_pressure: u8,
+    #[serde(default)]
+    pub short_squeeze_pressure: u8,
+    #[serde(default)]
+    pub stop_hunt_probability: u8,
+    #[serde(default)]
+    pub cascade_intensity: u8,
+    #[serde(default)]
+    pub estimated_forced_size_usd: f64,
+    #[serde(default)]
+    pub zones: Vec<ContractWhaleLiquidationZone>,
+    #[serde(default)]
+    pub flow_attribution: ContractWhaleForcedFlowAttribution,
+    #[serde(default)]
+    pub price_impact: ContractWhalePriceImpactAttribution,
+}
+
+impl Default for ContractWhaleLiquidationForce {
+    fn default() -> Self {
+        Self {
+            active_zone: "neutral".to_string(),
+            primary_driver: "whale_initiated_flow".to_string(),
+            long_liquidation_pressure: 0,
+            short_squeeze_pressure: 0,
+            stop_hunt_probability: 0,
+            cascade_intensity: 0,
+            estimated_forced_size_usd: 0.0,
+            zones: Vec::new(),
+            flow_attribution: ContractWhaleForcedFlowAttribution::default(),
+            price_impact: ContractWhalePriceImpactAttribution::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleMarketDriverComponent {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub weight_pct: f64,
+}
+
+impl Default for ContractWhaleMarketDriverComponent {
+    fn default() -> Self {
+        Self {
+            key: "whale_intent".to_string(),
+            score: 0,
+            weight_pct: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleMarketDriver {
+    #[serde(default)]
+    pub primary_driver: String,
+    #[serde(default)]
+    pub market_state: String,
+    #[serde(default)]
+    pub whale_intent_pct: f64,
+    #[serde(default)]
+    pub liquidity_forcing_pct: f64,
+    #[serde(default)]
+    pub derivatives_pressure_pct: f64,
+    #[serde(default)]
+    pub reflexivity_pct: f64,
+    #[serde(default)]
+    pub components: Vec<ContractWhaleMarketDriverComponent>,
+    #[serde(default)]
+    pub interpretation: String,
+}
+
+impl Default for ContractWhaleMarketDriver {
+    fn default() -> Self {
+        Self {
+            primary_driver: "whale_intent".to_string(),
+            market_state: "whale_led_expansion".to_string(),
+            whale_intent_pct: 1.0,
+            liquidity_forcing_pct: 0.0,
+            derivatives_pressure_pct: 0.0,
+            reflexivity_pct: 0.0,
+            components: Vec::new(),
+            interpretation: "市场主要由主动资金流驱动。".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignal {
     pub id: String,
     pub ts: i64,
@@ -780,6 +957,10 @@ pub struct ContractWhaleSignal {
     pub whale_action: ContractWhaleAction,
     #[serde(default)]
     pub trajectory: ContractWhaleTrajectory,
+    #[serde(default)]
+    pub liquidation_force: ContractWhaleLiquidationForce,
+    #[serde(default)]
+    pub market_driver: ContractWhaleMarketDriver,
     pub read_only: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,

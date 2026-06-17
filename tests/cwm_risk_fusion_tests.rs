@@ -1,9 +1,9 @@
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::types::{
-        ContractWhaleActiveSources, ContractWhaleDirection, ContractWhaleMarketType,
-        ContractWhalePriceResponseType, ContractWhaleScoreBreakdown, ContractWhaleSeverity,
-        ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
-        ContractWhaleSpotConfirmationContext,
+        ContractWhaleActiveSources, ContractWhaleDirection, ContractWhaleLiquidationForce,
+        ContractWhaleMarketType, ContractWhalePriceResponseType, ContractWhaleScoreBreakdown,
+        ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType,
+        ContractWhaleSourceRole, ContractWhaleSpotConfirmationContext,
     },
     runtime::{
         cwm_risk_fusion::{
@@ -710,6 +710,12 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         discord_reason: "dry_run".to_string(),
         discord_would_send: true,
         final_result: "多平台主动买入爆发，疑似主力合约拉盘".to_string(),
+        cluster: Default::default(),
+        persistence: Default::default(),
+        whale_action: Default::default(),
+        trajectory: Default::default(),
+        liquidation_force: ContractWhaleLiquidationForce::default(),
+        market_driver: Default::default(),
         read_only: true,
         analysis_only: true,
         execution_enabled: false,

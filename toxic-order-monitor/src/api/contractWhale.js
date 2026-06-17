@@ -361,6 +361,8 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     persistence: normalizePersistenceState(item.persistence),
     whaleAction: normalizeWhaleAction(item.whaleAction),
     trajectory: normalizeWhaleTrajectory(item.trajectory),
+    liquidationForce: normalizeLiquidationForce(item.liquidationForce),
+    marketDriver: normalizeMarketDriver(item.marketDriver),
   };
 }
 
@@ -431,6 +433,75 @@ function normalizeStealthProfile(value) {
     entropy: clampRatio(numberOrNull(source.entropy) ?? 0),
     crossExchangeDispersion: clampRatio(numberOrNull(source.crossExchangeDispersion) ?? 0),
   };
+}
+
+function normalizeLiquidationForce(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const flow = source.flowAttribution && typeof source.flowAttribution === "object" ? source.flowAttribution : {};
+  const impact = source.priceImpact && typeof source.priceImpact === "object" ? source.priceImpact : {};
+  return {
+    activeZone: source.activeZone ? String(source.activeZone) : "neutral",
+    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : (flow.dominantDriver ? String(flow.dominantDriver) : "whale_initiated_flow"),
+    longLiquidationPressure: clampScore(numberOrNull(source.longLiquidationPressure) ?? 0),
+    shortSqueezePressure: clampScore(numberOrNull(source.shortSqueezePressure) ?? 0),
+    stopHuntProbability: clampScore(numberOrNull(source.stopHuntProbability) ?? 0),
+    cascadeIntensity: clampScore(numberOrNull(source.cascadeIntensity) ?? 0),
+    estimatedForcedSizeUsd: numberOrNull(source.estimatedForcedSizeUsd) ?? 0,
+    zones: Array.isArray(source.zones) ? source.zones.map(normalizeLiquidationZone) : [],
+    flowAttribution: {
+      whalePct: clampRatio(numberOrNull(flow.whalePct) ?? 1),
+      retailPct: clampRatio(numberOrNull(flow.retailPct) ?? 0),
+      liquidationPct: clampRatio(numberOrNull(flow.liquidationPct) ?? 0),
+      dominantDriver: flow.dominantDriver ? String(flow.dominantDriver) : "whale_initiated_flow",
+    },
+    priceImpact: {
+      whaleImpact: numberOrNull(impact.whaleImpact) ?? 0,
+      liquidationCascade: numberOrNull(impact.liquidationCascade) ?? 0,
+      stopLossSweep: numberOrNull(impact.stopLossSweep) ?? 0,
+      passiveAbsorption: numberOrNull(impact.passiveAbsorption) ?? 0,
+    },
+  };
+}
+
+function normalizeLiquidationZone(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    side: source.side ? String(source.side) : "neutral",
+    lowPriceUsd: numberOrNull(source.lowPriceUsd),
+    highPriceUsd: numberOrNull(source.highPriceUsd),
+    estimatedSizeUsd: numberOrNull(source.estimatedSizeUsd) ?? 0,
+    intensity: clampScore(numberOrNull(source.intensity) ?? 0),
+    reason: source.reason ? String(source.reason) : "",
+  };
+}
+
+function normalizeMarketDriver(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : "whale_intent",
+    marketState: source.marketState ? String(source.marketState) : "whale_led_expansion",
+    whaleIntentPct: clampRatio(numberOrNull(source.whaleIntentPct) ?? 1),
+    liquidityForcingPct: clampRatio(numberOrNull(source.liquidityForcingPct) ?? 0),
+    derivativesPressurePct: clampRatio(numberOrNull(source.derivativesPressurePct) ?? 0),
+    reflexivityPct: clampRatio(numberOrNull(source.reflexivityPct) ?? 0),
+    components: Array.isArray(source.components) ? source.components.map(normalizeMarketDriverComponent) : [],
+    interpretation: source.interpretation ? String(source.interpretation) : "价格主要由主动资金流驱动。",
+  };
+}
+
+function normalizeMarketDriverComponent(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    key: source.key ? String(source.key) : "whale_intent",
+    score: clampScore(numberOrNull(source.score) ?? 0),
+    weightPct: clampRatio(numberOrNull(source.weightPct) ?? 0),
+  };
+}
+
+function clampScore(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
 }
 
 function clampRatio(value) {

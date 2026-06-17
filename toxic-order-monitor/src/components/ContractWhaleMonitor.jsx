@@ -565,7 +565,9 @@ function RawSignalDebugTable({ items, onOpenSignal }) {
           <HeaderCell>历史分位</HeaderCell>
           <HeaderCell>主导平台</HeaderCell>
           <HeaderCell>价格变化</HeaderCell>
+          <HeaderCell>市场驱动</HeaderCell>
           <HeaderCell>清算</HeaderCell>
+          <HeaderCell>驱动力</HeaderCell>
           <HeaderCell>OI</HeaderCell>
           <HeaderCell>资金费率</HeaderCell>
           <HeaderCell>Discord</HeaderCell>
@@ -618,7 +620,9 @@ function RawSignalDebugTable({ items, onOpenSignal }) {
             <Cell>{formatPercentile(item.percentileLevel)}</Cell>
             <Cell>{item.mainExchange}</Cell>
             <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
+            <Cell>{marketDriverLabel(item.marketDriver?.primaryDriver)}</Cell>
             <Cell>{liquidationStatus(item)}</Cell>
+            <Cell>{liquidationDriverLabel(item.liquidationForce?.primaryDriver)}</Cell>
             <Cell>{oiStatus(item)}</Cell>
             <Cell>{fundingStatus(item)}</Cell>
             <Cell>{discordStatus(item)}</Cell>
@@ -794,6 +798,14 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               </p>
             ) : null}
           </div>
+        </DetailSection>
+
+        <DetailSection title="Full Market Driver Engine" className="mt-4">
+          <MarketDriverPanel signal={signal} />
+        </DetailSection>
+
+        <DetailSection title="Liquidity Force Layer" className="mt-4">
+          <LiquidationForcePanel signal={signal} />
         </DetailSection>
 
         <DetailSection title="Signal Cluster / Persistence" className="mt-4">
@@ -982,6 +994,109 @@ function DetailGrid({ rows }) {
   );
 }
 
+function MarketDriverPanel({ signal }) {
+  const driver = signal.marketDriver || {};
+  const rows = [
+    ["Whale Intent", driver.whaleIntentPct, "主动鲸鱼资金"],
+    ["Liquidity Force", driver.liquidityForcingPct, "流动性真空 / 止损"],
+    ["Derivatives", driver.derivativesPressurePct, "清算 / OI / Funding"],
+    ["Reflexivity", driver.reflexivityPct, "趋势反馈放大"],
+  ];
+  return (
+    <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="console-label text-cyan-200">Market Forcing Function</p>
+          <h5 className="mt-1 text-sm font-bold text-white">
+            Primary Driver: {marketDriverLabel(driver.primaryDriver)}
+          </h5>
+          <p className="mt-1 text-xs text-slate-400">{driver.interpretation || "价格主要由主动资金流驱动。"}</p>
+        </div>
+        <span className="rounded-full border border-cyan-300/25 px-2 py-1 text-[11px] font-bold text-cyan-100">
+          {marketDriverStateLabel(driver.marketState)}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <MetricStack label="Dominant Driver" value={marketDriverLabel(driver.primaryDriver)} detail="final driver fusion" />
+        <MetricStack label="Market State" value={marketDriverStateLabel(driver.marketState)} detail="final classifier" />
+      </div>
+      <div className="mt-3 space-y-2">
+        {rows.map(([label, value, detail]) => (
+          <ProgressRow key={label} label={`${label} · ${detail}`} value={Number(value || 0) * 100} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LiquidationForcePanel({ signal }) {
+  const force = signal.liquidationForce || {};
+  const flow = force.flowAttribution || {};
+  const impact = force.priceImpact || {};
+  const zones = Array.isArray(force.zones) ? force.zones : [];
+  return (
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="console-label text-red-200">Forced Liquidity</p>
+            <h5 className="mt-1 text-sm font-bold text-white">
+              {activeLiquidationZoneLabel(force.activeZone)}
+            </h5>
+          </div>
+          <span className="rounded-full border border-red-400/30 px-2 py-1 text-[11px] font-bold text-red-100">
+            {liquidationDriverLabel(force.primaryDriver)}
+          </span>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <MetricStack label="Long Liq Pressure" value={formatScore(force.longLiquidationPressure)} detail="longs forced sell" />
+          <MetricStack label="Short Squeeze" value={formatScore(force.shortSqueezePressure)} detail="shorts forced buy" />
+          <MetricStack label="Stop Hunt" value={formatScore(force.stopHuntProbability)} detail="wick / reversal risk" />
+          <MetricStack label="Cascade" value={formatScore(force.cascadeIntensity)} detail={formatUsd(force.estimatedForcedSizeUsd)} />
+        </div>
+        <div className="mt-3 space-y-2">
+          <ProgressRow label="Whale initiated" value={Number(flow.whalePct || 0) * 100} />
+          <ProgressRow label="Retail follow" value={Number(flow.retailPct || 0) * 100} />
+          <ProgressRow label="Forced liquidation" value={Number(flow.liquidationPct || 0) * 100} />
+        </div>
+      </div>
+      <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="console-label">Price Impact Attribution</p>
+            <h5 className="mt-1 text-sm font-bold text-white">价格驱动力拆解</h5>
+          </div>
+          <span className="text-xs text-slate-500">alert-only · read-only</span>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <MetricStack label="Whale flow" value={formatSignedPct(impact.whaleImpact)} detail="主动资金影响" />
+          <MetricStack label="Liquidation" value={formatSignedPct(impact.liquidationCascade)} detail="强制平仓影响" />
+          <MetricStack label="Stop-loss sweep" value={formatSignedPct(impact.stopLossSweep)} detail="扫损影响" />
+          <MetricStack label="Absorption" value={formatSignedPct(impact.passiveAbsorption)} detail="被动吸收抵消" />
+        </div>
+        <div className="mt-3 space-y-2">
+          {zones.length ? zones.map((zone, index) => (
+            <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2" key={`${zone.side}-${index}`}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold text-slate-100">{liquidationZoneSideLabel(zone.side)}</p>
+                <span className="text-[11px] font-bold text-cyan-100">{formatScore(zone.intensity)}</span>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                {formatPriceRange(zone.lowPriceUsd, zone.highPriceUsd)} · {formatUsd(zone.estimatedSizeUsd)}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">{liquidationForceReasonLabel(zone.reason)}</p>
+            </div>
+          )) : (
+            <p className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-3 text-xs text-slate-500">
+              当前窗口没有清算区证据，按主动资金流观察。
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ContractWhaleTrendBar({ trend, symbol }) {
   const item = trend || {};
   const baseSymbol = baseAssetSymbol(item.symbol || symbol);
@@ -1056,6 +1171,31 @@ function MiniInfoCard({ label, value, detail }) {
       <p className="console-label">{label}</p>
       <p className="mt-1 font-bold text-slate-100">{value}</p>
       <p className="mt-1 truncate text-slate-400" title={detail}>{detail}</p>
+    </div>
+  );
+}
+
+function MetricStack({ label, value, detail }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-black text-slate-100">{value}</p>
+      <p className="mt-1 truncate text-[11px] text-slate-500" title={detail}>{detail}</p>
+    </div>
+  );
+}
+
+function ProgressRow({ label, value }) {
+  const percent = Math.max(0, Math.min(100, Number(value || 0)));
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-slate-400">
+        <span>{label}</span>
+        <span className="font-semibold text-slate-200">{formatPct(percent)}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+        <div className="h-full rounded-full bg-cyan-400/80" style={{ width: `${percent}%` }} />
+      </div>
     </div>
   );
 }
@@ -1997,6 +2137,73 @@ function liquidationStatus(item) {
     ? "N/A"
     : formatPct(Number(item.liquidationRatio) * 100);
   return `疑似强平 ${formatBaseVolume(total, item.symbol)} / ${ratio}`;
+}
+
+function activeLiquidationZoneLabel(value) {
+  const labels = {
+    long_liquidation_zone: "Long Liquidation Zone",
+    short_squeeze_zone: "Short Squeeze Zone",
+    stop_loss_sweep_zone: "Stop-loss Sweep Zone",
+    neutral: "Neutral Zone",
+  };
+  return labels[value] || "Neutral Zone";
+}
+
+function marketDriverLabel(value) {
+  const labels = {
+    whale_intent: "Whale Intent",
+    liquidity_forcing: "Liquidity Forcing",
+    derivatives_pressure: "Derivatives Pressure",
+    reflexivity_feedback: "Reflexivity Feedback",
+  };
+  return labels[value] || "Whale Intent";
+}
+
+function marketDriverStateLabel(value) {
+  const labels = {
+    whale_led_expansion: "Whale-led Expansion",
+    whale_led_distribution: "Whale-led Distribution",
+    liquidity_squeeze_regime: "Liquidity Squeeze",
+    liquidation_cascade_regime: "Liquidation Cascade",
+    short_squeeze_regime: "Short Squeeze",
+    stop_hunt_regime: "Stop Hunt",
+    derivatives_pressure_regime: "Derivatives Pressure",
+    reflexive_trend_phase: "Reflexive Trend",
+  };
+  return labels[value] || "Whale-led Expansion";
+}
+
+function liquidationDriverLabel(value) {
+  const labels = {
+    whale_initiated_flow: "Whale Flow",
+    liquidation_cascade: "Liquidation",
+    retail_follow_flow: "Retail Follow",
+  };
+  return labels[value] || "Whale Flow";
+}
+
+function liquidationZoneSideLabel(value) {
+  const labels = {
+    long_liquidation: "Long liquidation cluster",
+    short_liquidation: "Short liquidation cluster",
+    neutral: "Neutral zone",
+  };
+  return labels[value] || "Liquidation cluster";
+}
+
+function liquidationForceReasonLabel(value) {
+  const labels = {
+    "downside stop-loss and long liquidation cluster": "下方止损与多头强平区",
+    "upside stop-loss and short liquidation cluster": "上方止损与空头强平区",
+  };
+  return labels[value] || value || "清算代理区";
+}
+
+function formatPriceRange(low, high) {
+  const lowText = formatPrice(low);
+  const highText = formatPrice(high);
+  if (lowText === "N/A" && highText === "N/A") return "price N/A";
+  return `${lowText} - ${highText}`;
 }
 
 function oiStatus(item) {

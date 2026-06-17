@@ -9,12 +9,14 @@ pub mod adapter;
 pub mod collector;
 pub mod engine;
 pub mod manager;
+pub mod market_truth;
 pub mod types;
 
 pub use adapter::NewTokenSignalAdapter;
 pub use collector::ContractFlowCollector;
 pub use engine::NewTokenFlowEngine;
 pub use manager::{normalize_symbol, TokenWatchError, TokenWatchManager};
+pub use market_truth::fetch_market_price_snapshot;
 pub use types::{
     AdvisoryDirection, BehaviorProbabilities, BehaviorWindowMetrics, CapitalPhase,
     CapitalStructureView, CapitalTimeline, CapitalTimelinePhase, ContractTick, ContractTickSide,
@@ -22,13 +24,14 @@ pub use types::{
     EstimatedPositionSize, ExpectedHoldTime, FlowActorRegime, ForcedFlowAttribution,
     LastAccumulationNode, LatentPositionPoint, LiquidationZone, LiquidityForceState,
     LiquidityReactionMap, LiquidityVacuumZone, MarketDynamicsState, MarketEnergy,
-    MarketStateVector, MarketStateVelocity, NewTokenWatchMutationResponse, NewTokenWatchRequest,
-    PhaseTimelineSegment, PositionFlowCurve, PositionFlowPoint, PositionPathSegment,
-    PositionSmoothing, PositionValidityGate, PriceImpactDecomposition, RegimeTransitionProbability,
-    SignalCompressionState, SmartLevel, SmartMoneyChartResponse, SmartMoneyDecomposition,
-    SmartMoneyPositionReconstruction, SmartMoneyReconstructionResponse, StabilityRegime,
-    StopLossCascadeState, TimeHorizonInference, TokenChartMarker, TokenChartPoint, TokenFlowRegime,
-    TokenFlowSignal, TokenWatchItem, TokenWatchListResponse, TradeSignalAdvisory,
-    TradingDecisionEntry, TradingDecisionExit, TradingDecisionKernel, TradingInvalidation,
-    TradingPositionSize, TradingStabilityKernel, MAX_ACTIVE_TOKENS,
+    MarketPriceSnapshot, MarketStateVector, MarketStateVelocity, NewTokenWatchMutationResponse,
+    NewTokenWatchRequest, PhaseTimelineSegment, PositionFlowCurve, PositionFlowPoint,
+    PositionPathSegment, PositionSmoothing, PositionValidityGate, PriceImpactDecomposition,
+    PriceSource, RegimeTransitionProbability, SignalCompressionState, SmartLevel,
+    SmartMoneyChartResponse, SmartMoneyDecomposition, SmartMoneyPositionReconstruction,
+    SmartMoneyReconstructionResponse, StabilityRegime, StopLossCascadeState, TimeHorizonInference,
+    TokenChartMarker, TokenChartPoint, TokenFlowRegime, TokenFlowSignal, TokenWatchItem,
+    TokenWatchListResponse, TradeSignalAdvisory, TradingDecisionEntry, TradingDecisionExit,
+    TradingDecisionKernel, TradingInvalidation, TradingPositionSize, TradingStabilityKernel,
+    MAX_ACTIVE_TOKENS,
 };

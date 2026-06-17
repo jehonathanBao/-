@@ -10,13 +10,13 @@ use super::{
         BehaviorProbabilities, CapitalPhase, CapitalTimeline, CapitalTimelinePhase, ContractTick,
         CostDistributionBand, DecisionOrderType, DecisionTiming, ForcedFlowAttribution,
         LiquidationZone, LiquidityForceState, LiquidityReactionMap, LiquidityVacuumZone,
-        MarketDynamicsState, MarketEnergy, MarketStateVector, MarketStateVelocity,
-        PhaseTimelineSegment, PositionFlowCurve, PositionFlowPoint, PriceImpactDecomposition,
-        RegimeTransitionProbability, SmartLevel, SmartMoneyChartResponse,
-        SmartMoneyReconstructionResponse, StabilityRegime, StopLossCascadeState, TokenChartMarker,
-        TokenChartPoint, TokenWatchItem, TokenWatchListResponse, TradingDecisionEntry,
-        TradingDecisionExit, TradingDecisionKernel, TradingInvalidation, TradingPositionSize,
-        MAX_ACTIVE_TOKENS,
+        MarketDynamicsState, MarketEnergy, MarketPriceSnapshot, MarketStateVector,
+        MarketStateVelocity, PhaseTimelineSegment, PositionFlowCurve, PositionFlowPoint,
+        PriceImpactDecomposition, PriceSource, RegimeTransitionProbability, SmartLevel,
+        SmartMoneyChartResponse, SmartMoneyReconstructionResponse, StabilityRegime,
+        StopLossCascadeState, TokenChartMarker, TokenChartPoint, TokenWatchItem,
+        TokenWatchListResponse, TradingDecisionEntry, TradingDecisionExit, TradingDecisionKernel,
+        TradingInvalidation, TradingPositionSize, MAX_ACTIVE_TOKENS,
     },
 };
 use crate::normalizers::trade::now_ms;
@@ -100,8 +100,21 @@ impl TokenWatchManager {
         raw_symbol: &str,
         timeframe: &str,
     ) -> Result<SmartMoneyReconstructionResponse, TokenWatchError> {
+        self.get_reconstruction_with_market(raw_symbol, timeframe, None)
+    }
+
+    pub fn get_reconstruction_with_market(
+        &self,
+        raw_symbol: &str,
+        timeframe: &str,
+        market_price: Option<MarketPriceSnapshot>,
+    ) -> Result<SmartMoneyReconstructionResponse, TokenWatchError> {
         let item = self.refresh_item(raw_symbol)?;
-        Ok(build_reconstruction_response(&item, timeframe))
+        Ok(build_reconstruction_response(
+            &item,
+            timeframe,
+            market_price,
+        ))
     }
 
     pub fn get_chart(
@@ -109,8 +122,17 @@ impl TokenWatchManager {
         raw_symbol: &str,
         timeframe: &str,
     ) -> Result<SmartMoneyChartResponse, TokenWatchError> {
+        self.get_chart_with_market(raw_symbol, timeframe, None)
+    }
+
+    pub fn get_chart_with_market(
+        &self,
+        raw_symbol: &str,
+        timeframe: &str,
+        market_price: Option<MarketPriceSnapshot>,
+    ) -> Result<SmartMoneyChartResponse, TokenWatchError> {
         let item = self.refresh_item(raw_symbol)?;
-        Ok(build_chart_response(&item, timeframe))
+        Ok(build_chart_response(&item, timeframe, market_price))
     }
 
     fn refresh_item(&self, raw_symbol: &str) -> Result<TokenWatchItem, TokenWatchError> {
@@ -135,6 +157,7 @@ impl TokenWatchManager {
 fn build_reconstruction_response(
     item: &TokenWatchItem,
     timeframe: &str,
+    market_price: Option<MarketPriceSnapshot>,
 ) -> SmartMoneyReconstructionResponse {
     let tf = normalize_timeframe(timeframe);
     let signal = &item.last_signal;
@@ -142,7 +165,9 @@ fn build_reconstruction_response(
     let reconstruction = &signal.position_reconstruction;
     let cost = &capital.cost_basis;
     let position = &capital.estimated_position;
-    let current_price = current_price(item).max(0.0);
+    let analysis_price = analysis_price(item).max(0.0);
+    let market_snapshot = select_market_price(market_price, analysis_price);
+    let current_price = market_snapshot.price.max(0.0);
     let estimated_net_position_base = reconstruction
         .latent_position
         .last()
@@ -185,10 +210,15 @@ fn build_reconstruction_response(
         timeframe: tf,
         current_phase: capital.phase,
         current_price,
-        change_24h_pct: None,
-        volume_24h_usd: None,
-        high_24h: None,
-        low_24h: None,
+        market_price: current_price,
+        market_price_source: market_snapshot.source,
+        analysis_price,
+        analysis_price_source: PriceSource::Vwap,
+        price_fallback_reason: market_snapshot.fallback_reason.clone(),
+        change_24h_pct: market_snapshot.change_24h_pct,
+        volume_24h_usd: market_snapshot.volume_24h_usd,
+        high_24h: market_snapshot.high_24h,
+        low_24h: market_snapshot.low_24h,
         market_cap_usd: None,
         cost_basis_low: cost.lower,
         cost_basis_high: cost.upper,
@@ -220,8 +250,14 @@ fn build_reconstruction_response(
     }
 }
 
-fn build_chart_response(item: &TokenWatchItem, timeframe: &str) -> SmartMoneyChartResponse {
+fn build_chart_response(
+    item: &TokenWatchItem,
+    timeframe: &str,
+    market_price: Option<MarketPriceSnapshot>,
+) -> SmartMoneyChartResponse {
     let reconstruction = &item.last_signal.position_reconstruction;
+    let analysis_price = analysis_price(item).max(0.0);
+    let market_snapshot = select_market_price(market_price, analysis_price);
     let mut previous_position = 0.0;
     let points = reconstruction
         .latent_position
@@ -241,6 +277,10 @@ fn build_chart_response(item: &TokenWatchItem, timeframe: &str) -> SmartMoneyCha
     SmartMoneyChartResponse {
         symbol: item.symbol.clone(),
         timeframe: normalize_timeframe(timeframe),
+        market_price: market_snapshot.price,
+        market_price_source: market_snapshot.source,
+        analysis_price,
+        analysis_price_source: PriceSource::Vwap,
         points,
         phase_segments: build_phase_timeline(item),
         markers,
@@ -256,13 +296,48 @@ fn normalize_timeframe(timeframe: &str) -> String {
 }
 
 fn current_price(item: &TokenWatchItem) -> f64 {
+    market_tick_price(item).unwrap_or_else(|| analysis_price(item))
+}
+
+fn market_tick_price(item: &TokenWatchItem) -> Option<f64> {
     item.last_signal
         .position_reconstruction
         .latent_position
         .last()
         .map(|point| point.price)
-        .filter(|price| *price > 0.0)
-        .unwrap_or(item.last_signal.capital_structure.cost_basis.vwap_anchor)
+        .filter(|price| price.is_finite() && *price > 0.0)
+}
+
+fn analysis_price(item: &TokenWatchItem) -> f64 {
+    let cost = &item.last_signal.capital_structure.cost_basis;
+    if cost.vwap_anchor.is_finite() && cost.vwap_anchor > 0.0 {
+        cost.vwap_anchor
+    } else {
+        market_tick_price(item).unwrap_or_default()
+    }
+}
+
+fn select_market_price(
+    market_price: Option<MarketPriceSnapshot>,
+    fallback_price: f64,
+) -> MarketPriceSnapshot {
+    if let Some(snapshot) = market_price
+        .filter(|snapshot| snapshot.price.is_finite() && snapshot.price > 0.0 && !snapshot.stale)
+    {
+        snapshot
+    } else {
+        MarketPriceSnapshot {
+            price: fallback_price.max(0.0),
+            source: PriceSource::Reconstructed,
+            updated_at_ms: now_ms(),
+            change_24h_pct: None,
+            volume_24h_usd: None,
+            high_24h: None,
+            low_24h: None,
+            stale: true,
+            fallback_reason: Some("market_price_unavailable_using_analysis_vwap".to_string()),
+        }
+    }
 }
 
 fn pct_change(current: f64, basis: f64) -> f64 {

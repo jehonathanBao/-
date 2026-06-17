@@ -90,6 +90,11 @@ export function normalizeNewTokenReconstruction(payload = {}) {
     timeframe: payload.timeframe || "15m",
     currentPhase: payload.currentPhase || "neutral",
     currentPrice: Number(payload.currentPrice || 0),
+    marketPrice: Number(payload.marketPrice ?? payload.currentPrice ?? 0),
+    marketPriceSource: payload.marketPriceSource || "reconstructed",
+    analysisPrice: Number(payload.analysisPrice ?? payload.vwapAnchor ?? 0),
+    analysisPriceSource: payload.analysisPriceSource || "vwap",
+    priceFallbackReason: payload.priceFallbackReason || null,
     change24hPct: optionalNumber(payload.change24hPct),
     volume24hUsd: optionalNumber(payload.volume24hUsd),
     high24h: optionalNumber(payload.high24h),
@@ -145,6 +150,10 @@ export function normalizeNewTokenChart(payload = {}) {
   return {
     symbol: String(payload.symbol || "").toUpperCase(),
     timeframe: payload.timeframe || "15m",
+    marketPrice: Number(payload.marketPrice || 0),
+    marketPriceSource: payload.marketPriceSource || "reconstructed",
+    analysisPrice: Number(payload.analysisPrice || 0),
+    analysisPriceSource: payload.analysisPriceSource || "vwap",
     points: Array.isArray(payload.points) ? payload.points.map(normalizeChartPoint) : [],
     phaseSegments: Array.isArray(payload.phaseSegments)
       ? payload.phaseSegments.map(normalizePhaseTimelineSegment)

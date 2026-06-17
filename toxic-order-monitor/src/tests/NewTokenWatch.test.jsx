@@ -168,6 +168,10 @@ vi.mock("../api/newTokenWatch.js", () => ({
       timeframe: "15m",
       currentPhase: "accumulation",
       currentPrice: 1.95,
+      marketPrice: 1.95,
+      marketPriceSource: "market_perp",
+      analysisPrice: 1.94,
+      analysisPriceSource: "vwap",
       change24hPct: null,
       volume24hUsd: null,
       high24h: null,
@@ -581,6 +585,10 @@ describe("NewTokenWatch", () => {
     expect(await screen.findByText("机构级智能资金终端")).toBeInTheDocument();
     expect(screen.getByText("ABCUSDT")).toBeInTheDocument();
     expect(await screen.findByText("成本结构与仓位状态")).toBeInTheDocument();
+    expect(screen.getByText("Market Price")).toBeInTheDocument();
+    expect(screen.getByText("Price Source")).toBeInTheDocument();
+    expect(screen.getAllByText("PERP").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Analysis price: \$1.94 · Source VWAP/)).toBeInTheDocument();
     expect(screen.getByText("Capital Structure Overview")).toBeInTheDocument();
     expect(screen.getByText("Capital Phase Bar")).toBeInTheDocument();
     expect(screen.getByText("Timeframe Structure Stack")).toBeInTheDocument();

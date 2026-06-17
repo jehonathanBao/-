@@ -1,6 +1,7 @@
 use btc_toxic_flow_monitor_rs::toxic_v3::new_token_watch::{
     AdvisoryDirection, CapitalPhase, ContractTick, ContractTickSide, FlowActorRegime,
-    NewTokenFlowEngine, StabilityRegime, TokenFlowRegime, TokenWatchManager, MAX_ACTIVE_TOKENS,
+    MarketPriceSnapshot, NewTokenFlowEngine, PriceSource, StabilityRegime, TokenFlowRegime,
+    TokenWatchManager, MAX_ACTIVE_TOKENS,
 };
 
 fn tick(
@@ -33,6 +34,14 @@ fn manager_add_remove_and_capacity_limit() {
         .expect("reconstruction response");
     assert_eq!(reconstruction.symbol, "ABCUSDT");
     assert_eq!(reconstruction.timeframe, "15m");
+    assert_eq!(
+        reconstruction.market_price_source,
+        PriceSource::Reconstructed
+    );
+    assert_eq!(reconstruction.analysis_price_source, PriceSource::Vwap);
+    assert_eq!(reconstruction.current_price, reconstruction.market_price);
+    assert!(reconstruction.analysis_price > 0.0);
+    assert!(reconstruction.price_fallback_reason.is_some());
     assert!(reconstruction.read_only);
     assert!(reconstruction.cost_basis_low <= reconstruction.vwap_anchor);
     assert!(reconstruction.vwap_anchor <= reconstruction.cost_basis_high);
@@ -78,8 +87,35 @@ fn manager_add_remove_and_capacity_limit() {
         .get_reconstruction("ABCUSDT", "4h")
         .expect("4h reconstruction response");
     assert_eq!(reconstruction_4h.timeframe, "4h");
+    let market_reconstruction = manager
+        .get_reconstruction_with_market(
+            "ABCUSDT",
+            "15m",
+            Some(MarketPriceSnapshot {
+                price: 123.45,
+                source: PriceSource::MarketPerp,
+                updated_at_ms: 1,
+                change_24h_pct: Some(1.2),
+                volume_24h_usd: Some(4_200_000.0),
+                high_24h: Some(130.0),
+                low_24h: Some(118.0),
+                stale: false,
+                fallback_reason: None,
+            }),
+        )
+        .expect("market-backed reconstruction response");
+    assert_eq!(market_reconstruction.current_price, 123.45);
+    assert_eq!(market_reconstruction.market_price, 123.45);
+    assert_eq!(
+        market_reconstruction.market_price_source,
+        PriceSource::MarketPerp
+    );
+    assert_eq!(market_reconstruction.price_fallback_reason, None);
+    assert_eq!(market_reconstruction.change_24h_pct, Some(1.2));
     let chart = manager.get_chart("abc", "bad_tf").expect("chart response");
     assert_eq!(chart.timeframe, "15m");
+    assert_eq!(chart.market_price_source, PriceSource::Reconstructed);
+    assert_eq!(chart.analysis_price_source, PriceSource::Vwap);
     assert!(chart.read_only);
     assert!(!chart.points.is_empty());
     let chart_4h = manager.get_chart("abc", "4h").expect("4h chart response");
