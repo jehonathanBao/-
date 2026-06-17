@@ -5,12 +5,15 @@ use crate::spot_whale_monitor::types::SpotWhaleSignal;
 
 use super::sqlite::SqliteStore;
 
+pub const SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 200.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct SpotWhaleSignalQuery {
     pub symbol: Option<String>,
     pub severity: Option<String>,
     pub signal_type: Option<String>,
     pub discord_sent: Option<bool>,
+    pub min_abs_net_volume_base: Option<f64>,
     pub limit: usize,
     pub offset: usize,
 }
@@ -29,6 +32,11 @@ pub trait SpotWhaleRepo {
         reason: &str,
     ) -> anyhow::Result<usize>;
     fn count_spot_whale_signals(&self, symbol: &str) -> anyhow::Result<usize>;
+    fn prune_spot_whale_signals_older_than(
+        &self,
+        cutoff_ts: i64,
+        preserve_abs_net_volume_base: f64,
+    ) -> anyhow::Result<usize>;
 }
 
 impl SpotWhaleRepo for SqliteStore {
@@ -115,6 +123,9 @@ impl SpotWhaleRepo for SqliteStore {
         let severity = query.severity.as_deref().map(compact_filter_value);
         let signal_type = query.signal_type.as_deref().map(compact_filter_value);
         let discord_sent = query.discord_sent.map(bool_to_int);
+        let min_abs_net_volume_base = query
+            .min_abs_net_volume_base
+            .filter(|value| value.is_finite() && *value > 0.0);
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
@@ -124,8 +135,9 @@ impl SpotWhaleRepo for SqliteStore {
                   AND (?2 IS NULL OR LOWER(REPLACE(severity, '_', '')) = ?2)
                   AND (?3 IS NULL OR LOWER(REPLACE(signal_type, '_', '')) = ?3)
                   AND (?4 IS NULL OR discord_sent = ?4)
+                  AND (?5 IS NULL OR ABS(net_volume_base) >= ?5)
                 ORDER BY ts DESC
-                LIMIT ?5 OFFSET ?6
+                LIMIT ?6 OFFSET ?7
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -134,6 +146,7 @@ impl SpotWhaleRepo for SqliteStore {
                     severity.as_deref(),
                     signal_type.as_deref(),
                     discord_sent,
+                    min_abs_net_volume_base,
                     query.limit as i64,
                     query.offset as i64,
                 ],
@@ -202,6 +215,32 @@ impl SpotWhaleRepo for SqliteStore {
                 |row| row.get::<_, i64>(0),
             )?;
             Ok(count.max(0) as usize)
+        })
+    }
+
+    fn prune_spot_whale_signals_older_than(
+        &self,
+        cutoff_ts: i64,
+        preserve_abs_net_volume_base: f64,
+    ) -> anyhow::Result<usize> {
+        let threshold =
+            if preserve_abs_net_volume_base.is_finite() && preserve_abs_net_volume_base > 0.0 {
+                preserve_abs_net_volume_base
+            } else {
+                SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
+            };
+        self.with_connection(|conn| {
+            let changed = conn
+                .execute(
+                    r#"
+                    DELETE FROM spot_whale_signals
+                    WHERE ts < ?1
+                      AND ABS(net_volume_base) < ?2
+                    "#,
+                    params![cutoff_ts, threshold],
+                )
+                .context("failed to prune spot whale signals")?;
+            Ok(changed)
         })
     }
 }

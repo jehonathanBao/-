@@ -19,7 +19,9 @@ use btc_toxic_flow_monitor_rs::{
         },
     },
     storage::{
-        spot_whale_repo::{SpotWhaleRepo, SpotWhaleSignalQuery},
+        spot_whale_repo::{
+            SpotWhaleRepo, SpotWhaleSignalQuery, SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+        },
         SqliteStore,
     },
 };
@@ -161,6 +163,87 @@ fn spot_whale_signal_history_survives_reopen_and_tracks_discord_state() {
 }
 
 #[test]
+fn spot_whale_history_filters_by_absolute_net_direction() {
+    let store = temp_store("spot-whale-abs-net-filter");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+
+    let positive = signal_with_net(&base, "positive-250", 1, 250.0);
+    let negative = signal_with_net(&base, "negative-520", 2, -520.0);
+    let weak = signal_with_net(&base, "weak-150", 3, 150.0);
+
+    store.upsert_spot_whale_signal(&positive).unwrap();
+    store.upsert_spot_whale_signal(&negative).unwrap();
+    store.upsert_spot_whale_signal(&weak).unwrap();
+
+    let rows = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            min_abs_net_volume_base: Some(200.0),
+            limit: 10,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    let ids = rows
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![negative.id.as_str(), positive.id.as_str()]);
+
+    let rows = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            min_abs_net_volume_base: Some(500.0),
+            limit: 10,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, negative.id);
+}
+
+#[test]
+fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
+    let store = temp_store("spot-whale-prune-preserve-net");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    let cutoff_ts = base.ts + 10_000;
+
+    let old_protected = signal_with_net(&base, "old-protected-negative-250", -20_000, -250.0);
+    let old_weak = signal_with_net(&base, "old-weak-150", -19_000, 150.0);
+    let recent_weak = signal_with_net(&base, "recent-weak-100", 20_000, 100.0);
+
+    store.upsert_spot_whale_signal(&old_protected).unwrap();
+    store.upsert_spot_whale_signal(&old_weak).unwrap();
+    store.upsert_spot_whale_signal(&recent_weak).unwrap();
+
+    let pruned = store
+        .prune_spot_whale_signals_older_than(
+            cutoff_ts,
+            SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+        )
+        .unwrap();
+    assert_eq!(pruned, 1);
+
+    let rows = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 10,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    let ids = rows
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&old_protected.id.as_str()));
+    assert!(ids.contains(&recent_weak.id.as_str()));
+    assert!(!ids.contains(&old_weak.id.as_str()));
+}
+
+#[test]
 fn spot_whale_service_restores_persisted_history_on_startup() {
     let store = temp_store("spot-whale-service-restore");
     let config = SpotWhaleRuntimeConfig::default();
@@ -263,4 +346,18 @@ fn contribution(exchange: &str, buy: f64, sell: f64) -> SpotExchangeContribution
         dominance: net.abs() / total,
         trade_count: 10,
     }
+}
+
+fn signal_with_net(
+    base: &btc_toxic_flow_monitor_rs::spot_whale_monitor::types::SpotWhaleSignal,
+    suffix: &str,
+    ts_delta_ms: i64,
+    net_volume_base: f64,
+) -> btc_toxic_flow_monitor_rs::spot_whale_monitor::types::SpotWhaleSignal {
+    let mut signal = base.clone();
+    signal.id = format!("{}-{suffix}", base.id);
+    signal.ts = base.ts + ts_delta_ms;
+    signal.net_volume_base = net_volume_base;
+    signal.dominance = net_volume_base.abs() / signal.total_volume_base.max(1.0);
+    signal
 }

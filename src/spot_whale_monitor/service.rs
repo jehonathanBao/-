@@ -322,6 +322,7 @@ impl SpotWhaleService {
                 severity: query.severity.clone(),
                 signal_type: query.signal_type.clone(),
                 discord_sent: query.discord_sent,
+                min_abs_net_volume_base: query.min_abs_net_volume_base,
                 limit,
                 ..SpotWhaleSignalQuery::default()
             })
@@ -355,6 +356,12 @@ impl SpotWhaleService {
                         query
                             .discord_sent
                             .map(|value| signal.discord_sent == value)
+                            .unwrap_or(true)
+                    })
+                    .filter(|signal| {
+                        query
+                            .min_abs_net_volume_base
+                            .map(|threshold| signal.net_volume_base.abs() >= threshold)
                             .unwrap_or(true)
                     })
                     .take(limit)
@@ -607,6 +614,7 @@ pub struct SpotWhaleQuery {
     pub severity: Option<String>,
     pub signal_type: Option<String>,
     pub discord_sent: Option<bool>,
+    pub min_abs_net_volume_base: Option<f64>,
     pub limit: Option<usize>,
 }
 

@@ -5,6 +5,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import SpotWhaleMonitor from "../components/SpotWhaleMonitor.jsx";
 import {
+  fetchSpotWhaleHistory,
   fetchSpotWhaleLatest,
   fetchSpotWhaleSummary,
 } from "../api/spotWhale.js";
@@ -103,20 +104,48 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getByText("符合 gate")).toBeInTheDocument();
   });
 
-  it("filters visible spot signals by signed net direction threshold", async () => {
+  it("filters visible spot signals by absolute net direction threshold", async () => {
     const user = userEvent.setup();
     render(<SpotWhaleMonitor />);
 
     expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("净方向"), "pos100");
-    expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toBeInTheDocument();
-
-    await user.selectOptions(screen.getByLabelText("净方向"), "neg50");
-    await waitFor(() => {
-      expect(screen.queryByTestId("spot-whale-row-spot-whale-BTC")).not.toBeInTheDocument();
+    fetchSpotWhaleHistory.mockResolvedValueOnce({
+      summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+      items: [
+        {
+          id: "spot-whale-negative-BTC",
+          ts: 1_700_000_000_001,
+          symbol: "BTC",
+          windowSec: 15,
+          signalType: "spot_aggressive_sell",
+          direction: "sell",
+          severity: "critical",
+          score: 86,
+          totalVolumeBase: 680,
+          netVolumeBase: -520,
+          totalNotionalUsd: 44_000_000,
+          dominance: 0.76,
+          priceMovePct: -0.18,
+          coinbasePremiumPct: -0.02,
+          mainExchange: "coinbase",
+          dataQuality: 90,
+          discordEligible: true,
+          discordSent: false,
+          discordReason: "critical_or_s_gate",
+          exchanges: [],
+          finalResult: "现货主动卖出同步放大",
+        },
+      ],
+      error: null,
     });
-    expect(screen.getByText("暂无匹配净方向阈值的现货异动")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
+    expect(fetchSpotWhaleHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 50, net_direction: "abs500", symbol: "BTC" }),
+    );
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-negative-BTC")).toBeInTheDocument();
+    expect(screen.getByText("-520 BTC")).toBeInTheDocument();
   });
 
   it("refreshes summary and latest when switching to ETH", async () => {

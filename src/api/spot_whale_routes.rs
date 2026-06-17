@@ -16,6 +16,7 @@ pub struct SpotWhaleApiQuery {
     pub severity: Option<String>,
     pub signal_type: Option<String>,
     pub discord_sent: Option<String>,
+    pub net_direction: Option<String>,
 }
 
 pub async fn spot_whale_summary_route(
@@ -56,6 +57,7 @@ pub async fn spot_whale_history_route(
             ));
         }
     };
+    let min_abs_net_volume_base = parse_net_direction_filter(query.net_direction.as_deref())?;
     Ok(Json(serde_json::json!(state.spot_whale_service().history(
         SpotWhaleQuery {
             symbol: Some(symbol),
@@ -66,6 +68,7 @@ pub async fn spot_whale_history_route(
                 .signal_type
                 .filter(|value| !value.eq_ignore_ascii_case("all")),
             discord_sent,
+            min_abs_net_volume_base,
             limit: Some(limit),
         }
     ))))
@@ -89,6 +92,30 @@ fn parse_limit(value: Option<&str>) -> Result<usize, (StatusCode, Json<serde_jso
             .map(|limit| limit.clamp(1, 200))
             .map_err(|_| bad_request("invalid_limit", "limit must be a positive integer")),
         None => Ok(50),
+    }
+}
+
+fn parse_net_direction_filter(
+    value: Option<&str>,
+) -> Result<Option<f64>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if raw.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+    let compact = raw
+        .chars()
+        .filter(|ch| *ch != '_' && *ch != '-' && !ch.is_whitespace())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>();
+    match compact.as_str() {
+        "abs200" | "gte200" | "min200" | "200" => Ok(Some(200.0)),
+        "abs500" | "gte500" | "min500" | "500" => Ok(Some(500.0)),
+        _ => Err(bad_request(
+            "invalid_net_direction",
+            "net_direction must be all, abs200, or abs500",
+        )),
     }
 }
 

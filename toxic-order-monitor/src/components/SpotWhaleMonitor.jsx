@@ -292,12 +292,8 @@ function SpotWhaleFilters({ filters, onChange }) {
           value={filters.net_direction}
         >
           <option value="all">全部</option>
-          <option value="pos50">净买入 ≥ 50</option>
-          <option value="pos100">净买入 ≥ 100</option>
-          <option value="pos200">净买入 ≥ 200</option>
-          <option value="neg50">净卖出 ≤ -50</option>
-          <option value="neg100">净卖出 ≤ -100</option>
-          <option value="neg200">净卖出 ≤ -200</option>
+          <option value="abs200">大于 200（正负）</option>
+          <option value="abs500">大于 500（正负）</option>
         </select>
       </label>
     </div>
@@ -433,13 +429,23 @@ function Cell({ children }) {
 }
 
 function shouldUseHistory(filters) {
-  return filters.severity !== "all" || filters.signal_type !== "all" || filters.discord_sent !== "all";
+  return (
+    filters.severity !== "all" ||
+    filters.signal_type !== "all" ||
+    filters.discord_sent !== "all" ||
+    filters.net_direction !== "all"
+  );
 }
 
 function filterByNetDirection(items, filter) {
   if (!Array.isArray(items)) return [];
   const value = String(filter || "all").toLowerCase();
   if (value === "all") return items;
+  const absoluteMatch = value.match(/^abs(200|500)$/);
+  if (absoluteMatch) {
+    const threshold = Number(absoluteMatch[1]);
+    return items.filter((item) => Math.abs(Number(item?.netVolumeBase || 0)) >= threshold);
+  }
   const match = value.match(/^(pos|neg)(50|100|200)$/);
   if (!match) return items;
   const threshold = Number(match[2]);
