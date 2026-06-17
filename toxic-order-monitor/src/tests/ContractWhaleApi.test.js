@@ -448,6 +448,7 @@ describe("contract whale api", () => {
       severity: "critical",
       signal_type: "aggressive_buy",
       direction: "buy",
+      net_direction: "abs1000",
       discord_sent: "true",
       window_sec: "15",
       exchange: "binance",
@@ -455,7 +456,7 @@ describe("contract whale api", () => {
     });
 
     expect(axios.get).toHaveBeenCalledWith(
-      "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&discord_sent=true&window_sec=15&exchange=binance&limit=50",
+      "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&net_direction=abs1000&discord_sent=true&window_sec=15&exchange=binance&limit=50",
     );
     expect(payload.items).toHaveLength(1);
     expect(payload.meta).toMatchObject({

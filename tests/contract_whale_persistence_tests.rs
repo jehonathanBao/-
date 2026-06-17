@@ -316,6 +316,7 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     buy_critical.id = "contract-whale:BTC:15:1700000000000:buy-critical".to_string();
     buy_critical.ts = 1_700_000_000_000;
     buy_critical.severity = ContractWhaleSeverity::Critical;
+    buy_critical.net_volume_btc = 800.0;
 
     let mut buy_s = base.clone();
     buy_s.id = "contract-whale:BTC:15:1700000010000:buy-s".to_string();
@@ -323,6 +324,7 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     buy_s.severity = ContractWhaleSeverity::S;
     buy_s.discord_sent = true;
     buy_s.discord_sent_at = Some(buy_s.ts + 1);
+    buy_s.net_volume_btc = 1_200.0;
 
     let mut sell_critical = base.clone();
     sell_critical.id = "contract-whale:BTC:15:1700000020000:sell-critical".to_string();
@@ -330,6 +332,7 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     sell_critical.severity = ContractWhaleSeverity::Critical;
     sell_critical.direction = ContractWhaleDirection::Sell;
     sell_critical.signal_type = ContractWhaleSignalType::AggressiveSell;
+    sell_critical.net_volume_btc = -1_500.0;
 
     for signal in [&buy_critical, &buy_s, &sell_critical] {
         store.upsert_contract_whale_signal(signal).unwrap();
@@ -396,6 +399,23 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
     assert!(unsent_binance_15s
         .iter()
         .all(|signal| !signal.discord_sent && signal.window_sec == 15));
+
+    let abs_net_1000 = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            min_abs_net_volume_btc: Some(1_000.0),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    let ids = abs_net_1000
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![sell_critical.id.as_str(), buy_s.id.as_str()]);
+    assert!(abs_net_1000
+        .iter()
+        .all(|signal| signal.net_volume_btc.abs() >= 1_000.0));
 }
 
 #[test]

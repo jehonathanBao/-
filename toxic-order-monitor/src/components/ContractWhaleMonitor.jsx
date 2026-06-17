@@ -14,6 +14,7 @@ const DEFAULT_FILTERS = {
   severity: "all",
   signal_type: "all",
   direction: "all",
+  net_direction: "all",
   discord_sent: "all",
   window_sec: "all",
   exchange: "all",
@@ -1062,7 +1063,7 @@ function MiniInfoCard({ label, value, detail }) {
 function ContractWhaleFilters({ filters, onChange }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
   return (
-    <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-7">
+    <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-8">
       <FilterSelect label="币种" value={filters.symbol} onChange={(value) => update("symbol", value)}>
         <option value="BTC">BTC</option>
         <option value="ETH">ETH</option>
@@ -1088,6 +1089,10 @@ function ContractWhaleFilters({ filters, onChange }) {
         <option value="sell">主动卖出</option>
         <option value="absorption">吸收</option>
         <option value="suppression">压制</option>
+      </FilterSelect>
+      <FilterSelect label="净方向" value={filters.net_direction} onChange={(value) => update("net_direction", value)}>
+        <option value="all">全部</option>
+        <option value="abs1000">大于 1000（正负）</option>
       </FilterSelect>
       <FilterSelect label="Discord" value={filters.discord_sent} onChange={(value) => update("discord_sent", value)}>
         <option value="all">全部</option>
@@ -1421,7 +1426,7 @@ function directionLabel(direction) {
 }
 
 function shouldUseHistory(filters) {
-  return ["severity", "signal_type", "direction", "discord_sent", "window_sec", "exchange"].some(
+  return ["severity", "signal_type", "direction", "net_direction", "discord_sent", "window_sec", "exchange"].some(
     (key) => filters[key] && filters[key] !== "all",
   );
 }

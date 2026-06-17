@@ -56,6 +56,7 @@ pub struct ContractWhaleQuery {
     pub discord_sent: Option<String>,
     pub window_sec: Option<String>,
     pub exchange: Option<String>,
+    pub net_direction: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub offset: Option<String>,
@@ -2549,6 +2550,7 @@ pub fn parse_history_query(
         discord_sent: parse_optional_bool(query.discord_sent.as_deref(), "discord_sent")?,
         window_sec: parse_window_sec_filter(query.window_sec.as_deref())?,
         exchange: parse_exchange_filter(query.exchange.as_deref())?,
+        min_abs_net_volume_btc: parse_net_direction_filter(query.net_direction.as_deref())?,
         from_ts,
         to_ts,
         limit: parse_limit(query.limit.as_deref(), 50, 200)?,
@@ -2654,6 +2656,21 @@ fn parse_window_sec_filter(
     match filter.parse::<u64>() {
         Ok(window_sec @ (5 | 15 | 60)) => Ok(Some(window_sec)),
         _ => Err(bad_request("window_sec_invalid")),
+    }
+}
+
+fn parse_net_direction_filter(
+    filter: Option<&str>,
+) -> Result<Option<f64>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+    match normalize_token(filter).as_str() {
+        "abs1000" | "gte1000" | "min1000" | "1000" => Ok(Some(1000.0)),
+        _ => Err(bad_request("net_direction_invalid")),
     }
 }
 

@@ -761,12 +761,14 @@ describe("ContractWhaleMonitor", () => {
 
     await screen.findByText("主力合约监控");
     await user.selectOptions(screen.getByLabelText("等级"), "critical");
+    await user.selectOptions(screen.getByLabelText("净方向"), "abs1000");
 
     await waitFor(() =>
-      expect(fetchContractWhaleHistory).toHaveBeenCalledWith(
+      expect(fetchContractWhaleHistory).toHaveBeenLastCalledWith(
         expect.objectContaining({
           symbol: "BTC",
           severity: "critical",
+          net_direction: "abs1000",
           limit: 50,
         }),
       ),

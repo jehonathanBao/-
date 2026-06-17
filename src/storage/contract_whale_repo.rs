@@ -19,6 +19,7 @@ pub struct ContractWhaleSignalQuery {
     pub discord_sent: Option<bool>,
     pub window_sec: Option<u64>,
     pub exchange: Option<String>,
+    pub min_abs_net_volume_btc: Option<f64>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
     pub limit: usize,
@@ -602,6 +603,9 @@ impl ContractWhaleRepo for SqliteStore {
         let direction = query.direction.map(enum_value).transpose()?;
         let discord_sent = query.discord_sent.map(bool_to_int);
         let window_sec = query.window_sec.map(|window_sec| window_sec as i64);
+        let min_abs_net_volume_btc = query
+            .min_abs_net_volume_btc
+            .filter(|value| value.is_finite() && *value > 0.0);
         let exchange_like = query
             .exchange
             .as_deref()
@@ -622,8 +626,9 @@ impl ContractWhaleRepo for SqliteStore {
                   AND (?7 IS NULL OR discord_sent = ?7)
                   AND (?8 IS NULL OR window_sec = ?8)
                   AND (?9 IS NULL OR exchanges_json LIKE ?9)
+                  AND (?10 IS NULL OR ABS(net_volume_btc) >= ?10)
                 ORDER BY ts DESC
-                LIMIT ?10 OFFSET ?11
+                LIMIT ?11 OFFSET ?12
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -637,6 +642,7 @@ impl ContractWhaleRepo for SqliteStore {
                     discord_sent,
                     window_sec,
                     exchange_like.as_deref(),
+                    min_abs_net_volume_btc,
                     query.limit as i64,
                     query.offset as i64,
                 ],
