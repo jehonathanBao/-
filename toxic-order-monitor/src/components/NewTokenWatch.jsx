@@ -352,6 +352,8 @@ function ReconstructionDashboard({ reconstruction, chart, item, loading }) {
 
       <TradingDecisionKernelPanel reconstruction={reconstruction} />
 
+      <ExecutionStrategyKernelPanel reconstruction={reconstruction} />
+
       <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.6fr)_380px]">
         <StructureChart chart={chart} reconstruction={reconstruction} />
         <SmartMoneyStructurePanel reconstruction={reconstruction} />
@@ -630,6 +632,85 @@ function TradingDecisionKernelPanel({ reconstruction }) {
           <MetricStack label="Regime" value={decisionConditionLabel(invalidation.regimeCondition)} detail="state flip condition" />
           <MetricStack label="Flow / Liquidity" value={decisionConditionLabel(invalidation.flowCondition)} detail={decisionConditionLabel(invalidation.liquidityCondition)} />
         </InfoCard>
+      </div>
+    </section>
+  );
+}
+
+function ExecutionStrategyKernelPanel({ reconstruction }) {
+  const strategy = reconstruction.executionStrategy || {};
+  const entry = strategy.entry || {};
+  const exit = strategy.exit || {};
+  const size = strategy.positionSize || {};
+  const stop = strategy.stop || {};
+  const reasoning = Array.isArray(strategy.reasoning) ? strategy.reasoning : [];
+
+  return (
+    <section className="rounded-xl border border-cyan-400/20 bg-slate-950/75 p-4">
+      <div className="flex flex-col gap-1 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Execution Strategy Kernel</p>
+          <h5 className="mt-1 text-lg font-black text-white">Market Force → Action Compiler</h5>
+        </div>
+        <span className="text-xs text-slate-500">advisory-only · read-only · no exchange execution</span>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <InfoCard title="ENTRY">
+          <div className="flex items-center justify-between gap-3">
+            <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${directionTone(strategy.direction)}`}>
+              {directionLabel(strategy.direction)}
+            </span>
+            <span className="text-xs font-black text-cyan-100">{percent(strategy.confidence)}</span>
+          </div>
+          <MetricStack label="Primary Driver" value={marketDriverLabel(strategy.primaryDriver)} detail={`Secondary: ${marketDriverLabel(strategy.secondaryDriver)}`} />
+          <MetricStack label="Entry Window" value={`${orderTypeLabel(entry.orderType)} · ${timingLabel(entry.timing)}`} detail={decisionConditionLabel(entry.condition)} />
+          <MetricStack label="Zone" value={entry.zoneHigh > 0 ? `${formatPrice(entry.zoneLow)} - ${formatPrice(entry.zoneHigh)}` : "N/A"} detail="cost basis + liquidity band" />
+        </InfoCard>
+
+        <InfoCard title="EXIT">
+          <MetricStack label="Exit Zone" value={exit.zoneHigh > 0 ? `${formatPrice(exit.zoneLow)} - ${formatPrice(exit.zoneHigh)}` : "N/A"} detail={decisionConditionLabel(exit.condition)} />
+          <MetricStack label="Timing" value={timingLabel(exit.timing)} detail="driver state must remain valid" />
+          <MetricStack label="Action Boundary" value={strategy.advisoryOnly ? "Advisory" : "Unsafe"} detail={strategy.readOnly ? "No order route exposed" : "Read-only flag missing"} />
+        </InfoCard>
+
+        <InfoCard title="POSITION SIZE">
+          <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs text-slate-500">Compiled Size</span>
+              <span className="text-2xl font-black text-white">{Math.round(Number(size.pct || 0))}%</span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-cyan-300" style={{ width: `${Math.max(0, Math.min(100, Number(size.pct || 0)))}%` }} />
+            </div>
+          </div>
+          <MetricStack label="Multiplier" value={`${Number(size.multiplier || 0).toFixed(2)}x`} detail={decisionConditionLabel(size.reason)} />
+        </InfoCard>
+
+        <InfoCard title="STOP / INVALIDATION">
+          <div className="flex items-center justify-between gap-3">
+            <span className={`rounded-full border px-2 py-1 text-[11px] font-black ${stop.active ? "border-red-400/40 bg-red-400/10 text-red-200" : "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"}`}>
+              {stop.active ? "BLOCKING" : "ARMED"}
+            </span>
+            <span className="text-sm font-black text-slate-100">{formatPrice(stop.priceLevel)}</span>
+          </div>
+          <MetricStack label="Regime" value={decisionConditionLabel(stop.regimeCondition)} detail="driver flip condition" />
+          <MetricStack label="Flow / Liquidity" value={decisionConditionLabel(stop.flowCondition)} detail={decisionConditionLabel(stop.liquidityCondition)} />
+        </InfoCard>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {reasoning.length ? (
+          reasoning.map((item) => (
+            <span className="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1 text-xs text-slate-300" key={item}>
+              {executionReasonLabel(item)}
+            </span>
+          ))
+        ) : (
+          <span className="rounded-full border border-slate-800 bg-slate-900/70 px-3 py-1 text-xs text-slate-500">
+            awaiting execution strategy reasoning
+          </span>
+        )}
       </div>
     </section>
   );
@@ -1470,6 +1551,16 @@ function primaryDriverLabel(value) {
   return "Unknown Driver";
 }
 
+function marketDriverLabel(value) {
+  if (value === "whale_intent") return "Whale Intent";
+  if (value === "liquidity_forcing") return "Liquidity Forcing";
+  if (value === "derivatives_pressure") return "Derivatives Pressure";
+  if (value === "reflexivity_feedback") return "Reflexivity Feedback";
+  if (value === "liquidation_cascade") return "Liquidation Cascade";
+  if (value === "none") return "None";
+  return value || "Unknown Driver";
+}
+
 function liquiditySweepLabel(value) {
   if (value === "upside_short_sweep") return "上方空头止损扫单";
   if (value === "downside_long_sweep") return "下方多头止损扫单";
@@ -1514,10 +1605,31 @@ function decisionConditionLabel(value) {
   if (value === "smp_reversal_against_direction") return "SMP 反向";
   if (value === "liquidity_stress_or_manipulation") return "流动性压力或操控环境";
   if (value === "liquidity_collapse_or_vacuum_expansion") return "流动性坍塌或真空扩张";
+  if (value === "execution_kernel_waits_for_driver_alignment") return "等待驱动力与风险窗口对齐";
+  if (value === "driver_dominance_x_regime_stability_x_liquidity_health") return "主导驱动力 × 状态稳定 × 流动性健康";
   if (value === "no_trade") return "无交易";
   if (value === "no_entry") return "无入场";
   if (value === "no_exit") return "无退出";
   return value || "N/A";
+}
+
+function executionReasonLabel(value) {
+  if (value === "advisory_only_no_exchange_execution") return "advisory only · no exchange execution";
+  if (value === "liquidity_supportive=true") return "liquidity supportive";
+  if (value === "liquidity_supportive=false") return "liquidity not supportive";
+  if (value === "trap_active=true") return "trap risk active";
+  if (value === "trap_active=false") return "trap risk inactive";
+  if (String(value).startsWith("primary_driver=")) {
+    const [, payload] = String(value).split("=");
+    const [driver, score] = payload.split(":");
+    return `primary ${marketDriverLabel(driver)} ${score || ""}`.trim();
+  }
+  if (String(value).startsWith("secondary_driver=")) {
+    const [, payload] = String(value).split("=");
+    const [driver, score] = payload.split(":");
+    return `secondary ${marketDriverLabel(driver)} ${score || ""}`.trim();
+  }
+  return value || "reason unavailable";
 }
 
 function liquidityCondition(reconstruction = {}) {

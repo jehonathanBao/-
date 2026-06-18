@@ -386,6 +386,7 @@ pub struct SmartMoneyReconstructionResponse {
     pub market_dynamics: MarketDynamicsState,
     pub liquidity_force: LiquidityForceState,
     pub trading_decision: TradingDecisionKernel,
+    pub execution_strategy: ExecutionStrategyKernel,
     pub phase_timeline: Vec<PhaseTimelineSegment>,
     pub cost_distribution: Vec<CostDistributionBand>,
     pub smart_levels: Vec<SmartLevel>,
@@ -720,6 +721,40 @@ impl Default for TradingDecisionKernel {
             position_size: TradingPositionSize::default(),
             invalidation: TradingInvalidation::default(),
             confidence: 0.0,
+            advisory_only: true,
+            read_only: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionStrategyKernel {
+    pub direction: AdvisoryDirection,
+    pub entry: TradingDecisionEntry,
+    pub exit: TradingDecisionExit,
+    pub position_size: TradingPositionSize,
+    pub stop: TradingInvalidation,
+    pub confidence: f64,
+    pub primary_driver: String,
+    pub secondary_driver: String,
+    pub reasoning: Vec<String>,
+    pub advisory_only: bool,
+    pub read_only: bool,
+}
+
+impl Default for ExecutionStrategyKernel {
+    fn default() -> Self {
+        Self {
+            direction: AdvisoryDirection::NoTrade,
+            entry: TradingDecisionEntry::default(),
+            exit: TradingDecisionExit::default(),
+            position_size: TradingPositionSize::default(),
+            stop: TradingInvalidation::default(),
+            confidence: 0.0,
+            primary_driver: "none".to_string(),
+            secondary_driver: "none".to_string(),
+            reasoning: vec!["advisory_only_no_exchange_execution".to_string()],
             advisory_only: true,
             read_only: true,
         }

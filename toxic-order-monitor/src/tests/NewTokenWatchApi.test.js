@@ -352,6 +352,44 @@ describe("newTokenWatch API", () => {
             advisoryOnly: true,
             readOnly: true,
           },
+          executionStrategy: {
+            direction: "long",
+            entry: {
+              orderType: "limit",
+              zoneLow: 1.91,
+              zoneHigh: 1.95,
+              timing: "wait",
+              condition: "enter_near_cost_basis_when_smp_regime_liquidity_align",
+            },
+            exit: {
+              zoneLow: 1.97,
+              zoneHigh: 2.02,
+              condition: "exit_on_distribution_transition_or_mfe_exhaustion",
+              timing: "wait",
+            },
+            positionSize: {
+              pct: 29,
+              multiplier: 0.29,
+              reason: "driver_dominance_x_regime_stability_x_liquidity_health",
+            },
+            stop: {
+              active: false,
+              priceLevel: 1.88,
+              regimeCondition: "regime_flip_against_direction",
+              flowCondition: "smp_reversal_against_direction",
+              liquidityCondition: "liquidity_collapse_or_vacuum_expansion",
+            },
+            confidence: 0.71,
+            primaryDriver: "liquidity_forcing",
+            secondaryDriver: "whale_intent",
+            reasoning: [
+              "primary_driver=liquidity_forcing:0.72",
+              "secondary_driver=whale_intent:0.64",
+              "advisory_only_no_exchange_execution",
+            ],
+            advisoryOnly: true,
+            readOnly: true,
+          },
           readOnly: true,
         },
       })
@@ -404,6 +442,11 @@ describe("newTokenWatch API", () => {
     expect(reconstruction.tradingDecision.entry.orderType).toBe("limit");
     expect(reconstruction.tradingDecision.positionSize.pct).toBe(34);
     expect(reconstruction.tradingDecision.invalidation.active).toBe(false);
+    expect(reconstruction.executionStrategy.direction).toBe("long");
+    expect(reconstruction.executionStrategy.positionSize.pct).toBe(29);
+    expect(reconstruction.executionStrategy.stop.active).toBe(false);
+    expect(reconstruction.executionStrategy.primaryDriver).toBe("liquidity_forcing");
+    expect(reconstruction.executionStrategy.reasoning).toContain("advisory_only_no_exchange_execution");
     expect(chart.timeframe).toBe("4h");
   });
 
@@ -463,5 +506,10 @@ describe("newTokenWatch API", () => {
     expect(reconstruction.tradingDecision.entry.orderType).toBe("none");
     expect(reconstruction.tradingDecision.positionSize.pct).toBe(0);
     expect(reconstruction.tradingDecision.invalidation.active).toBe(true);
+    expect(reconstruction.executionStrategy.direction).toBe("no_trade");
+    expect(reconstruction.executionStrategy.entry.orderType).toBe("none");
+    expect(reconstruction.executionStrategy.positionSize.pct).toBe(0);
+    expect(reconstruction.executionStrategy.stop.active).toBe(true);
+    expect(reconstruction.executionStrategy.advisoryOnly).toBe(true);
   });
 });

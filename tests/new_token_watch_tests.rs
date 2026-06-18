@@ -80,6 +80,16 @@ fn manager_add_remove_and_capacity_limit() {
     assert!(reconstruction.trading_decision.advisory_only);
     assert!((0.0..=1.0).contains(&reconstruction.trading_decision.confidence));
     assert!((0.0..=100.0).contains(&reconstruction.trading_decision.position_size.pct));
+    assert!(reconstruction.execution_strategy.read_only);
+    assert!(reconstruction.execution_strategy.advisory_only);
+    assert!((0.0..=1.0).contains(&reconstruction.execution_strategy.confidence));
+    assert!((0.0..=100.0).contains(&reconstruction.execution_strategy.position_size.pct));
+    assert!(!reconstruction.execution_strategy.primary_driver.is_empty());
+    assert!(reconstruction
+        .execution_strategy
+        .reasoning
+        .iter()
+        .any(|item| item.contains("advisory_only_no_exchange_execution")));
     assert!(!reconstruction.phase_timeline.is_empty());
     assert!(!reconstruction.cost_distribution.is_empty());
     assert!(!reconstruction.smart_levels.is_empty());

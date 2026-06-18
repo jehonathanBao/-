@@ -132,6 +132,7 @@ export function normalizeNewTokenReconstruction(payload = {}) {
     marketDynamics: normalizeMarketDynamics(payload.marketDynamics),
     liquidityForce: normalizeLiquidityForce(payload.liquidityForce),
     tradingDecision: normalizeTradingDecision(payload.tradingDecision),
+    executionStrategy: normalizeExecutionStrategy(payload.executionStrategy),
     phaseTimeline: Array.isArray(payload.phaseTimeline)
       ? payload.phaseTimeline.map(normalizePhaseTimelineSegment)
       : [],
@@ -352,6 +353,22 @@ function normalizeTradingDecision(decision = {}) {
     confidence: Number(decision.confidence || 0),
     advisoryOnly: decision.advisoryOnly !== false,
     readOnly: decision.readOnly !== false,
+  };
+}
+
+function normalizeExecutionStrategy(strategy = {}) {
+  return {
+    direction: strategy.direction || "no_trade",
+    entry: normalizeTradingDecisionEntry(strategy.entry),
+    exit: normalizeTradingDecisionExit(strategy.exit),
+    positionSize: normalizeTradingPositionSize(strategy.positionSize),
+    stop: normalizeTradingInvalidation(strategy.stop),
+    confidence: Number(strategy.confidence || 0),
+    primaryDriver: strategy.primaryDriver || "none",
+    secondaryDriver: strategy.secondaryDriver || "none",
+    reasoning: Array.isArray(strategy.reasoning) ? strategy.reasoning : [],
+    advisoryOnly: strategy.advisoryOnly !== false,
+    readOnly: strategy.readOnly !== false,
   };
 }
 

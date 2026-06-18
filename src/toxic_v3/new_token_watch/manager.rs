@@ -8,12 +8,12 @@ use super::{
     engine::NewTokenFlowEngine,
     types::{
         BehaviorProbabilities, CapitalPhase, CapitalTimeline, CapitalTimelinePhase, ContractTick,
-        CostDistributionBand, DecisionOrderType, DecisionTiming, ForcedFlowAttribution,
-        LiquidationZone, LiquidityForceState, LiquidityReactionMap, LiquidityVacuumZone,
-        MarketDynamicsState, MarketEnergy, MarketPriceSnapshot, MarketStateVector,
-        MarketStateVelocity, PhaseTimelineSegment, PositionFlowCurve, PositionFlowPoint,
-        PriceImpactDecomposition, PriceSource, RegimeTransitionProbability, SmartLevel,
-        SmartMoneyChartResponse, SmartMoneyReconstructionResponse, StabilityRegime,
+        CostDistributionBand, DecisionOrderType, DecisionTiming, ExecutionStrategyKernel,
+        ForcedFlowAttribution, LiquidationZone, LiquidityForceState, LiquidityReactionMap,
+        LiquidityVacuumZone, MarketDynamicsState, MarketEnergy, MarketPriceSnapshot,
+        MarketStateVector, MarketStateVelocity, PhaseTimelineSegment, PositionFlowCurve,
+        PositionFlowPoint, PriceImpactDecomposition, PriceSource, RegimeTransitionProbability,
+        SmartLevel, SmartMoneyChartResponse, SmartMoneyReconstructionResponse, StabilityRegime,
         StopLossCascadeState, TokenChartMarker, TokenChartPoint, TokenWatchItem,
         TokenWatchListResponse, TradingDecisionEntry, TradingDecisionExit, TradingDecisionKernel,
         TradingInvalidation, TradingPositionSize, MAX_ACTIVE_TOKENS,
@@ -220,6 +220,13 @@ fn build_reconstruction_response(
         &market_dynamics,
         &liquidity_force,
     );
+    let execution_strategy = build_execution_strategy(
+        item,
+        &liquidity_reaction_map,
+        &market_dynamics,
+        &liquidity_force,
+        &trading_decision,
+    );
     SmartMoneyReconstructionResponse {
         symbol: item.symbol.clone(),
         timeframe: tf,
@@ -257,6 +264,7 @@ fn build_reconstruction_response(
         market_dynamics,
         liquidity_force,
         trading_decision,
+        execution_strategy,
         phase_timeline,
         cost_distribution: build_cost_distribution(item),
         smart_levels: build_smart_levels(item),
@@ -1195,6 +1203,138 @@ fn build_trading_decision(
         position_size,
         invalidation,
         confidence,
+        advisory_only: true,
+        read_only: true,
+    }
+}
+
+fn build_execution_strategy(
+    item: &TokenWatchItem,
+    liquidity_reaction_map: &LiquidityReactionMap,
+    market_dynamics: &MarketDynamicsState,
+    liquidity_force: &LiquidityForceState,
+    trading_decision: &TradingDecisionKernel,
+) -> ExecutionStrategyKernel {
+    let signal = &item.last_signal;
+    let stable = &signal.signal_compression.stable_signals;
+    let actor = &signal.actor_decomposition;
+    let dynamics_vector = &market_dynamics.state_vector;
+    let dynamics_velocity = &market_dynamics.state_velocity;
+    let energy = &market_dynamics.market_energy;
+    let forced = &liquidity_force.forced_flow_attribution;
+    let cascade = &liquidity_force.stop_loss_cascade;
+
+    let whale_intent = (stable.smp_stable.abs() * 0.42
+        + actor.smart_money_probability.clamp(0.0, 1.0) * 0.32
+        + signal.flow_persistence.clamp(0.0, 1.0) * 0.26)
+        .clamp(0.0, 1.0);
+    let liquidity_forcing = ((1.0 - liquidity_reaction_map.impact_efficiency).clamp(0.0, 1.0)
+        * 0.22
+        + liquidity_reaction_map.absorption_ratio.clamp(0.0, 1.0) * 0.20
+        + forced.liquidation_pct.clamp(0.0, 1.0) * 0.28
+        + cascade.stop_hunt_probability.clamp(0.0, 1.0) * 0.30)
+        .clamp(0.0, 1.0);
+    let derivatives_pressure = (forced.liquidation_pct.clamp(0.0, 1.0) * 0.34
+        + cascade.cascade_intensity.clamp(0.0, 1.0) * 0.34
+        + cascade.stop_hunt_probability.clamp(0.0, 1.0) * 0.22
+        + stable.lsm_stable.max(0.0).clamp(0.0, 1.0) * 0.10)
+        .clamp(0.0, 1.0);
+    let reflexivity_feedback = (energy.score.clamp(0.0, 1.0) * 0.36
+        + energy.regime_stability.clamp(0.0, 1.0) * 0.24
+        + dynamics_velocity.flow_acceleration.abs().clamp(0.0, 1.0) * 0.22
+        + dynamics_velocity.regime_transition_speed.clamp(0.0, 1.0) * 0.18)
+        .clamp(0.0, 1.0);
+
+    let mut drivers = vec![
+        ("whale_intent", whale_intent),
+        ("liquidity_forcing", liquidity_forcing),
+        ("derivatives_pressure", derivatives_pressure),
+        ("reflexivity_feedback", reflexivity_feedback),
+    ];
+    drivers.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let primary_driver = drivers
+        .first()
+        .map(|(name, _)| (*name).to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let primary_strength = drivers.first().map(|(_, value)| *value).unwrap_or_default();
+    let secondary_driver = drivers
+        .get(1)
+        .map(|(name, _)| (*name).to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let secondary_strength = drivers.get(1).map(|(_, value)| *value).unwrap_or_default();
+
+    let trap_active = cascade.stop_hunt_probability > 0.74 && cascade.cascade_intensity > 0.58;
+    let liquidity_supportive = dynamics_vector.liquidity >= 0.35
+        && market_dynamics.market_energy.liquidity_availability >= 0.35;
+    let direction = if trading_decision.invalidation.active
+        || trap_active
+        || !liquidity_supportive
+        || primary_strength < 0.25
+        || matches!(
+            trading_decision.direction,
+            super::types::AdvisoryDirection::NoTrade
+        ) {
+        super::types::AdvisoryDirection::NoTrade
+    } else {
+        trading_decision.direction
+    };
+
+    let mut entry = trading_decision.entry.clone();
+    let mut exit = trading_decision.exit.clone();
+    let mut position_size = trading_decision.position_size.clone();
+    let mut stop = trading_decision.invalidation.clone();
+
+    if matches!(direction, super::types::AdvisoryDirection::NoTrade) {
+        entry = TradingDecisionEntry {
+            order_type: DecisionOrderType::None,
+            zone_low: 0.0,
+            zone_high: 0.0,
+            timing: DecisionTiming::Invalid,
+            condition: "execution_kernel_waits_for_driver_alignment".to_string(),
+        };
+        exit = TradingDecisionExit::default();
+        position_size = TradingPositionSize::default();
+        stop.active = true;
+    } else {
+        let driver_multiplier =
+            (0.72 + primary_strength * 0.20 + secondary_strength * 0.08).clamp(0.0, 1.0);
+        position_size.pct = (position_size.pct * driver_multiplier).clamp(0.0, 100.0);
+        position_size.multiplier = (position_size.multiplier * driver_multiplier).clamp(0.0, 1.0);
+        position_size.reason = "driver_dominance_x_regime_stability_x_liquidity_health".to_string();
+    }
+
+    let confidence = if matches!(direction, super::types::AdvisoryDirection::NoTrade) {
+        (trading_decision.confidence * 0.40 + primary_strength * 0.20).clamp(0.0, 0.49)
+    } else {
+        (trading_decision.confidence * 0.44
+            + primary_strength * 0.24
+            + secondary_strength * 0.10
+            + energy.regime_stability.clamp(0.0, 1.0) * 0.12
+            + dynamics_vector.liquidity.clamp(0.0, 1.0) * 0.10)
+            .clamp(0.0, 1.0)
+    };
+
+    ExecutionStrategyKernel {
+        direction,
+        entry,
+        exit,
+        position_size,
+        stop,
+        confidence,
+        primary_driver: primary_driver.clone(),
+        secondary_driver: secondary_driver.clone(),
+        reasoning: vec![
+            format!("primary_driver={primary_driver}:{primary_strength:.2}"),
+            format!("secondary_driver={secondary_driver}:{secondary_strength:.2}"),
+            format!("liquidity_supportive={liquidity_supportive}"),
+            format!("trap_active={trap_active}"),
+            "advisory_only_no_exchange_execution".to_string(),
+        ],
         advisory_only: true,
         read_only: true,
     }

@@ -409,6 +409,46 @@ vi.mock("../api/newTokenWatch.js", () => ({
         advisoryOnly: true,
         readOnly: true,
       },
+      executionStrategy: {
+        direction: "long",
+        entry: {
+          orderType: "limit",
+          zoneLow: 1.91,
+          zoneHigh: 1.95,
+          timing: "wait",
+          condition: "enter_near_cost_basis_when_smp_regime_liquidity_align",
+        },
+        exit: {
+          zoneLow: 1.97,
+          zoneHigh: 2.02,
+          condition: "exit_on_distribution_transition_or_mfe_exhaustion",
+          timing: "wait",
+        },
+        positionSize: {
+          pct: 29,
+          multiplier: 0.29,
+          reason: "driver_dominance_x_regime_stability_x_liquidity_health",
+        },
+        stop: {
+          active: false,
+          priceLevel: 1.88,
+          regimeCondition: "regime_flip_against_direction",
+          flowCondition: "smp_reversal_against_direction",
+          liquidityCondition: "liquidity_collapse_or_vacuum_expansion",
+        },
+        confidence: 0.71,
+        primaryDriver: "liquidity_forcing",
+        secondaryDriver: "whale_intent",
+        reasoning: [
+          "primary_driver=liquidity_forcing:0.72",
+          "secondary_driver=whale_intent:0.64",
+          "liquidity_supportive=true",
+          "trap_active=false",
+          "advisory_only_no_exchange_execution",
+        ],
+        advisoryOnly: true,
+        readOnly: true,
+      },
       phaseTimeline: [
         {
           phase: "accumulation",
@@ -616,13 +656,20 @@ describe("NewTokenWatch", () => {
     expect(screen.getByText("Short Squeeze Zone")).toBeInTheDocument();
     expect(screen.getAllByText("Liquidation Cascade").length).toBeGreaterThan(0);
     expect(screen.getByText("Trading Decision Kernel")).toBeInTheDocument();
-    expect(screen.getByText("ENTRY")).toBeInTheDocument();
-    expect(screen.getByText("EXIT")).toBeInTheDocument();
+    expect(screen.getAllByText("ENTRY").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("EXIT").length).toBeGreaterThan(0);
     expect(screen.getByText("POSITION_SIZE")).toBeInTheDocument();
     expect(screen.getByText("INVALIDATION")).toBeInTheDocument();
+    expect(screen.getByText("Execution Strategy Kernel")).toBeInTheDocument();
+    expect(screen.getByText("Market Force → Action Compiler")).toBeInTheDocument();
+    expect(screen.getByText("STOP / INVALIDATION")).toBeInTheDocument();
+    expect(screen.getByText("Liquidity Forcing")).toBeInTheDocument();
+    expect(screen.getByText("primary Liquidity Forcing 0.72")).toBeInTheDocument();
+    expect(screen.getByText("advisory only · no exchange execution")).toBeInTheDocument();
     expect(screen.getAllByText("LONG").length).toBeGreaterThan(0);
-    expect(screen.getByText("Limit · Wait")).toBeInTheDocument();
-    expect(screen.getByText("34%")).toBeInTheDocument();
+    expect(screen.getAllByText("Limit · Wait").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("34%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("29%").length).toBeGreaterThan(0);
     expect(screen.getByText("低波动吸收")).toBeInTheDocument();
     expect(screen.getByText("+$1.2M")).toBeInTheDocument();
     expect(screen.getByText("$320K/m")).toBeInTheDocument();
