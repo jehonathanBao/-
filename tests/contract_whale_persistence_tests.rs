@@ -456,13 +456,32 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
     ];
     store.upsert_contract_flow_buckets(&buckets).unwrap();
 
-    let mut old_signal = sample_s_signal();
-    old_signal.id = "contract-whale:BTC:15:old:s".to_string();
-    old_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
+    let mut old_s_signal = sample_s_signal();
+    old_s_signal.id = "contract-whale:BTC:15:old:s".to_string();
+    old_s_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
+    old_s_signal.net_volume_btc = 100.0;
+    old_s_signal.severity = ContractWhaleSeverity::S;
+    let mut old_large_net_signal = sample_s_signal();
+    old_large_net_signal.id = "contract-whale:BTC:15:old:large-net".to_string();
+    old_large_net_signal.ts = now - 390 * 24 * 60 * 60 * 1000;
+    old_large_net_signal.net_volume_btc = -650.0;
+    old_large_net_signal.severity = ContractWhaleSeverity::Medium;
+    let mut old_weak_signal = sample_s_signal();
+    old_weak_signal.id = "contract-whale:BTC:15:old:weak".to_string();
+    old_weak_signal.ts = now - 380 * 24 * 60 * 60 * 1000;
+    old_weak_signal.net_volume_btc = 499.0;
+    old_weak_signal.severity = ContractWhaleSeverity::Medium;
     let mut fresh_signal = sample_s_signal();
     fresh_signal.id = "contract-whale:BTC:15:fresh:s".to_string();
     fresh_signal.ts = now;
-    store.upsert_contract_whale_signal(&old_signal).unwrap();
+    fresh_signal.severity = ContractWhaleSeverity::Medium;
+    store.upsert_contract_whale_signal(&old_s_signal).unwrap();
+    store
+        .upsert_contract_whale_signal(&old_large_net_signal)
+        .unwrap();
+    store
+        .upsert_contract_whale_signal(&old_weak_signal)
+        .unwrap();
     store.upsert_contract_whale_signal(&fresh_signal).unwrap();
 
     let result = store
@@ -488,8 +507,15 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             ..ContractWhaleSignalQuery::default()
         })
         .unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, fresh_signal.id);
+    let remaining_ids = remaining
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(remaining.len(), 3);
+    assert!(remaining_ids.contains(&old_s_signal.id.as_str()));
+    assert!(remaining_ids.contains(&old_large_net_signal.id.as_str()));
+    assert!(remaining_ids.contains(&fresh_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_weak_signal.id.as_str()));
 }
 
 #[test]

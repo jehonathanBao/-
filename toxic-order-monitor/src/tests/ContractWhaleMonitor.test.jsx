@@ -548,6 +548,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("逐条合约信号")).toBeInTheDocument();
     expect(screen.getByText(/每一次 CWM 检测到的合约信号都会在这里展示/)).toBeInTheDocument();
     expect(screen.getByTestId("raw-contract-whale-signals")).toBeInTheDocument();
+    expect(screen.getAllByText(/2023/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(
       screen.getAllByText((_, element) => {
@@ -761,14 +762,15 @@ describe("ContractWhaleMonitor", () => {
 
     await screen.findByText("主力合约监控");
     await user.selectOptions(screen.getByLabelText("等级"), "critical");
-    await user.selectOptions(screen.getByLabelText("净方向"), "abs1000");
+    expect(screen.getByRole("option", { name: "大于 500（正负）" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
 
     await waitFor(() =>
       expect(fetchContractWhaleHistory).toHaveBeenLastCalledWith(
         expect.objectContaining({
           symbol: "BTC",
           severity: "critical",
-          net_direction: "abs1000",
+          net_direction: "abs500",
           limit: 50,
         }),
       ),

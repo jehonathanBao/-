@@ -719,7 +719,7 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
         discord_sent: Some("true".to_string()),
         window_sec: Some("15".to_string()),
         exchange: Some("binance".to_string()),
-        net_direction: Some("abs1000".to_string()),
+        net_direction: Some("abs500".to_string()),
         from: Some("1700000000000".to_string()),
         to: Some("1700086400000".to_string()),
         limit: Some("999".to_string()),
@@ -733,7 +733,7 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
     assert_eq!(parsed.discord_sent, Some(true));
     assert_eq!(parsed.window_sec, Some(15));
     assert_eq!(parsed.exchange.as_deref(), Some("binance"));
-    assert_eq!(parsed.min_abs_net_volume_btc, Some(1000.0));
+    assert_eq!(parsed.min_abs_net_volume_btc, Some(500.0));
     assert_eq!(parsed.limit, 200);
     assert_eq!(parsed.offset, 25);
 }

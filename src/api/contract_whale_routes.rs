@@ -2669,6 +2669,7 @@ fn parse_net_direction_filter(
         return Ok(None);
     }
     match normalize_token(filter).as_str() {
+        "abs500" | "gte500" | "min500" | "500" => Ok(Some(500.0)),
         "abs1000" | "gte1000" | "min1000" | "1000" => Ok(Some(1000.0)),
         _ => Err(bad_request("net_direction_invalid")),
     }

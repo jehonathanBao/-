@@ -589,7 +589,10 @@ function RawSignalDebugTable({ items, onOpenSignal }) {
             }}
             tabIndex={0}
           >
-            <Cell>{formatTime(item.ts)}</Cell>
+            <Cell>
+              <span className="block whitespace-nowrap text-slate-200">{formatDate(item.ts)}</span>
+              <span className="block whitespace-nowrap text-slate-500">{formatTime(item.ts)}</span>
+            </Cell>
             <Cell>
               <SymbolWithPrice item={item} />
             </Cell>
@@ -1232,6 +1235,7 @@ function ContractWhaleFilters({ filters, onChange }) {
       </FilterSelect>
       <FilterSelect label="净方向" value={filters.net_direction} onChange={(value) => update("net_direction", value)}>
         <option value="all">全部</option>
+        <option value="abs500">大于 500（正负）</option>
         <option value="abs1000">大于 1000（正负）</option>
       </FilterSelect>
       <FilterSelect label="Discord" value={filters.discord_sent} onChange={(value) => update("discord_sent", value)}>
@@ -2106,6 +2110,16 @@ function formatTime(value) {
     hour12: false,
     minute: "2-digit",
     second: "2-digit",
+  });
+}
+
+function formatDate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  return new Date(number).toLocaleDateString("zh-CN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   });
 }
 

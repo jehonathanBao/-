@@ -10,6 +10,8 @@ use crate::contract_whale_monitor::types::{
 
 use super::sqlite::SqliteStore;
 
+const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct ContractWhaleSignalQuery {
     pub symbol: Option<String>,
@@ -783,6 +785,7 @@ impl ContractWhaleRepo for SqliteStore {
         flow_cutoff_ts: i64,
         signal_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
+        let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let flow_1s_deleted = tx
@@ -793,8 +796,17 @@ impl ContractWhaleRepo for SqliteStore {
                 .context("failed to prune contract flow 1s buckets")?;
             let signal_deleted = tx
                 .execute(
-                    "DELETE FROM contract_whale_signals WHERE ts < ?1",
-                    params![signal_cutoff_ts],
+                    r#"
+                    DELETE FROM contract_whale_signals
+                    WHERE ts < ?1
+                      AND severity != ?2
+                      AND ABS(COALESCE(net_volume_btc, 0.0)) < ?3
+                    "#,
+                    params![
+                        signal_cutoff_ts,
+                        s_severity,
+                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                    ],
                 )
                 .context("failed to prune contract whale signals")?;
             tx.commit()?;
