@@ -20,7 +20,7 @@ use crate::toxic_v3::new_token_watch::{
 static NEW_TOKEN_WATCH_MANAGER: OnceLock<TokenWatchManager> = OnceLock::new();
 
 pub fn global_new_token_watch_manager() -> &'static TokenWatchManager {
-    NEW_TOKEN_WATCH_MANAGER.get_or_init(TokenWatchManager::default)
+    NEW_TOKEN_WATCH_MANAGER.get_or_init(TokenWatchManager::persistent_default)
 }
 
 pub async fn new_token_watch_list_route() -> impl IntoResponse {
@@ -66,7 +66,12 @@ pub async fn new_token_watch_chart_route(
 pub async fn new_token_watch_add_route(
     Json(request): Json<NewTokenWatchRequest>,
 ) -> impl IntoResponse {
-    match global_new_token_watch_manager().add_token(&request.symbol) {
+    let symbol = request.symbol;
+    let result =
+        tokio::task::spawn_blocking(move || global_new_token_watch_manager().add_token(&symbol))
+            .await
+            .unwrap_or(Err(TokenWatchError::PersistenceFailed));
+    match result {
         Ok(item) => {
             let market_price = fetch_market_price_snapshot(&item.symbol).await;
             let anchored_item = global_new_token_watch_manager()
@@ -89,7 +94,12 @@ pub async fn new_token_watch_add_route(
 pub async fn new_token_watch_remove_route(
     Json(request): Json<NewTokenWatchRequest>,
 ) -> impl IntoResponse {
-    match global_new_token_watch_manager().remove_token(&request.symbol) {
+    let symbol = request.symbol;
+    let result =
+        tokio::task::spawn_blocking(move || global_new_token_watch_manager().remove_token(&symbol))
+            .await
+            .unwrap_or(Err(TokenWatchError::PersistenceFailed));
+    match result {
         Ok(item) => Json(NewTokenWatchMutationResponse {
             ok: true,
             item: Some(item),
@@ -164,6 +174,7 @@ fn token_error_response(error: TokenWatchError) -> axum::response::Response {
         TokenWatchError::InvalidSymbol => StatusCode::BAD_REQUEST,
         TokenWatchError::MaxActiveTokensReached => StatusCode::CONFLICT,
         TokenWatchError::TokenNotFound => StatusCode::NOT_FOUND,
+        TokenWatchError::PersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
         status,
@@ -181,6 +192,7 @@ fn error_response(error: TokenWatchError) -> axum::response::Response {
         TokenWatchError::InvalidSymbol => StatusCode::BAD_REQUEST,
         TokenWatchError::MaxActiveTokensReached => StatusCode::CONFLICT,
         TokenWatchError::TokenNotFound => StatusCode::NOT_FOUND,
+        TokenWatchError::PersistenceFailed => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
         status,

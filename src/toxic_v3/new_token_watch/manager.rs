@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
@@ -29,42 +35,64 @@ pub enum TokenWatchError {
     MaxActiveTokensReached,
     #[error("token_not_found")]
     TokenNotFound,
+    #[error("persistence_failed")]
+    PersistenceFailed,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TokenWatchManager {
     items: Arc<RwLock<BTreeMap<String, TokenWatchItem>>>,
+    persistence_path: Option<Arc<PathBuf>>,
 }
 
 impl TokenWatchManager {
+    pub fn persistent_default() -> Self {
+        Self::with_persistence_path(default_watchlist_path())
+    }
+
+    pub fn with_persistence_path(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let items = load_persisted_items(&path);
+        Self {
+            items: Arc::new(RwLock::new(items)),
+            persistence_path: Some(Arc::new(path)),
+        }
+    }
+
     pub fn add_token(&self, raw_symbol: &str) -> Result<TokenWatchItem, TokenWatchError> {
         let symbol = normalize_symbol(raw_symbol)?;
-        let mut guard = self.items.write();
-        if let Some(existing) = guard.get(&symbol) {
-            return Ok(existing.clone());
-        }
-        if guard.len() >= MAX_ACTIVE_TOKENS {
-            return Err(TokenWatchError::MaxActiveTokensReached);
-        }
-        let now = now_ms();
-        let ticks = ContractFlowCollector::deterministic_probe_ticks(&symbol, now as u64);
-        let item = TokenWatchItem {
-            symbol: symbol.clone(),
-            added_at_ms: now,
-            stream_status: "read_only_probe".to_string(),
-            last_signal: NewTokenFlowEngine::analyze_ticks(&symbol, &ticks),
-            read_only: true,
+        let item = {
+            let mut guard = self.items.write();
+            if let Some(existing) = guard.get(&symbol) {
+                return Ok(existing.clone());
+            }
+            if guard.len() >= MAX_ACTIVE_TOKENS {
+                return Err(TokenWatchError::MaxActiveTokensReached);
+            }
+            let now = now_ms();
+            let item = build_watch_item(&symbol, now, now);
+            guard.insert(symbol.clone(), item.clone());
+            item
         };
-        guard.insert(symbol, item.clone());
+        if self.persist_current_items().is_err() {
+            self.items.write().remove(&symbol);
+            return Err(TokenWatchError::PersistenceFailed);
+        }
         Ok(item)
     }
 
     pub fn remove_token(&self, raw_symbol: &str) -> Result<TokenWatchItem, TokenWatchError> {
         let symbol = normalize_symbol(raw_symbol)?;
-        self.items
+        let removed = self
+            .items
             .write()
             .remove(&symbol)
-            .ok_or(TokenWatchError::TokenNotFound)
+            .ok_or(TokenWatchError::TokenNotFound)?;
+        if self.persist_current_items().is_err() {
+            self.items.write().insert(symbol, removed.clone());
+            return Err(TokenWatchError::PersistenceFailed);
+        }
+        Ok(removed)
     }
 
     pub fn list_active_tokens(&self) -> TokenWatchListResponse {
@@ -166,6 +194,109 @@ impl TokenWatchManager {
     #[cfg(test)]
     pub fn clear(&self) {
         self.items.write().clear();
+    }
+
+    fn persist_current_items(&self) -> std::io::Result<()> {
+        let Some(path) = self.persistence_path.as_deref() else {
+            return Ok(());
+        };
+        let items = self
+            .items
+            .read()
+            .values()
+            .map(|item| PersistedTokenWatchItem {
+                symbol: item.symbol.clone(),
+                added_at_ms: item.added_at_ms,
+            })
+            .collect::<Vec<_>>();
+        persist_items(path, &items)
+    }
+}
+
+impl Default for TokenWatchManager {
+    fn default() -> Self {
+        Self {
+            items: Arc::new(RwLock::new(BTreeMap::new())),
+            persistence_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTokenWatchList {
+    version: u8,
+    items: Vec<PersistedTokenWatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTokenWatchItem {
+    symbol: String,
+    added_at_ms: i64,
+}
+
+fn default_watchlist_path() -> PathBuf {
+    if let Ok(path) = std::env::var("NEW_TOKEN_WATCHLIST_PATH") {
+        return PathBuf::from(path);
+    }
+    if let Ok(sqlite_path) = std::env::var("SQLITE_PATH") {
+        if let Some(parent) = Path::new(&sqlite_path).parent() {
+            return parent.join("new-token-watchlist.json");
+        }
+    }
+    PathBuf::from("data/new-token-watchlist.json")
+}
+
+fn load_persisted_items(path: &Path) -> BTreeMap<String, TokenWatchItem> {
+    let Ok(bytes) = fs::read(path) else {
+        return BTreeMap::new();
+    };
+    let Ok(snapshot) = serde_json::from_slice::<PersistedTokenWatchList>(&bytes) else {
+        return BTreeMap::new();
+    };
+    let now = now_ms();
+    let mut items = BTreeMap::new();
+    for persisted in snapshot.items.into_iter().take(MAX_ACTIVE_TOKENS) {
+        let Ok(symbol) = normalize_symbol(&persisted.symbol) else {
+            continue;
+        };
+        let added_at_ms = if persisted.added_at_ms > 0 {
+            persisted.added_at_ms
+        } else {
+            now
+        };
+        items
+            .entry(symbol.clone())
+            .or_insert_with(|| build_watch_item(&symbol, added_at_ms, now));
+    }
+    items
+}
+
+fn persist_items(path: &Path, items: &[PersistedTokenWatchItem]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let snapshot = PersistedTokenWatchList {
+        version: 1,
+        items: items.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&snapshot)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(tmp_path, path)?;
+    Ok(())
+}
+
+fn build_watch_item(symbol: &str, added_at_ms: i64, now: i64) -> TokenWatchItem {
+    let ticks = ContractFlowCollector::deterministic_probe_ticks(symbol, now as u64);
+    TokenWatchItem {
+        symbol: symbol.to_string(),
+        added_at_ms,
+        stream_status: "read_only_probe".to_string(),
+        last_signal: NewTokenFlowEngine::analyze_ticks(symbol, &ticks),
+        read_only: true,
     }
 }
 

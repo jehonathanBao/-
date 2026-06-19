@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use btc_toxic_flow_monitor_rs::toxic_v3::new_token_watch::{
     AdvisoryDirection, CapitalPhase, ContractTick, ContractTickSide, FlowActorRegime,
     MarketPriceSnapshot, NewTokenFlowEngine, PriceSource, StabilityRegime, TokenFlowRegime,
@@ -207,6 +209,38 @@ fn manager_add_remove_and_capacity_limit() {
 }
 
 #[test]
+fn manager_persists_selected_tokens_across_restart() {
+    let path = temp_watchlist_path("new-token-watch-persist");
+    let manager = TokenWatchManager::with_persistence_path(&path);
+
+    let first = manager.add_token("jto").expect("add jto");
+    let second = manager.add_token("asterusdt").expect("add aster");
+    assert_eq!(first.symbol, "JTOUSDT");
+    assert_eq!(second.symbol, "ASTERUSDT");
+
+    let restarted = TokenWatchManager::with_persistence_path(&path);
+    let symbols = restarted
+        .list_active_tokens()
+        .items
+        .iter()
+        .map(|item| item.symbol.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(symbols, vec!["ASTERUSDT", "JTOUSDT"]);
+
+    restarted.remove_token("JTOUSDT").expect("remove jto");
+    let restarted_after_remove = TokenWatchManager::with_persistence_path(&path);
+    let symbols_after_remove = restarted_after_remove
+        .list_active_tokens()
+        .items
+        .iter()
+        .map(|item| item.symbol.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(symbols_after_remove, vec!["ASTERUSDT"]);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn engine_detects_accumulation_distribution_and_building() {
     let accumulation = (0..12)
         .map(|idx| {
@@ -380,4 +414,15 @@ fn engine_detects_accumulation_distribution_and_building() {
         + signal.actor_decomposition.momentum_chaser_probability
         + signal.actor_decomposition.smart_money_probability;
     assert!((actor_probability_sum - 1.0).abs() < 0.000_001);
+}
+
+fn temp_watchlist_path(name: &str) -> std::path::PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "btc-toxic-flow-{name}-{unique}-{}.json",
+        std::process::id()
+    ))
 }
