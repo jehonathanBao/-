@@ -8,12 +8,12 @@ use crate::{
         active_trade_toxicity_routes, binance_alt_contract_routes, calibration_routes,
         contract_whale_routes, dev_alert_routes, discord_notification_routes,
         durable_archive_dryrun_routes, durable_archive_write_audit_routes,
-        durable_archive_write_routes, liquidation_toxicity_routes, main_force_event_routes,
-        manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
+        durable_archive_write_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
+        main_force_event_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
         manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
         manual_evidence_freshness_routes, manual_governance_index_routes,
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
-        new_token_watch_routes, orderbook_wall_interpretation_routes,
+        market_regime_routes, new_token_watch_routes, orderbook_wall_interpretation_routes,
         orderbook_wall_lifecycle_routes, parameter_patch_diff_routes, parameter_review_routes,
         routes, runtime_control_routes, scan_log_routes, score_routes, security, spot_whale_routes,
         static_files, structural_toxicity_routes, toxic_governance_ledger_routes,
@@ -143,6 +143,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/new-token-watch/chart",
             get(new_token_watch_routes::new_token_watch_chart_route),
+        )
+        .route(
+            "/api/regime/latest",
+            get(market_regime_routes::market_regime_latest_route),
+        )
+        .route(
+            "/api/manipulation/latest",
+            get(market_regime_routes::manipulation_latest_route),
+        )
+        .route(
+            "/api/signal/latest",
+            get(market_regime_routes::market_signal_latest_route),
+        )
+        .route(
+            "/api/liquidation/cascade",
+            get(liquidation_cascade_routes::liquidation_cascade_route),
+        )
+        .route(
+            "/api/liquidation/leverage-map",
+            get(liquidation_cascade_routes::liquidation_leverage_map_route),
+        )
+        .route(
+            "/api/liquidation/liquidity-gap",
+            get(liquidation_cascade_routes::liquidation_liquidity_gap_route),
         )
         .route(
             "/api/new-token-watch/add",
