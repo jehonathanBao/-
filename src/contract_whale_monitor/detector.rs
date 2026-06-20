@@ -187,6 +187,7 @@ pub fn detect_contract_whale_signal_with_config(
         trajectory: Default::default(),
         liquidation_force,
         market_driver,
+        event_lifecycle: Default::default(),
         read_only: true,
         analysis_only: true,
         execution_enabled: false,

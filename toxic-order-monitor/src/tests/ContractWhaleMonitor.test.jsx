@@ -385,6 +385,57 @@ vi.mock("../api/contractWhale.js", () => ({
             },
           ],
           finalResult: "多平台主动买入爆发，疑似主力合约拉盘",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+            status: "active",
+            startTime: 1_700_000_000_000,
+            lastUpdateTime: 1_700_000_000_000,
+            volumeAccumulated: 4820,
+            oiAccumulated: 900,
+            updateCount: 2,
+          },
+        },
+        {
+          id: "contract-whale-closed-row",
+          ts: 1_699_999_820_000,
+          symbol: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_sell",
+          direction: "sell",
+          severity: "medium",
+          score: 44,
+          mainForceScore: 44,
+          spotScore: 30,
+          contractScore: 44,
+          totalVolumeBtc: 760,
+          netVolumeBtc: -520,
+          totalNotionalUsd: 53_000_000,
+          dominance: 0.684,
+          orderPriceUsd: 69_800,
+          currentMarketPriceUsd: 70_000,
+          priceDeviationPct: 0.286,
+          priceDeviationFiltered: false,
+          priceMovePct: -0.12,
+          priceResponseType: "no_clear_response",
+          mainExchange: "binance",
+          marketType: "perp",
+          sourceRole: "primary",
+          dataQuality: 86,
+          discordEligible: false,
+          discordSent: false,
+          discordReason: "display_only",
+          discordWouldSend: false,
+          mergedFrom: [],
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:1699999820000",
+            status: "closed",
+            startTime: 1_699_999_820_000,
+            lastUpdateTime: 1_699_999_820_000,
+            volumeAccumulated: 760,
+            oiAccumulated: 0,
+            updateCount: 1,
+          },
+          finalResult: "上一段主动卖出事件已结束",
         },
       ],
       error: null,
@@ -547,6 +598,8 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Hazard Curve (lambda proxy)")).toBeInTheDocument();
     expect(screen.getByText("合约市场事件")).toBeInTheDocument();
     expect(screen.getByText(/60 秒内的 5s \/ 15s \/ 60s 切片会合并成一个市场事件/)).toBeInTheDocument();
+    expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
+    expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getByTestId("raw-contract-whale-signals")).toBeInTheDocument();
     expect(screen.getAllByText(/2023/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);

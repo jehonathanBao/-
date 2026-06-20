@@ -516,6 +516,85 @@ fn contract_whale_history_response_merges_same_event_time_window_slices() {
 }
 
 #[test]
+fn contract_whale_history_response_marks_active_and_closed_event_lifecycle() {
+    let _guard = contract_whale_test_guard();
+    let mut closed = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    closed.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
+    closed.total_volume_btc = 420.0;
+    closed.total_volume = 420.0;
+    closed.net_volume_btc = 380.0;
+    closed.net_volume = 380.0;
+    let mut active = persisted_signal(1_700_000_180_000, ContractWhaleSeverity::Medium);
+    active.id = "contract-whale:BTC:15:1700000180000:buy".to_string();
+    active.total_volume_btc = 520.0;
+    active.total_volume = 520.0;
+    active.net_volume_btc = 490.0;
+    active.net_volume = 490.0;
+
+    let response = build_contract_whale_history_response(
+        vec![closed, active],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    let items = serde_json::to_value(&response.items).expect("items json");
+    let items = items.as_array().expect("items array");
+    let active_item = items
+        .iter()
+        .find(|item| item["id"] == "contract-whale:BTC:15:1700000180000:buy")
+        .expect("active event");
+    let closed_item = items
+        .iter()
+        .find(|item| item["id"] == "contract-whale:BTC:15:1700000000000:buy")
+        .expect("closed event");
+
+    assert_eq!(active_item["eventLifecycle"]["status"], "active");
+    assert_eq!(closed_item["eventLifecycle"]["status"], "closed");
+    assert_eq!(closed_item["eventLifecycle"]["volumeAccumulated"], 420.0);
+    assert_eq!(closed_item["eventLifecycle"]["updateCount"], 1);
+}
+
+#[test]
+fn contract_whale_history_response_updates_same_event_within_thirty_seconds() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
+    first.total_volume_btc = 300.0;
+    first.total_volume = 300.0;
+    first.net_volume_btc = 240.0;
+    first.net_volume = 240.0;
+    let mut second = persisted_signal(1_700_000_020_000, ContractWhaleSeverity::Medium);
+    second.id = "contract-whale:BTC:15:1700000020000:buy".to_string();
+    second.total_volume_btc = 500.0;
+    second.total_volume = 500.0;
+    second.net_volume_btc = 410.0;
+    second.net_volume = 410.0;
+
+    let response = build_contract_whale_history_response(
+        vec![first, second],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    let items = serde_json::to_value(&response.items).expect("items json");
+    let items = items.as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["eventLifecycle"]["status"], "active");
+    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 800.0);
+    assert_eq!(items[0]["eventLifecycle"]["updateCount"], 2);
+    assert_eq!(items[0]["totalVolumeBtc"], 800.0);
+    assert_eq!(items[0]["netVolumeBtc"], 650.0);
+}
+
+#[test]
 fn contract_whale_response_returns_disabled_empty_state_when_config_disabled() {
     let _guard = contract_whale_test_guard();
     let flow_state = FlowState {

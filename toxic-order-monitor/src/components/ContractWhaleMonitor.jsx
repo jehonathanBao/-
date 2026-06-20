@@ -515,6 +515,8 @@ function CurvePanel({ label, points, tone }) {
 }
 
 function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
+  const activeItems = items.filter((item) => eventLifecycleStatus(item) !== "closed");
+  const closedItems = items.filter((item) => eventLifecycleStatus(item) === "closed");
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -535,16 +537,51 @@ function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
         ) : items.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
         ) : (
-          <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} />
+          <div className="space-y-4 p-3">
+            <EventLifecycleFeedGroup
+              emptyText="暂无活跃合约事件"
+              items={activeItems}
+              onOpenSignal={onOpenSignal}
+              testId="raw-contract-whale-signals"
+              title="ACTIVE EVENTS (updated)"
+            />
+            <EventLifecycleFeedGroup
+              emptyText="暂无已结束合约事件"
+              items={closedItems}
+              onOpenSignal={onOpenSignal}
+              testId="raw-contract-whale-signals-closed"
+              title="CLOSED EVENTS (finalized)"
+            />
+          </div>
         )}
       </div>
     </section>
   );
 }
 
-function RawSignalDebugTable({ items, onOpenSignal }) {
+function EventLifecycleFeedGroup({ emptyText, items, onOpenSignal, testId, title }) {
   return (
-    <table className="min-w-full table-fixed text-left text-xs" data-testid="raw-contract-whale-signals">
+    <div className="rounded-xl border border-slate-800 bg-slate-950/40">
+      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+        <p className="text-xs font-bold tracking-[0.18em] text-cyan-200">{title}</p>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
+          {items.length} events
+        </span>
+      </div>
+      {items.length === 0 ? (
+        <p className="px-3 py-4 text-xs text-slate-500">{emptyText}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} testId={testId} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals" }) {
+  return (
+    <table className="min-w-full table-fixed text-left text-xs" data-testid={testId}>
       <thead className="bg-slate-950/80 text-slate-400">
         <tr>
           <HeaderCell>时间</HeaderCell>
@@ -761,6 +798,11 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["价格响应", priceResponseLabel(signal.priceResponseType)],
                 ["等级", severityLabel(signal.severity)],
                 ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
+                ["事件状态", eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"],
+                ["事件开始", formatTime(signal.eventLifecycle?.startTime)],
+                ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
+                ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
+                ["累计成交", formatBaseVolume(signal.eventLifecycle?.volumeAccumulated || signal.totalVolumeBtc, signal.symbol)],
                 ["触发时间", formatTime(signal.ts)],
                 ["触发价格", formatPrice(signalTriggerPrice(signal))],
                 ["信号价格", formatPrice(signal.orderPriceUsd ?? signalTriggerPrice(signal))],
@@ -2023,6 +2065,10 @@ function mergedWindowLabel(item) {
   }
   const label = [...windows].sort((left, right) => left - right).map((windowSec) => `${windowSec}s`).join(" + ");
   return label ? `merged ${label}` : `merged +${item?.mergedFrom?.length || 0}`;
+}
+
+function eventLifecycleStatus(item) {
+  return String(item?.eventLifecycle?.status || "active").toLowerCase() === "closed" ? "closed" : "active";
 }
 
 function clusterIntentLabel(value) {

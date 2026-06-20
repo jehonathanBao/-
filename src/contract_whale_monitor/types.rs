@@ -837,6 +837,33 @@ impl Default for ContractWhaleMarketDriver {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContractWhaleEventStatus {
+    #[default]
+    Active,
+    Closed,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleEventLifecycle {
+    #[serde(default)]
+    pub event_id: String,
+    #[serde(default)]
+    pub start_time: i64,
+    #[serde(default)]
+    pub last_update_time: i64,
+    #[serde(default)]
+    pub status: ContractWhaleEventStatus,
+    #[serde(default)]
+    pub volume_accumulated: f64,
+    #[serde(default)]
+    pub oi_accumulated: f64,
+    #[serde(default)]
+    pub update_count: usize,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignal {
@@ -961,6 +988,8 @@ pub struct ContractWhaleSignal {
     pub liquidation_force: ContractWhaleLiquidationForce,
     #[serde(default)]
     pub market_driver: ContractWhaleMarketDriver,
+    #[serde(default)]
+    pub event_lifecycle: ContractWhaleEventLifecycle,
     pub read_only: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,

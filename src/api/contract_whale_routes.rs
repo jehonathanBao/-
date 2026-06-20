@@ -19,6 +19,7 @@ use crate::{
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
+        event_lifecycle::apply_contract_whale_event_lifecycle,
         log_events,
         merge::merge_contract_whale_signals,
         trajectory::apply_contract_whale_trajectories,
@@ -1098,6 +1099,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .toxic_order
             .max_price_deviation_pct,
     );
+    items = apply_contract_whale_event_lifecycle(items, now);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -1174,6 +1176,8 @@ pub fn build_contract_whale_history_response(
             .toxic_order
             .max_price_deviation_pct,
     );
+    let lifecycle_reference_now = items.iter().map(|item| item.ts).max().unwrap_or(now);
+    items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -1230,6 +1234,7 @@ pub fn build_contract_whale_items_response(
             .toxic_order
             .max_price_deviation_pct,
     );
+    items = apply_contract_whale_event_lifecycle(items, now);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
