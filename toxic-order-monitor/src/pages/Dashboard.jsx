@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
 import { pushDiscordAlert, sendDiscordTestMessage } from "../api/discord.js";
 import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
+import AltcoinManipulationDashboard from "../components/AltcoinManipulationDashboard.jsx";
 import BinanceAltContractMonitor from "../components/BinanceAltContractMonitor.jsx";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
@@ -34,6 +35,7 @@ export default function Dashboard() {
   const isLiquidationCascadeView = viewMode === "liquidation-cascade";
   const isSpotWhaleView = viewMode === "spot-whale";
   const isAltContractView = viewMode === "alt-contract-monitor";
+  const isAltcoinManipulationView = viewMode === "altcoin-manipulation";
   const isNewTokenWatchView = viewMode === "new-token-watch";
   const isUsageGuideView = viewMode === "usage-guide";
   const {
@@ -60,7 +62,7 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView || isLiquidationCascadeView || isSpotWhaleView || isAltContractView || isNewTokenWatchView || isUsageGuideView) {
+    if (isContractWhaleView || isLiquidationCascadeView || isSpotWhaleView || isAltContractView || isAltcoinManipulationView || isNewTokenWatchView || isUsageGuideView) {
       return;
     }
     fetchSignals().then((items) => {
@@ -72,7 +74,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isAltContractView, isContractWhaleView, isLiquidationCascadeView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
+  }, [isAltContractView, isAltcoinManipulationView, isContractWhaleView, isLiquidationCascadeView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -94,7 +96,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView && !isLiquidationCascadeView && !isSpotWhaleView && !isAltContractView && !isNewTokenWatchView && !isUsageGuideView,
+    enabled: !isContractWhaleView && !isLiquidationCascadeView && !isSpotWhaleView && !isAltContractView && !isAltcoinManipulationView && !isNewTokenWatchView && !isUsageGuideView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -285,6 +287,8 @@ export default function Dashboard() {
           <LiquidationCascadePage />
         ) : isSpotWhaleView ? (
           <SpotWhalePage />
+        ) : isAltcoinManipulationView ? (
+          <AltcoinManipulationPage />
         ) : isAltContractView ? (
           <AltContractPage />
         ) : isNewTokenWatchView ? (
@@ -448,6 +452,26 @@ function LiquidationCascadePage() {
   );
 }
 
+function AltcoinManipulationPage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Altcoin Manipulation Signals</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">妖币控盘监控</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            独立展示 /api/altcoin/signals 的山寨控盘输出，按 OI、成交、Funding 和价格结构拆解控盘风险。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          山寨专用 · BTC 隔离 · 只读展示
+        </div>
+      </div>
+      <AltcoinManipulationDashboard />
+    </>
+  );
+}
+
 function SpotWhalePage() {
   return (
     <>
@@ -578,6 +602,9 @@ function filterLabel(activeRiskFilter, viewMode) {
   if (viewMode === "liquidation-cascade") {
     return "强平瀑布预测";
   }
+  if (viewMode === "altcoin-manipulation") {
+    return "妖币控盘监控";
+  }
   if (viewMode === "spot-whale") {
     return "BTC/ETH 现货监控";
   }
@@ -608,6 +635,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
   if (pathname === "/liquidation-cascade") return "liquidation-cascade";
+  if (pathname === "/altcoin-manipulation") return "altcoin-manipulation";
   if (pathname === "/alt-contract-monitor") return "alt-contract-monitor";
   if (pathname === "/new-token-watch") return "new-token-watch";
   if (pathname === "/spot-whale" || pathname === "/spot-monitor") return "spot-whale";

@@ -100,6 +100,29 @@ vi.mock("../api/liquidationCascade.js", () => ({
       error: null,
     }),
   ),
+  fetchAltcoinSignals: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "ASTER",
+        regime: "MANIPULATION_HIGH",
+        bias: "SHORT",
+        confidence: 0.72,
+        manipulationScore: 0.81,
+        oiSignalScore: 0.76,
+        volumeSignalScore: 0.69,
+        fundingSignalScore: 0.55,
+        priceSignalScore: 0.61,
+        pumpDumpScore: 0.64,
+        signals: ["OI_DIVERGENCE", "FAKE_BREAKOUT"],
+        riskTags: ["PUMP_RISK"],
+        metrics: {
+          oi_signal_score: 0.76,
+          volume_signal_score: 0.69,
+        },
+      },
+      error: null,
+    }),
+  ),
   fetchMarketRegime: vi.fn(() =>
     Promise.resolve({
       data: {
@@ -274,7 +297,8 @@ describe("Dashboard interactions", () => {
     expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
-    expect(screen.getByRole("link", { name: "强平瀑布预测" })).toHaveAttribute("href", "/liquidation-cascade");
+    expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
     expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor");
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
@@ -287,13 +311,24 @@ describe("Dashboard interactions", () => {
   it("opens the standalone liquidation cascade predictor route", async () => {
     renderDashboard("/liquidation-cascade");
 
-    expect(screen.getByRole("link", { name: "强平瀑布预测" })).toHaveAttribute("href", "/liquidation-cascade");
+    expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
     expect((await screen.findAllByText("强平瀑布预测")).length).toBeGreaterThan(0);
     expect(await screen.findByText("IMMINENT")).toBeInTheDocument();
     expect(screen.getAllByText("82%").length).toBeGreaterThan(0);
     expect(screen.getByText("2.5% - 5%")).toBeInTheDocument();
     expect(screen.getAllByText("BTC_STRUCTURE_ONLY").length).toBeGreaterThan(0);
     expect(screen.queryByText("mean_reversion_only")).not.toBeInTheDocument();
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
+  });
+
+  it("opens the standalone altcoin manipulation monitor route", async () => {
+    renderDashboard("/altcoin-manipulation");
+
+    expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
+    expect((await screen.findAllByText("妖币控盘监控")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("MANIPULATION_HIGH")).toBeInTheDocument();
+    expect(screen.getByText("OI_DIVERGENCE")).toBeInTheDocument();
+    expect(screen.getByText("PUMP_RISK")).toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 
