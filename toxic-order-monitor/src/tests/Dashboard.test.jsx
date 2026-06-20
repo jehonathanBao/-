@@ -100,29 +100,31 @@ vi.mock("../api/liquidationCascade.js", () => ({
       error: null,
     }),
   ),
-  fetchAltcoinSignals: vi.fn(() =>
-    Promise.resolve({
+  fetchAltcoinSignals: vi.fn((symbol = "ASTERUSDT") => {
+    const baseSymbol = String(symbol).replace(/USDT$/i, "").toUpperCase();
+    const isZec = baseSymbol === "ZEC";
+    return Promise.resolve({
       data: {
-        symbol: "ASTER",
-        regime: "MANIPULATION_HIGH",
-        bias: "SHORT",
-        confidence: 0.72,
-        manipulationScore: 0.81,
-        oiSignalScore: 0.76,
-        volumeSignalScore: 0.69,
-        fundingSignalScore: 0.55,
-        priceSignalScore: 0.61,
-        pumpDumpScore: 0.64,
-        signals: ["OI_DIVERGENCE", "FAKE_BREAKOUT"],
+        symbol: baseSymbol,
+        regime: isZec ? "MANIPULATION_MEDIUM" : "MANIPULATION_HIGH",
+        bias: isZec ? "NEUTRAL" : "SHORT",
+        confidence: isZec ? 0.61 : 0.72,
+        manipulationScore: isZec ? 0.58 : 0.81,
+        oiSignalScore: isZec ? 0.44 : 0.76,
+        volumeSignalScore: isZec ? 0.63 : 0.69,
+        fundingSignalScore: isZec ? 0.31 : 0.55,
+        priceSignalScore: isZec ? 0.57 : 0.61,
+        pumpDumpScore: isZec ? 0.52 : 0.64,
+        signals: ["OI_DIVERGENCE", `${baseSymbol}_FLOW_SIGNAL`],
         riskTags: ["PUMP_RISK"],
         metrics: {
-          oi_signal_score: 0.76,
-          volume_signal_score: 0.69,
+          oi_signal_score: isZec ? 0.44 : 0.76,
+          volume_signal_score: isZec ? 0.63 : 0.69,
         },
       },
       error: null,
-    }),
-  ),
+    });
+  }),
   fetchMarketRegime: vi.fn(() =>
     Promise.resolve({
       data: {
@@ -326,10 +328,24 @@ describe("Dashboard interactions", () => {
 
     expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
     expect((await screen.findAllByText("妖币控盘监控")).length).toBeGreaterThan(0);
-    expect(await screen.findByText("MANIPULATION_HIGH")).toBeInTheDocument();
+    expect((await screen.findAllByText("MANIPULATION_HIGH")).length).toBeGreaterThan(0);
     expect(screen.getByText("OI_DIVERGENCE")).toBeInTheDocument();
     expect(screen.getByText("PUMP_RISK")).toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
+  });
+
+  it("adds several altcoin manipulation symbols and renders them together", async () => {
+    const user = userEvent.setup();
+    renderDashboard("/altcoin-manipulation");
+
+    await screen.findByText("ASTER");
+    await user.type(screen.getByLabelText("山寨合约 symbols"), "JTOUSDT ZECUSDT");
+    await user.click(screen.getByRole("button", { name: "加入监控" }));
+
+    expect(await screen.findByText("JTO")).toBeInTheDocument();
+    expect(await screen.findByText("ZEC")).toBeInTheDocument();
+    expect(screen.getByText("MANIPULATION_MEDIUM")).toBeInTheDocument();
+    expect(screen.getByText("3 / 10")).toBeInTheDocument();
   });
 
   it("keeps dashboard and spot monitor route aliases working", async () => {
