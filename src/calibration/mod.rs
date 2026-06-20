@@ -1,6 +1,7 @@
 pub mod calibration_report_store;
 pub mod calibration_runner;
 pub mod calibration_types;
+pub mod false_positive_analytics;
 pub mod false_positive_report;
 pub mod manual_apply_dryrun_validator;
 pub mod manual_apply_evidence_pack;
@@ -17,4 +18,5 @@ pub mod parameter_grid;
 pub mod parameter_patch_diff;
 pub mod parameter_recommendation_review_store;
 pub mod reason_code_stats;
+pub mod strategy_evolution;
 pub mod threshold_report;
