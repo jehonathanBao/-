@@ -7,6 +7,7 @@ export default function App() {
       <Route path="/" element={<Dashboard />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/contract-whale" element={<Dashboard />} />
+      <Route path="/liquidation-cascade" element={<Dashboard />} />
       <Route path="/alt-contract-monitor" element={<Dashboard />} />
       <Route path="/new-token-watch" element={<Dashboard />} />
       <Route path="/spot-monitor" element={<Dashboard />} />

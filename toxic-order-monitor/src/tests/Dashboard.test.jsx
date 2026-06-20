@@ -25,6 +25,114 @@ vi.mock("../api/scanLogs.js", async () => {
 
 vi.mock("../api/contractWhale.js", async () => import("./__mocks__/contractWhale.js"));
 
+vi.mock("../api/liquidationCascade.js", () => ({
+  fetchLiquidationCascade: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "BTCUSDT",
+        cascadeProbability: 0.82,
+        status: "IMMINENT",
+        direction: "DOWN",
+        estimatedMove: "2.5% - 5%",
+        timeWindow: "5m - 30m",
+        riskZone: [65500, 66000],
+        signals: ["OI_CLUSTER_HIGH", "LIQUIDITY_VOID"],
+        components: {
+          leverageConcentration: 0.78,
+          liquidityGap: 0.66,
+          fundingStress: 0.42,
+          triggerProximity: 0.71,
+          oiStress: 0.57,
+        },
+      },
+      error: null,
+    }),
+  ),
+  fetchLiquidationLeverageMap: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "BTCUSDT",
+        heatmap: [
+          { price: 65500, side: "long", intensity: 0.84, notionalUsd: 120_000_000, distanceBps: 38 },
+        ],
+        highRiskZones: [{ low: 65500, high: 66000, strength: 0.82, side: "long" }],
+      },
+      error: null,
+    }),
+  ),
+  fetchLiquidationLiquidityGap: vi.fn(() =>
+    Promise.resolve({
+      data: { symbol: "BTCUSDT", belowPrice: 0.68, abovePrice: 0.44, dominantGap: "DOWN", signals: ["THIN_BID"] },
+      error: null,
+    }),
+  ),
+  fetchBtcStructure: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "BTC",
+        regime: "LIQUIDATION",
+        bias: "SHORT",
+        confidence: 0.76,
+        structureScore: 0.64,
+        liquidationCascadeProbability: 0.82,
+        gammaPressure: 0.33,
+        signals: ["BTC_STRUCTURE_ONLY", "LIQUIDATION_IMMINENT"],
+        metrics: {
+          liquidationPressure: 0.82,
+          gammaPressure: 0.33,
+        },
+      },
+      error: null,
+    }),
+  ),
+  fetchAltcoinManipulation: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "ASTER",
+        regime: "MANIPULATION",
+        bias: "SHORT",
+        confidence: 0.72,
+        manipulationScore: 0.81,
+        pumpDumpScore: 0.64,
+        signals: ["FAKE_BREAKOUT"],
+        metrics: {},
+      },
+      error: null,
+    }),
+  ),
+  fetchMarketRegime: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "BTCUSDT",
+        regime: "LIQUIDATION",
+        confidence: 0.76,
+        directionBias: "SHORT",
+        signals: ["FUNDING_STRESS"],
+      },
+      error: null,
+    }),
+  ),
+  fetchManipulationAssessment: vi.fn(() =>
+    Promise.resolve({ data: { symbol: "BTCUSDT", score: 0.64, signals: ["FAKE_BREAKOUT"] }, error: null }),
+  ),
+  fetchMarketSignalAssessment: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        symbol: "BTCUSDT",
+        regime: "LIQUIDATION",
+        confidence: 0.74,
+        manipulationScore: 0.64,
+        directionBias: "SHORT",
+        signals: ["LIQUIDITY_VOID"],
+        adjustedSignalStrength: 0.58,
+        allowedSignalFamily: "mean_reversion_only",
+        riskNote: "liquidation regime active",
+      },
+      error: null,
+    }),
+  ),
+}));
+
 vi.mock("../api/usageGuide.js", () => ({
   fetchUsageGuide: vi.fn(() =>
     Promise.resolve({
@@ -166,14 +274,27 @@ describe("Dashboard interactions", () => {
     expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
+    expect(screen.getByRole("link", { name: "强平瀑布预测" })).toHaveAttribute("href", "/liquidation-cascade");
     expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor");
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
-    expect(screen.queryByRole("link", { name: "BTC 清算监控" })).not.toBeInTheDocument();
     expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getAllByText("主力合约监控未启用").length).toBeGreaterThan(0);
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the standalone liquidation cascade predictor route", async () => {
+    renderDashboard("/liquidation-cascade");
+
+    expect(screen.getByRole("link", { name: "强平瀑布预测" })).toHaveAttribute("href", "/liquidation-cascade");
+    expect((await screen.findAllByText("强平瀑布预测")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("IMMINENT")).toBeInTheDocument();
+    expect(screen.getAllByText("82%").length).toBeGreaterThan(0);
+    expect(screen.getByText("2.5% - 5%")).toBeInTheDocument();
+    expect(screen.getAllByText("BTC_STRUCTURE_ONLY").length).toBeGreaterThan(0);
+    expect(screen.queryByText("mean_reversion_only")).not.toBeInTheDocument();
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 
   it("keeps dashboard and spot monitor route aliases working", async () => {

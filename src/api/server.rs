@@ -5,11 +5,12 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, binance_alt_contract_routes, calibration_routes,
-        contract_whale_routes, dev_alert_routes, discord_notification_routes,
-        durable_archive_dryrun_routes, durable_archive_write_audit_routes,
-        durable_archive_write_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
-        main_force_event_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
+        active_trade_toxicity_routes, altcoin_routes, binance_alt_contract_routes,
+        btc_structure_routes, calibration_routes, contract_whale_routes, dev_alert_routes,
+        discord_notification_routes, durable_archive_dryrun_routes,
+        durable_archive_write_audit_routes, durable_archive_write_routes, fusion_routes,
+        liquidation_cascade_routes, liquidation_toxicity_routes, main_force_event_routes,
+        manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
         manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
         manual_evidence_freshness_routes, manual_governance_index_routes,
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
@@ -39,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/dashboard", get(static_files::spa))
         .route("/alt-contract-monitor", get(static_files::spa))
         .route("/contract-whale", get(static_files::spa))
+        .route("/liquidation-cascade", get(static_files::spa))
         .route("/spot-monitor", get(static_files::spa))
         .route("/spot-whale", get(static_files::spa))
         .route("/signals", get(static_files::spa))
@@ -167,6 +169,43 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/liquidation/liquidity-gap",
             get(liquidation_cascade_routes::liquidation_liquidity_gap_route),
+        )
+        .route(
+            "/api/btc/structure",
+            get(btc_structure_routes::btc_structure_route),
+        )
+        .route(
+            "/api/btc/regime",
+            get(btc_structure_routes::btc_regime_route),
+        )
+        .route(
+            "/api/btc/liquidation",
+            get(btc_structure_routes::btc_liquidation_route),
+        )
+        .route(
+            "/api/altcoin/manipulation",
+            get(altcoin_routes::altcoin_manipulation_route),
+        )
+        .route(
+            "/api/altcoin/regime",
+            get(altcoin_routes::altcoin_regime_route),
+        )
+        .route(
+            "/api/altcoin/fusion",
+            get(altcoin_routes::altcoin_fusion_route),
+        )
+        .route(
+            "/api/altcoin/signals",
+            get(altcoin_routes::altcoin_signals_route),
+        )
+        .route("/api/fusion/state", get(fusion_routes::fusion_state_route))
+        .route(
+            "/api/fusion/decision",
+            get(fusion_routes::fusion_decision_route),
+        )
+        .route(
+            "/api/fusion/tf-breakdown",
+            get(fusion_routes::fusion_tf_breakdown_route),
         )
         .route(
             "/api/new-token-watch/add",

@@ -6,6 +6,7 @@ import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
 import BinanceAltContractMonitor from "../components/BinanceAltContractMonitor.jsx";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
+import LiquidationCascadeDashboard from "../components/LiquidationCascadeDashboard.jsx";
 import NewTokenWatch from "../components/NewTokenWatch.jsx";
 import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
@@ -30,6 +31,7 @@ export default function Dashboard() {
   const location = useLocation();
   const viewMode = viewModeFromPath(location.pathname);
   const isContractWhaleView = viewMode === "contract-whale";
+  const isLiquidationCascadeView = viewMode === "liquidation-cascade";
   const isSpotWhaleView = viewMode === "spot-whale";
   const isAltContractView = viewMode === "alt-contract-monitor";
   const isNewTokenWatchView = viewMode === "new-token-watch";
@@ -58,7 +60,7 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView || isSpotWhaleView || isAltContractView || isNewTokenWatchView || isUsageGuideView) {
+    if (isContractWhaleView || isLiquidationCascadeView || isSpotWhaleView || isAltContractView || isNewTokenWatchView || isUsageGuideView) {
       return;
     }
     fetchSignals().then((items) => {
@@ -70,7 +72,7 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isAltContractView, isContractWhaleView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
+  }, [isAltContractView, isContractWhaleView, isLiquidationCascadeView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
@@ -92,7 +94,7 @@ export default function Dashboard() {
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView && !isSpotWhaleView && !isAltContractView && !isNewTokenWatchView && !isUsageGuideView,
+    enabled: !isContractWhaleView && !isLiquidationCascadeView && !isSpotWhaleView && !isAltContractView && !isNewTokenWatchView && !isUsageGuideView,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
@@ -279,6 +281,8 @@ export default function Dashboard() {
         <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
         {isContractWhaleView ? (
           <ContractWhalePage />
+        ) : isLiquidationCascadeView ? (
+          <LiquidationCascadePage />
         ) : isSpotWhaleView ? (
           <SpotWhalePage />
         ) : isAltContractView ? (
@@ -424,6 +428,26 @@ function ContractWhalePage() {
   );
 }
 
+function LiquidationCascadePage() {
+  return (
+    <>
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Liquidation Cascade Predictor</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">强平瀑布预测</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            独立展示杠杆集中、流动性缺口、市场状态与操控风险，用于观察潜在强平瀑布窗口。
+          </p>
+        </div>
+        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
+          只读预测 · 不推送 · 不下单
+        </div>
+      </div>
+      <LiquidationCascadeDashboard />
+    </>
+  );
+}
+
 function SpotWhalePage() {
   return (
     <>
@@ -551,6 +575,9 @@ function filterLabel(activeRiskFilter, viewMode) {
   if (viewMode === "contract-whale") {
     return "BTC/ETH 合约监控";
   }
+  if (viewMode === "liquidation-cascade") {
+    return "强平瀑布预测";
+  }
   if (viewMode === "spot-whale") {
     return "BTC/ETH 现货监控";
   }
@@ -580,6 +607,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 
 function viewModeFromPath(pathname) {
   if (pathname === "/contract-whale") return "contract-whale";
+  if (pathname === "/liquidation-cascade") return "liquidation-cascade";
   if (pathname === "/alt-contract-monitor") return "alt-contract-monitor";
   if (pathname === "/new-token-watch") return "new-token-watch";
   if (pathname === "/spot-whale" || pathname === "/spot-monitor") return "spot-whale";
