@@ -20,6 +20,7 @@ use crate::{
         config::contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         event_lifecycle::apply_contract_whale_event_lifecycle,
+        event_quality::apply_contract_whale_event_quality_filter,
         log_events,
         merge::merge_contract_whale_signals,
         trajectory::apply_contract_whale_trajectories,
@@ -1100,6 +1101,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .max_price_deviation_pct,
     );
     items = apply_contract_whale_event_lifecycle(items, now);
+    items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -1178,6 +1180,7 @@ pub fn build_contract_whale_history_response(
     );
     let lifecycle_reference_now = items.iter().map(|item| item.ts).max().unwrap_or(now);
     items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
+    items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -1235,6 +1238,7 @@ pub fn build_contract_whale_items_response(
             .max_price_deviation_pct,
     );
     items = apply_contract_whale_event_lifecycle(items, now);
+    items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {

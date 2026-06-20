@@ -595,6 +595,87 @@ fn contract_whale_history_response_updates_same_event_within_thirty_seconds() {
 }
 
 #[test]
+fn contract_whale_history_response_scores_clean_event_quality() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
+    first.total_volume_btc = 420.0;
+    first.total_volume = 420.0;
+    first.net_volume_btc = 360.0;
+    first.net_volume = 360.0;
+    first.total_notional_usd = 28_000_000.0;
+    first.price_move_pct = Some(0.22);
+    first.oi_change_1m_btc = Some(80.0);
+
+    let mut second = persisted_signal(1_700_000_020_000, ContractWhaleSeverity::Medium);
+    second.id = "contract-whale:BTC:15:1700000020000:buy".to_string();
+    second.total_volume_btc = 510.0;
+    second.total_volume = 510.0;
+    second.net_volume_btc = 430.0;
+    second.net_volume = 430.0;
+    second.total_notional_usd = 34_000_000.0;
+    second.price_move_pct = Some(0.28);
+    second.oi_change_1m_btc = Some(110.0);
+
+    let response = build_contract_whale_history_response(
+        vec![first, second],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    let items = serde_json::to_value(&response.items).expect("items json");
+    let items = items.as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["eventQuality"]["valid"], true);
+    assert!(
+        items[0]["eventQuality"]["qualityScore"]
+            .as_f64()
+            .expect("quality score")
+            > 0.6
+    );
+    assert!(
+        items[0]["eventQuality"]["mergeSimilarityScore"]
+            .as_f64()
+            .expect("merge similarity")
+            > 0.75
+    );
+    assert_eq!(
+        items[0]["eventQuality"]["falseEventFlags"]
+            .as_array()
+            .expect("false event flags")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn contract_whale_history_response_filters_micro_spike_false_events() {
+    let _guard = contract_whale_test_guard();
+    let mut micro_spike = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    micro_spike.id = "contract-whale:BTC:5:1700000000000:buy".to_string();
+    micro_spike.window_sec = 5;
+    micro_spike.total_volume_btc = 42.0;
+    micro_spike.total_volume = 42.0;
+    micro_spike.net_volume_btc = 4.0;
+    micro_spike.net_volume = 4.0;
+    micro_spike.total_notional_usd = 2_700_000.0;
+    micro_spike.dominance = 4.0 / 42.0;
+    micro_spike.price_move_pct = Some(0.01);
+    micro_spike.oi_change_1m_btc = None;
+    micro_spike.oi_change_5m_btc = None;
+    micro_spike.multi_exchange_confirmed = false;
+
+    let response =
+        build_contract_whale_history_response(vec![micro_spike], "BTC", 50, None, true, true, None);
+
+    assert!(response.items.is_empty());
+}
+
+#[test]
 fn contract_whale_response_returns_disabled_empty_state_when_config_disabled() {
     let _guard = contract_whale_test_guard();
     let flow_state = FlowState {

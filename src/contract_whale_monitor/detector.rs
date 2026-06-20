@@ -188,6 +188,7 @@ pub fn detect_contract_whale_signal_with_config(
         liquidation_force,
         market_driver,
         event_lifecycle: Default::default(),
+        event_quality: Default::default(),
         read_only: true,
         analysis_only: true,
         execution_enabled: false,

@@ -717,6 +717,7 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         liquidation_force: ContractWhaleLiquidationForce::default(),
         market_driver: Default::default(),
         event_lifecycle: Default::default(),
+        event_quality: Default::default(),
         read_only: true,
         analysis_only: true,
         execution_enabled: false,

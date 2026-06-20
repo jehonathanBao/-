@@ -12,6 +12,7 @@ pub mod detector;
 pub mod discord;
 pub mod discord_notifier;
 pub mod event_lifecycle;
+pub mod event_quality;
 pub mod merge;
 pub mod normalizer;
 pub mod persistence;

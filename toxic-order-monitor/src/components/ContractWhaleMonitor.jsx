@@ -589,6 +589,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
           <HeaderCell>类型</HeaderCell>
           <HeaderCell>等级</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
+          <HeaderCell>质量</HeaderCell>
           <HeaderCell>成交量</HeaderCell>
           <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
@@ -654,6 +655,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
                 </span>
               ) : null}
             </Cell>
+            <Cell>{eventQualityBadge(item)}</Cell>
             <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
             <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
@@ -803,6 +805,9 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
                 ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
                 ["累计成交", formatBaseVolume(signal.eventLifecycle?.volumeAccumulated || signal.totalVolumeBtc, signal.symbol)],
+                ["事件质量", eventQualityLabel(signal)],
+                ["合并相似度", formatPct(Number(signal.eventQuality?.mergeSimilarityScore || 0) * 100)],
+                ["假事件标记", eventQualityFlagsLabel(signal)],
                 ["触发时间", formatTime(signal.ts)],
                 ["触发价格", formatPrice(signalTriggerPrice(signal))],
                 ["信号价格", formatPrice(signal.orderPriceUsd ?? signalTriggerPrice(signal))],
@@ -2069,6 +2074,28 @@ function mergedWindowLabel(item) {
 
 function eventLifecycleStatus(item) {
   return String(item?.eventLifecycle?.status || "active").toLowerCase() === "closed" ? "closed" : "active";
+}
+
+function eventQualityBadge(item) {
+  const score = Math.round(Number(item?.eventQuality?.qualityScore ?? 1) * 100);
+  const valid = item?.eventQuality?.valid !== false;
+  const flags = item?.eventQuality?.falseEventFlags || [];
+  return (
+    <span className={valid ? "text-emerald-200" : "text-rose-300"}>
+      Q {score}
+      {flags.length ? <span className="block text-[10px] uppercase text-rose-300">{flags[0]}</span> : null}
+    </span>
+  );
+}
+
+function eventQualityLabel(item) {
+  const score = Math.round(Number(item?.eventQuality?.qualityScore ?? 1) * 100);
+  return `Q ${score} · ${item?.eventQuality?.valid === false ? "filtered" : "clean"}`;
+}
+
+function eventQualityFlagsLabel(item) {
+  const flags = item?.eventQuality?.falseEventFlags || [];
+  return flags.length ? flags.join(", ") : "none";
 }
 
 function clusterIntentLabel(value) {

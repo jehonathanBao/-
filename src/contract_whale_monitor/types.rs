@@ -866,6 +866,30 @@ pub struct ContractWhaleEventLifecycle {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleEventQuality {
+    #[serde(default)]
+    pub quality_score: f64,
+    #[serde(default)]
+    pub merge_similarity_score: f64,
+    #[serde(default)]
+    pub valid: bool,
+    #[serde(default)]
+    pub false_event_flags: Vec<String>,
+}
+
+impl Default for ContractWhaleEventQuality {
+    fn default() -> Self {
+        Self {
+            quality_score: 1.0,
+            merge_similarity_score: 1.0,
+            valid: true,
+            false_event_flags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignal {
     pub id: String,
     pub ts: i64,
@@ -990,6 +1014,8 @@ pub struct ContractWhaleSignal {
     pub market_driver: ContractWhaleMarketDriver,
     #[serde(default)]
     pub event_lifecycle: ContractWhaleEventLifecycle,
+    #[serde(default)]
+    pub event_quality: ContractWhaleEventQuality,
     pub read_only: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,

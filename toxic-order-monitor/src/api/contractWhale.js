@@ -364,6 +364,7 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     liquidationForce: normalizeLiquidationForce(item.liquidationForce),
     marketDriver: normalizeMarketDriver(item.marketDriver),
     eventLifecycle: normalizeEventLifecycle(item.eventLifecycle),
+    eventQuality: normalizeEventQuality(item.eventQuality),
   };
 }
 
@@ -407,6 +408,16 @@ function normalizeEventLifecycle(value) {
     volumeAccumulated: numberOrNull(source.volumeAccumulated) || 0,
     oiAccumulated: numberOrNull(source.oiAccumulated) || 0,
     updateCount: Math.max(1, Math.round(numberOrNull(source.updateCount) || 1)),
+  };
+}
+
+function normalizeEventQuality(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    qualityScore: clampRatio(numberOrNull(source.qualityScore) ?? 1),
+    mergeSimilarityScore: clampRatio(numberOrNull(source.mergeSimilarityScore) ?? 1),
+    valid: source.valid === undefined ? true : Boolean(source.valid),
+    falseEventFlags: normalizeStringArray(source.falseEventFlags),
   };
 }
 

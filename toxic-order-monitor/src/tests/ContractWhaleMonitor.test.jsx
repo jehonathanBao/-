@@ -394,6 +394,12 @@ vi.mock("../api/contractWhale.js", () => ({
             oiAccumulated: 900,
             updateCount: 2,
           },
+          eventQuality: {
+            qualityScore: 0.86,
+            mergeSimilarityScore: 0.91,
+            valid: true,
+            falseEventFlags: [],
+          },
         },
         {
           id: "contract-whale-closed-row",
@@ -434,6 +440,12 @@ vi.mock("../api/contractWhale.js", () => ({
             volumeAccumulated: 760,
             oiAccumulated: 0,
             updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.67,
+            mergeSimilarityScore: 0.5,
+            valid: true,
+            falseEventFlags: [],
           },
           finalResult: "上一段主动卖出事件已结束",
         },
@@ -601,6 +613,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getByTestId("raw-contract-whale-signals")).toBeInTheDocument();
+    expect(screen.getByText("Q 86")).toBeInTheDocument();
     expect(screen.getAllByText(/2023/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(
