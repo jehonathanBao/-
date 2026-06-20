@@ -1166,6 +1166,7 @@ pub fn build_contract_whale_history_response(
         };
     }
     items.retain(|signal| is_perp_signal(signal) && severity_matches(signal.severity, severity));
+    items = merge_contract_whale_signals(items);
     decorate_and_filter_price_deviated_signals(
         &mut items,
         None,

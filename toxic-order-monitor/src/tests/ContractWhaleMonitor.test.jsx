@@ -545,8 +545,8 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
     expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
     expect(screen.getByText("Hazard Curve (lambda proxy)")).toBeInTheDocument();
-    expect(screen.getByText("逐条合约信号")).toBeInTheDocument();
-    expect(screen.getByText(/每一次 CWM 检测到的合约信号都会在这里展示/)).toBeInTheDocument();
+    expect(screen.getByText("合约市场事件")).toBeInTheDocument();
+    expect(screen.getByText(/60 秒内的 5s \/ 15s \/ 60s 切片会合并成一个市场事件/)).toBeInTheDocument();
     expect(screen.getByTestId("raw-contract-whale-signals")).toBeInTheDocument();
     expect(screen.getAllByText(/2023/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);

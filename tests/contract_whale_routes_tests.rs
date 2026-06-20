@@ -461,6 +461,53 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
     assert_eq!(response.items[0].severity, ContractWhaleSeverity::S);
     assert_eq!(response.items[0].window_sec, 15);
     assert_eq!(response.summary.signal_count, 1);
+    assert!(response.items[0].total_volume_btc > 6_100.0);
+    assert!(response.items[0].net_volume_btc > 4_900.0);
+    assert_eq!(response.items[0].merged_from.len(), 1);
+    assert!(response.items[0]
+        .merged_from
+        .iter()
+        .any(|id| id.contains("BTC:5:")));
+}
+
+#[test]
+fn contract_whale_history_response_merges_same_event_time_window_slices() {
+    let _guard = contract_whale_test_guard();
+    let mut fifteen_sec = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Medium);
+    fifteen_sec.id = "contract-whale:BTC:15:1700000030000:buy".to_string();
+    fifteen_sec.window_sec = 15;
+    fifteen_sec.total_volume_btc = 665.0;
+    fifteen_sec.net_volume_btc = 620.0;
+    fifteen_sec.total_volume = 665.0;
+    fifteen_sec.net_volume = 620.0;
+    fifteen_sec.total_notional_usd = 43_000_000.0;
+    fifteen_sec.score = 52;
+    let mut five_sec = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::Medium);
+    five_sec.id = "contract-whale:BTC:5:1700000015000:buy".to_string();
+    five_sec.window_sec = 5;
+    five_sec.total_volume_btc = 473.0;
+    five_sec.net_volume_btc = 430.0;
+    five_sec.total_volume = 473.0;
+    five_sec.net_volume = 430.0;
+    five_sec.total_notional_usd = 30_000_000.0;
+    five_sec.score = 47;
+
+    let response = build_contract_whale_history_response(
+        vec![five_sec, fifteen_sec],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(response.items[0].window_sec, 15);
+    assert_eq!(response.items[0].total_volume_btc, 1_138.0);
+    assert_eq!(response.items[0].net_volume_btc, 1_050.0);
+    assert_eq!(response.items[0].total_notional_usd, 73_000_000.0);
+    assert_eq!(response.items[0].score, 52);
     assert_eq!(response.items[0].merged_from.len(), 1);
     assert!(response.items[0]
         .merged_from
@@ -776,7 +823,7 @@ fn contract_whale_history_query_rejects_invalid_params() {
     );
 
     let invalid_net_direction = ContractWhaleQuery {
-        net_direction: Some("abs500".to_string()),
+        net_direction: Some("abs250".to_string()),
         ..empty_query()
     };
     assert_eq!(

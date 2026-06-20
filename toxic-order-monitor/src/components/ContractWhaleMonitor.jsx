@@ -301,7 +301,7 @@ function WhaleTrajectoryDashboard({
           <p className="console-label text-cyan-300">Whale Behavior Timeline</p>
           <h4 className="mt-1 text-base font-bold text-white">主力行为轨迹（辅助）</h4>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-            按同一 symbol、方向、价格区间和时间连续性把碎片信号合并成 whale entity，用于复盘连续主力意图；上方逐条合约信号表保留每一次检测结果。
+            按同一 symbol、方向、价格区间和时间连续性把事件继续合并成 whale entity，用于复盘连续主力意图；上方事件表展示已压缩的市场事件。
           </p>
         </div>
         <div className="grid grid-cols-3 gap-2 text-xs text-slate-300">
@@ -519,10 +519,10 @@ function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="console-label text-cyan-300">Contract Signal Feed</p>
-          <h4 className="mt-1 text-base font-bold text-white">逐条合约信号</h4>
+          <p className="console-label text-cyan-300">Contract Event Feed</p>
+          <h4 className="mt-1 text-base font-bold text-white">合约市场事件</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            每一次 CWM 检测到的合约信号都会在这里展示；下方主力行为轨迹只是辅助聚合，不会替代原始信号列表。
+            同 symbol、方向、类型且 60 秒内的 5s / 15s / 60s 切片会合并成一个市场事件；下方主力行为轨迹用于复盘更长的连续意图。
           </p>
         </div>
         <span className="rounded-full border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100">
@@ -551,7 +551,7 @@ function RawSignalDebugTable({ items, onOpenSignal }) {
           <HeaderCell>币种 / 价格</HeaderCell>
           <HeaderCell>类型</HeaderCell>
           <HeaderCell>等级</HeaderCell>
-          <HeaderCell>窗口</HeaderCell>
+          <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>成交量</HeaderCell>
           <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
@@ -609,7 +609,14 @@ function RawSignalDebugTable({ items, onOpenSignal }) {
                 {severityLabel(item.severity)}
               </span>
             </Cell>
-            <Cell>{item.windowSec}s</Cell>
+            <Cell>
+              <span className="block whitespace-nowrap">{item.windowSec}s</span>
+              {item.mergedFrom?.length ? (
+                <span className="block whitespace-nowrap text-[10px] uppercase tracking-wide text-cyan-300">
+                  {mergedWindowLabel(item)}
+                </span>
+              ) : null}
+            </Cell>
             <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
             <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
@@ -753,7 +760,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["方向", directionLabel(signal.direction)],
                 ["价格响应", priceResponseLabel(signal.priceResponseType)],
                 ["等级", severityLabel(signal.severity)],
-                ["窗口", `${signal.windowSec}s`],
+                ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
                 ["触发时间", formatTime(signal.ts)],
                 ["触发价格", formatPrice(signalTriggerPrice(signal))],
                 ["信号价格", formatPrice(signal.orderPriceUsd ?? signalTriggerPrice(signal))],
@@ -2003,6 +2010,19 @@ function clusterTableLabel(item) {
   const persistence = Number(item?.persistence?.persistenceScore || 0);
   if (count <= 1 && persistence <= 0) return "单点";
   return `${count}条 · ${formatPct(persistence * 100)}`;
+}
+
+function mergedWindowLabel(item) {
+  const windows = new Set();
+  const currentWindow = Number(item?.windowSec || 0);
+  if (currentWindow > 0) windows.add(currentWindow);
+  for (const id of item?.mergedFrom || []) {
+    const parts = String(id || "").split(":");
+    const parsed = Number(parts[2]);
+    if (Number.isFinite(parsed) && parsed > 0) windows.add(parsed);
+  }
+  const label = [...windows].sort((left, right) => left - right).map((windowSec) => `${windowSec}s`).join(" + ");
+  return label ? `merged ${label}` : `merged +${item?.mergedFrom?.length || 0}`;
 }
 
 function clusterIntentLabel(value) {
