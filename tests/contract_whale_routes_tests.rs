@@ -20,6 +20,10 @@ use btc_toxic_flow_monitor_rs::{
             ContractWhaleSeverity, ContractWhaleTrend60s,
         },
     },
+    core_event::final_store::final_event_store::{
+        build_final_event_store_response_from_contract_whale_response,
+        build_final_events_from_contract_whale_signals,
+    },
     types::flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
 };
 
@@ -650,6 +654,157 @@ fn contract_whale_history_response_scores_clean_event_quality() {
             .len(),
         0
     );
+}
+
+#[test]
+fn final_event_projection_is_single_truth_for_merged_contract_whale_event() {
+    let _guard = contract_whale_test_guard();
+    let mut fifteen_sec = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::Medium);
+    fifteen_sec.id = "contract-whale:BTC:15:1700000015000:sell".to_string();
+    fifteen_sec.window_sec = 15;
+    fifteen_sec.signal_type =
+        btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignalType::DownsideAbsorption;
+    fifteen_sec.total_volume_btc = 3_100.0;
+    fifteen_sec.net_volume_btc = -2_950.0;
+    fifteen_sec.total_volume = 3_100.0;
+    fifteen_sec.net_volume = -2_950.0;
+    fifteen_sec.total_notional_usd = 199_000_000.0;
+    fifteen_sec.price_move_pct = Some(0.19);
+    fifteen_sec.oi_change_1m_btc = Some(80.0);
+
+    let mut five_sec = fifteen_sec.clone();
+    five_sec.id = "contract-whale:BTC:5:1700000015000:sell".to_string();
+    five_sec.window_sec = 5;
+    five_sec.total_volume_btc = 1_776.0;
+    five_sec.net_volume_btc = -1_669.0;
+    five_sec.total_volume = 1_776.0;
+    five_sec.net_volume = -1_669.0;
+    five_sec.total_notional_usd = 114_000_000.0;
+
+    let response = build_contract_whale_history_response(
+        vec![five_sec, fifteen_sec],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+    let final_events = build_final_events_from_contract_whale_signals(&response.items);
+
+    assert_eq!(response.items.len(), 1);
+    assert_eq!(final_events.len(), 1);
+    let event = &final_events[0];
+    assert_eq!(
+        event.event_id, response.items[0].event_lifecycle.event_id,
+        "FinalEvent must use the lifecycle event id as the canonical id"
+    );
+    assert_eq!(event.symbol, "BTC");
+    assert_eq!(event.event_type, "downside_absorption");
+    assert_eq!(event.status, "active");
+    assert_eq!(event.window_sec, 15);
+    assert_eq!(event.volume, 4_876.0);
+    assert_eq!(event.notional, 313_000_000.0);
+    assert_eq!(event.net_volume, -4_619.0);
+    assert_eq!(event.direction_bias, "sell");
+    assert!(event.quality_score > 0.80);
+    assert_eq!(event.source_signal_ids.len(), 2);
+    assert!(event
+        .source_signal_ids
+        .iter()
+        .any(|id| id.contains("BTC:15:")));
+    assert!(event
+        .source_signal_ids
+        .iter()
+        .any(|id| id.contains("BTC:5:")));
+}
+
+#[test]
+fn final_event_store_response_keeps_source_signal_as_read_only_projection_evidence() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
+    first.total_volume_btc = 420.0;
+    first.total_volume = 420.0;
+    first.net_volume_btc = 360.0;
+    first.net_volume = 360.0;
+    first.total_notional_usd = 28_000_000.0;
+    first.price_move_pct = Some(0.22);
+    first.oi_change_1m_btc = Some(80.0);
+
+    let response =
+        build_contract_whale_history_response(vec![first], "BTC", 50, None, true, true, None);
+    let final_response = build_final_event_store_response_from_contract_whale_response(&response);
+
+    assert_eq!(final_response.count, 1);
+    assert_eq!(final_response.items.len(), 1);
+    assert_eq!(
+        final_response.items[0].source_signal.id,
+        response.items[0].id
+    );
+    assert_eq!(
+        final_response.items[0]
+            .source_signal
+            .event_lifecycle
+            .event_id,
+        final_response.items[0].event_id
+    );
+    assert_eq!(
+        final_response.items[0].source_signal.event_quality.valid,
+        true
+    );
+}
+
+#[test]
+fn final_event_store_computes_cross_event_impact_normalization() {
+    let mut low = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    low.id = "contract-whale:BTC:15:1700000000000:low".to_string();
+    low.total_volume_btc = 100.0;
+    low.net_volume_btc = 70.0;
+    low.total_notional_usd = 6_400_000.0;
+
+    let mut mid = persisted_signal(1_700_000_600_000, ContractWhaleSeverity::Medium);
+    mid.id = "contract-whale:BTC:15:1700000600000:mid".to_string();
+    mid.ts = 1_700_000_600_000;
+    mid.event_lifecycle.event_id = "cwm-event:BTC:aggressive_buy:1700000600000".to_string();
+    mid.event_lifecycle.start_time = 1_700_000_600_000;
+    mid.event_lifecycle.last_update_time = 1_700_000_600_000;
+    mid.total_volume_btc = 200.0;
+    mid.net_volume_btc = 140.0;
+    mid.total_notional_usd = 12_800_000.0;
+
+    let mut high = persisted_signal(1_700_001_200_000, ContractWhaleSeverity::High);
+    high.id = "contract-whale:BTC:15:1700001200000:high".to_string();
+    high.ts = 1_700_001_200_000;
+    high.event_lifecycle.event_id = "cwm-event:BTC:aggressive_buy:1700001200000".to_string();
+    high.event_lifecycle.start_time = 1_700_001_200_000;
+    high.event_lifecycle.last_update_time = 1_700_001_200_000;
+    high.total_volume_btc = 700.0;
+    high.net_volume_btc = 620.0;
+    high.total_notional_usd = 44_800_000.0;
+
+    let response = build_contract_whale_history_response(
+        vec![high, mid, low],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+    let final_response = build_final_event_store_response_from_contract_whale_response(&response);
+
+    assert_eq!(final_response.count, 3);
+    let strongest = final_response
+        .items
+        .iter()
+        .find(|event| (event.raw_volume - 700.0).abs() < f64::EPSILON)
+        .expect("highest-volume event should be present");
+    assert!(strongest.impact_score > 2.0);
+    assert!(strongest.z_score > 1.0);
+    assert!(strongest.percentile >= 90.0);
+    assert_eq!(strongest.normalized_strength, "EXTREME");
+    assert_eq!(strongest.direction_bias, "buy");
 }
 
 #[test]

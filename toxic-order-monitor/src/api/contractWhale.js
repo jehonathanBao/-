@@ -266,6 +266,134 @@ export async function fetchContractWhaleEvents(filters = {}) {
   }
 }
 
+export async function fetchFinalEvents(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 20 });
+    const response = await axios.get(`${baseURL}/api/final-events?${query}`);
+    const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const requestedSymbol = filters.symbol || "BTC";
+    const normalizedItems = items
+      .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+      .map((item) => normalizeFinalEvent(item, requestedSymbol))
+      .filter(isVisibleContractWhaleSignal);
+    return {
+      count: numberOrNull(response.data?.count) ?? normalizedItems.length,
+      items: normalizedItems,
+      error: null,
+    };
+  } catch {
+    return { count: 0, items: [], error: "final_events_unavailable" };
+  }
+}
+
+export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
+  const sourceSignal = item?.sourceSignal && typeof item.sourceSignal === "object" ? item.sourceSignal : {};
+  const eventSymbol = item?.symbol || sourceSignal.symbol || fallbackSymbol || "BTC";
+  const signal = normalizeContractWhaleSignal(sourceSignal, eventSymbol);
+  const sourceSignalIds = normalizeRawStringArray(item?.sourceSignalIds);
+  const eventId = item?.eventId ? String(item.eventId) : (signal.eventLifecycle?.eventId || signal.id);
+  const eventType = item?.eventType ? String(item.eventType) : signal.signalType;
+  const status = String(item?.status || signal.eventLifecycle?.status || "active").toLowerCase() === "closed" ? "closed" : "active";
+  const volume = numberOrNull(item?.volume) ?? signal.totalVolumeBtc;
+  const netVolume = numberOrNull(item?.netVolume) ?? signal.netVolumeBtc;
+  const notional = numberOrNull(item?.notional) ?? signal.totalNotionalUsd;
+  const price = numberOrNull(item?.price) ?? signal.orderPriceUsd ?? signal.triggerPriceUsd;
+  const priceMovePct = numberOrNull(item?.priceMovePct) ?? signal.priceMovePct;
+  const dominance = clampRatio(numberOrNull(item?.dominance) ?? signal.dominance);
+  const rawVolume = numberOrNull(item?.rawVolume) ?? volume;
+  const impactScore = numberOrNull(item?.impactScore) ?? 0;
+  const zScore = numberOrNull(item?.zScore) ?? 0;
+  const percentile = numberOrNull(item?.percentile) ?? 0;
+  const normalizedScore = clampRatio(numberOrNull(item?.normalizedScore) ?? 0);
+  const normalizedStrength = item?.normalizedStrength ? String(item.normalizedStrength).toUpperCase() : "LOW";
+  const impactLevel = item?.impactLevel ? String(item.impactLevel).toUpperCase() : "C";
+  const signalLevel = item?.signalLevel ? String(item.signalLevel).toUpperCase() : "L1";
+  const signalLabel = item?.signalLabel ? String(item.signalLabel).toUpperCase() : "LOW IMPACT EVENT";
+  const falseEventFlags = normalizeStringArray(item?.falseEventFlags);
+  const mergedFrom = sourceSignalIds.length > 1 ? sourceSignalIds.slice(1) : signal.mergedFrom;
+
+  return {
+    ...signal,
+    id: eventId,
+    finalEventId: eventId,
+    sourceSignalId: signal.id,
+    rawVolume,
+    impactScore,
+    zScore,
+    percentile,
+    normalizedScore,
+    normalizedStrength,
+    impactLevel,
+    signalLevel,
+    signalLabel,
+    ts: numberOrNull(item?.endTime) ?? signal.ts,
+    symbol: eventSymbol,
+    baseAsset: eventSymbol,
+    quantityUnit: eventSymbol,
+    signalType: eventType,
+    direction: item?.directionBias || signal.direction,
+    windowSec: numberOrNull(item?.windowSec) || signal.windowSec,
+    totalVolumeBtc: volume,
+    netVolumeBtc: netVolume,
+    totalNotionalUsd: notional,
+    dominance,
+    triggerPriceUsd: price ?? signal.triggerPriceUsd,
+    orderPriceUsd: price ?? signal.orderPriceUsd,
+    priceMovePct,
+    mergedFrom,
+    eventLifecycle: {
+      ...signal.eventLifecycle,
+      eventId,
+      startTime: numberOrNull(item?.startTime) ?? signal.eventLifecycle?.startTime,
+      lastUpdateTime: numberOrNull(item?.endTime) ?? signal.eventLifecycle?.lastUpdateTime,
+      status,
+      volumeAccumulated: volume,
+      updateCount: Math.max(1, sourceSignalIds.length || signal.eventLifecycle?.updateCount || 1),
+    },
+    eventQuality: {
+      ...signal.eventQuality,
+      qualityScore: clampRatio(numberOrNull(item?.qualityScore) ?? signal.eventQuality?.qualityScore ?? 1),
+      mergeSimilarityScore: clampRatio(
+        numberOrNull(item?.mergeSimilarityScore) ?? signal.eventQuality?.mergeSimilarityScore ?? 1,
+      ),
+      valid: falseEventFlags.length === 0 && (signal.eventQuality?.valid ?? true),
+      falseEventFlags,
+    },
+    finalEvent: {
+      eventId,
+      symbol: eventSymbol,
+      eventType,
+      startTime: numberOrNull(item?.startTime),
+      endTime: numberOrNull(item?.endTime),
+      status,
+      windowSec: numberOrNull(item?.windowSec),
+      rawVolume,
+      impactScore,
+      zScore,
+      percentile,
+      normalizedScore,
+      normalizedStrength,
+      impactLevel,
+      signalLevel,
+      signalLabel,
+      volume,
+      netVolume,
+      notional,
+      price,
+      priceMovePct,
+      directionBias: item?.directionBias || signal.direction,
+      dominance,
+      qualityScore: clampRatio(numberOrNull(item?.qualityScore) ?? signal.eventQuality?.qualityScore ?? 1),
+      mergeSimilarityScore: clampRatio(
+        numberOrNull(item?.mergeSimilarityScore) ?? signal.eventQuality?.mergeSimilarityScore ?? 1,
+      ),
+      falseEventFlags,
+      sourceSignalIds,
+    },
+  };
+}
+
 export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
   const totalVolumeBtc = numberOrNull(item.totalVolume) ?? numberOrNull(item.totalVolumeBtc) ?? 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
@@ -791,6 +919,11 @@ function normalizeResponseMeta(meta) {
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item || "").toLowerCase()).filter(Boolean);
+}
+
+function normalizeRawStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "")).filter(Boolean);
 }
 
 function buildContractWhaleQuery(filters) {

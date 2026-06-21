@@ -5,6 +5,7 @@ import {
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
+  fetchFinalEvents,
   normalizeContractWhaleSignal,
   normalizeMarketStatus,
   normalizePlatformStatus,
@@ -618,6 +619,124 @@ describe("contract whale api", () => {
       id: 8,
       symbol: "ETH",
       regimeType: "range_rotation",
+    });
+  });
+
+  it("fetches final events as canonical read-only event projections", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        count: 1,
+        items: [
+          {
+            eventId: "cwm-event:BTC:downside_absorption:1700000000000",
+            symbol: "BTC",
+            eventType: "downside_absorption",
+            startTime: 1_700_000_000_000,
+            endTime: 1_700_000_015_000,
+            status: "closed",
+            windowSec: 15,
+            rawVolume: 4_876,
+            impactScore: 2.14,
+            zScore: 2.14,
+            percentile: 93,
+            normalizedScore: 0.88,
+            normalizedStrength: "EXTREME",
+            impactLevel: "A",
+            signalLevel: "L3",
+            signalLabel: "HIGH IMPACT EVENT",
+            volume: 4_876,
+            netVolume: -4_619,
+            notional: 313_000_000,
+            price: 64_166,
+            priceMovePct: 0.19,
+            directionBias: "sell",
+            dominance: 0.947,
+            qualityScore: 0.81,
+            mergeSimilarityScore: 0.84,
+            falseEventFlags: [],
+            sourceSignalIds: [
+              "contract-whale:BTC:15:1700000000000:downside_absorption",
+              "contract-whale:BTC:5:1700000000010:downside_absorption",
+            ],
+            sourceSignal: {
+              id: "contract-whale:BTC:15:1700000000000:downside_absorption",
+              ts: 1_700_000_015_000,
+              symbol: "BTC",
+              windowSec: 15,
+              signalType: "downside_absorption",
+              direction: "sell",
+              severity: "medium",
+              score: 51,
+              mainForceScore: 51,
+              spotScore: 59,
+              contractScore: 47,
+              totalVolumeBtc: 4_876,
+              netVolumeBtc: -4_619,
+              totalNotionalUsd: 313_000_000,
+              dominance: 0.947,
+              orderPriceUsd: 64_166,
+              priceMovePct: 0.19,
+              mergedFrom: ["contract-whale:BTC:5:1700000000010:downside_absorption"],
+              eventLifecycle: {
+                eventId: "cwm-event:BTC:downside_absorption:1700000000000",
+                status: "closed",
+                startTime: 1_700_000_000_000,
+                lastUpdateTime: 1_700_000_015_000,
+                volumeAccumulated: 4_876,
+                updateCount: 2,
+              },
+              eventQuality: {
+                qualityScore: 0.81,
+                mergeSimilarityScore: 0.84,
+                valid: true,
+                falseEventFlags: [],
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const payload = await fetchFinalEvents({ symbol: "BTC", limit: 12 });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/final-events?symbol=BTC&limit=12");
+    expect(payload.count).toBe(1);
+    expect(payload.items[0]).toMatchObject({
+      id: "cwm-event:BTC:downside_absorption:1700000000000",
+      finalEventId: "cwm-event:BTC:downside_absorption:1700000000000",
+      symbol: "BTC",
+      signalType: "downside_absorption",
+      windowSec: 15,
+      totalVolumeBtc: 4_876,
+      netVolumeBtc: -4_619,
+      totalNotionalUsd: 313_000_000,
+      dominance: 0.947,
+      eventLifecycle: {
+        eventId: "cwm-event:BTC:downside_absorption:1700000000000",
+        status: "closed",
+        startTime: 1_700_000_000_000,
+        lastUpdateTime: 1_700_000_015_000,
+      },
+      eventQuality: {
+        qualityScore: 0.81,
+        mergeSimilarityScore: 0.84,
+        valid: true,
+      },
+      finalEvent: expect.objectContaining({
+        rawVolume: 4_876,
+        impactScore: 2.14,
+        zScore: 2.14,
+        percentile: 93,
+        normalizedScore: 0.88,
+        normalizedStrength: "EXTREME",
+        impactLevel: "A",
+        signalLevel: "L3",
+        signalLabel: "HIGH IMPACT EVENT",
+        sourceSignalIds: [
+          "contract-whale:BTC:15:1700000000000:downside_absorption",
+          "contract-whale:BTC:5:1700000000010:downside_absorption",
+        ],
+      }),
     });
   });
 

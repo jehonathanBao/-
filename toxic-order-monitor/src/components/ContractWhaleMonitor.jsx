@@ -5,6 +5,7 @@ import {
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
+  fetchFinalEvents,
 } from "../api/contractWhale.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
@@ -25,6 +26,7 @@ export default function ContractWhaleMonitor() {
     loading: true,
     summary: null,
     items: [],
+    finalEvents: [],
     events: [],
     meta: null,
     error: null,
@@ -42,15 +44,20 @@ export default function ContractWhaleMonitor() {
       const request = shouldUseHistory(filters)
         ? fetchContractWhaleHistory({ ...filters, limit: 50 })
         : fetchContractWhaleLatest(50, filters.symbol);
-      Promise.all([request, fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 })]).then(([payload, eventsPayload]) => {
+      Promise.all([
+        request,
+        fetchFinalEvents({ symbol: filters.symbol, limit: 12 }),
+        fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 }),
+      ]).then(([payload, finalEventsPayload, eventsPayload]) => {
         if (cancelled) return;
         setState((previous) => ({
           loading: false,
           summary: payload.error ? previous.summary : payload.summary,
           items: payload.error ? previous.items : payload.items,
+          finalEvents: finalEventsPayload.error ? previous.finalEvents : finalEventsPayload.items,
           events: eventsPayload.error ? previous.events : eventsPayload.items,
           meta: payload.error ? previous.meta : (payload.meta || null),
-          error: payload.error || eventsPayload.error || null,
+          error: payload.error || finalEventsPayload.error || eventsPayload.error || null,
         }));
       });
     };
@@ -192,7 +199,8 @@ export default function ContractWhaleMonitor() {
     },
   };
   const platformCapabilities = summary.platforms || {};
-  const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
+  const detailItems = dedupeSignalsById([...state.items, ...state.finalEvents]);
+  const selectedSignal = detailItems.find((item) => item.id === selectedSignalId) || null;
   const whaleEntities = buildWhaleEntities(state.items);
 
   return (
@@ -255,7 +263,7 @@ export default function ContractWhaleMonitor() {
 
       <RawSignalDebugSection
         enabled={summary.enabled}
-        items={state.items}
+        items={state.finalEvents}
         loading={state.loading}
         onOpenSignal={setSelectedSignalId}
       />
@@ -276,7 +284,7 @@ export default function ContractWhaleMonitor() {
         <ContractWhaleDetailModal
           summary={summary}
           signal={selectedSignal}
-          relatedSignals={state.items}
+          relatedSignals={detailItems}
           onClose={() => setSelectedSignalId(null)}
         />
       ) : null}
@@ -514,6 +522,17 @@ function CurvePanel({ label, points, tone }) {
   );
 }
 
+function dedupeSignalsById(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    if (!item?.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    result.push(item);
+  }
+  return result;
+}
+
 function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
   const activeItems = items.filter((item) => eventLifecycleStatus(item) !== "closed");
   const closedItems = items.filter((item) => eventLifecycleStatus(item) === "closed");
@@ -590,6 +609,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
           <HeaderCell>等级</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
+          <HeaderCell>冲击</HeaderCell>
           <HeaderCell>成交量</HeaderCell>
           <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
@@ -618,11 +638,11 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             className="console-row"
             data-testid={`contract-whale-row-${item.id}`}
             key={item.id}
-            onClick={() => onOpenSignal(item.id)}
+            onClick={() => onOpenSignal(signalDetailTargetId(item))}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                onOpenSignal(item.id);
+                onOpenSignal(signalDetailTargetId(item));
               }
             }}
             tabIndex={0}
@@ -656,6 +676,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
               ) : null}
             </Cell>
             <Cell>{eventQualityBadge(item)}</Cell>
+            <Cell>{impactNormalizationBadge(item)}</Cell>
             <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
             <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
@@ -677,11 +698,11 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             <Cell>{discordStatus(item)}</Cell>
             <Cell>
               <button
-                aria-label={`查看主力合约信号详情 ${item.id}`}
+                aria-label={`查看主力合约信号详情 ${signalDetailTargetId(item)}`}
                 className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
                 onClick={(event) => {
                   event.stopPropagation();
-                  onOpenSignal(item.id);
+                  onOpenSignal(signalDetailTargetId(item));
                 }}
                 type="button"
               >
@@ -693,6 +714,10 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
       </tbody>
     </table>
   );
+}
+
+function signalDetailTargetId(item) {
+  return item?.sourceSignalId || item?.id;
 }
 
 function MainForceEventsSection({ events, symbol }) {
@@ -805,6 +830,14 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
                 ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
                 ["累计成交", formatBaseVolume(signal.eventLifecycle?.volumeAccumulated || signal.totalVolumeBtc, signal.symbol)],
+                ["Raw Volume", formatBaseVolume(signal.rawVolume ?? signal.finalEvent?.rawVolume ?? signal.totalVolumeBtc, signal.symbol)],
+                ["Impact Score", `${finiteNumber(signal.impactScore ?? signal.finalEvent?.impactScore).toFixed(2)}x`],
+                ["Z-score", finiteNumber(signal.zScore ?? signal.finalEvent?.zScore).toFixed(2)],
+                ["Percentile", `P${Math.round(finiteNumber(signal.percentile ?? signal.finalEvent?.percentile))}`],
+                ["Impact Level", String(signal.impactLevel || signal.finalEvent?.impactLevel || "C").toUpperCase()],
+                ["Signal Level", String(signal.signalLevel || signal.finalEvent?.signalLevel || "L1").toUpperCase()],
+                ["Signal Label", String(signal.signalLabel || signal.finalEvent?.signalLabel || "LOW IMPACT EVENT").toUpperCase()],
+                ["Normalized Strength", String(signal.normalizedStrength || signal.finalEvent?.normalizedStrength || "LOW").toUpperCase()],
                 ["事件质量", eventQualityLabel(signal)],
                 ["合并相似度", formatPct(Number(signal.eventQuality?.mergeSimilarityScore || 0) * 100)],
                 ["假事件标记", eventQualityFlagsLabel(signal)],
@@ -2086,6 +2119,39 @@ function eventQualityBadge(item) {
       {flags.length ? <span className="block text-[10px] uppercase text-rose-300">{flags[0]}</span> : null}
     </span>
   );
+}
+
+function impactNormalizationBadge(item) {
+  const impactLevel = String(item?.impactLevel || item?.finalEvent?.impactLevel || "C").toUpperCase();
+  const signalLevel = String(item?.signalLevel || item?.finalEvent?.signalLevel || "L1").toUpperCase();
+  const signalLabel = String(item?.signalLabel || item?.finalEvent?.signalLabel || "LOW IMPACT EVENT").toUpperCase();
+  const impactScore = finiteNumber(item?.impactScore ?? item?.finalEvent?.impactScore);
+  const zScore = finiteNumber(item?.zScore ?? item?.finalEvent?.zScore);
+  const percentile = Math.round(finiteNumber(item?.percentile ?? item?.finalEvent?.percentile));
+
+  return (
+    <span className="block whitespace-nowrap">
+      <span className={`block text-xs font-bold ${signalLevelClass(signalLevel)}`}>
+        {signalLevel} / {impactLevel}
+      </span>
+      <span className="block text-[10px] uppercase tracking-wide text-slate-400">{signalLabel}</span>
+      <span className="block text-[10px] text-slate-500">
+        {impactScore.toFixed(2)}x · z {zScore.toFixed(2)} · P{percentile}
+      </span>
+    </span>
+  );
+}
+
+function signalLevelClass(signalLevel) {
+  if (signalLevel === "S") return "text-rose-200";
+  if (signalLevel === "L3") return "text-red-300";
+  if (signalLevel === "L2") return "text-yellow-200";
+  return "text-slate-400";
+}
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function eventQualityLabel(item) {

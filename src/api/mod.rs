@@ -9,6 +9,7 @@ pub mod discord_notification_routes;
 pub mod durable_archive_dryrun_routes;
 pub mod durable_archive_write_audit_routes;
 pub mod durable_archive_write_routes;
+pub mod final_event_routes;
 pub mod fusion_routes;
 pub mod liquidation_cascade_routes;
 pub mod liquidation_toxicity_routes;

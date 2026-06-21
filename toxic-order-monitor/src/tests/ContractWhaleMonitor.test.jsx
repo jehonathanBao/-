@@ -9,6 +9,7 @@ import {
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
+  fetchFinalEvents,
 } from "../api/contractWhale.js";
 
 function hasPriceText(text) {
@@ -517,6 +518,125 @@ vi.mock("../api/contractWhale.js", () => ({
       error: null,
     }),
   ),
+  fetchFinalEvents: vi.fn(() =>
+    Promise.resolve({
+      count: 2,
+      items: [
+        {
+          id: "cwm-event:BTC:aggressive_buy:1700000000000",
+          finalEventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+          sourceSignalId: "contract-whale-row",
+          ts: 1_700_000_000_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "s",
+          score: 94,
+          mainForceScore: 87,
+          spotScore: 81,
+          contractScore: 94,
+          totalVolumeBtc: 4820,
+          netVolumeBtc: 3260,
+          totalNotionalUsd: 337_000_000,
+          dominance: 0.676,
+          triggerPriceUsd: 69_917,
+          orderPriceUsd: 69_917,
+          currentMarketPriceUsd: 70_000,
+          priceDeviationPct: 0.1186,
+          priceDeviationFiltered: false,
+          priceMovePct: 0.31,
+          mainExchange: "binance",
+          dynamicMultiple: 9.4,
+          percentileLevel: 99.9,
+          liquidationSuspected: true,
+          liquidationLongBtc: 420,
+          liquidationRatio: 0.087,
+          oiChange5mBtc: 900,
+          oiChangePct: 1.2,
+          oiBias: "rising",
+          fundingRate: 0.00018,
+          fundingBias: "long",
+          discordEligible: true,
+          discordSent: false,
+          discordReason: "critical_or_s_gate",
+          discordWouldSend: true,
+          mergedFrom: ["contract-whale:BTC:5:1700000000000:buy"],
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+            status: "active",
+            startTime: 1_700_000_000_000,
+            lastUpdateTime: 1_700_000_000_000,
+            volumeAccumulated: 4820,
+            oiAccumulated: 900,
+            updateCount: 2,
+          },
+          eventQuality: {
+            qualityScore: 0.86,
+            mergeSimilarityScore: 0.91,
+            valid: true,
+            falseEventFlags: [],
+          },
+          marketDriver: {
+            primaryDriver: "whale_intent",
+          },
+          liquidationForce: {
+            primaryDriver: "whale_initiated_flow",
+          },
+        },
+        {
+          id: "cwm-event:BTC:aggressive_sell:1699999820000",
+          finalEventId: "cwm-event:BTC:aggressive_sell:1699999820000",
+          sourceSignalId: "contract-whale-closed-row",
+          ts: 1_699_999_820_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_sell",
+          direction: "sell",
+          severity: "medium",
+          score: 44,
+          mainForceScore: 44,
+          spotScore: 30,
+          contractScore: 44,
+          totalVolumeBtc: 760,
+          netVolumeBtc: -520,
+          totalNotionalUsd: 53_000_000,
+          dominance: 0.684,
+          triggerPriceUsd: 69_800,
+          orderPriceUsd: 69_800,
+          currentMarketPriceUsd: 70_000,
+          priceDeviationPct: 0.286,
+          priceDeviationFiltered: false,
+          priceMovePct: -0.12,
+          mainExchange: "binance",
+          discordEligible: false,
+          discordSent: false,
+          discordReason: "display_only",
+          discordWouldSend: false,
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:1699999820000",
+            status: "closed",
+            startTime: 1_699_999_820_000,
+            lastUpdateTime: 1_699_999_820_000,
+            volumeAccumulated: 760,
+            oiAccumulated: 0,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.67,
+            mergeSimilarityScore: 0.5,
+            valid: true,
+            falseEventFlags: [],
+          },
+        },
+      ],
+      error: null,
+    }),
+  ),
   normalizePlatformStatus: vi.fn((platform) => {
     const status = String(platform?.status || "disabled").toLowerCase();
     const enabled = Boolean(platform?.platformEnabled ?? platform?.enabled);
@@ -712,6 +832,51 @@ describe("ContractWhaleMonitor", () => {
       ],
       error: null,
     });
+    fetchFinalEvents.mockResolvedValueOnce({
+      count: 1,
+      items: [
+        {
+          id: "cwm-event:ETH:aggressive_buy:1700000100000",
+          finalEventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+          sourceSignalId: "eth-contract-whale-row",
+          ts: 1_700_000_100_000,
+          symbol: "ETH",
+          baseAsset: "ETH",
+          quantityUnit: "ETH",
+          windowSec: 60,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 34,
+          mainForceScore: 34,
+          spotScore: 27,
+          contractScore: 21,
+          totalVolumeBtc: 16869,
+          netVolumeBtc: 610,
+          totalNotionalUsd: 28_000_000,
+          dominance: 0.036,
+          triggerPriceUsd: 1675,
+          priceDeviationPct: 0.04,
+          priceMovePct: 0.03,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+            status: "active",
+            startTime: 1_700_000_100_000,
+            lastUpdateTime: 1_700_000_100_000,
+            volumeAccumulated: 16869,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.71,
+            mergeSimilarityScore: 1,
+            valid: true,
+            falseEventFlags: [],
+          },
+        },
+      ],
+      error: null,
+    });
 
     render(<ContractWhaleMonitor />);
 
@@ -809,6 +974,53 @@ describe("ContractWhaleMonitor", () => {
         ],
         error: null,
       });
+    fetchFinalEvents
+      .mockResolvedValueOnce({ count: 0, items: [], error: null })
+      .mockResolvedValueOnce({
+        count: 1,
+        items: [
+          {
+            id: "cwm-event:ETH:aggressive_buy:1700000100000",
+            finalEventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+            sourceSignalId: "eth-selected-contract-whale-row",
+            ts: 1_700_000_100_000,
+            symbol: "ETH",
+            baseAsset: "ETH",
+            quantityUnit: "ETH",
+            windowSec: 60,
+            signalType: "aggressive_buy",
+            direction: "buy",
+            severity: "medium",
+            score: 34,
+            mainForceScore: 34,
+            spotScore: 27,
+            contractScore: 21,
+            totalVolumeBtc: 16869,
+            netVolumeBtc: 610,
+            totalNotionalUsd: 28_000_000,
+            dominance: 0.036,
+            triggerPriceUsd: 1675,
+            priceDeviationPct: 0.04,
+            priceMovePct: 0.03,
+            mainExchange: "binance",
+            eventLifecycle: {
+              eventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+              status: "active",
+              startTime: 1_700_000_100_000,
+              lastUpdateTime: 1_700_000_100_000,
+              volumeAccumulated: 16869,
+              updateCount: 1,
+            },
+            eventQuality: {
+              qualityScore: 0.71,
+              mergeSimilarityScore: 1,
+              valid: true,
+              falseEventFlags: [],
+            },
+          },
+        ],
+        error: null,
+      });
 
     render(<ContractWhaleMonitor />);
 
@@ -847,6 +1059,105 @@ describe("ContractWhaleMonitor", () => {
         limit: 12,
       }),
     );
+  });
+
+  it("renders contract market event rows from the FinalEventStore projection", async () => {
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: {
+        status: "active",
+        healthStatus: "healthy",
+        latestDirection: "neutral",
+        latestSeverity: "medium",
+        signalCount: 0,
+        readOnly: true,
+        enabled: true,
+        dryRun: true,
+        contractDataQuality: 90,
+        spotDataQuality: 80,
+        overallDataQuality: 85,
+        discordDryRunStats: {},
+        marketStructureLite: {},
+        trend60s: {},
+        exchanges: {},
+        platforms: {},
+      },
+      items: [],
+      error: null,
+    });
+    fetchFinalEvents.mockResolvedValueOnce({
+      count: 1,
+      items: [
+        {
+          id: "cwm-event:BTC:downside_absorption:1700000015000",
+          finalEventId: "cwm-event:BTC:downside_absorption:1700000015000",
+          ts: 1_700_000_015_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          rawVolume: 4876,
+          impactScore: 2.14,
+          zScore: 2.14,
+          percentile: 93,
+          normalizedScore: 0.88,
+          normalizedStrength: "EXTREME",
+          impactLevel: "A",
+          signalLevel: "L3",
+          signalLabel: "HIGH IMPACT EVENT",
+          signalType: "downside_absorption",
+          direction: "sell",
+          severity: "medium",
+          score: 51,
+          mainForceScore: 51,
+          spotScore: 59,
+          contractScore: 47,
+          totalVolumeBtc: 4876,
+          netVolumeBtc: -4619,
+          totalNotionalUsd: 313_000_000,
+          dominance: 0.947,
+          triggerPriceUsd: 64_166,
+          orderPriceUsd: 64_166,
+          priceMovePct: 0.19,
+          mainExchange: "binance",
+          mergedFrom: [
+            "contract-whale:BTC:5:1700000015000:downside_absorption",
+          ],
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:downside_absorption:1700000015000",
+            status: "closed",
+            startTime: 1_700_000_000_000,
+            lastUpdateTime: 1_700_000_015_000,
+            volumeAccumulated: 4876,
+            updateCount: 2,
+          },
+          eventQuality: {
+            qualityScore: 0.81,
+            mergeSimilarityScore: 0.84,
+            valid: true,
+            falseEventFlags: [],
+          },
+        },
+      ],
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchFinalEvents).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: "BTC",
+          limit: 12,
+        }),
+      ),
+    );
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("下方吸收");
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("4,876 BTC");
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("Q 81");
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("L3 / A");
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("HIGH IMPACT EVENT");
+    expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("2.14x · z 2.14 · P93");
   });
 
   it("shows a spot-only explanation when coinbase is selected in contract history", async () => {
