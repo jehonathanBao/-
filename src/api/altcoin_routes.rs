@@ -82,7 +82,9 @@ fn build_altcoin_state(
             runtime_modified: false,
         };
     }
-    let _ = enable_binance_alt_contract_symbol_for_watch(&symbol);
+    if enable_binance_alt_contract_symbol_for_watch(&symbol).is_ok() {
+        state.binance_alt_contract_service().start();
+    }
 
     let now = now_ms();
     let latest_signal = state.contract_whale_store().and_then(|store| {

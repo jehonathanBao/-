@@ -4,7 +4,7 @@ use std::time::Duration;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Json, Query,
+        Json, Query, State,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -13,6 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::{
+    app::AppState,
     binance_alt_contract_monitor::config::enable_binance_alt_contract_symbol_for_watch,
     toxic_v3::new_token_watch::{
         fetch_market_price_snapshot, NewTokenWatchMutationResponse, NewTokenWatchRequest,
@@ -67,6 +68,7 @@ pub async fn new_token_watch_chart_route(
 }
 
 pub async fn new_token_watch_add_route(
+    State(state): State<AppState>,
     Json(request): Json<NewTokenWatchRequest>,
 ) -> impl IntoResponse {
     let symbol = request.symbol;
@@ -76,7 +78,9 @@ pub async fn new_token_watch_add_route(
             .unwrap_or(Err(TokenWatchError::PersistenceFailed));
     match result {
         Ok(item) => {
-            let _ = enable_binance_alt_contract_symbol_for_watch(&item.symbol);
+            if enable_binance_alt_contract_symbol_for_watch(&item.symbol).is_ok() {
+                state.binance_alt_contract_service().start();
+            }
             let market_price = fetch_market_price_snapshot(&item.symbol).await;
             let anchored_item = global_new_token_watch_manager()
                 .refresh_token_with_market(&item.symbol, market_price)

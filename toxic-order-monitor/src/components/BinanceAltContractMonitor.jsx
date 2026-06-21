@@ -677,6 +677,12 @@ function CollapsedUniverseSummary({ summary }) {
         仅 USDT / PERPETUAL / TRADING · 排除 {excludedSymbols.join(", ") || "无"} · Candidate only · 只读提醒 · 不下单 ·
         dry-run 默认开启
       </p>
+      {monitoredSymbols.length ? (
+        <p className="mt-2 rounded-lg border border-cyan-400/15 bg-cyan-400/10 px-3 py-2 text-cyan-100">
+          监控币种 {monitoredSymbols.slice(0, 12).join(", ")}
+          {monitoredSymbols.length > 12 ? ` +${monitoredSymbols.length - 12}` : ""}
+        </p>
+      ) : null}
     </div>
   );
 }

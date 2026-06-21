@@ -58,6 +58,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText(/全量监控 Binance USDT 永续山寨合约/)).toBeInTheDocument();
     expect(screen.getAllByText(/全 Binance USDT 永续/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Tier A1 \/ B1 \/ C0 \/ D0 \/ E0/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/监控币种 SOLUSDT, DOGEUSDT/)).toBeInTheDocument();
     expect(screen.getByText(/相对冲击展示：AIS ≥ 70/)).toBeInTheDocument();
     expect(screen.getByText("在线")).toBeInTheDocument();
     expect(screen.getByText("Ultra Core")).toBeInTheDocument();

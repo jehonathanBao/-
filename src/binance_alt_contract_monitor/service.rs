@@ -195,14 +195,19 @@ impl BinanceAltContractService {
         }
     }
 
+    fn runtime_enabled(&self, config: &super::config::BinanceAltContractRuntimeConfig) -> bool {
+        self.enabled || config.enabled
+    }
+
     pub fn start(&self) {
-        if !self.enabled || self.tasks.read().iter().any(|task| !task.is_finished()) {
+        let config = binance_alt_contract_runtime_config();
+        let enabled = self.runtime_enabled(&config);
+        if !enabled || self.tasks.read().iter().any(|task| !task.is_finished()) {
             return;
         }
-        let config = binance_alt_contract_runtime_config();
         tracing::info!(
             target: LOG_TARGET,
-            enabled = self.enabled,
+            enabled,
             dry_run = self.dry_run,
             "{} runtime started",
             LOG_PREFIX
@@ -245,7 +250,7 @@ impl BinanceAltContractService {
 
     pub fn ingest_trade(&self, trade: AltContractTrade) -> Vec<AltContractSignal> {
         let config = binance_alt_contract_runtime_config();
-        if !self.enabled || !self.product_enabled(&trade.product_id, &config) {
+        if !self.runtime_enabled(&config) || !self.product_enabled(&trade.product_id, &config) {
             return Vec::new();
         }
         self.mark_trade(trade.exchange, trade.ts);
@@ -607,16 +612,17 @@ impl BinanceAltContractService {
 
     pub fn summary(&self, symbol: Option<&str>) -> AltContractSummary {
         let config = binance_alt_contract_runtime_config();
+        let enabled = self.runtime_enabled(&config);
         let now = now_ms();
         let state = self.state.read();
         let empty_signals = VecDeque::new();
         let empty_trades = VecDeque::new();
-        let signals = if self.enabled {
+        let signals = if enabled {
             &state.signals
         } else {
             &empty_signals
         };
-        let trades = if self.enabled {
+        let trades = if enabled {
             &state.trades
         } else {
             &empty_trades
@@ -628,7 +634,7 @@ impl BinanceAltContractService {
                 .map(|item| &signal.product_id == item)
                 .unwrap_or(true)
         });
-        let all_monitored_symbols = if !self.enabled {
+        let all_monitored_symbols = if !enabled {
             Vec::new()
         } else if state.symbol_metas.is_empty() {
             config.enabled_symbols()
@@ -641,7 +647,7 @@ impl BinanceAltContractService {
             .or_else(|| all_monitored_symbols.first().cloned())
             .unwrap_or_else(|| "SOLUSDT".to_string());
         let exchanges = summarized_exchange_statuses(
-            self.enabled,
+            enabled,
             &state.exchanges,
             now,
             config.data_quality.heartbeat_stale_ms,
@@ -665,7 +671,7 @@ impl BinanceAltContractService {
             .filter(|signal| now.saturating_sub(signal.ts) <= 60 * 60_000)
             .filter(|signal| signal.discord_would_send)
             .count();
-        let health_status = health_status(self.enabled, &exchanges);
+        let health_status = health_status(enabled, &exchanges);
         let dry_run_stats = dry_run_stats(signals, now);
         let last_trade_at = exchanges
             .values()
@@ -692,7 +698,7 @@ impl BinanceAltContractService {
             hot_oi_symbols: recent_seen_keys(&state.hot_oi_seen_at, now, candidate_ttl_ms),
         };
         let smaf_report = audit_smart_money_system(SmafAuditInput {
-            enabled: self.enabled,
+            enabled,
             now_ms: now,
             exchanges: &exchanges,
             signals,
@@ -712,8 +718,8 @@ impl BinanceAltContractService {
                 .map(|signal| status_from_severity(signal.severity).to_string())
                 .unwrap_or_else(|| "calm".to_string()),
             health_status: health_status.clone(),
-            health_reason: health_reason(self.enabled, &health_status).to_string(),
-            collector_status: collector_status(self.enabled, exchanges.get("binance")),
+            health_reason: health_reason(enabled, &health_status).to_string(),
+            collector_status: collector_status(enabled, exchanges.get("binance")),
             last_trade_at,
             last_oi_poll_at: state.last_oi_poll_at,
             last_force_order_at: state.last_force_order_at,
@@ -748,14 +754,14 @@ impl BinanceAltContractService {
             active_anomaly_count,
             recent_critical_or_s_count,
             dry_run_would_send_count,
-            enabled: self.enabled,
+            enabled,
             dry_run: self.dry_run,
             read_only: true,
             symbol: symbol.map(|value| value.to_ascii_uppercase()),
             trend60s: trend_for_symbol(trades, &trend_product, now),
             exchanges,
             dry_run_stats,
-            symbol_universe: symbol_universe_summary(&config, &state.symbol_metas, self.enabled),
+            symbol_universe: symbol_universe_summary(&config, &state.symbol_metas, enabled),
             all_market_context,
             smaf_report,
             smll_report,
@@ -765,14 +771,14 @@ impl BinanceAltContractService {
     }
 
     pub fn latest(&self, symbol: Option<&str>, limit: usize) -> AltContractLatestResponse {
-        if !self.enabled {
+        let config = binance_alt_contract_runtime_config();
+        if !self.runtime_enabled(&config) {
             return AltContractLatestResponse {
                 summary: self.summary(symbol),
                 items: Vec::new(),
                 limit: limit.clamp(1, 200),
             };
         }
-        let config = binance_alt_contract_runtime_config();
         let limit = limit.clamp(1, 200);
         let product_filter = symbol.map(product_id_for_symbol);
         let mut items = self
@@ -799,14 +805,14 @@ impl BinanceAltContractService {
     }
 
     pub fn history(&self, query: BinanceAltContractQuery) -> AltContractLatestResponse {
-        if !self.enabled {
+        let config = binance_alt_contract_runtime_config();
+        if !self.runtime_enabled(&config) {
             return AltContractLatestResponse {
                 summary: self.summary(query.symbol.as_deref()),
                 items: Vec::new(),
                 limit: query.limit.unwrap_or(50).clamp(1, 200),
             };
         }
-        let config = binance_alt_contract_runtime_config();
         let limit = query.limit.unwrap_or(50).clamp(1, 200);
         let product_filter = query.symbol.as_deref().map(product_id_for_symbol);
         let severity_filter = query.severity.as_deref().map(compact_filter_value);

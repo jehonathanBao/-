@@ -6,8 +6,9 @@ use std::{
 
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::{
-        reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
-        BinanceAltContractRuntimeConfig, BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
+        enable_binance_alt_contract_symbol_for_watch, reset_binance_alt_contract_runtime_config,
+        set_binance_alt_contract_runtime_config, BinanceAltContractRuntimeConfig,
+        BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
     },
     detector::detect_alt_contract_signal,
     service::{BinanceAltContractQuery, BinanceAltContractService},
@@ -365,6 +366,67 @@ fn disabled_summary_is_read_only_and_lists_configured_symbols() {
     assert_eq!(summary.symbol_universe.mode, "disabled");
     assert_eq!(summary.symbol_universe.monitored_count, 0);
     assert!(summary.symbol_universe.tier_counts.is_empty());
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn watch_activation_after_disabled_boot_is_visible_in_alt_contract_summary_and_latest() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let path = temp_path("bacm-watch-activation-after-disabled-boot.jsonl");
+    let _ = fs::remove_file(&path);
+    let mut config = BinanceAltContractRuntimeConfig {
+        enabled: false,
+        dry_run: true,
+        data_quality: BinanceAltDataQualityConfig {
+            warmup_ms: 1,
+            ..BinanceAltDataQualityConfig::default()
+        },
+        persistence_path: path.clone(),
+        ..BinanceAltContractRuntimeConfig::default()
+    };
+    config.exchange.binance_enabled = false;
+    config.oi_scheduler.enabled = false;
+    config.discord.enabled = false;
+    set_binance_alt_contract_runtime_config(config.clone());
+
+    let service = BinanceAltContractService::new(false, true, 1_699_999_900_000);
+
+    let product_id = enable_binance_alt_contract_symbol_for_watch("aster")
+        .expect("new token watch should activate matching alt contract symbol");
+    assert_eq!(product_id, "ASTERUSDT");
+
+    let summary = service.summary(None);
+    assert!(summary.enabled);
+    assert_eq!(summary.health_status, "unhealthy");
+    assert_eq!(summary.symbol_universe.mode, "whitelist_only");
+    assert_eq!(summary.symbol_universe.monitored_count, 1);
+    assert_eq!(summary.symbol_universe.whitelist, vec!["ASTERUSDT"]);
+    assert_eq!(summary.monitored_symbols, vec!["ASTERUSDT"]);
+
+    let updated_config = btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::config::binance_alt_contract_runtime_config();
+    let mut signal = detect_alt_contract_signal(
+        &stats("ASTER", AltContractDirection::Buy),
+        &AltContractContext {
+            oi_change_1m_base: Some(100_000.0),
+            oi_change_pct: Some(1.5),
+            persistence_windows: 3,
+            ticker_quote_volume_24h_usd: Some(90_000_000.0),
+            ..AltContractContext::default()
+        },
+        &updated_config,
+    )
+    .expect("watch signal");
+    signal.alt_impact_score = impact_score(80.0);
+    assert!(service.insert_signal_for_tests(signal));
+
+    let latest = service.latest(Some("ASTER"), 50);
+    assert!(latest.summary.enabled);
+    assert_eq!(latest.summary.symbol_universe.monitored_count, 1);
+    assert_eq!(latest.items.len(), 1);
+    assert_eq!(latest.items[0].product_id, "ASTERUSDT");
+
+    let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();
 }
 
