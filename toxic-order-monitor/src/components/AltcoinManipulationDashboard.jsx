@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchAltcoinSignals } from "../api/liquidationCascade.js";
 
 const DEFAULT_SYMBOLS = ["ASTERUSDT"];
-const MAX_SYMBOLS = 10;
+const MAX_SYMBOLS = 50;
 const STORAGE_KEY = "altcoin_manipulation_watchlist_v1";
 
 const regimeTone = {
@@ -121,7 +121,7 @@ export default function AltcoinManipulationDashboard() {
       }
     }
     if (nextSymbols.length === symbols.length) {
-      setNotice({ type: "warning", message: "没有新增 symbol，可能已在监控列表或超过最多 10 个限制。" });
+      setNotice({ type: "warning", message: `没有新增 symbol，可能已在监控列表或超过最多 ${MAX_SYMBOLS} 个限制。` });
       return;
     }
     setSymbols(nextSymbols);

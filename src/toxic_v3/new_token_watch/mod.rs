@@ -1,6 +1,6 @@
 //! Read-only new-token contract-flow watcher.
 //!
-//! This module manages an operator-selected list of up to 10 symbols and turns
+//! This module manages an operator-selected list of up to 50 symbols and turns
 //! public contract-flow observations into candidate behavior labels. It never
 //! places orders, cancels orders, reads private streams, signs requests, or
 //! mutates exchange state.

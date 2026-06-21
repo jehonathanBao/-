@@ -12,9 +12,12 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
-use crate::toxic_v3::new_token_watch::{
-    fetch_market_price_snapshot, NewTokenWatchMutationResponse, NewTokenWatchRequest,
-    TokenWatchError, TokenWatchManager, MAX_ACTIVE_TOKENS,
+use crate::{
+    binance_alt_contract_monitor::config::enable_binance_alt_contract_symbol_for_watch,
+    toxic_v3::new_token_watch::{
+        fetch_market_price_snapshot, NewTokenWatchMutationResponse, NewTokenWatchRequest,
+        TokenWatchError, TokenWatchManager, MAX_ACTIVE_TOKENS,
+    },
 };
 
 static NEW_TOKEN_WATCH_MANAGER: OnceLock<TokenWatchManager> = OnceLock::new();
@@ -73,6 +76,7 @@ pub async fn new_token_watch_add_route(
             .unwrap_or(Err(TokenWatchError::PersistenceFailed));
     match result {
         Ok(item) => {
+            let _ = enable_binance_alt_contract_symbol_for_watch(&item.symbol);
             let market_price = fetch_market_price_snapshot(&item.symbol).await;
             let anchored_item = global_new_token_watch_manager()
                 .refresh_token_with_market(&item.symbol, market_price)

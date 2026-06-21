@@ -1,6 +1,10 @@
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     collector::shard_symbols,
-    config::{BinanceAltContractRuntimeConfig, BinanceAltUniverseMode},
+    config::{
+        binance_alt_contract_runtime_config, enable_binance_alt_contract_symbol_for_watch,
+        reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
+        BinanceAltContractRuntimeConfig, BinanceAltUniverseMode,
+    },
     symbol_universe::{build_symbol_universe, BinanceAltSymbolCandidate},
     types::{AltContractMarketTier, AltContractSymbolTier},
 };
@@ -139,6 +143,41 @@ fn whitelist_only_mode_ignores_non_whitelisted_symbols() {
 
     assert_eq!(universe.len(), 1);
     assert_eq!(universe[0].product_id, "SUIUSDT");
+}
+
+#[test]
+fn watched_altcoin_symbol_enables_only_matching_alt_contract_monitoring() {
+    reset_binance_alt_contract_runtime_config();
+    let mut config = BinanceAltContractRuntimeConfig::default();
+    config.enabled = false;
+    config.exchange.binance_enabled = false;
+    config.oi_scheduler.enabled = false;
+    config.discord.enabled = false;
+    config.symbol_universe.universe_mode = BinanceAltUniverseMode::AllBinanceUsdtPerp;
+    config.symbol_universe.whitelist = Vec::new();
+    set_binance_alt_contract_runtime_config(config);
+
+    let product_id =
+        enable_binance_alt_contract_symbol_for_watch("aster").expect("enable watched symbol");
+    let updated = binance_alt_contract_runtime_config();
+
+    assert_eq!(product_id, "ASTERUSDT");
+    assert!(updated.enabled);
+    assert!(updated.exchange.binance_enabled);
+    assert!(updated.oi_scheduler.enabled);
+    assert!(
+        !updated.discord.enabled,
+        "watch activation must not enable Discord pushes"
+    );
+    assert_eq!(
+        updated.symbol_universe.universe_mode,
+        BinanceAltUniverseMode::WhitelistOnly
+    );
+    assert_eq!(updated.enabled_symbols(), vec!["ASTERUSDT"]);
+    assert!(updated.symbol_enabled("ASTERUSDT"));
+    assert!(!updated.symbol_enabled("DOGEUSDT"));
+
+    reset_binance_alt_contract_runtime_config();
 }
 
 #[test]

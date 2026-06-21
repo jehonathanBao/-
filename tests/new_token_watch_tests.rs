@@ -28,6 +28,8 @@ fn tick(
 fn manager_add_remove_and_capacity_limit() {
     let manager = TokenWatchManager::default();
 
+    assert_eq!(MAX_ACTIVE_TOKENS, 50);
+
     let first = manager.add_token("abc").expect("add abc");
     assert_eq!(first.symbol, "ABCUSDT");
     assert_eq!(manager.list_active_tokens().active_count, 1);

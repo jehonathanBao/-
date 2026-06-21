@@ -4,6 +4,7 @@ import {
   fetchNewTokenChart,
   fetchNewTokenReconstruction,
   fetchNewTokenWatchList,
+  NEW_TOKEN_WATCH_MAX_ACTIVE,
   normalizeNewTokenWatchList,
   removeNewTokenWatch,
 } from "../api/newTokenWatch.js";
@@ -46,7 +47,7 @@ const phaseStrip = [
 
 export default function NewTokenWatch() {
   const [items, setItems] = useState([]);
-  const [maxActiveTokens, setMaxActiveTokens] = useState(10);
+  const [maxActiveTokens, setMaxActiveTokens] = useState(NEW_TOKEN_WATCH_MAX_ACTIVE);
   const [symbolInput, setSymbolInput] = useState("");
   const [selectedSymbol, setSelectedSymbol] = useState("");
   const [timeframe, setTimeframe] = useState("15m");
@@ -1821,7 +1822,7 @@ function formatSignedUsd(value) {
 }
 
 function errorMessage(error) {
-  if (error === "max_active_tokens_reached") return "最多只能同时监控 10 个币。";
+  if (error === "max_active_tokens_reached") return "最多只能同时监控 50 个币。";
   if (error === "invalid_symbol") return "Symbol 格式无效。";
   if (error === "token_not_found") return "该 symbol 当前未在监控列表。";
   return error || "操作失败";

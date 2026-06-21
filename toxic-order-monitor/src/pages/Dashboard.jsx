@@ -520,7 +520,7 @@ function NewTokenWatchPage() {
           <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">New Token Contract Flow</p>
           <h2 className="mt-2 text-2xl font-bold text-white">新币合约监控</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            最多选择 10 个 USDT 合约 symbol，独立观察吸筹、建仓、出货和中性订单流候选。
+            最多选择 50 个 USDT 合约 symbol，独立观察吸筹、建仓、出货和中性订单流候选。
           </p>
         </div>
         <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">

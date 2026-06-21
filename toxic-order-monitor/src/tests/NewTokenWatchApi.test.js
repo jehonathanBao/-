@@ -154,7 +154,7 @@ describe("newTokenWatch API", () => {
             },
           },
         ],
-        maxActiveTokens: 10,
+        maxActiveTokens: 50,
         activeCount: 1,
         readOnly: true,
       },
@@ -191,7 +191,7 @@ describe("newTokenWatch API", () => {
     expect(result.items[0].lastSignal.positionReconstruction.accumulationPath[0].label).toBe("silent_accumulation");
     expect(result.items[0].lastSignal.positionReconstruction.lastAccumulationNode.confidence).toBe(0.84);
     expect(result.items[0].lastSignal.positionReconstruction.latentPosition[0].impactAdjustedPosition).toBe(18);
-    expect(result.maxActiveTokens).toBe(10);
+    expect(result.maxActiveTokens).toBe(50);
   });
 
   it("adds and removes a symbol through backend routes", async () => {

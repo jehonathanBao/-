@@ -537,6 +537,50 @@ pub fn set_binance_alt_contract_runtime_config(config: BinanceAltContractRuntime
         .expect("binance alt contract config lock poisoned") = config;
 }
 
+pub fn enable_binance_alt_contract_symbol_for_watch(
+    raw_symbol: &str,
+) -> Result<String, &'static str> {
+    let product_id = normalize_watch_product_id(raw_symbol)?;
+    let mut config = global_config()
+        .write()
+        .expect("binance alt contract config lock poisoned");
+    let needs_explicit_watchlist = !config.enabled
+        || !config.exchange.binance_enabled
+        || !config.oi_scheduler.enabled
+        || !matches!(
+            config.symbol_universe.universe_mode,
+            BinanceAltUniverseMode::AllBinanceUsdtPerp
+        )
+        || !config.symbol_universe.whitelist.is_empty();
+
+    config.enabled = true;
+    config.exchange.binance_enabled = true;
+    config.oi_scheduler.enabled = true;
+
+    if needs_explicit_watchlist {
+        config.symbol_universe.universe_mode = BinanceAltUniverseMode::WhitelistOnly;
+        if !config
+            .symbol_universe
+            .whitelist
+            .iter()
+            .map(|symbol| normalize_product_id(symbol))
+            .any(|symbol| symbol == product_id)
+        {
+            config.symbol_universe.whitelist.push(product_id.clone());
+        }
+    }
+    config
+        .symbol_universe
+        .blacklist
+        .retain(|symbol| normalize_product_id(symbol) != product_id);
+    config
+        .symbol_universe
+        .exclude_symbols
+        .retain(|symbol| normalize_product_id(symbol) != product_id);
+
+    Ok(product_id)
+}
+
 pub fn reset_binance_alt_contract_runtime_config() {
     set_binance_alt_contract_runtime_config(BinanceAltContractRuntimeConfig::default());
 }
@@ -1258,6 +1302,20 @@ fn default_top50_symbols() -> Vec<String> {
 
 fn normalize_product_id(value: &str) -> String {
     value.trim().to_ascii_uppercase()
+}
+
+fn normalize_watch_product_id(value: &str) -> Result<String, &'static str> {
+    let mut product_id = normalize_product_id(value);
+    if product_id.is_empty() || !product_id.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return Err("invalid_symbol");
+    }
+    if !product_id.ends_with("USDT") {
+        product_id.push_str("USDT");
+    }
+    if product_id == "BTCUSDT" || product_id == "ETHUSDT" {
+        return Err("excluded_symbol");
+    }
+    Ok(product_id)
 }
 
 fn bool_setting(settings: &::config::Config, env_key: &str, toml_key: &str, default: bool) -> bool {

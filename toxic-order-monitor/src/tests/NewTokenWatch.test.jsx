@@ -17,6 +17,7 @@ vi.mock("../hooks/useReconnectingWebSocket.js", () => ({
 }));
 
 vi.mock("../api/newTokenWatch.js", () => ({
+  NEW_TOKEN_WATCH_MAX_ACTIVE: 50,
   fetchNewTokenWatchList: vi.fn(() =>
     Promise.resolve({
       items: [
@@ -157,7 +158,7 @@ vi.mock("../api/newTokenWatch.js", () => ({
           },
         },
       ],
-      maxActiveTokens: 10,
+      maxActiveTokens: 50,
       activeCount: 1,
       readOnly: true,
     }),
@@ -597,7 +598,7 @@ vi.mock("../api/newTokenWatch.js", () => ({
           },
         },
       ],
-      maxActiveTokens: 10,
+      maxActiveTokens: 50,
       readOnly: true,
     }),
   ),
@@ -606,7 +607,7 @@ vi.mock("../api/newTokenWatch.js", () => ({
       ok: true,
       item: { symbol: "ABCUSDT" },
       items: [],
-      maxActiveTokens: 10,
+      maxActiveTokens: 50,
       readOnly: true,
     }),
   ),
@@ -692,7 +693,7 @@ describe("NewTokenWatch", () => {
     expect(screen.getAllByText("6m 42s · Abs 84% · Conf 84%").length).toBeGreaterThan(0);
     expect(fetchNewTokenReconstruction).toHaveBeenCalledWith("ABCUSDT", "15m");
     expect(fetchNewTokenChart).toHaveBeenCalledWith("ABCUSDT", "15m");
-    expect(screen.getByText("1/10")).toBeInTheDocument();
+    expect(screen.getByText("1/50")).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("行为窗口"), "4h");
 

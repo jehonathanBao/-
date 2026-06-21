@@ -10,6 +10,7 @@ use crate::{
     },
     api::new_token_watch_routes::global_new_token_watch_manager,
     app::AppState,
+    binance_alt_contract_monitor::config::enable_binance_alt_contract_symbol_for_watch,
     contract_whale_monitor::{
         aggregator::market_context_from_snapshots,
         types::{ContractFlowBucket, ContractWhaleDirection},
@@ -81,6 +82,7 @@ fn build_altcoin_state(
             runtime_modified: false,
         };
     }
+    let _ = enable_binance_alt_contract_symbol_for_watch(&symbol);
 
     let now = now_ms();
     let latest_signal = state.contract_whale_store().and_then(|store| {

@@ -1,6 +1,6 @@
 import axios from "axios";
 
-export const NEW_TOKEN_WATCH_MAX_ACTIVE = 10;
+export const NEW_TOKEN_WATCH_MAX_ACTIVE = 50;
 
 export async function fetchNewTokenWatchList() {
   const response = await axios.get("/api/new-token-watch/list");

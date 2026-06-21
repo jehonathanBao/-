@@ -345,7 +345,7 @@ describe("Dashboard interactions", () => {
     expect(await screen.findByText("JTO")).toBeInTheDocument();
     expect(await screen.findByText("ZEC")).toBeInTheDocument();
     expect(screen.getByText("MANIPULATION_MEDIUM")).toBeInTheDocument();
-    expect(screen.getByText("3 / 10")).toBeInTheDocument();
+    expect(screen.getByText("3 / 50")).toBeInTheDocument();
   });
 
   it("keeps dashboard and spot monitor route aliases working", async () => {
