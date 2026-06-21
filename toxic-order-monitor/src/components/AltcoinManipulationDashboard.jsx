@@ -76,8 +76,12 @@ export default function AltcoinManipulationDashboard() {
   const selectedResult = useMemo(
     () =>
       results.find(
+        (item) => normalizeSymbolInput(item.requestedSymbol) === normalizeSymbolInput(selectedSymbol),
+      ) ||
+      results.find(
         (item) => normalizeSymbolInput(item.data?.symbol || item.requestedSymbol) === normalizeSymbolInput(selectedSymbol),
-      ) || results[0],
+      ) ||
+      results[0],
     [results, selectedSymbol],
   );
 
@@ -232,7 +236,7 @@ export default function AltcoinManipulationDashboard() {
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-5">
-          <Panel title={`四组件控盘评分 · ${selectedState?.symbol || selectedSymbol}`}>
+          <Panel title={`四组件控盘评分 · ${selectedResult?.requestedSymbol || selectedState?.symbol || selectedSymbol}`}>
             <div className="grid gap-4 md:grid-cols-2">
               {componentLabels.map(([key, label]) => (
                 <ComponentBar key={key} label={label} value={selectedState?.[key]} />
