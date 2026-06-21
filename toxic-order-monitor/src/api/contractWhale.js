@@ -70,9 +70,9 @@ const calmSummary = {
     updatedAtMs: null,
   },
   exchanges: {
-    binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+    binance: { connected: false, status: "initializing", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
-    bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+    bitfinex: { connected: false, status: "initializing", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     coinbase: { connected: false, status: "spot_only", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
   },
   platforms: {

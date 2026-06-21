@@ -693,6 +693,20 @@ describe("ContractWhaleMonitor", () => {
     vi.useRealTimers();
   });
 
+  it("does not show enabled contract platforms as offline while initial requests are pending", () => {
+    fetchContractWhaleLatest.mockReturnValueOnce(new Promise(() => {}));
+    fetchFinalEvents.mockReturnValueOnce(new Promise(() => {}));
+    fetchContractWhaleEvents.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<ContractWhaleMonitor />);
+
+    expect(screen.getByTestId("platform-status-chip-binance")).toHaveTextContent("等待数据");
+    expect(screen.getByTestId("platform-status-chip-bitfinex")).toHaveTextContent("等待数据");
+    expect(screen.getByTestId("platform-status-chip-binance")).not.toHaveTextContent("离线");
+    expect(screen.getByTestId("platform-status-chip-bitfinex")).not.toHaveTextContent("离线");
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
+  });
+
   it("renders summary cards and latest contract whale signals", async () => {
     render(<ContractWhaleMonitor />);
 
@@ -1326,15 +1340,16 @@ describe("ContractWhaleMonitor", () => {
 
     expect(screen.getByText("主力合约监控")).toBeInTheDocument();
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
-    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(0);
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
+    expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
 
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(2);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(2);
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(3);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(2);
   });

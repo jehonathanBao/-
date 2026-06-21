@@ -97,6 +97,7 @@ export default function ContractWhaleMonitor() {
       }
     };
 
+    refreshSummary();
     refreshLatest();
     configurePolling();
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -186,9 +187,9 @@ export default function ContractWhaleMonitor() {
       updatedAtMs: null,
     },
     exchanges: {
-      binance: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+      binance: { connected: false, status: "initializing", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
       okx: { connected: false, status: "disabled", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
-      bitfinex: { connected: false, status: "disconnected", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
+      bitfinex: { connected: false, status: "initializing", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
       coinbase: { connected: false, status: "spot_only", lastTradeAt: null, latencyMs: null, reconnectCount: 0 },
     },
     platforms: {
@@ -1736,11 +1737,22 @@ function compactPlatformStatus(platform, runtime) {
   if (connected) {
     return { label: "运行中", tone: "emerald" };
   }
+  if (runtimeStatus === "stale" || platformStatus === "stale") {
+    return { label: "数据延迟", tone: "yellow" };
+  }
+  if (
+    runtimeStatus === "initializing" ||
+    runtimeStatus === "waiting_for_data" ||
+    platformStatus === "initializing" ||
+    platformStatus === "waiting_for_data"
+  ) {
+    return { label: "等待数据", tone: "cyan" };
+  }
   if (runtimeStatus === "disconnected" || platformStatus === "disconnected") {
     return { label: "离线", tone: "red" };
   }
   if (platformStatus === "active" || platformStatus === "enabled") {
-    return { label: "已启用", tone: "cyan" };
+    return { label: "等待数据", tone: "cyan" };
   }
   return { label: "等待数据", tone: "cyan" };
 }
