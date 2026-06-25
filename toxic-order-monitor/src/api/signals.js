@@ -7,15 +7,18 @@ export async function fetchSignals() {
     const response = await axios.get(`${baseURL}/api/toxicity/signal-inbox/recent`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     if (items.length === 0) {
-      return demoSignalsForEmptyInbox();
+      return demoSignalsIfEnabled();
     }
     return items.map(mapInboxItemToSignal);
   } catch {
-    return demoSignalsForEmptyInbox();
+    return demoSignalsIfEnabled();
   }
 }
 
-function demoSignalsForEmptyInbox() {
+function demoSignalsIfEnabled() {
+  if (import.meta.env.VITE_USE_DEMO_SIGNALS !== "true") {
+    return [];
+  }
   return mockSignals.map((signal) => ({
     ...signal,
     isLive: false,

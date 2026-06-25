@@ -12,6 +12,7 @@ vi.mock("axios", () => ({
 describe("signals api mapping", () => {
   beforeEach(() => {
     axios.get.mockReset();
+    vi.unstubAllEnvs();
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
 
@@ -656,7 +657,16 @@ describe("signals api mapping", () => {
     expect(signal.replaySnapshot).toEqual({ safeSummary: "redacted snapshot" });
   });
 
-  it("uses demo signals when backend inbox is reachable but empty", async () => {
+  it("returns an empty inbox when backend inbox is reachable but empty", async () => {
+    axios.get.mockResolvedValueOnce({ data: { items: [] } });
+
+    const signals = await fetchSignals();
+
+    expect(signals).toEqual([]);
+  });
+
+  it("uses demo signals only when explicitly enabled", async () => {
+    vi.stubEnv("VITE_USE_DEMO_SIGNALS", "true");
     axios.get.mockResolvedValueOnce({ data: { items: [] } });
 
     const signals = await fetchSignals();

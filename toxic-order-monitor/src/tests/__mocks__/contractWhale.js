@@ -65,6 +65,13 @@ export const fetchContractWhaleEvents = vi.fn(() =>
   }),
 );
 
+export const fetchFinalEvents = vi.fn(() =>
+  Promise.resolve({
+    items: [],
+    error: null,
+  }),
+);
+
 export const normalizePlatformStatus = vi.fn((platform) => ({
   key: platform?.platformEnabled ? "active" : "disabled",
   label: platform?.platformEnabled ? "运行中" : "未启用",
