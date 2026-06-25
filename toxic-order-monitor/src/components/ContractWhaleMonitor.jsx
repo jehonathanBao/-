@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
+  fetchContractEvents,
+  fetchContractRetentionStatus,
   fetchContractWhaleEvents,
-  fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
-  fetchFinalEvents,
+  fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
 const LATEST_REFRESH_MS = 10_000;
+const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_FILTERS = {
   symbol: "BTC",
   severity: "all",
@@ -26,8 +28,18 @@ export default function ContractWhaleMonitor() {
     loading: true,
     summary: null,
     items: [],
-    finalEvents: [],
+    contractEvents: [],
+    contractEventsCursor: null,
+    contractEventsHasMore: false,
+    contractEventsServerTime: null,
+    contractEventsLastEventTs: null,
+    finalEvents: { active: [], closed: [] },
+    finalEventsCursor: null,
+    finalEventsHasMore: false,
+    finalEventsServerTime: null,
+    finalEventsLastEventTs: null,
     events: [],
+    retentionStatus: null,
     meta: null,
     error: null,
   });
@@ -41,23 +53,48 @@ export default function ContractWhaleMonitor() {
     let latestTimer = null;
 
     const refreshLatest = () => {
-      const request = shouldUseHistory(filters)
-        ? fetchContractWhaleHistory({ ...filters, limit: 50 })
-        : fetchContractWhaleLatest(50, filters.symbol);
       Promise.all([
-        request,
-        fetchFinalEvents({ symbol: filters.symbol, limit: 12 }),
+        fetchContractWhaleLatest(50, filters.symbol),
+        fetchContractEvents({ ...filters, range: "24h", limit: 100 }),
+        fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit: 100 }),
         fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 }),
-      ]).then(([payload, finalEventsPayload, eventsPayload]) => {
+        fetchContractRetentionStatus(),
+      ]).then(([payload, contractEventsPayload, finalEventsPayload, eventsPayload, retentionStatus]) => {
         if (cancelled) return;
         setState((previous) => ({
           loading: false,
           summary: payload.error ? previous.summary : payload.summary,
           items: payload.error ? previous.items : payload.items,
-          finalEvents: finalEventsPayload.error ? previous.finalEvents : finalEventsPayload.items,
+          contractEvents: contractEventsPayload.error ? previous.contractEvents : contractEventsPayload.items,
+          contractEventsCursor: contractEventsPayload.error ? previous.contractEventsCursor : contractEventsPayload.nextCursor,
+          contractEventsHasMore: contractEventsPayload.error ? previous.contractEventsHasMore : contractEventsPayload.hasMore,
+          contractEventsServerTime: contractEventsPayload.error
+            ? previous.contractEventsServerTime
+            : contractEventsPayload.serverTime,
+          contractEventsLastEventTs: contractEventsPayload.error
+            ? previous.contractEventsLastEventTs
+            : contractEventsPayload.lastEventTs,
+          finalEvents: finalEventsPayload.error
+            ? previous.finalEvents
+            : { active: finalEventsPayload.active, closed: finalEventsPayload.closed },
+          finalEventsCursor: finalEventsPayload.error ? previous.finalEventsCursor : finalEventsPayload.nextCursor,
+          finalEventsHasMore: finalEventsPayload.error ? previous.finalEventsHasMore : finalEventsPayload.hasMore,
+          finalEventsServerTime: finalEventsPayload.error
+            ? previous.finalEventsServerTime
+            : finalEventsPayload.serverTime,
+          finalEventsLastEventTs: finalEventsPayload.error
+            ? previous.finalEventsLastEventTs
+            : finalEventsPayload.lastEventTs,
           events: eventsPayload.error ? previous.events : eventsPayload.items,
+          retentionStatus: retentionStatus?.error ? previous.retentionStatus : retentionStatus,
           meta: payload.error ? previous.meta : (payload.meta || null),
-          error: payload.error || finalEventsPayload.error || eventsPayload.error || null,
+          error:
+            payload.error ||
+            contractEventsPayload.error ||
+            finalEventsPayload.error ||
+            eventsPayload.error ||
+            retentionStatus?.error ||
+            null,
         }));
       });
     };
@@ -200,9 +237,60 @@ export default function ContractWhaleMonitor() {
     },
   };
   const platformCapabilities = summary.platforms || {};
-  const detailItems = dedupeSignalsById([...state.items, ...state.finalEvents]);
+  const lifecycleItems = [...state.finalEvents.active, ...state.finalEvents.closed];
+  const detailItems = dedupeSignalsById([...state.items, ...state.contractEvents, ...lifecycleItems]);
+  const latestSignalTs = Math.max(
+    0,
+    ...state.items.map((item) => Number(item?.ts) || 0),
+  );
+  const eventsSyncLag = latestSignalTs > 0 &&
+    Number.isFinite(state.contractEventsLastEventTs) &&
+    latestSignalTs - state.contractEventsLastEventTs > EVENTS_SYNC_LAG_MS;
   const selectedSignal = detailItems.find((item) => item.id === selectedSignalId) || null;
   const whaleEntities = buildWhaleEntities(state.items);
+  const showCoinbaseSpotOnlyNotice =
+    filters.exchange === "coinbase" || state.meta?.reason === "coinbase_perp_disabled";
+
+  async function loadMoreContractEvents() {
+    if (!state.contractEventsHasMore || !state.contractEventsCursor) return;
+    const payload = await fetchContractEvents({
+      ...filters,
+      range: "24h",
+      limit: 100,
+      cursor: state.contractEventsCursor,
+    });
+    if (payload.error) return;
+    setState((previous) => ({
+      ...previous,
+      contractEvents: mergeUniqueById(previous.contractEvents, payload.items),
+      contractEventsCursor: payload.nextCursor,
+      contractEventsHasMore: payload.hasMore,
+      contractEventsServerTime: payload.serverTime,
+      contractEventsLastEventTs: payload.lastEventTs ?? previous.contractEventsLastEventTs,
+    }));
+  }
+
+  async function loadMoreFinalEvents() {
+    if (!state.finalEventsHasMore || !state.finalEventsCursor) return;
+    const payload = await fetchFinalEventsV2({
+      symbol: filters.symbol,
+      range: "24h",
+      limit: 100,
+      cursor: state.finalEventsCursor,
+    });
+    if (payload.error) return;
+    setState((previous) => ({
+      ...previous,
+      finalEvents: {
+        active: mergeUniqueById(previous.finalEvents.active, payload.active),
+        closed: mergeUniqueById(previous.finalEvents.closed, payload.closed),
+      },
+      finalEventsCursor: payload.nextCursor,
+      finalEventsHasMore: payload.hasMore,
+      finalEventsServerTime: payload.serverTime,
+      finalEventsLastEventTs: payload.lastEventTs ?? previous.finalEventsLastEventTs,
+    }));
+  }
 
   return (
     <section className="console-panel mb-5 p-4 md:p-5">
@@ -244,7 +332,7 @@ export default function ContractWhaleMonitor() {
           主力合约监控数据暂时不可用，已保留上一次结果。
         </p>
       ) : null}
-      {state.meta?.reason === "coinbase_perp_disabled" ? (
+      {showCoinbaseSpotOnlyNotice ? (
         <p className="mt-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
           Coinbase 当前仅启用现货，未启用合约；本页只统计 perp 合约成交，因此不会返回 Coinbase 合约信号。
         </p>
@@ -263,10 +351,19 @@ export default function ContractWhaleMonitor() {
       </p>
 
       <RawSignalDebugSection
+        contractEvents={state.contractEvents}
         enabled={summary.enabled}
-        items={state.finalEvents}
+        finalEvents={state.finalEvents}
+        finalEventsHasMore={state.finalEventsHasMore}
         loading={state.loading}
+        onLoadMoreContractEvents={loadMoreContractEvents}
+        onLoadMoreFinalEvents={loadMoreFinalEvents}
         onOpenSignal={setSelectedSignalId}
+        retentionStatus={state.retentionStatus}
+        eventsSyncLag={eventsSyncLag}
+        latestSignalTs={latestSignalTs}
+        contractEventsLastEventTs={state.contractEventsLastEventTs}
+        contractEventsHasMore={state.contractEventsHasMore}
       />
 
       <WhaleTrajectoryDashboard
@@ -534,9 +631,33 @@ function dedupeSignalsById(items) {
   return result;
 }
 
-function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
-  const activeItems = items.filter((item) => eventLifecycleStatus(item) !== "closed");
-  const closedItems = items.filter((item) => eventLifecycleStatus(item) === "closed");
+function mergeUniqueById(previousItems, nextItems) {
+  const map = new Map();
+  [...(previousItems || []), ...(nextItems || [])].forEach((item) => {
+    const key = item?.eventId || item?.finalEventId || item?.id;
+    if (!key) return;
+    map.set(key, item);
+  });
+  return Array.from(map.values());
+}
+
+function RawSignalDebugSection({
+  contractEvents,
+  enabled,
+  finalEvents,
+  finalEventsHasMore,
+  loading,
+  onLoadMoreContractEvents,
+  onLoadMoreFinalEvents,
+  onOpenSignal,
+  retentionStatus,
+  contractEventsHasMore,
+  eventsSyncLag,
+  latestSignalTs,
+  contractEventsLastEventTs,
+}) {
+  const activeItems = finalEvents.active || [];
+  const closedItems = finalEvents.closed || [];
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -544,56 +665,107 @@ function RawSignalDebugSection({ enabled, items, loading, onOpenSignal }) {
           <p className="console-label text-cyan-300">Contract Event Feed</p>
           <h4 className="mt-1 text-base font-bold text-white">合约市场事件</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            同 symbol、方向、类型且 60 秒内的 5s / 15s / 60s 切片会合并成一个市场事件；下方主力行为轨迹用于复盘更长的连续意图。
+            当前列表为历史事件流，不是 latest 快照。latest 只用于顶部实时状态；历史事件来自 contract_whale_signals，ACTIVE/CLOSED 是生命周期投影视图。
           </p>
         </div>
         <span className="rounded-full border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100">
-          {items.length} rows
+          已加载 {contractEvents.length} 条
         </span>
       </div>
-      <div className="overflow-x-auto border-t border-slate-800">
+      <div className="space-y-4 border-t border-slate-800 p-3">
+        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
+          <p>历史事件流不会被新的 latest 快照直接覆盖；事件离开 ACTIVE/CLOSED 视图，通常是状态切换、分页边界或筛选变化，不等于数据库删除。</p>
+          {eventsSyncLag ? (
+            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+              数据延迟：latest 已更新到 {formatDateTime(latestSignalTs)}，历史事件流当前只同步到 {formatDateTime(contractEventsLastEventTs)}。
+            </p>
+          ) : null}
+          {retentionStatus ? (
+            <p className="mt-2 text-cyan-100">
+              retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
+            </p>
+          ) : null}
+        </div>
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
-        ) : items.length === 0 ? (
+        ) : contractEvents.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
         ) : (
-          <div className="space-y-4 p-3">
-            <EventLifecycleFeedGroup
-              emptyText="暂无活跃合约事件"
-              items={activeItems}
-              onOpenSignal={onOpenSignal}
-              testId="raw-contract-whale-signals"
-              title="ACTIVE EVENTS (updated)"
-            />
-            <EventLifecycleFeedGroup
-              emptyText="暂无已结束合约事件"
-              items={closedItems}
-              onOpenSignal={onOpenSignal}
-              testId="raw-contract-whale-signals-closed"
-              title="CLOSED EVENTS (finalized)"
-            />
+          <div className="rounded-xl border border-slate-800 bg-slate-950/40">
+            <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+              <p className="text-xs font-bold tracking-[0.18em] text-cyan-200">HISTORICAL EVENTS (24h stream)</p>
+              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
+                已加载 {contractEvents.length} 条
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <RawSignalDebugTable items={contractEvents} onOpenSignal={onOpenSignal} testId="raw-contract-whale-signals" />
+            </div>
+            {contractEventsHasMore ? (
+              <div className="border-t border-slate-800 px-3 py-2 text-right">
+                <button
+                  className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10"
+                  onClick={onLoadMoreContractEvents}
+                  type="button"
+                >
+                  加载更多历史事件
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
+
+        <EventLifecycleFeedGroup
+          emptyText="暂无活跃合约事件"
+          hasMore={finalEventsHasMore}
+          items={activeItems}
+          onLoadMore={onLoadMoreFinalEvents}
+          onOpenSignal={onOpenSignal}
+          testId="raw-contract-whale-signals-active"
+          title="ACTIVE EVENTS (updated)"
+        />
+        <EventLifecycleFeedGroup
+          emptyText="暂无已结束合约事件"
+          hasMore={finalEventsHasMore}
+          items={closedItems}
+          onLoadMore={onLoadMoreFinalEvents}
+          onOpenSignal={onOpenSignal}
+          testId="raw-contract-whale-signals-closed"
+          title="CLOSED EVENTS (finalized)"
+        />
       </div>
     </section>
   );
 }
 
-function EventLifecycleFeedGroup({ emptyText, items, onOpenSignal, testId, title }) {
+function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpenSignal, testId, title }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
         <p className="text-xs font-bold tracking-[0.18em] text-cyan-200">{title}</p>
         <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
-          {items.length} events
+          已加载 {items.length} 条
         </span>
       </div>
       {items.length === 0 ? (
         <p className="px-3 py-4 text-xs text-slate-500">{emptyText}</p>
       ) : (
-        <div className="overflow-x-auto">
-          <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} testId={testId} />
-        </div>
+        <>
+          <div className="overflow-x-auto">
+            <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} testId={testId} />
+          </div>
+          {hasMore ? (
+            <div className="border-t border-slate-800 px-3 py-2 text-right">
+              <button
+                className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10"
+                onClick={onLoadMore}
+                type="button"
+              >
+                加载更多
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -637,8 +809,8 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
         {items.map((item) => (
           <tr
             className="console-row"
-            data-testid={`contract-whale-row-${item.id}`}
-            key={item.id}
+            data-testid={`contract-whale-row-${item.eventId || item.finalEventId || item.id}`}
+            key={item.eventId || item.finalEventId || item.id}
             onClick={() => onOpenSignal(signalDetailTargetId(item))}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
@@ -699,7 +871,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             <Cell>{discordStatus(item)}</Cell>
             <Cell>
               <button
-                aria-label={`查看主力合约信号详情 ${signalDetailTargetId(item)}`}
+                aria-label={`查看主力合约信号详情 ${signalDetailTargetId(item)} ${testId}`}
                 className="rounded-lg border border-cyan-500/40 px-2 py-1 text-cyan-100 outline-none transition hover:border-cyan-300 hover:bg-cyan-500/10 focus-visible:ring-2 focus-visible:ring-cyan-500/35"
                 onClick={(event) => {
                   event.stopPropagation();
@@ -2292,6 +2464,12 @@ function formatDate(value) {
     month: "2-digit",
     year: "numeric",
   });
+}
+
+function formatDateTime(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "N/A";
+  return `${formatDate(number)} ${formatTime(number)}`;
 }
 
 function formatEventRange(startedAt, endedAt) {

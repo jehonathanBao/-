@@ -1,11 +1,14 @@
 import axios from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchContractEvents,
+  fetchContractRetentionStatus,
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
   fetchContractWhaleSummary,
   fetchFinalEvents,
+  fetchFinalEventsV2,
   normalizeContractWhaleSignal,
   normalizeMarketStatus,
   normalizePlatformStatus,
@@ -737,6 +740,134 @@ describe("contract whale api", () => {
           "contract-whale:BTC:5:1700000000010:downside_absorption",
         ],
       }),
+    });
+  });
+
+  it("fetches contract events as the default historical event feed", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          {
+            eventId: "contract-event:btc:1",
+            sourceSignalId: "contract-whale:BTC:15:1700000000000:buy",
+            symbol: "BTC",
+            price: 64_166,
+            ts: 1_700_000_015_000,
+            status: "active",
+            signalType: "aggressive_buy",
+            severity: "Medium",
+            windowSec: 15,
+            volumeBtc: 4_876,
+            notionalUsd: 313_000_000,
+            netVolumeBtc: 4_619,
+            direction: "buy",
+            netDirection: "net_buy",
+            mainForceScore: 51,
+            exchangeSpotCount: 1,
+            exchangeContractCount: 2,
+            source: "contract_whale_signals",
+            isRetentionProtected: true,
+            retentionReason: "net_volume_ge_500_btc",
+          },
+        ],
+        nextCursor: "100",
+        hasMore: true,
+        limit: 100,
+        range: "24h",
+        serverTime: 1_700_000_100_000,
+        lastEventTs: 1_700_000_000_000,
+      },
+    });
+
+    const payload = await fetchContractEvents({ symbol: "BTC", range: "24h", limit: 100 });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-events?symbol=BTC&range=24h&limit=100");
+    expect(payload).toMatchObject({
+      items: [
+        expect.objectContaining({
+          eventId: "contract-event:btc:1",
+          sourceSignalId: "contract-whale:BTC:15:1700000000000:buy",
+          symbol: "BTC",
+          status: "active",
+          signalType: "aggressive_buy",
+          severity: "Medium",
+          volumeBtc: 4_876,
+          isRetentionProtected: true,
+          retentionReason: "net_volume_ge_500_btc",
+        }),
+      ],
+      nextCursor: "100",
+      hasMore: true,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_100_000,
+      lastEventTs: 1_700_000_000_000,
+    });
+  });
+
+  it("fetches final-events-v2 with paged active and closed arrays", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        active: [{ eventId: "active-1", symbol: "BTC" }],
+        closed: [{ eventId: "closed-1", symbol: "BTC" }],
+        nextCursor: "200",
+        hasMore: true,
+        limit: 100,
+        range: "24h",
+        serverTime: 1_700_000_200_000,
+        lastEventTs: 1_700_000_010_000,
+      },
+    });
+
+    const payload = await fetchFinalEventsV2({ symbol: "BTC", limit: 100, range: "24h" });
+
+    expect(axios.get).toHaveBeenCalledWith("/api/final-events-v2?symbol=BTC&limit=100&range=24h");
+    expect(payload).toMatchObject({
+      active: [expect.objectContaining({ eventId: "active-1", symbol: "BTC" })],
+      closed: [expect.objectContaining({ eventId: "closed-1", symbol: "BTC" })],
+      nextCursor: "200",
+      hasMore: true,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_200_000,
+      lastEventTs: 1_700_000_010_000,
+    });
+  });
+
+  it("fetches retention status for contract whale cleanup diagnostics", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        flowRetentionDays: 14,
+        signalRetentionDays: 365,
+        signalProtectSeverityS: true,
+        signalProtectNetVolumeBtc: 500,
+        cleanupIntervalHours: 1,
+        tables: {
+          contractWhaleSignals: {
+            rowCount: 99,
+            protectedSCount: 3,
+            protectedNetVolumeCount: 5,
+          },
+        },
+      },
+    });
+
+    const payload = await fetchContractRetentionStatus();
+
+    expect(axios.get).toHaveBeenCalledWith("/api/contract-retention-status");
+    expect(payload).toMatchObject({
+      flowRetentionDays: 14,
+      signalRetentionDays: 365,
+      signalProtectSeverityS: true,
+      signalProtectNetVolumeBtc: 500,
+      cleanupIntervalHours: 1,
+      tables: {
+        contractWhaleSignals: {
+          rowCount: 99,
+          protectedSCount: 3,
+          protectedNetVolumeCount: 5,
+        },
+      },
     });
   });
 

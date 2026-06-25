@@ -6,6 +6,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Deserialize;
 
 use crate::{
@@ -59,6 +60,9 @@ pub struct ContractWhaleQuery {
     pub window_sec: Option<String>,
     pub exchange: Option<String>,
     pub net_direction: Option<String>,
+    pub status: Option<String>,
+    pub range: Option<String>,
+    pub cursor: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub offset: Option<String>,
@@ -2545,13 +2549,21 @@ fn severity_matches(severity: ContractWhaleSeverity, filter: Option<&str>) -> bo
 pub fn parse_history_query(
     query: &ContractWhaleQuery,
 ) -> Result<ContractWhaleSignalQuery, (StatusCode, Json<serde_json::Value>)> {
-    let from_ts = parse_optional_i64(query.from.as_deref(), "from")?;
+    let mut from_ts = parse_optional_i64(query.from.as_deref(), "from")?;
     let to_ts = parse_optional_i64(query.to.as_deref(), "to")?;
+    if from_ts.is_none() {
+        from_ts = parse_range_start_ms(query.range.as_deref())?;
+    }
     if let (Some(from_ts), Some(to_ts)) = (from_ts, to_ts) {
         if from_ts > to_ts {
             return Err(bad_request("from_must_be_before_to"));
         }
     }
+    let parsed_cursor = parse_cursor(query.cursor.as_deref())?;
+    let offset = match parsed_cursor.as_ref().and_then(cursor_offset) {
+        Some(cursor) => cursor,
+        None => parse_offset(query.offset.as_deref())?,
+    };
     Ok(ContractWhaleSignalQuery {
         symbol: parse_symbol_filter(query.symbol.as_deref())?,
         severity: parse_severity_filter(query.severity.as_deref())?,
@@ -2563,8 +2575,10 @@ pub fn parse_history_query(
         min_abs_net_volume_btc: parse_net_direction_filter(query.net_direction.as_deref())?,
         from_ts,
         to_ts,
-        limit: parse_limit(query.limit.as_deref(), 50, 200)?,
-        offset: parse_offset(query.offset.as_deref())?,
+        cursor_ts: parsed_cursor.as_ref().and_then(cursor_ts),
+        cursor_signal_id: parsed_cursor.as_ref().and_then(cursor_signal_id),
+        limit: parse_limit(query.limit.as_deref(), 50, 500)?,
+        offset,
     })
 }
 
@@ -2713,6 +2727,89 @@ fn parse_offset(value: Option<&str>) -> Result<usize, (StatusCode, Json<serde_js
     value
         .parse::<usize>()
         .map_err(|_| bad_request("offset_invalid"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContractHistoryCursor {
+    Offset(usize),
+    Positioned { ts: i64, signal_id: String },
+}
+
+pub fn encode_contract_history_cursor(ts: i64, signal_id: &str) -> String {
+    BASE64_STANDARD.encode(format!("{ts}|{signal_id}"))
+}
+
+fn parse_cursor(
+    value: Option<&str>,
+) -> Result<Option<ContractHistoryCursor>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if let Ok(offset) = value.parse::<usize>() {
+        return Ok(Some(ContractHistoryCursor::Offset(offset)));
+    }
+
+    let decoded = BASE64_STANDARD
+        .decode(value)
+        .map_err(|_| bad_request("cursor_invalid"))?;
+    let decoded = String::from_utf8(decoded).map_err(|_| bad_request("cursor_invalid"))?;
+    let Some((ts_raw, signal_id_raw)) = decoded.split_once('|') else {
+        return Err(bad_request("cursor_invalid"));
+    };
+    let ts = ts_raw
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| bad_request("cursor_invalid"))?;
+    let signal_id = signal_id_raw.trim();
+    if signal_id.is_empty() {
+        return Err(bad_request("cursor_invalid"));
+    }
+    Ok(Some(ContractHistoryCursor::Positioned {
+        ts,
+        signal_id: signal_id.to_string(),
+    }))
+}
+
+fn cursor_offset(cursor: &ContractHistoryCursor) -> Option<usize> {
+    match cursor {
+        ContractHistoryCursor::Offset(offset) => Some(*offset),
+        ContractHistoryCursor::Positioned { .. } => None,
+    }
+}
+
+fn cursor_ts(cursor: &ContractHistoryCursor) -> Option<i64> {
+    match cursor {
+        ContractHistoryCursor::Offset(_) => None,
+        ContractHistoryCursor::Positioned { ts, .. } => Some(*ts),
+    }
+}
+
+fn cursor_signal_id(cursor: &ContractHistoryCursor) -> Option<String> {
+    match cursor {
+        ContractHistoryCursor::Offset(_) => None,
+        ContractHistoryCursor::Positioned { signal_id, .. } => Some(signal_id.clone()),
+    }
+}
+
+fn parse_range_start_ms(
+    value: Option<&str>,
+) -> Result<Option<i64>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+    let now = now_ms();
+    let delta_ms = match value.to_ascii_lowercase().as_str() {
+        "15m" => 15 * 60 * 1000,
+        "1h" => 60 * 60 * 1000,
+        "4h" => 4 * 60 * 60 * 1000,
+        "24h" => 24 * 60 * 60 * 1000,
+        "7d" => 7 * 24 * 60 * 60 * 1000,
+        _ => return Err(bad_request("range_invalid")),
+    };
+    Ok(Some(now.saturating_sub(delta_ms)))
 }
 
 fn parse_optional_bool(

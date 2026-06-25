@@ -266,6 +266,40 @@ export async function fetchContractWhaleEvents(filters = {}) {
   }
 }
 
+export async function fetchContractEvents(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
+    const response = await axios.get(`${baseURL}/api/contract-events?${query}`);
+    const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const requestedSymbol = filters.symbol || "BTC";
+    return {
+      items: items
+        .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+        .map((item) => normalizeContractEvent(item, requestedSymbol))
+        .filter(isVisibleContractWhaleSignal),
+      nextCursor: response.data?.nextCursor ?? response.data?.next_cursor ?? null,
+      hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
+      limit: numberOrNull(response.data?.limit) ?? filters.limit ?? 100,
+      range: String(response.data?.range || filters.range || "24h"),
+      serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
+      lastEventTs: numberOrNull(response.data?.lastEventTs ?? response.data?.last_event_ts),
+      error: null,
+    };
+  } catch {
+    return {
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: filters.limit ?? 100,
+      range: filters.range || "24h",
+      serverTime: null,
+      lastEventTs: null,
+      error: "contract_events_unavailable",
+    };
+  }
+}
+
 export async function fetchFinalEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
@@ -284,6 +318,66 @@ export async function fetchFinalEvents(filters = {}) {
     };
   } catch {
     return { count: 0, items: [], error: "final_events_unavailable" };
+  }
+}
+
+export async function fetchFinalEventsV2(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
+    const response = await axios.get(`${baseURL}/api/final-events-v2?${query}`);
+    const requestedSymbol = filters.symbol || "BTC";
+    const normalizeArray = (items) =>
+      (Array.isArray(items) ? items : [])
+        .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+        .map((item) => normalizeFinalEvent(item, requestedSymbol))
+        .filter(isVisibleContractWhaleSignal);
+
+    return {
+      active: normalizeArray(response.data?.active),
+      closed: normalizeArray(response.data?.closed),
+      nextCursor: response.data?.nextCursor ?? response.data?.next_cursor ?? null,
+      hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
+      limit: numberOrNull(response.data?.limit) ?? filters.limit ?? 100,
+      range: String(response.data?.range || filters.range || "24h"),
+      serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
+      lastEventTs: numberOrNull(response.data?.lastEventTs ?? response.data?.last_event_ts),
+      error: null,
+    };
+  } catch {
+    return {
+      active: [],
+      closed: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: filters.limit ?? 100,
+      range: filters.range || "24h",
+      serverTime: null,
+      lastEventTs: null,
+      error: "final_events_v2_unavailable",
+    };
+  }
+}
+
+export async function fetchContractRetentionStatus() {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const response = await axios.get(`${baseURL}/api/contract-retention-status`);
+    return response.data || null;
+  } catch {
+    return {
+      flowRetentionDays: 14,
+      signalRetentionDays: 365,
+      signalProtectSeverityS: true,
+      signalProtectNetVolumeBtc: 500,
+      cleanupIntervalHours: 1,
+      tables: {
+        contractFlow1s: { rowCount: null, reason: "query_failed" },
+        contractWhaleSignals: { rowCount: null, reason: "query_failed" },
+        mainForceEvents: { rowCount: null, reason: "query_failed" },
+      },
+      error: "retention_status_unavailable",
+    };
   }
 }
 
@@ -316,8 +410,9 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   return {
     ...signal,
     id: eventId,
+    eventId,
     finalEventId: eventId,
-    sourceSignalId: signal.id,
+    sourceSignalId: item?.sourceSignalId || signal.id,
     rawVolume,
     impactScore,
     zScore,
@@ -391,6 +486,58 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
       falseEventFlags,
       sourceSignalIds,
     },
+  };
+}
+
+export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
+  const normalized = normalizeFinalEvent(item, fallbackSymbol);
+  const finalEvent = normalized.finalEvent || {};
+  const rawWindowSec = numberOrNull(item?.windowSec ?? item?.window_sec);
+  const rawVolumeBtc = numberOrNull(item?.volumeBtc ?? item?.volume_btc);
+  const rawNotionalUsd = numberOrNull(item?.notionalUsd ?? item?.notional_usd);
+  const rawNetVolumeBtc = numberOrNull(item?.netVolumeBtc ?? item?.net_volume_btc);
+  const rawPrice = numberOrNull(item?.price);
+  const rawTs = numberOrNull(item?.ts);
+  return {
+    ...normalized,
+    id: item?.eventId || item?.event_id || normalized.id,
+    eventId: item?.eventId || item?.event_id || normalized.eventId || normalized.id,
+    finalEventId: item?.eventId || item?.event_id || normalized.finalEventId || normalized.id,
+    sourceSignalId: item?.sourceSignalId || item?.source_signal_id || normalized.sourceSignalId,
+    ts: rawTs ?? normalized.ts,
+    status: String(item?.status || finalEvent.status || normalized.eventLifecycle?.status || "unknown").toLowerCase(),
+    signalType: item?.signalType || item?.signal_type || normalized.signalType,
+    severity: item?.severity || normalized.severity,
+    windowSec: rawWindowSec ?? normalized.windowSec,
+    score: numberOrNull(item?.score) ?? normalized.score,
+    totalVolumeBtc: rawVolumeBtc ?? normalized.totalVolumeBtc,
+    volumeBtc: rawVolumeBtc ?? normalized.totalVolumeBtc,
+    totalNotionalUsd: rawNotionalUsd ?? normalized.totalNotionalUsd,
+    notionalUsd: rawNotionalUsd ?? normalized.totalNotionalUsd,
+    netVolumeBtc: rawNetVolumeBtc ?? normalized.netVolumeBtc,
+    direction: item?.direction || normalized.direction,
+    dominance: numberOrNull(item?.dominance) ?? normalized.dominance,
+    mainForceScore: numberOrNull(item?.mainForceScore ?? item?.main_force_score) ?? normalized.mainForceScore,
+    spotScore: numberOrNull(item?.spotScore ?? item?.spot_score) ?? normalized.spotScore,
+    contractScore: numberOrNull(item?.contractScore ?? item?.contract_score) ?? normalized.contractScore,
+    orderPriceUsd: rawPrice ?? normalized.orderPriceUsd,
+    triggerPriceUsd: rawPrice ?? normalized.triggerPriceUsd,
+    priceDeviationPct: numberOrNull(item?.priceDeviationPct ?? item?.price_deviation_pct) ?? normalized.priceDeviationPct,
+    priceMovePct: numberOrNull(item?.priceMovePct ?? item?.price_move_pct) ?? normalized.priceMovePct,
+    dynamicMultiple: numberOrNull(item?.dynamicMultiple ?? item?.dynamic_multiple) ?? normalized.dynamicMultiple,
+    percentileLevel: numberOrNull(item?.percentileLevel ?? item?.percentile_level) ?? normalized.percentileLevel,
+    mainExchange: item?.mainExchange || item?.main_exchange || normalized.mainExchange,
+    liquidationSuspected: Boolean(item?.liquidationSuspected ?? item?.liquidation_suspected ?? normalized.liquidationSuspected),
+    liquidationLongBtc: numberOrNull(item?.liquidationLongBtc ?? item?.liquidation_long_btc) ?? normalized.liquidationLongBtc,
+    liquidationRatio: numberOrNull(item?.liquidationRatio ?? item?.liquidation_ratio) ?? normalized.liquidationRatio,
+    oiChange1mBtc: numberOrNull(item?.oiChange1mBtc ?? item?.oi_change_1m_btc) ?? normalized.oiChange1mBtc,
+    oiChangePct: numberOrNull(item?.oiChangePct ?? item?.oi_change_pct) ?? normalized.oiChangePct,
+    oiBias: item?.oiBias || item?.oi_bias || normalized.oiBias,
+    fundingRate: numberOrNull(item?.fundingRate ?? item?.funding_rate) ?? normalized.fundingRate,
+    fundingBias: item?.fundingBias || item?.funding_bias || normalized.fundingBias,
+    source: item?.source ? String(item.source) : "contract_whale_signals",
+    isRetentionProtected: Boolean(item?.isRetentionProtected ?? item?.is_retention_protected),
+    retentionReason: item?.retentionReason ?? item?.retention_reason ?? null,
   };
 }
 

@@ -10,7 +10,7 @@ use crate::contract_whale_monitor::types::{
 
 use super::sqlite::SqliteStore;
 
-const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
+pub const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct ContractWhaleSignalQuery {
@@ -24,6 +24,8 @@ pub struct ContractWhaleSignalQuery {
     pub min_abs_net_volume_btc: Option<f64>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
+    pub cursor_ts: Option<i64>,
+    pub cursor_signal_id: Option<String>,
     pub limit: usize,
     pub offset: usize,
 }
@@ -110,6 +112,10 @@ pub trait ContractWhaleRepo {
 pub struct ContractWhaleRetentionPruneResult {
     pub flow_1s_deleted: usize,
     pub signal_deleted: usize,
+    pub flow_cutoff_ts: i64,
+    pub signal_cutoff_ts: i64,
+    pub protected_s_count: usize,
+    pub protected_net_volume_count: usize,
 }
 
 impl ContractWhaleRepo for SqliteStore {
@@ -608,6 +614,10 @@ impl ContractWhaleRepo for SqliteStore {
         let min_abs_net_volume_btc = query
             .min_abs_net_volume_btc
             .filter(|value| value.is_finite() && *value > 0.0);
+        let cursor_signal_id = query
+            .cursor_signal_id
+            .as_deref()
+            .map(str::to_string);
         let exchange_like = query
             .exchange
             .as_deref()
@@ -629,8 +639,13 @@ impl ContractWhaleRepo for SqliteStore {
                   AND (?8 IS NULL OR window_sec = ?8)
                   AND (?9 IS NULL OR exchanges_json LIKE ?9)
                   AND (?10 IS NULL OR ABS(net_volume_btc) >= ?10)
-                ORDER BY ts DESC
-                LIMIT ?11 OFFSET ?12
+                  AND (
+                        ?11 IS NULL
+                        OR ts < ?11
+                        OR (ts = ?11 AND signal_id < ?12)
+                  )
+                ORDER BY ts DESC, signal_id DESC
+                LIMIT ?13 OFFSET ?14
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -645,6 +660,8 @@ impl ContractWhaleRepo for SqliteStore {
                     window_sec,
                     exchange_like.as_deref(),
                     min_abs_net_volume_btc,
+                    query.cursor_ts,
+                    cursor_signal_id.as_deref(),
                     query.limit as i64,
                     query.offset as i64,
                 ],
@@ -788,6 +805,20 @@ impl ContractWhaleRepo for SqliteStore {
         let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
+            let protected_s_count = tx.query_row(
+                "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity = ?2",
+                params![signal_cutoff_ts, s_severity.clone()],
+                |row| row.get::<_, i64>(0),
+            )? as usize;
+            let protected_net_volume_count = tx.query_row(
+                "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity != ?2 AND ABS(COALESCE(net_volume_btc, 0.0)) >= ?3",
+                params![
+                    signal_cutoff_ts,
+                    s_severity.clone(),
+                    CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                ],
+                |row| row.get::<_, i64>(0),
+            )? as usize;
             let flow_1s_deleted = tx
                 .execute(
                     "DELETE FROM contract_flow_1s WHERE ts_bucket < ?1",
@@ -813,6 +844,10 @@ impl ContractWhaleRepo for SqliteStore {
             Ok(ContractWhaleRetentionPruneResult {
                 flow_1s_deleted,
                 signal_deleted,
+                flow_cutoff_ts,
+                signal_cutoff_ts,
+                protected_s_count,
+                protected_net_volume_count,
             })
         })
     }

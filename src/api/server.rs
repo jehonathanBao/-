@@ -6,7 +6,7 @@ use axum::{middleware, routing::get, Router};
 use crate::{
     api::{
         active_trade_toxicity_routes, altcoin_routes, binance_alt_contract_routes,
-        btc_structure_routes, calibration_routes, contract_whale_routes, dev_alert_routes,
+        btc_structure_routes, calibration_routes, contract_event_routes, contract_whale_routes, dev_alert_routes,
         discord_notification_routes, durable_archive_dryrun_routes,
         durable_archive_write_audit_routes, durable_archive_write_routes, final_event_routes,
         fusion_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
@@ -85,6 +85,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/final-events/:id",
             get(final_event_routes::final_event_by_id_route),
+        )
+        .route(
+            "/api/contract-events",
+            get(contract_event_routes::contract_events_route),
+        )
+        .route(
+            "/api/final-events-v2",
+            get(contract_event_routes::final_events_v2_route),
+        )
+        .route(
+            "/api/contract-retention-status",
+            get(contract_event_routes::contract_retention_status_route),
         )
         .route(
             "/api/scores/toxic-short/summary",

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use sha2::{Digest, Sha256};
+
 use super::types::{
     ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal,
     ExchangeFlowContribution,
@@ -108,12 +110,18 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 }
 
 fn lifecycle_event_id(signal: &ContractWhaleSignal) -> String {
-    format!(
-        "cwm-event:{}:{:?}:{}",
+    let price = signal.order_price_usd.unwrap_or_default();
+    let payload = format!(
+        "{}|{}|{:?}|{}|{:?}|{price:.8}|{net_volume:.8}",
         signal.symbol.to_ascii_uppercase(),
+        signal.ts,
         signal.signal_type,
-        signal.ts
-    )
+        signal.window_sec,
+        signal.direction,
+        net_volume = signal.net_volume_btc,
+    );
+    let digest = Sha256::digest(payload.as_bytes());
+    format!("cwm-event-{:x}", digest)
 }
 
 fn oi_delta_abs(signal: &ContractWhaleSignal) -> f64 {

@@ -240,6 +240,7 @@ pub async fn prune_contract_whale_retention_nonblocking(
 ) -> Option<ContractWhaleRetentionPruneResult> {
     let flow_cutoff = retention_cutoff_ms(now_ms, flow_1s_days);
     let signal_cutoff = retention_cutoff_ms(now_ms, signals_days);
+    let started_at = std::time::Instant::now();
     match tokio::task::spawn_blocking(move || {
         store.prune_contract_whale_retention(flow_cutoff, signal_cutoff)
     })
@@ -249,8 +250,13 @@ pub async fn prune_contract_whale_retention_nonblocking(
             tracing::info!(
                 target: LOG_TARGET,
                 event = log_events::RETENTION_PRUNED,
+                flow_cutoff_ts = result.flow_cutoff_ts,
+                signal_cutoff_ts = result.signal_cutoff_ts,
                 flow_1s_deleted = result.flow_1s_deleted,
                 signal_deleted = result.signal_deleted,
+                protected_s_count = result.protected_s_count,
+                protected_net_volume_count = result.protected_net_volume_count,
+                duration_ms = started_at.elapsed().as_millis() as u64,
                 "{} retention pruned",
                 LOG_PREFIX
             );

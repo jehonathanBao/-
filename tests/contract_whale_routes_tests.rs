@@ -7,7 +7,8 @@ use btc_toxic_flow_monitor_rs::{
     api::contract_whale_routes::{
         build_contract_whale_history_response, build_contract_whale_items_response,
         build_contract_whale_metrics_text, build_contract_whale_response,
-        build_contract_whale_response_with_runtime_and_baselines, parse_history_query,
+        build_contract_whale_response_with_runtime_and_baselines,
+        encode_contract_history_cursor, parse_history_query,
         ContractWhaleQualityBaseline, ContractWhaleQuery, ContractWhaleResponseRuntime,
     },
     contract_whale_monitor::{
@@ -1086,6 +1087,9 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
         to: Some("1700086400000".to_string()),
         limit: Some("999".to_string()),
         offset: Some("25".to_string()),
+        status: None,
+        range: None,
+        cursor: None,
     };
 
     let parsed = parse_history_query(&query).expect("valid query");
@@ -1096,8 +1100,28 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
     assert_eq!(parsed.window_sec, Some(15));
     assert_eq!(parsed.exchange.as_deref(), Some("binance"));
     assert_eq!(parsed.min_abs_net_volume_btc, Some(500.0));
-    assert_eq!(parsed.limit, 200);
+    assert_eq!(parsed.limit, 500);
     assert_eq!(parsed.offset, 25);
+    assert_eq!(parsed.cursor_ts, None);
+    assert_eq!(parsed.cursor_signal_id, None);
+}
+
+#[test]
+fn contract_whale_history_query_accepts_stable_cursor() {
+    let _guard = contract_whale_test_guard();
+    let cursor = encode_contract_history_cursor(1_700_000_000_123, "sig_abc");
+    let query = ContractWhaleQuery {
+        cursor: Some(cursor),
+        limit: Some("100".to_string()),
+        ..empty_query()
+    };
+
+    let parsed = parse_history_query(&query).expect("valid cursor query");
+
+    assert_eq!(parsed.limit, 100);
+    assert_eq!(parsed.offset, 0);
+    assert_eq!(parsed.cursor_ts, Some(1_700_000_000_123));
+    assert_eq!(parsed.cursor_signal_id.as_deref(), Some("sig_abc"));
 }
 
 #[test]
@@ -1315,6 +1339,9 @@ fn empty_query() -> ContractWhaleQuery {
         from: None,
         to: None,
         offset: None,
+        status: None,
+        range: None,
+        cursor: None,
     }
 }
 
