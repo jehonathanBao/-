@@ -1,6 +1,7 @@
 import axios from "axios";
 
 export const CWM_MAX_PRICE_DEVIATION_PCT = 5;
+const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 const VOLUME_DISPLAY_CONTEXT = {
   SINGLE_WINDOW: "single_window",
   CONTRACT_EVENT_STREAM: "contract_event_stream",
@@ -87,6 +88,60 @@ const calmSummary = {
     okx: { platformEnabled: false, status: "disabled", markets: {} },
   },
 };
+
+export async function fetchJsonWithTimeout(
+  url,
+  {
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    axiosConfig = {},
+    retryCount = 0,
+    retryDelayMs = 0,
+  } = {},
+) {
+  const attempts = Math.max(0, Number(retryCount) || 0) + 1;
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    let timeoutId = null;
+    const timeoutError = new Error(`Request timed out after ${timeoutMs}ms`);
+    timeoutError.code = "ERR_CWM_TIMEOUT";
+    const requestPromise = axios.get(url, {
+      ...axiosConfig,
+      signal: controller.signal,
+    });
+    const guardedRequestPromise = requestPromise.catch((error) => {
+      if (controller.signal.aborted) {
+        throw timeoutError;
+      }
+      throw error;
+    });
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        controller.abort();
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([guardedRequestPromise, timeoutPromise]);
+    } catch (error) {
+      lastError = error;
+      if (error?.code === "ERR_CWM_TIMEOUT" && attempt < attempts - 1) {
+        if (retryDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
+        continue;
+      }
+      throw error;
+    } finally {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      controller.abort();
+    }
+  }
+  throw lastError;
+}
 
 export function normalizePlatformStatus(platform) {
   const item = platform && typeof platform === "object" ? platform : {};
@@ -201,7 +256,9 @@ export async function fetchContractWhaleSummary(symbol = "BTC") {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ symbol });
-    const response = await axios.get(`${baseURL}/api/contract-whale/summary?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/summary?${query}`, {
+      timeoutMs: 5_000,
+    });
     return {
       summary: normalizeSummary(response.data, symbol),
       meta: normalizeResponseMeta(response.data?.meta),
@@ -216,7 +273,9 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC") {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ limit, symbol });
-    const response = await axios.get(`${baseURL}/api/contract-whale/latest?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/latest?${query}`, {
+      timeoutMs: 5_000,
+    });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     return {
       summary: normalizeSummary(response.data?.summary, symbol),
@@ -236,7 +295,9 @@ export async function fetchContractWhaleHistory(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 50 });
-    const response = await axios.get(`${baseURL}/api/contract-whale/history?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/history?${query}`, {
+      timeoutMs: 6_000,
+    });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
     return {
@@ -257,7 +318,9 @@ export async function fetchContractWhaleEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 20 });
-    const response = await axios.get(`${baseURL}/api/contract-whale/events?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/events?${query}`, {
+      timeoutMs: 6_000,
+    });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
     return {
@@ -275,7 +338,9 @@ export async function fetchContractEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
-    const response = await axios.get(`${baseURL}/api/contract-events?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events?${query}`, {
+      timeoutMs: 6_000,
+    });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
     return {
@@ -309,7 +374,9 @@ export async function fetchFinalEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ ...filters, limit: filters.limit ?? 20 });
-    const response = await axios.get(`${baseURL}/api/final-events?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/final-events?${query}`, {
+      timeoutMs: 6_000,
+    });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
     const normalizedItems = items
@@ -330,7 +397,9 @@ export async function fetchFinalEventsV2(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
-    const response = await axios.get(`${baseURL}/api/final-events-v2?${query}`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/final-events-v2?${query}`, {
+      timeoutMs: 6_000,
+    });
     const requestedSymbol = filters.symbol || "BTC";
     const normalizeArray = (items) =>
       (Array.isArray(items) ? items : [])
@@ -367,7 +436,9 @@ export async function fetchFinalEventsV2(filters = {}) {
 export async function fetchContractRetentionStatus() {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
-    const response = await axios.get(`${baseURL}/api/contract-retention-status`);
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-retention-status`, {
+      timeoutMs: 4_000,
+    });
     return response.data || null;
   } catch {
     return {

@@ -9,6 +9,7 @@ import {
   fetchContractWhaleSummary,
   fetchFinalEvents,
   fetchFinalEventsV2,
+  fetchJsonWithTimeout,
   normalizeContractWhaleSignal,
   normalizeMarketStatus,
   normalizePlatformStatus,
@@ -105,7 +106,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleLatest(20);
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=20&symbol=BTC");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/latest?limit=20&symbol=BTC",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.summary).toMatchObject({
       status: "strong",
       healthStatus: "healthy",
@@ -351,7 +355,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleSummary();
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=BTC");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/summary?symbol=BTC",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.summary.exchanges.binance).toMatchObject({
       connected: true,
       status: "connected",
@@ -385,7 +392,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleSummary("ETH");
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=ETH");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/summary?symbol=ETH",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.summary.trend60s).toMatchObject({
       symbol: "ETH",
       baseAsset: "ETH",
@@ -450,7 +460,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleLatest(20, "ETH");
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=20&symbol=ETH");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/latest?limit=20&symbol=ETH",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.items[0]).toMatchObject({
       symbol: "ETH",
       baseAsset: "ETH",
@@ -507,6 +520,7 @@ describe("contract whale api", () => {
 
     expect(axios.get).toHaveBeenCalledWith(
       "/api/contract-whale/history?symbol=BTC&severity=critical&signal_type=aggressive_buy&direction=buy&net_direction=abs1000&discord_sent=true&window_sec=15&exchange=binance&limit=50",
+      expect.objectContaining({ signal: expect.any(Object) }),
     );
     expect(payload.items).toHaveLength(1);
     expect(payload.meta).toMatchObject({
@@ -540,7 +554,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleHistory({ symbol: "ETH", limit: 20 });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/history?symbol=ETH&limit=20");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/history?symbol=ETH&limit=20",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.summary.trend60s.symbol).toBe("ETH");
     expect(payload.items).toHaveLength(1);
     expect(payload.items[0]).toMatchObject({
@@ -552,6 +569,27 @@ describe("contract whale api", () => {
       netVolumeBtc: 610,
     });
     expect(payload.items[0].triggerPriceUsd).toBeCloseTo(28_000_000 / 16_869, 6);
+  });
+
+  it("rejects hanging requests after the configured timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      axios.get.mockImplementationOnce((_url, config = {}) => {
+        expect(config.signal).toBeDefined();
+        return new Promise(() => {});
+      });
+
+      const request = fetchJsonWithTimeout("/api/contract-whale/summary?symbol=BTC", {
+        timeoutMs: 10,
+      });
+      const rejection = expect(request).rejects.toMatchObject({ code: "ERR_CWM_TIMEOUT" });
+
+      await vi.advanceTimersByTimeAsync(11);
+
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fetches main-force event history for timeline markers", async () => {
@@ -590,7 +628,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleEvents({ symbol: "BTC", limit: 12 });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/events?symbol=BTC&limit=12");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/events?symbol=BTC&limit=12",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.items[0]).toMatchObject({
       id: 7,
       symbol: "BTC",
@@ -616,7 +657,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractWhaleEvents({ symbol: "ETH", limit: 12 });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/events?symbol=ETH&limit=12");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/events?symbol=ETH&limit=12",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.items).toHaveLength(1);
     expect(payload.items[0]).toMatchObject({
       id: 8,
@@ -702,7 +746,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchFinalEvents({ symbol: "BTC", limit: 12 });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/final-events?symbol=BTC&limit=12");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/final-events?symbol=BTC&limit=12",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload.count).toBe(1);
     expect(payload.items[0]).toMatchObject({
       id: "cwm-event:BTC:downside_absorption:1700000000000",
@@ -781,7 +828,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractEvents({ symbol: "BTC", range: "24h", limit: 100 });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-events?symbol=BTC&range=24h&limit=100");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-events?symbol=BTC&range=24h&limit=100",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload).toMatchObject({
       items: [
         expect.objectContaining({
@@ -821,7 +871,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchFinalEventsV2({ symbol: "BTC", limit: 100, range: "24h" });
 
-    expect(axios.get).toHaveBeenCalledWith("/api/final-events-v2?symbol=BTC&limit=100&range=24h");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/final-events-v2?symbol=BTC&limit=100&range=24h",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload).toMatchObject({
       active: [expect.objectContaining({ eventId: "active-1", symbol: "BTC" })],
       closed: [expect.objectContaining({ eventId: "closed-1", symbol: "BTC" })],
@@ -854,7 +907,10 @@ describe("contract whale api", () => {
 
     const payload = await fetchContractRetentionStatus();
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-retention-status");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-retention-status",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(payload).toMatchObject({
       flowRetentionDays: 14,
       signalRetentionDays: 365,
@@ -876,7 +932,10 @@ describe("contract whale api", () => {
 
     await fetchContractWhaleLatest();
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/latest?limit=50&symbol=BTC");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/latest?limit=50&symbol=BTC",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
   });
 
   it("fetches ETH summary with symbol query", async () => {
@@ -884,7 +943,10 @@ describe("contract whale api", () => {
 
     await fetchContractWhaleSummary("ETH");
 
-    expect(axios.get).toHaveBeenCalledWith("/api/contract-whale/summary?symbol=ETH");
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/summary?symbol=ETH",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
   });
 
   it("falls back to calm state on network failure", async () => {

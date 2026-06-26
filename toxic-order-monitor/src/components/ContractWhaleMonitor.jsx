@@ -51,65 +51,79 @@ export default function ContractWhaleMonitor() {
     let cancelled = false;
     let summaryTimer = null;
     let latestTimer = null;
+    let retentionTimer = null;
 
-    const refreshLatest = () => {
-      Promise.all([
-        fetchContractWhaleLatest(50, filters.symbol),
-        fetchContractEvents({ ...filters, range: "24h", limit: 100 }),
-        fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit: 100 }),
-        fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 }),
-        fetchContractRetentionStatus(),
-      ]).then(([payload, contractEventsPayload, finalEventsPayload, eventsPayload, retentionStatus]) => {
-        if (cancelled) return;
-        setState((previous) => ({
-          loading: false,
-          summary: payload.error ? previous.summary : payload.summary,
-          items: payload.error ? previous.items : payload.items,
-          contractEvents: contractEventsPayload.error ? previous.contractEvents : contractEventsPayload.items,
-          contractEventsCursor: contractEventsPayload.error ? previous.contractEventsCursor : contractEventsPayload.nextCursor,
-          contractEventsHasMore: contractEventsPayload.error ? previous.contractEventsHasMore : contractEventsPayload.hasMore,
-          contractEventsServerTime: contractEventsPayload.error
-            ? previous.contractEventsServerTime
-            : contractEventsPayload.serverTime,
-          contractEventsLastEventTs: contractEventsPayload.error
-            ? previous.contractEventsLastEventTs
-            : contractEventsPayload.lastEventTs,
-          finalEvents: finalEventsPayload.error
-            ? previous.finalEvents
-            : { active: finalEventsPayload.active, closed: finalEventsPayload.closed },
-          finalEventsCursor: finalEventsPayload.error ? previous.finalEventsCursor : finalEventsPayload.nextCursor,
-          finalEventsHasMore: finalEventsPayload.error ? previous.finalEventsHasMore : finalEventsPayload.hasMore,
-          finalEventsServerTime: finalEventsPayload.error
-            ? previous.finalEventsServerTime
-            : finalEventsPayload.serverTime,
-          finalEventsLastEventTs: finalEventsPayload.error
-            ? previous.finalEventsLastEventTs
-            : finalEventsPayload.lastEventTs,
-          events: eventsPayload.error ? previous.events : eventsPayload.items,
-          retentionStatus: retentionStatus?.error ? previous.retentionStatus : retentionStatus,
-          meta: payload.error ? previous.meta : (payload.meta || null),
-          error:
-            payload.error ||
-            contractEventsPayload.error ||
-            finalEventsPayload.error ||
-            eventsPayload.error ||
-            retentionStatus?.error ||
-            null,
-        }));
-      });
+    const updateState = (updater) => {
+      if (cancelled) return;
+      setState((previous) => updater(previous));
     };
 
-    const refreshSummary = () => {
-      fetchContractWhaleSummary(filters.symbol).then((payload) => {
-        if (cancelled) return;
-        setState((previous) => ({
-          ...previous,
-          loading: false,
-          summary: payload.error ? previous.summary : payload.summary,
-          meta: payload.error ? previous.meta : (payload.meta || previous.meta),
-          error: payload.error || null,
-        }));
-      });
+    const refreshSummary = async () => {
+      const payload = await fetchContractWhaleSummary(filters.symbol);
+      updateState((previous) => ({
+        ...previous,
+        loading: false,
+        summary: payload.error ? previous.summary : payload.summary,
+        meta: payload.error ? previous.meta : (payload.meta || previous.meta),
+        error: payload.error || null,
+      }));
+    };
+
+    const refreshLatest = async () => {
+      const payload = await fetchContractWhaleLatest(50, filters.symbol);
+      updateState((previous) => ({
+        ...previous,
+        loading: false,
+        summary: payload.error ? previous.summary : payload.summary,
+        items: payload.error ? previous.items : payload.items,
+        meta: payload.error ? previous.meta : (payload.meta || previous.meta),
+        error: payload.error || null,
+      }));
+    };
+
+    const refreshContractEvents = async (limit = 50) => {
+      const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
+      updateState((previous) => ({
+        ...previous,
+        loading: false,
+        contractEvents: payload.error ? previous.contractEvents : payload.items,
+        contractEventsCursor: payload.error ? previous.contractEventsCursor : payload.nextCursor,
+        contractEventsHasMore: payload.error ? previous.contractEventsHasMore : payload.hasMore,
+        contractEventsServerTime: payload.error ? previous.contractEventsServerTime : payload.serverTime,
+        contractEventsLastEventTs: payload.error ? previous.contractEventsLastEventTs : payload.lastEventTs,
+      }));
+    };
+
+    const refreshFinalEvents = async (limit = 30) => {
+      const payload = await fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit });
+      updateState((previous) => ({
+        ...previous,
+        loading: false,
+        finalEvents: payload.error
+          ? previous.finalEvents
+          : { active: payload.active, closed: payload.closed },
+        finalEventsCursor: payload.error ? previous.finalEventsCursor : payload.nextCursor,
+        finalEventsHasMore: payload.error ? previous.finalEventsHasMore : payload.hasMore,
+        finalEventsServerTime: payload.error ? previous.finalEventsServerTime : payload.serverTime,
+        finalEventsLastEventTs: payload.error ? previous.finalEventsLastEventTs : payload.lastEventTs,
+      }));
+    };
+
+    const refreshWhaleEvents = async () => {
+      const payload = await fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 });
+      updateState((previous) => ({
+        ...previous,
+        loading: false,
+        events: payload.error ? previous.events : payload.items,
+      }));
+    };
+
+    const refreshRetention = async () => {
+      const payload = await fetchContractRetentionStatus();
+      updateState((previous) => ({
+        ...previous,
+        retentionStatus: payload?.error ? previous.retentionStatus : payload,
+      }));
     };
 
     const clearTimers = () => {
@@ -134,14 +148,21 @@ export default function ContractWhaleMonitor() {
       }
     };
 
-    refreshSummary();
-    refreshLatest();
+    void refreshSummary();
+    void refreshLatest();
+    void refreshContractEvents(50);
+    void refreshFinalEvents(30);
+    void refreshWhaleEvents();
+    retentionTimer = window.setTimeout(() => {
+      void refreshRetention();
+    }, 3000);
     configurePolling();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       cancelled = true;
       clearTimers();
+      if (retentionTimer) window.clearTimeout(retentionTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [filters]);
@@ -688,7 +709,9 @@ function RawSignalDebugSection({
             <p className="mt-2 text-cyan-100">
               retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
             </p>
-          ) : null}
+          ) : (
+            <p className="mt-2 text-slate-500">retention: 延迟加载中，先展示实时事件与最新快照。</p>
+          )}
         </div>
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>

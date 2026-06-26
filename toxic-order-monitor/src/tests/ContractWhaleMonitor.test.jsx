@@ -868,6 +868,24 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the core contract-whale content visible while retention stays deferred", async () => {
+    fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<ContractWhaleMonitor />);
+
+    expect(screen.getByText("主力合约监控")).toBeInTheDocument();
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
+    expect(fetchContractEvents).toHaveBeenCalledTimes(1);
+    expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1);
+    expect(fetchContractWhaleEvents).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.getByText("强异动")).toBeInTheDocument());
+    expect(fetchContractRetentionStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Buy 62.0% / Sell 38.0%")).toBeInTheDocument();
+    expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
+    expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
+  });
+
   it("renders summary cards and latest contract whale signals", async () => {
     render(<ContractWhaleMonitor />);
 
@@ -952,17 +970,16 @@ describe("ContractWhaleMonitor", () => {
       expect.objectContaining({
         symbol: "BTC",
         range: "24h",
-        limit: 100,
+        limit: 50,
       }),
     );
     expect(fetchFinalEventsV2).toHaveBeenCalledWith(
       expect.objectContaining({
         symbol: "BTC",
         range: "24h",
-        limit: 100,
+        limit: 30,
       }),
     );
-    expect(fetchContractRetentionStatus).toHaveBeenCalledTimes(1);
   });
 
   it("uses the signal symbol as the base unit for ETH contract flow values", async () => {
@@ -1316,7 +1333,7 @@ describe("ContractWhaleMonitor", () => {
           severity: "critical",
           net_direction: "abs500",
           range: "24h",
-          limit: 100,
+          limit: 50,
         }),
       ),
     );
@@ -1429,7 +1446,7 @@ describe("ContractWhaleMonitor", () => {
         expect.objectContaining({
           symbol: "BTC",
           range: "24h",
-          limit: 100,
+          limit: 30,
         }),
       ),
     );
@@ -1493,7 +1510,7 @@ describe("ContractWhaleMonitor", () => {
           symbol: "BTC",
           exchange: "coinbase",
           range: "24h",
-          limit: 100,
+          limit: 50,
         }),
       ),
     );
