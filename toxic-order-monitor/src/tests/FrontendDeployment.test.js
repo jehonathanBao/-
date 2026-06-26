@@ -24,6 +24,12 @@ describe("frontend production deployment", () => {
     expect(compose).not.toContain("./toxic-order-monitor/vite.config.js:/app/vite.config.js");
   });
 
+  it("declares a frontend healthcheck so nginx availability can be supervised", () => {
+    const dockerfile = readFile("toxic-order-monitor/Dockerfile.frontend");
+    expect(dockerfile).toContain("HEALTHCHECK");
+    expect(dockerfile).toContain("http://127.0.0.1:5173/");
+  });
+
   it("ships an explicit production web server config for SPA assets and backend proxying", () => {
     const nginxConfigPath = path.join(repoRoot, "toxic-order-monitor", "nginx.conf.template");
     expect(fs.existsSync(nginxConfigPath)).toBe(true);
@@ -35,21 +41,37 @@ describe("frontend production deployment", () => {
     expect(nginxConfig).toContain("Origin ${INTERNAL_API_ORIGIN}");
   });
 
-  it("keeps the frontend container on loopback-only upstream ports for host nginx to publish", () => {
+  it("keeps the frontend container on loopback-only upstream ports with health supervision", () => {
     const compose = readFile("docker-compose.yml");
     expect(compose).toContain('- "${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"');
     expect(compose).not.toContain(':5173:5173"');
+    expect(compose).toContain("restart: unless-stopped");
+    expect(compose).toContain("healthcheck:");
+    expect(compose).toContain("http://127.0.0.1:5173/");
   });
 
-  it("ships a host nginx site template for stable public dashboard ingress", () => {
+  it("ships a host nginx site template that serves SPA assets directly and only proxies API/ws", () => {
     const ingressTemplatePath = path.join(repoRoot, "deploy", "nginx-site.toxic-order-monitor.conf");
     expect(fs.existsSync(ingressTemplatePath)).toBe(true);
     const ingressTemplate = fs.readFileSync(ingressTemplatePath, "utf8");
+    expect(ingressTemplate).toContain("root /opt/toxic-order-monitor-rs/toxic-order-monitor/dist;");
+    expect(ingressTemplate).toContain("location /assets/");
+    expect(ingressTemplate).toContain("try_files $uri $uri/ /index.html;");
     expect(ingressTemplate).toContain("listen 80;");
     expect(ingressTemplate).toContain("listen 5173;");
-    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:8000");
     expect(ingressTemplate).toContain("location /api/");
+    expect(ingressTemplate).toContain("location /ws/");
+    expect(ingressTemplate).not.toContain("proxy_pass http://127.0.0.1:5174");
     expect(ingressTemplate).not.toContain("location = /dashboard");
+  });
+
+  it("ships a production front-end verification script for /contract-whale stability", () => {
+    const scriptPath = path.join(repoRoot, "scripts", "check_frontend_prod.sh");
+    expect(fs.existsSync(scriptPath)).toBe(true);
+    const script = fs.readFileSync(scriptPath, "utf8");
+    expect(script).toContain("/contract-whale");
+    expect(script).toContain("/dashboard");
+    expect(script).toContain("/api/contract-events?symbol=BTC");
   });
 });

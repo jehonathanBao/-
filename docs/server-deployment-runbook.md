@@ -29,12 +29,12 @@ This deployment keeps the Rust monitor process independent from the React/Vite f
 
 The backend listens on `0.0.0.0:3000` inside Compose and is exposed only on host loopback port `127.0.0.1:8000`.
 
-The frontend listens on `5173` inside the container but is exposed only on host loopback as `127.0.0.1:5174`. Host nginx owns the public `:80` and `:5173` entrypoints and proxies browser page and asset requests to `127.0.0.1:5174`, while proxying `/api` and `/ws` to the backend.
+The frontend listens on `5173` inside the container and is still published on host loopback as `127.0.0.1:5174` for local container inspection, but the public `:80` and `:5173` entrypoints are served by host nginx directly from the checked-out `toxic-order-monitor/dist` build output. Host nginx only proxies `/api` and `/ws` to the backend.
 
 Open:
 
 ```text
-http://<server-ip>:5173/dashboard
+http://<server-ip>:5173/contract-whale
 ```
 
 The frontend calls `/api/...` with relative URLs. Host nginx proxies those requests to `http://127.0.0.1:8000` and injects the operator token server-side. Browsers should not call `http://<server-ip>:8000` directly.
@@ -104,11 +104,11 @@ Real production replay files are ignored by git.
 
 ## Frontend Runtime
 
-The frontend container serves the built SPA through nginx. Refreshing the browser does not restart the Rust backend container. The deployment boundary is that browser refreshes never interrupt the backend bot runtime.
+The frontend container still serves the built SPA through nginx for internal health supervision and local loopback testing, but the public ingress does not depend on it. Host nginx serves the SPA shell and assets directly from `toxic-order-monitor/dist`, so browser refreshes never depend on the frontend container being up at that exact millisecond.
 
 ## WebSocket Boundary
 
-`/ws/signals` streams redacted toxic signal snapshots to the Dashboard. `/ws/scan-logs` streams sanitized runtime scan logs. Both use the same non-loopback token boundary as `/api` and should normally be reached through the Vite `/ws` proxy.
+`/ws/signals` streams redacted toxic signal snapshots to the Dashboard. `/ws/scan-logs` streams sanitized runtime scan logs. Both use the same non-loopback token boundary as `/api` and should normally be reached through the host nginx `/ws` proxy.
 
 `toxic-order-monitor/src/hooks/useReconnectingWebSocket.js` reconnects automatically with exponential backoff. The Dashboard merges incoming snapshots into the same persistent inbox used by HTTP polling.
 

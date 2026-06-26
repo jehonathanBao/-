@@ -2,7 +2,7 @@
 
 ## 问题概述
 
-如果服务器上访问 `http://服务器IP:5173/dashboard` 打不开前端页面，请按照本指南进行排查和修复。
+如果服务器上访问 `http://服务器IP:5173/contract-whale` 或 `http://服务器IP:5173/dashboard` 打不开前端页面，请按照本指南进行排查和修复。
 
 ## 快速开始
 
@@ -85,6 +85,9 @@ docker exec toxic-frontend nginx -t
 # 查看实际的Nginx配置文件
 docker exec toxic-frontend cat /etc/nginx/conf.d/default.conf
 
+# 检查宿主机 nginx 的站点配置
+sudo cat /etc/nginx/sites-enabled/toxic-order-monitor
+
 # 检查环境变量是否正确传递
 docker exec toxic-frontend env | grep -E "(OPERATOR_TOKEN|INTERNAL_API_ORIGIN)"
 ```
@@ -162,6 +165,9 @@ docker exec toxic-frontend ls -la /usr/share/nginx/html/
 # 检查是否有 index.html
 docker exec toxic-frontend cat /usr/share/nginx/html/index.html
 
+# 检查宿主机 dist 是否存在
+ls -la toxic-order-monitor/dist/index.html
+
 # 如果文件不存在，重新构建
 docker-compose build --no-cache frontend
 docker-compose up -d frontend
@@ -180,8 +186,8 @@ netstat -tlnp | grep 5173
 ss -tlnp | grep 5173
 
 # 检查 docker-compose.yml 中的端口映射
-# 容器应只绑定宿主机本地: "127.0.0.1:5174:5173"
-# 公网5173由宿主机nginx接管，不再由docker直接暴露
+# 容器仍只绑定宿主机本地: "127.0.0.1:5174:5173"
+# 公网5173由宿主机 nginx 直接提供 SPA shell，不再依赖 5174 上游
 
 # 重新启动
 docker-compose down

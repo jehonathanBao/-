@@ -92,6 +92,7 @@ cd C:\path\to\有毒订单监控-rs
 
 3. **本地访问测试**
    ```bash
+   curl http://localhost:5173/contract-whale
    curl http://localhost:5173/dashboard
    ```
 
@@ -101,10 +102,10 @@ cd C:\path\to\有毒订单监控-rs
 ## 常见问题快速解答
 
 ### Q: 前端页面显示 404 或 502？
-A: 运行 `quick-fix.sh` 重新构建和部署。
+A: 先运行 `quick-fix.sh` 重新构建和部署，再执行 `scripts/check_frontend_prod.sh` 检查 `/contract-whale`、`/dashboard` 和 `/api/*`。
 
 ### Q: 容器启动了但无法访问？
-A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。
+A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。现在公网入口由宿主 nginx 直接提供 SPA shell，因此即使前端容器短暂重启，`/contract-whale` 也不应再返回 502。
 
 ### Q: 提示 OPERATOR_TOKEN 未设置？
 A: 编辑 `.env` 文件，设置一个安全的令牌值。

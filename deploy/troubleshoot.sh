@@ -173,7 +173,7 @@ else
 fi
 
 echo "检查前端页面是否可访问..."
-if curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/dashboard 2>/dev/null | grep -q "200\|301\|302"; then
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/contract-whale 2>/dev/null | grep -q "200\|301\|302"; then
     echo "宿主机 nginx 公网入口可以访问"
 else
     echo "宿主机 nginx 公网入口无法访问，请进一步检查"

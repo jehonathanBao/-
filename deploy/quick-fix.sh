@@ -77,9 +77,9 @@ echo ""
 
 # 8. 测试本地访问
 echo "8. 测试本地访问..."
-if curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/dashboard 2>/dev/null | grep -q "200\|301\|302"; then
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:5173/contract-whale 2>/dev/null | grep -q "200\|301\|302"; then
     echo "宿主机 nginx 公网入口可以在本地访问"
-    echo "现在可以在浏览器中访问: http://$(hostname -I | awk '{print $1}'):5173/dashboard"
+    echo "现在可以在浏览器中访问: http://$(hostname -I | awk '{print $1}'):5173/contract-whale"
 else
     echo "宿主机 nginx 入口无法在本地访问，请查看日志"
     echo ""
