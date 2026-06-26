@@ -95,4 +95,19 @@ describe("spotWhale API", () => {
     expect(url).toContain("net_direction=abs500");
     expect(url).toContain("limit=50");
   });
+
+  it("passes abs50 and abs100 net direction filters to history endpoint", async () => {
+    axios.get.mockResolvedValue({
+      data: {
+        summary: { enabled: true, symbol: "BTC" },
+        items: [],
+      },
+    });
+
+    await fetchSpotWhaleHistory({ symbol: "BTC", net_direction: "abs50", limit: 50 });
+    await fetchSpotWhaleHistory({ symbol: "BTC", net_direction: "abs100", limit: 50 });
+
+    expect(axios.get.mock.calls[0][0]).toContain("net_direction=abs50");
+    expect(axios.get.mock.calls[1][0]).toContain("net_direction=abs100");
+  });
 });

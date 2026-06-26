@@ -148,6 +148,50 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getByText("-520 BTC")).toBeInTheDocument();
   });
 
+  it("supports abs50 and abs100 net-direction options in the spot filter", async () => {
+    const user = userEvent.setup();
+    render(<SpotWhaleMonitor />);
+
+    await screen.findByLabelText("净方向");
+
+    fetchSpotWhaleHistory.mockResolvedValueOnce({
+      summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+      items: [
+        {
+          id: "spot-whale-negative-100-BTC",
+          ts: 1_700_000_000_002,
+          symbol: "BTC",
+          windowSec: 15,
+          signalType: "spot_aggressive_sell",
+          direction: "sell",
+          severity: "medium",
+          score: 80,
+          totalVolumeBase: 150,
+          netVolumeBase: -100,
+          totalNotionalUsd: 6_000_000,
+          dominance: 0.67,
+          priceMovePct: -0.05,
+          coinbasePremiumPct: 0,
+          mainExchange: "binance",
+          dataQuality: 88,
+          discordEligible: false,
+          discordSent: false,
+          exchanges: [],
+          finalResult: "spot sell pressure",
+        },
+      ],
+      error: null,
+    });
+
+    await user.selectOptions(screen.getByLabelText("净方向"), "abs100");
+
+    expect(fetchSpotWhaleHistory).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 50, net_direction: "abs100", symbol: "BTC" }),
+    );
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-negative-100-BTC")).toBeInTheDocument();
+    expect(screen.getByText("-100 BTC")).toBeInTheDocument();
+  });
+
   it("refreshes summary and latest when switching to ETH", async () => {
     const user = userEvent.setup();
     render(<SpotWhaleMonitor />);

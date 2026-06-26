@@ -292,6 +292,8 @@ function SpotWhaleFilters({ filters, onChange }) {
           value={filters.net_direction}
         >
           <option value="all">全部</option>
+          <option value="abs50">大于 50（正负）</option>
+          <option value="abs100">大于 100（正负）</option>
           <option value="abs200">大于 200（正负）</option>
           <option value="abs500">大于 500（正负）</option>
         </select>
@@ -441,7 +443,7 @@ function filterByNetDirection(items, filter) {
   if (!Array.isArray(items)) return [];
   const value = String(filter || "all").toLowerCase();
   if (value === "all") return items;
-  const absoluteMatch = value.match(/^abs(200|500)$/);
+  const absoluteMatch = value.match(/^abs(50|100|200|500)$/);
   if (absoluteMatch) {
     const threshold = Number(absoluteMatch[1]);
     return items.filter((item) => Math.abs(Number(item?.netVolumeBase || 0)) >= threshold);

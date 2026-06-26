@@ -110,11 +110,13 @@ fn parse_net_direction_filter(
         .flat_map(|ch| ch.to_lowercase())
         .collect::<String>();
     match compact.as_str() {
+        "abs50" | "gte50" | "min50" | "50" => Ok(Some(50.0)),
+        "abs100" | "gte100" | "min100" | "100" => Ok(Some(100.0)),
         "abs200" | "gte200" | "min200" | "200" => Ok(Some(200.0)),
         "abs500" | "gte500" | "min500" | "500" => Ok(Some(500.0)),
         _ => Err(bad_request(
             "invalid_net_direction",
-            "net_direction must be all, abs200, or abs500",
+            "net_direction must be all, abs50, abs100, abs200, or abs500",
         )),
     }
 }
