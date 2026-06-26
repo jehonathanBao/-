@@ -91,15 +91,7 @@ services:
     depends_on:
       - backend
     environment:
-      VITE_PROXY_API_TARGET: http://backend:3000
-      VITE_PROXY_WS_TARGET: ws://backend:3000
-      CHOKIDAR_USEPOLLING: "true"
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:?set OPERATOR_TOKEN in your shell or .env before starting compose}
+      INTERNAL_API_ORIGIN: ${INTERNAL_API_ORIGIN:-http://127.0.0.1:3000}
     ports:
-      - "${DASHBOARD_BIND_HOST:-0.0.0.0}:5173:5173"
-    volumes:
-      - ./toxic-order-monitor/src:/app/src
-      - ./toxic-order-monitor/index.html:/app/index.html
-      - ./toxic-order-monitor/vite.config.js:/app/vite.config.js
-      - ./toxic-order-monitor/tailwind.config.js:/app/tailwind.config.js
-      - ./toxic-order-monitor/postcss.config.js:/app/postcss.config.js
-      - /app/node_modules
+      - "${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"

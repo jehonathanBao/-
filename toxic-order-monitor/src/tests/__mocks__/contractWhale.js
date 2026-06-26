@@ -65,9 +65,49 @@ export const fetchContractWhaleEvents = vi.fn(() =>
   }),
 );
 
+export const fetchContractEvents = vi.fn(() =>
+  Promise.resolve({
+    items: [],
+    nextCursor: null,
+    hasMore: false,
+    limit: 100,
+    range: "24h",
+    serverTime: Date.now(),
+    lastEventTs: null,
+    error: null,
+  }),
+);
+
 export const fetchFinalEvents = vi.fn(() =>
   Promise.resolve({
     items: [],
+    error: null,
+  }),
+);
+
+export const fetchFinalEventsV2 = vi.fn(() =>
+  Promise.resolve({
+    active: [],
+    closed: [],
+    nextCursor: null,
+    hasMore: false,
+    limit: 100,
+    range: "24h",
+    serverTime: Date.now(),
+    lastEventTs: null,
+    error: null,
+  }),
+);
+
+export const fetchContractRetentionStatus = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      rows: 0,
+      protectedRows: 0,
+      oldestTs: null,
+      newestTs: null,
+      protectedRules: ["severity = 'S'", "ABS(net_volume_btc) >= 500"],
+    },
     error: null,
   }),
 );

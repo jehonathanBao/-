@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const frontendRoot = path.resolve(testDir, "..", "..");
+const repoRoot = path.resolve(frontendRoot, "..");
+
+function readFile(relativePath) {
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+}
+
+describe("frontend production deployment", () => {
+  it("does not expose the Vite dev server as the public container command", () => {
+    const dockerfile = readFile("toxic-order-monitor/Dockerfile.frontend");
+    expect(dockerfile).not.toContain('CMD ["npm", "run", "dev"');
+  });
+
+  it("does not mount frontend source files into the public compose service", () => {
+    const compose = readFile("docker-compose.yml");
+    expect(compose).not.toContain("./toxic-order-monitor/src:/app/src");
+    expect(compose).not.toContain("./toxic-order-monitor/index.html:/app/index.html");
+    expect(compose).not.toContain("./toxic-order-monitor/vite.config.js:/app/vite.config.js");
+  });
+
+  it("ships an explicit production web server config for SPA assets and backend proxying", () => {
+    const nginxConfigPath = path.join(repoRoot, "toxic-order-monitor", "nginx.conf.template");
+    expect(fs.existsSync(nginxConfigPath)).toBe(true);
+    const nginxConfig = fs.readFileSync(nginxConfigPath, "utf8");
+    expect(nginxConfig).toContain("location /api/");
+    expect(nginxConfig).toContain("location /ws/");
+    expect(nginxConfig).toContain("try_files $uri $uri/ /index.html");
+    expect(nginxConfig).toContain("X-Operator-Api-Token ${OPERATOR_TOKEN}");
+    expect(nginxConfig).toContain("Origin ${INTERNAL_API_ORIGIN}");
+  });
+
+  it("keeps the frontend container on loopback-only upstream ports for host nginx to publish", () => {
+    const compose = readFile("docker-compose.yml");
+    expect(compose).toContain('- "${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"');
+    expect(compose).not.toContain(':5173:5173"');
+  });
+
+  it("ships a host nginx site template for stable public dashboard ingress", () => {
+    const ingressTemplatePath = path.join(repoRoot, "deploy", "nginx-site.toxic-order-monitor.conf");
+    expect(fs.existsSync(ingressTemplatePath)).toBe(true);
+    const ingressTemplate = fs.readFileSync(ingressTemplatePath, "utf8");
+    expect(ingressTemplate).toContain("listen 80;");
+    expect(ingressTemplate).toContain("listen 5173;");
+    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
+    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:8000");
+    expect(ingressTemplate).toContain("location /api/");
+    expect(ingressTemplate).not.toContain("location = /dashboard");
+  });
+});

@@ -25,21 +25,19 @@ This deployment keeps the Rust monitor process independent from the React/Vite f
 ## Services
 
 - `backend`: Rust monitor and API server.
-- `frontend`: Vite dev server with HMR.
+- `frontend`: static SPA server behind host nginx.
 
 The backend listens on `0.0.0.0:3000` inside Compose and is exposed only on host loopback port `127.0.0.1:8000`.
 
-The frontend listens on `0.0.0.0:5173` inside Compose and is exposed on host port `0.0.0.0:5173` by default so other terminals on the network can open the dashboard. Set `DASHBOARD_BIND_HOST=127.0.0.1` before `docker compose up` if you need to restrict it back to local-only access.
+The frontend listens on `5173` inside the container but is exposed only on host loopback as `127.0.0.1:5174`. Host nginx owns the public `:80` and `:5173` entrypoints and proxies browser page and asset requests to `127.0.0.1:5174`, while proxying `/api` and `/ws` to the backend.
 
 Open:
 
 ```text
-http://<server-ip>:5173
+http://<server-ip>:5173/dashboard
 ```
 
-The frontend calls `/api/...` with relative URLs. Vite proxies API calls to `http://backend:3000`.
-It also proxies `/ws/signals` and `/ws/scan-logs` to the backend so browser refreshes reconnect without restarting `toxic-bot`.
-The backend and operator token are still kept server-side; browsers should not call `http://<server-ip>:8000` directly.
+The frontend calls `/api/...` with relative URLs. Host nginx proxies those requests to `http://127.0.0.1:8000` and injects the operator token server-side. Browsers should not call `http://<server-ip>:8000` directly.
 
 ## Required Token
 
@@ -65,20 +63,14 @@ Do not put this token in `VITE_*` env vars. The Vite proxy injects it server-sid
 
 The browser must not receive `OPERATOR_TOKEN`.
 
-Development / current Compose mode:
+Current deployment mode:
 
-- Browser connects to the frontend origin: `/ws/signals`.
-- Vite proxy forwards `/ws/signals` to `ws://backend:3000`.
-- Vite proxy injects `x-operator-api-token` server-side.
+- Browser connects to the public origin: `/ws/signals` or `/ws/scan-logs`.
+- Host nginx proxies `/ws` to `http://127.0.0.1:8000`.
+- Host nginx injects `x-operator-api-token` server-side through `/etc/nginx/snippets/toxic-order-monitor-token.conf`.
 - Backend validates the token for non-loopback WS requests.
 
-Production static frontend mode:
-
-- Do not connect the browser directly to backend `/ws/signals` with `OPERATOR_TOKEN`.
-- Use a reverse proxy such as Nginx, Caddy, or Traefik to inject `x-operator-api-token` server-side.
-- Or implement a cookie/session-based auth layer.
-
-See `docs/reverse-proxy-production-example.md` for a placeholder-only Nginx example.
+Use `deploy/nginx-site.toxic-order-monitor.conf` as the host nginx site template.
 
 ## Logs
 
@@ -110,16 +102,9 @@ Runtime state and reports should stay under `./data`, including:
 
 Real production replay files are ignored by git.
 
-## Frontend HMR
+## Frontend Runtime
 
-The frontend container runs:
-
-```text
-npm run dev -- --host 0.0.0.0
-```
-
-Refreshing the browser or triggering Vite HMR affects only the frontend session. It does not restart the Rust backend container.
-The expected deployment boundary is that browser refresh and HMR never interrupt the backend bot runtime.
+The frontend container serves the built SPA through nginx. Refreshing the browser does not restart the Rust backend container. The deployment boundary is that browser refreshes never interrupt the backend bot runtime.
 
 ## WebSocket Boundary
 
@@ -377,7 +362,7 @@ payloads, evidence, markout, tokens, and webhook values.
 
 ## Remote Access
 
-For remote browser access, prefer a reverse proxy with TLS in front of the frontend and backend.
+For remote browser access, prefer host nginx (or another reverse proxy with TLS) in front of the frontend and backend.
 
 Do not expose the backend API publicly without:
 
@@ -408,7 +393,7 @@ docker compose logs -f frontend
 Then verify:
 
 ```text
-http://localhost:5173
+http://localhost:5173/dashboard
 http://localhost:8000/api/status
 ws://localhost:5173/ws/signals
 ws://localhost:5173/ws/scan-logs
