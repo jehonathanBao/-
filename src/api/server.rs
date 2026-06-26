@@ -6,8 +6,8 @@ use axum::{middleware, routing::get, Router};
 use crate::{
     api::{
         active_trade_toxicity_routes, altcoin_routes, binance_alt_contract_routes,
-        btc_structure_routes, calibration_routes, contract_event_routes, contract_whale_routes, dev_alert_routes,
-        discord_notification_routes, durable_archive_dryrun_routes,
+        btc_structure_routes, calibration_routes, contract_event_routes, contract_whale_routes,
+        dev_alert_routes, discord_notification_routes, durable_archive_dryrun_routes,
         durable_archive_write_audit_routes, durable_archive_write_routes, final_event_routes,
         fusion_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
         main_force_event_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,

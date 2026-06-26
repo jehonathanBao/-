@@ -905,6 +905,9 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Hazard Curve (lambda proxy)")).toBeInTheDocument();
     expect(screen.getByText("合约市场事件")).toBeInTheDocument();
     expect(screen.getByText(/当前列表为历史事件流，不是 latest 快照/)).toBeInTheDocument();
+    expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("生命周期累计流量 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getAllByText(/已加载 \d+ 条/).length).toBeGreaterThan(0);
@@ -1513,6 +1516,15 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("现货确认").length).toBeGreaterThan(0);
     expect(screen.getByText("现货与合约同向")).toBeInTheDocument();
     expect(screen.getByText("现货主动买入跟随合约方向")).toBeInTheDocument();
+    expect(screen.getByText("流量口径")).toBeInTheDocument();
+    expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("主动买 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("主动卖 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("净方向 BTC").length).toBeGreaterThan(0);
+    expect(screen.getByText("来源交易所")).toBeInTheDocument();
+    expect(screen.getByText("合并窗口")).toBeInTheDocument();
+    expect(screen.getByText("跨交易所聚合")).toBeInTheDocument();
+    expect(screen.getByText("生命周期累计")).toBeInTheDocument();
     expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
     expect(screen.getByText("合约源")).toBeInTheDocument();
     expect(screen.getByText("现货源")).toBeInTheDocument();
@@ -1560,7 +1572,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("买盘推动上涨").length).toBeGreaterThan(0);
     expect(screen.getByText(/成交流和价格方向一致/)).toBeInTheDocument();
     expect(screen.getByText("口径说明")).toBeInTheDocument();
-    expect(screen.getByText(/方向强度 = abs/)).toBeInTheDocument();
+    expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
     expect(screen.getByText("contract-whale:BTC:5:1700000000000:buy")).toBeInTheDocument();
     expect(screen.queryByText(/rawPayload/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/webhook/i)).not.toBeInTheDocument();

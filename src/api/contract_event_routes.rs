@@ -16,12 +16,11 @@ use crate::{
         types::{ContractWhaleDirection, ContractWhaleSeverity},
     },
     core_event::final_store::final_event_store::{
-        build_final_events_from_contract_whale_signals, FinalEvent,
+        build_final_events_from_contract_whale_signals, FinalEvent, VolumeDisplayContext,
     },
     storage::{
         contract_whale_repo::{
-            ContractWhaleRepo,
-            CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+            ContractWhaleRepo, CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
         },
         SqliteStore,
     },
@@ -157,20 +156,23 @@ fn contract_event_page_for_query(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
-    let symbol = history_query
-        .symbol
-        .as_deref()
-        .unwrap_or("BTC")
-        .to_string();
+    let symbol = history_query.symbol.as_deref().unwrap_or("BTC").to_string();
     let config = state.config().contract_whale_monitor;
     let raw_items = state
         .contract_whale_store()
         .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
         .unwrap_or_default();
     let has_more = raw_items.len() > requested_limit;
-    let sliced_items = raw_items.into_iter().take(requested_limit).collect::<Vec<_>>();
+    let sliced_items = raw_items
+        .into_iter()
+        .take(requested_limit)
+        .collect::<Vec<_>>();
     let next_cursor = has_more
-        .then(|| sliced_items.last().map(|signal| encode_contract_history_cursor(signal.ts, &signal.id)))
+        .then(|| {
+            sliced_items
+                .last()
+                .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
+        })
         .flatten();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
     let response = build_contract_whale_history_response(
@@ -211,20 +213,23 @@ fn final_events_v2_for_query(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
-    let symbol = history_query
-        .symbol
-        .as_deref()
-        .unwrap_or("BTC")
-        .to_string();
+    let symbol = history_query.symbol.as_deref().unwrap_or("BTC").to_string();
     let config = state.config().contract_whale_monitor;
     let raw_items = state
         .contract_whale_store()
         .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
         .unwrap_or_default();
     let has_more = raw_items.len() > requested_limit;
-    let sliced_items = raw_items.into_iter().take(requested_limit).collect::<Vec<_>>();
+    let sliced_items = raw_items
+        .into_iter()
+        .take(requested_limit)
+        .collect::<Vec<_>>();
     let next_cursor = has_more
-        .then(|| sliced_items.last().map(|signal| encode_contract_history_cursor(signal.ts, &signal.id)))
+        .then(|| {
+            sliced_items
+                .last()
+                .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
+        })
         .flatten();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
     let response = build_contract_whale_history_response(
@@ -240,7 +245,10 @@ fn final_events_v2_for_query(
     let requested_status = normalize_status_filter(query.status.as_deref());
     let mut active = Vec::new();
     let mut closed = Vec::new();
-    for event in build_final_events_from_contract_whale_signals(&response.items) {
+    for event in build_final_events_from_contract_whale_signals(
+        &response.items,
+        VolumeDisplayContext::FinalLifecycleEvent,
+    ) {
         if !status_matches(requested_status.as_deref(), &event.status) {
             continue;
         }
@@ -428,7 +436,9 @@ fn unavailable_retention_tables(reason: &str) -> ContractRetentionTables {
 }
 
 fn query_count(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<i64> {
-    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
 }
 
 fn query_min_ts(
@@ -436,7 +446,9 @@ fn query_min_ts(
     table: &str,
     column: &str,
 ) -> rusqlite::Result<Option<i64>> {
-    conn.query_row(&format!("SELECT MIN({column}) FROM {table}"), [], |row| row.get(0))
+    conn.query_row(&format!("SELECT MIN({column}) FROM {table}"), [], |row| {
+        row.get(0)
+    })
 }
 
 fn query_max_ts(
@@ -444,7 +456,9 @@ fn query_max_ts(
     table: &str,
     column: &str,
 ) -> rusqlite::Result<Option<i64>> {
-    conn.query_row(&format!("SELECT MAX({column}) FROM {table}"), [], |row| row.get(0))
+    conn.query_row(&format!("SELECT MAX({column}) FROM {table}"), [], |row| {
+        row.get(0)
+    })
 }
 
 fn query_older_than(

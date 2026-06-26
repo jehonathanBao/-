@@ -614,10 +614,7 @@ impl ContractWhaleRepo for SqliteStore {
         let min_abs_net_volume_btc = query
             .min_abs_net_volume_btc
             .filter(|value| value.is_finite() && *value > 0.0);
-        let cursor_signal_id = query
-            .cursor_signal_id
-            .as_deref()
-            .map(str::to_string);
+        let cursor_signal_id = query.cursor_signal_id.as_deref().map(str::to_string);
         let exchange_like = query
             .exchange
             .as_deref()

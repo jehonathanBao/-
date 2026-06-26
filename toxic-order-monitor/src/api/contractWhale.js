@@ -1,6 +1,11 @@
 import axios from "axios";
 
 export const CWM_MAX_PRICE_DEVIATION_PCT = 5;
+const VOLUME_DISPLAY_CONTEXT = {
+  SINGLE_WINDOW: "single_window",
+  CONTRACT_EVENT_STREAM: "contract_event_stream",
+  FINAL_LIFECYCLE_EVENT: "final_lifecycle_event",
+};
 
 const calmSummary = {
   status: "calm",
@@ -381,6 +386,124 @@ export async function fetchContractRetentionStatus() {
   }
 }
 
+function volumeDisplayLabelForContext(context) {
+  if (context === VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM) return "累计总流量 BTC";
+  if (context === VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT) return "生命周期累计流量 BTC";
+  return "窗口总流量 BTC";
+}
+
+function volumeSemanticsForContext(context) {
+  if (context === VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW) {
+    return "single_window_bidirectional_cross_exchange";
+  }
+  return "multi_exchange_bidirectional_lifecycle_accumulated";
+}
+
+function deriveBuySellFromTotalNet(total, net) {
+  const totalNumber = numberOrNull(total);
+  const netNumber = numberOrNull(net);
+  if (totalNumber === null || netNumber === null) {
+    return { buy: null, sell: null };
+  }
+  const buy = (totalNumber + netNumber) / 2;
+  const sell = (totalNumber - netNumber) / 2;
+  if (!Number.isFinite(buy) || !Number.isFinite(sell) || buy < -1e-9 || sell < -1e-9) {
+    return { buy: null, sell: null };
+  }
+  return {
+    buy: Math.max(0, buy),
+    sell: Math.max(0, sell),
+  };
+}
+
+function uniqueExchangeNames(exchanges) {
+  const values = new Set();
+  for (const item of Array.isArray(exchanges) ? exchanges : []) {
+    const exchange = String(item?.exchange || item?.name || item || "").trim().toLowerCase();
+    if (exchange) {
+      values.add(exchange);
+    }
+  }
+  return Array.from(values);
+}
+
+function mergeWindowsSec(item, fallbackWindowSec) {
+  const values = new Set();
+  const candidateLists = [
+    item?.mergedWindowsSec,
+    item?.merged_windows_sec,
+    item?.sourceSignal?.mergedWindowsSec,
+    item?.sourceSignal?.merged_windows_sec,
+    item?.mergedFrom,
+    item?.sourceSignalIds,
+  ];
+  for (const candidate of candidateLists) {
+    if (!Array.isArray(candidate)) continue;
+    for (const entry of candidate) {
+      if (typeof entry === "number" && Number.isFinite(entry) && entry > 0) {
+        values.add(Math.round(entry));
+        continue;
+      }
+      const text = String(entry || "");
+      const parsed = Number.parseInt(text.split(":")[2], 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        values.add(parsed);
+      }
+    }
+  }
+  const fallback = Number(fallbackWindowSec);
+  if (!values.size && Number.isFinite(fallback) && fallback > 0) {
+    values.add(Math.round(fallback));
+  }
+  return Array.from(values).sort((left, right) => left - right);
+}
+
+function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null) {
+  const rawTotal =
+    numberOrNull(item?.displayVolumeBtc ?? item?.display_volume_btc) ??
+    numberOrNull(item?.totalVolumeBtc ?? item?.total_volume_btc) ??
+    numberOrNull(item?.volume ?? item?.volume_btc) ??
+    0;
+  const rawNet =
+    numberOrNull(item?.netVolumeBtc ?? item?.net_volume_btc) ??
+    numberOrNull(item?.netVolume ?? item?.net_volume) ??
+    0;
+  const explicitBuy = numberOrNull(item?.buyVolumeBtc ?? item?.buy_volume_btc);
+  const explicitSell = numberOrNull(item?.sellVolumeBtc ?? item?.sell_volume_btc);
+  const derived = deriveBuySellFromTotalNet(rawTotal, rawNet);
+  const sourceExchanges = uniqueExchangeNames(
+    item?.sourceExchanges ?? item?.source_exchanges ?? item?.exchanges ?? item?.sourceSignal?.exchanges,
+  );
+  const sourceExchangeCount = numberOrNull(item?.sourceExchangeCount ?? item?.source_exchange_count);
+  return {
+    displayVolumeBtc: rawTotal,
+    displayVolumeLabel: item?.displayVolumeLabel ?? item?.display_volume_label ?? volumeDisplayLabelForContext(context),
+    volumeSemantics: item?.volumeSemantics ?? item?.volume_semantics ?? volumeSemanticsForContext(context),
+    isBidirectionalVolume: Boolean(item?.isBidirectionalVolume ?? item?.is_bidirectional_volume ?? true),
+    isCrossExchangeAggregated: Boolean(
+      item?.isCrossExchangeAggregated ?? item?.is_cross_exchange_aggregated ?? sourceExchanges.length > 1,
+    ),
+    isLifecycleAccumulated: Boolean(
+      item?.isLifecycleAccumulated ?? item?.is_lifecycle_accumulated ?? context !== VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW,
+    ),
+    mergedSignalCount: Math.max(
+      1,
+      Math.round(
+        numberOrNull(item?.mergedSignalCount ?? item?.merged_signal_count) ||
+          numberOrNull(item?.sourceSignal?.eventLifecycle?.updateCount) ||
+          numberOrNull(item?.eventLifecycle?.updateCount) ||
+          sourceExchanges.length ||
+          1,
+      ),
+    ),
+    sourceExchangeCount: sourceExchangeCount === null ? (sourceExchanges.length ? sourceExchanges.length : null) : sourceExchangeCount,
+    sourceExchanges,
+    mergedWindowsSec: mergeWindowsSec(item, fallbackWindowSec ?? item?.windowSec ?? item?.window_sec ?? 0),
+    buyVolumeBtc: explicitBuy ?? derived.buy,
+    sellVolumeBtc: explicitSell ?? derived.sell,
+  };
+}
+
 export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   const sourceSignal = item?.sourceSignal && typeof item.sourceSignal === "object" ? item.sourceSignal : {};
   const eventSymbol = item?.symbol || sourceSignal.symbol || fallbackSymbol || "BTC";
@@ -389,6 +512,15 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   const eventId = item?.eventId ? String(item.eventId) : (signal.eventLifecycle?.eventId || signal.id);
   const eventType = item?.eventType ? String(item.eventType) : signal.signalType;
   const status = String(item?.status || signal.eventLifecycle?.status || "active").toLowerCase() === "closed" ? "closed" : "active";
+  const volumeMeta = normalizeVolumeDisplayMeta(
+    {
+      ...item,
+      sourceSignal: signal,
+      sourceSignalIds,
+    },
+    VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT,
+    item?.windowSec ?? signal.windowSec,
+  );
   const volume = numberOrNull(item?.volume) ?? signal.totalVolumeBtc;
   const netVolume = numberOrNull(item?.netVolume) ?? signal.netVolumeBtc;
   const notional = numberOrNull(item?.notional) ?? signal.totalNotionalUsd;
@@ -406,6 +538,52 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   const signalLabel = item?.signalLabel ? String(item.signalLabel).toUpperCase() : "LOW IMPACT EVENT";
   const falseEventFlags = normalizeStringArray(item?.falseEventFlags);
   const mergedFrom = sourceSignalIds.length > 1 ? sourceSignalIds.slice(1) : signal.mergedFrom;
+  const finalEvent = {
+    eventId,
+    symbol: eventSymbol,
+    eventType,
+    startTime: numberOrNull(item?.startTime),
+    endTime: numberOrNull(item?.endTime),
+    status,
+    windowSec: numberOrNull(item?.windowSec),
+    rawVolume,
+    impactScore,
+    zScore,
+    percentile,
+    normalizedScore,
+    normalizedStrength,
+    impactLevel,
+    signalLevel,
+    signalLabel,
+    volume,
+    totalVolumeBtc: volume,
+    netVolume,
+    netVolumeBtc: netVolume,
+    notional,
+    totalNotionalUsd: notional,
+    buyVolumeBtc: volumeMeta.buyVolumeBtc,
+    sellVolumeBtc: volumeMeta.sellVolumeBtc,
+    displayVolumeBtc: volumeMeta.displayVolumeBtc,
+    displayVolumeLabel: volumeMeta.displayVolumeLabel,
+    volumeSemantics: volumeMeta.volumeSemantics,
+    isBidirectionalVolume: volumeMeta.isBidirectionalVolume,
+    isCrossExchangeAggregated: volumeMeta.isCrossExchangeAggregated,
+    isLifecycleAccumulated: volumeMeta.isLifecycleAccumulated,
+    mergedSignalCount: volumeMeta.mergedSignalCount,
+    sourceExchangeCount: volumeMeta.sourceExchangeCount,
+    sourceExchanges: volumeMeta.sourceExchanges,
+    mergedWindowsSec: volumeMeta.mergedWindowsSec,
+    price,
+    priceMovePct,
+    directionBias: item?.directionBias || signal.direction,
+    dominance,
+    qualityScore: clampRatio(numberOrNull(item?.qualityScore) ?? signal.eventQuality?.qualityScore ?? 1),
+    mergeSimilarityScore: clampRatio(
+      numberOrNull(item?.mergeSimilarityScore) ?? signal.eventQuality?.mergeSimilarityScore ?? 1,
+    ),
+    falseEventFlags,
+    sourceSignalIds,
+  };
 
   return {
     ...signal,
@@ -455,37 +633,7 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
       valid: falseEventFlags.length === 0 && (signal.eventQuality?.valid ?? true),
       falseEventFlags,
     },
-    finalEvent: {
-      eventId,
-      symbol: eventSymbol,
-      eventType,
-      startTime: numberOrNull(item?.startTime),
-      endTime: numberOrNull(item?.endTime),
-      status,
-      windowSec: numberOrNull(item?.windowSec),
-      rawVolume,
-      impactScore,
-      zScore,
-      percentile,
-      normalizedScore,
-      normalizedStrength,
-      impactLevel,
-      signalLevel,
-      signalLabel,
-      volume,
-      netVolume,
-      notional,
-      price,
-      priceMovePct,
-      directionBias: item?.directionBias || signal.direction,
-      dominance,
-      qualityScore: clampRatio(numberOrNull(item?.qualityScore) ?? signal.eventQuality?.qualityScore ?? 1),
-      mergeSimilarityScore: clampRatio(
-        numberOrNull(item?.mergeSimilarityScore) ?? signal.eventQuality?.mergeSimilarityScore ?? 1,
-      ),
-      falseEventFlags,
-      sourceSignalIds,
-    },
+    finalEvent,
   };
 }
 
@@ -498,6 +646,7 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
   const rawNetVolumeBtc = numberOrNull(item?.netVolumeBtc ?? item?.net_volume_btc);
   const rawPrice = numberOrNull(item?.price);
   const rawTs = numberOrNull(item?.ts);
+  const volumeMeta = normalizeVolumeDisplayMeta(item, VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM, rawWindowSec ?? normalized.windowSec);
   return {
     ...normalized,
     id: item?.eventId || item?.event_id || normalized.id,
@@ -515,6 +664,37 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
     totalNotionalUsd: rawNotionalUsd ?? normalized.totalNotionalUsd,
     notionalUsd: rawNotionalUsd ?? normalized.totalNotionalUsd,
     netVolumeBtc: rawNetVolumeBtc ?? normalized.netVolumeBtc,
+    buyVolumeBtc: numberOrNull(item?.buyVolumeBtc ?? item?.buy_volume_btc) ?? volumeMeta.buyVolumeBtc,
+    sellVolumeBtc: numberOrNull(item?.sellVolumeBtc ?? item?.sell_volume_btc) ?? volumeMeta.sellVolumeBtc,
+    displayVolumeBtc: numberOrNull(item?.displayVolumeBtc ?? item?.display_volume_btc) ?? volumeMeta.displayVolumeBtc,
+    displayVolumeLabel: item?.displayVolumeLabel ?? item?.display_volume_label ?? volumeMeta.displayVolumeLabel,
+    volumeSemantics: item?.volumeSemantics ?? item?.volume_semantics ?? volumeMeta.volumeSemantics,
+    isBidirectionalVolume: Boolean(item?.isBidirectionalVolume ?? item?.is_bidirectional_volume ?? volumeMeta.isBidirectionalVolume),
+    isCrossExchangeAggregated: Boolean(
+      item?.isCrossExchangeAggregated ?? item?.is_cross_exchange_aggregated ?? volumeMeta.isCrossExchangeAggregated,
+    ),
+    isLifecycleAccumulated: Boolean(item?.isLifecycleAccumulated ?? item?.is_lifecycle_accumulated ?? volumeMeta.isLifecycleAccumulated),
+    mergedSignalCount: Math.max(1, Math.round(numberOrNull(item?.mergedSignalCount ?? item?.merged_signal_count) || volumeMeta.mergedSignalCount)),
+    sourceExchangeCount: numberOrNull(item?.sourceExchangeCount ?? item?.source_exchange_count) ?? volumeMeta.sourceExchangeCount,
+    sourceExchanges: normalizeStringArray(item?.sourceExchanges ?? item?.source_exchanges).length
+      ? normalizeStringArray(item?.sourceExchanges ?? item?.source_exchanges)
+      : volumeMeta.sourceExchanges,
+    mergedWindowsSec: volumeMeta.mergedWindowsSec,
+    finalEvent: {
+      ...finalEvent,
+      displayVolumeBtc: volumeMeta.displayVolumeBtc,
+      displayVolumeLabel: volumeMeta.displayVolumeLabel,
+      volumeSemantics: volumeMeta.volumeSemantics,
+      isBidirectionalVolume: volumeMeta.isBidirectionalVolume,
+      isCrossExchangeAggregated: volumeMeta.isCrossExchangeAggregated,
+      isLifecycleAccumulated: volumeMeta.isLifecycleAccumulated,
+      mergedSignalCount: volumeMeta.mergedSignalCount,
+      sourceExchangeCount: volumeMeta.sourceExchangeCount,
+      sourceExchanges: volumeMeta.sourceExchanges,
+      mergedWindowsSec: volumeMeta.mergedWindowsSec,
+      buyVolumeBtc: volumeMeta.buyVolumeBtc,
+      sellVolumeBtc: volumeMeta.sellVolumeBtc,
+    },
     direction: item?.direction || normalized.direction,
     dominance: numberOrNull(item?.dominance) ?? normalized.dominance,
     mainForceScore: numberOrNull(item?.mainForceScore ?? item?.main_force_score) ?? normalized.mainForceScore,
@@ -546,6 +726,11 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   const activeSources = normalizeActiveSources(item.activeSources);
   const triggerPriceUsd = normalizeTriggerPrice(item, totalVolumeBtc, totalNotionalUsd);
+  const volumeMeta = normalizeVolumeDisplayMeta(
+    item,
+    VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW,
+    numberOrNull(item.windowSec) || 0,
+  );
   const orderPriceUsd =
     numberOrNull(item.orderPriceUsd) ??
     numberOrNull(item.orderPrice) ??
@@ -574,6 +759,18 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     totalVolumeBtc,
     netVolumeBtc: numberOrNull(item.netVolume) ?? numberOrNull(item.netVolumeBtc) ?? 0,
     totalNotionalUsd,
+    buyVolumeBtc: volumeMeta.buyVolumeBtc,
+    sellVolumeBtc: volumeMeta.sellVolumeBtc,
+    displayVolumeBtc: volumeMeta.displayVolumeBtc,
+    displayVolumeLabel: item.displayVolumeLabel ?? item.display_volume_label ?? volumeMeta.displayVolumeLabel,
+    volumeSemantics: item.volumeSemantics ?? item.volume_semantics ?? volumeMeta.volumeSemantics,
+    isBidirectionalVolume: volumeMeta.isBidirectionalVolume,
+    isCrossExchangeAggregated: volumeMeta.isCrossExchangeAggregated,
+    isLifecycleAccumulated: volumeMeta.isLifecycleAccumulated,
+    mergedSignalCount: volumeMeta.mergedSignalCount,
+    sourceExchangeCount: volumeMeta.sourceExchangeCount,
+    sourceExchanges: volumeMeta.sourceExchanges,
+    mergedWindowsSec: volumeMeta.mergedWindowsSec,
     dominance: numberOrNull(item.dominance) || 0,
     priceMovePct: numberOrNull(item.priceMovePct),
     priceMove5sPct: numberOrNull(item.priceMove5sPct),

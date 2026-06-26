@@ -913,6 +913,36 @@ describe("contract whale api", () => {
     expect(signal.token).toBeUndefined();
   });
 
+  it("maps volume display semantics without changing the underlying math", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "volume-semantics-signal",
+      symbol: "BTC",
+      windowSec: 15,
+      totalVolumeBtc: 4280,
+      netVolumeBtc: -620,
+      exchanges: [
+        { exchange: "binance" },
+        { exchange: "bitfinex" },
+      ],
+      mergedFrom: [
+        "contract-whale:BTC:5:1700000000010:buy",
+        "contract-whale:BTC:15:1700000000000:buy",
+      ],
+    });
+
+    expect(signal.displayVolumeLabel).toBe("窗口总流量 BTC");
+    expect(signal.volumeSemantics).toBe("single_window_bidirectional_cross_exchange");
+    expect(signal.displayVolumeBtc).toBe(4280);
+    expect(signal.buyVolumeBtc).toBe(1830);
+    expect(signal.sellVolumeBtc).toBe(2450);
+    expect(signal.isBidirectionalVolume).toBe(true);
+    expect(signal.isCrossExchangeAggregated).toBe(true);
+    expect(signal.isLifecycleAccumulated).toBe(false);
+    expect(signal.sourceExchangeCount).toBe(2);
+    expect(signal.sourceExchanges).toEqual(["binance", "bitfinex"]);
+    expect(signal.mergedWindowsSec).toEqual([5, 15]);
+  });
+
   it("normalizes signal cluster and persistence metadata", () => {
     const signal = normalizeContractWhaleSignal({
       id: "clustered-signal",

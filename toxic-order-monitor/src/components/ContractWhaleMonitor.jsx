@@ -656,6 +656,10 @@ function RawSignalDebugSection({
   latestSignalTs,
   contractEventsLastEventTs,
 }) {
+  const historicalVolumeLabel = "窗口总流量 BTC";
+  const lifecycleVolumeLabel = "生命周期累计流量 BTC";
+  const volumeTooltip =
+    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
   const activeItems = finalEvents.active || [];
   const closedItems = finalEvents.closed || [];
   return (
@@ -698,8 +702,17 @@ function RawSignalDebugSection({
                 已加载 {contractEvents.length} 条
               </span>
             </div>
+            <p className="border-b border-slate-800 px-3 py-2 text-[11px] leading-5 text-slate-500" title={volumeTooltip}>
+              口径：{historicalVolumeLabel}。{volumeTooltip}
+            </p>
             <div className="overflow-x-auto">
-              <RawSignalDebugTable items={contractEvents} onOpenSignal={onOpenSignal} testId="raw-contract-whale-signals" />
+              <RawSignalDebugTable
+                items={contractEvents}
+                onOpenSignal={onOpenSignal}
+                testId="raw-contract-whale-signals"
+                volumeLabel={historicalVolumeLabel}
+                volumeTooltip={volumeTooltip}
+              />
             </div>
             {contractEventsHasMore ? (
               <div className="border-t border-slate-800 px-3 py-2 text-right">
@@ -723,6 +736,8 @@ function RawSignalDebugSection({
           onOpenSignal={onOpenSignal}
           testId="raw-contract-whale-signals-active"
           title="ACTIVE EVENTS (updated)"
+          volumeLabel={lifecycleVolumeLabel}
+          volumeTooltip={volumeTooltip}
         />
         <EventLifecycleFeedGroup
           emptyText="暂无已结束合约事件"
@@ -732,13 +747,15 @@ function RawSignalDebugSection({
           onOpenSignal={onOpenSignal}
           testId="raw-contract-whale-signals-closed"
           title="CLOSED EVENTS (finalized)"
+          volumeLabel={lifecycleVolumeLabel}
+          volumeTooltip={volumeTooltip}
         />
       </div>
     </section>
   );
 }
 
-function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpenSignal, testId, title }) {
+function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpenSignal, testId, title, volumeLabel, volumeTooltip }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/40">
       <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
@@ -747,12 +764,21 @@ function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpen
           已加载 {items.length} 条
         </span>
       </div>
+      <p className="border-b border-slate-800 px-3 py-2 text-[11px] leading-5 text-slate-500" title={volumeTooltip}>
+        口径：{volumeLabel}。{volumeTooltip}
+      </p>
       {items.length === 0 ? (
         <p className="px-3 py-4 text-xs text-slate-500">{emptyText}</p>
       ) : (
         <>
           <div className="overflow-x-auto">
-            <RawSignalDebugTable items={items} onOpenSignal={onOpenSignal} testId={testId} />
+            <RawSignalDebugTable
+              items={items}
+              onOpenSignal={onOpenSignal}
+              testId={testId}
+              volumeLabel={volumeLabel}
+              volumeTooltip={volumeTooltip}
+            />
           </div>
           {hasMore ? (
             <div className="border-t border-slate-800 px-3 py-2 text-right">
@@ -771,7 +797,7 @@ function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpen
   );
 }
 
-function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals" }) {
+function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量 BTC", volumeTooltip }) {
   return (
     <table className="min-w-full table-fixed text-left text-xs" data-testid={testId}>
       <thead className="bg-slate-950/80 text-slate-400">
@@ -783,7 +809,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
           <HeaderCell>冲击</HeaderCell>
-          <HeaderCell>成交量</HeaderCell>
+          <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
           <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
           <HeaderCell>价格偏离</HeaderCell>
@@ -850,7 +876,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             </Cell>
             <Cell>{eventQualityBadge(item)}</Cell>
             <Cell>{impactNormalizationBadge(item)}</Cell>
-            <Cell>{formatBaseVolume(item.totalVolumeBtc, item.symbol)}</Cell>
+            <Cell>{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, item.symbol)}</Cell>
             <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
             <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
@@ -989,25 +1015,38 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
         </div>
 
         <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          <DetailSection title="基础信息">
-            <DetailGrid
-              rows={[
-                ["Symbol", signal.symbol],
-                ["类型", signalTypeLabel(signal.signalType)],
-                ["方向", directionLabel(signal.direction)],
-                ["价格响应", priceResponseLabel(signal.priceResponseType)],
-                ["等级", severityLabel(signal.severity)],
-                ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
-                ["事件状态", eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"],
-                ["事件开始", formatTime(signal.eventLifecycle?.startTime)],
-                ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
-                ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
-                ["累计成交", formatBaseVolume(signal.eventLifecycle?.volumeAccumulated || signal.totalVolumeBtc, signal.symbol)],
-                ["Raw Volume", formatBaseVolume(signal.rawVolume ?? signal.finalEvent?.rawVolume ?? signal.totalVolumeBtc, signal.symbol)],
-                ["Impact Score", `${finiteNumber(signal.impactScore ?? signal.finalEvent?.impactScore).toFixed(2)}x`],
-                ["Z-score", finiteNumber(signal.zScore ?? signal.finalEvent?.zScore).toFixed(2)],
-                ["Percentile", `P${Math.round(finiteNumber(signal.percentile ?? signal.finalEvent?.percentile))}`],
-                ["Impact Level", String(signal.impactLevel || signal.finalEvent?.impactLevel || "C").toUpperCase()],
+        <DetailSection title="基础信息">
+          <DetailGrid
+            rows={[
+              ["Symbol", signal.symbol],
+              ["类型", signalTypeLabel(signal.signalType)],
+              ["方向", directionLabel(signal.direction)],
+              ["价格响应", priceResponseLabel(signal.priceResponseType)],
+              ["等级", severityLabel(signal.severity)],
+              ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
+              ["事件状态", eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"],
+              ["事件开始", formatTime(signal.eventLifecycle?.startTime)],
+              ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
+              ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
+              ["流量口径", signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || "总流量 BTC"],
+              ["总流量 BTC", formatOptionalBaseVolume(signal.displayVolumeBtc ?? signal.finalEvent?.displayVolumeBtc ?? signal.totalVolumeBtc, signal.symbol)],
+              ["原始窗口流量", formatOptionalBaseVolume(signal.rawVolume ?? signal.finalEvent?.rawVolume ?? signal.totalVolumeBtc, signal.symbol)],
+              ["主动买 BTC", formatOptionalBaseVolume(signal.buyVolumeBtc ?? signal.finalEvent?.buyVolumeBtc, signal.symbol)],
+              ["主动卖 BTC", formatOptionalBaseVolume(signal.sellVolumeBtc ?? signal.finalEvent?.sellVolumeBtc, signal.symbol)],
+              ["净方向 BTC", signal.netVolumeBtc === null || signal.netVolumeBtc === undefined ? "—" : netDirection(signal.netVolumeBtc, signal.symbol)],
+              ["来源交易所", sourceListLabel(signal.sourceExchanges || signal.finalEvent?.sourceExchanges || signal.activeSources?.contract?.map((entry) => entry.exchange))],
+              ["来源交易所数", signal.sourceExchangeCount === null || signal.sourceExchangeCount === undefined ? "—" : `${signal.sourceExchangeCount}`],
+              ["合并窗口", formatWindowList(signal.mergedWindowsSec || signal.finalEvent?.mergedWindowsSec || [signal.windowSec])],
+              [
+                "累计信号数",
+                `${signal.mergedSignalCount ?? signal.finalEvent?.mergedSignalCount ?? signal.eventLifecycle?.updateCount ?? 1}`,
+              ],
+              ["跨交易所聚合", yesNoLabel(signal.isCrossExchangeAggregated ?? signal.finalEvent?.isCrossExchangeAggregated)],
+              ["生命周期累计", yesNoLabel(signal.isLifecycleAccumulated ?? signal.finalEvent?.isLifecycleAccumulated)],
+              ["Impact Score", `${finiteNumber(signal.impactScore ?? signal.finalEvent?.impactScore).toFixed(2)}x`],
+              ["Z-score", finiteNumber(signal.zScore ?? signal.finalEvent?.zScore).toFixed(2)],
+              ["Percentile", `P${Math.round(finiteNumber(signal.percentile ?? signal.finalEvent?.percentile))}`],
+              ["Impact Level", String(signal.impactLevel || signal.finalEvent?.impactLevel || "C").toUpperCase()],
                 ["Signal Level", String(signal.signalLevel || signal.finalEvent?.signalLevel || "L1").toUpperCase()],
                 ["Signal Label", String(signal.signalLabel || signal.finalEvent?.signalLabel || "LOW IMPACT EVENT").toUpperCase()],
                 ["Normalized Strength", String(signal.normalizedStrength || signal.finalEvent?.normalizedStrength || "LOW").toUpperCase()],
@@ -1157,10 +1196,12 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                   <p className="font-bold text-slate-100">{windowSec}s</p>
                   {item ? (
                     <div className="mt-2 space-y-1 text-xs text-slate-300">
-                      <p>成交量：{formatBaseVolume(item.totalVolumeBtc, signal.symbol)}</p>
+                      <p>{signal.displayVolumeLabel || "总流量 BTC"}：{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, signal.symbol)}</p>
+                      <p>主动买 BTC：{formatOptionalBaseVolume(item.buyVolumeBtc, signal.symbol)}</p>
+                      <p>主动卖 BTC：{formatOptionalBaseVolume(item.sellVolumeBtc, signal.symbol)}</p>
                       <p>名义金额：{formatUsd(item.totalNotionalUsd)}</p>
                       <p>价格：{formatPrice(signalTriggerPrice(item))}</p>
-                      <p>净方向：{netDirection(item.netVolumeBtc, signal.symbol)}</p>
+                      <p>净方向 BTC：{item.netVolumeBtc === null || item.netVolumeBtc === undefined ? "—" : netDirection(item.netVolumeBtc, signal.symbol)}</p>
                       <p>价格变化：{formatSignedPct(item.priceMovePct)}</p>
                       <p>异常倍数：{formatMultiple(item.dynamicMultiple)}</p>
                     </div>
@@ -1225,7 +1266,8 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
 
         <DetailSection title="口径说明" className="mt-4">
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-6 text-cyan-50">
-            <p>方向强度 = abs(主动买入 - 主动卖出) / 总成交量，表示本轮信号整体方向是否集中。</p>
+            <p>总流量 = 主动买量 + 主动卖量；历史视图会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。</p>
+            <p>主动买 / 主动卖 / 净方向 是流向拆分，不是新的算法结果；净方向只表示买卖差值，不代表总量变化。</p>
             <p>买入/卖出占比 = 单个平台内部的主动买卖比例，只说明该平台自己的流向结构。</p>
             <p>净流贡献 = 该平台对本轮信号同方向净流的贡献比例，用来判断主导平台。</p>
           </div>
@@ -1636,8 +1678,12 @@ function SourceSnapshotCard({ entries, title }) {
   );
 }
 
-function HeaderCell({ children }) {
-  return <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-[0.08em]">{children}</th>;
+function HeaderCell({ children, title }) {
+  return (
+    <th className="whitespace-nowrap px-3 py-3 text-[11px] font-semibold uppercase tracking-[0.08em]" title={title}>
+      {children}
+    </th>
+  );
 }
 
 function Cell({ children }) {
@@ -2212,8 +2258,23 @@ function formatBtc(value) {
   return formatBaseVolume(value, "BTC");
 }
 
+function formatOptionalBaseVolume(value, symbol = "BTC") {
+  if (value === null || value === undefined) return "—";
+  return formatBaseVolume(value, symbol);
+}
+
 function formatBaseVolume(value, symbol = "BTC") {
   return `${Math.round(Number(value || 0)).toLocaleString("en-US")} ${baseAssetSymbol(symbol)}`;
+}
+
+function yesNoLabel(value) {
+  if (value === null || value === undefined) return "—";
+  return value ? "是" : "否";
+}
+
+function formatWindowList(value) {
+  if (!Array.isArray(value) || value.length === 0) return "—";
+  return value.join(", ") + " 秒";
 }
 
 function baseAssetSymbol(symbol = "BTC") {

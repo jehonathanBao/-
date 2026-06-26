@@ -7,9 +7,9 @@ use btc_toxic_flow_monitor_rs::{
     api::contract_whale_routes::{
         build_contract_whale_history_response, build_contract_whale_items_response,
         build_contract_whale_metrics_text, build_contract_whale_response,
-        build_contract_whale_response_with_runtime_and_baselines,
-        encode_contract_history_cursor, parse_history_query,
-        ContractWhaleQualityBaseline, ContractWhaleQuery, ContractWhaleResponseRuntime,
+        build_contract_whale_response_with_runtime_and_baselines, encode_contract_history_cursor,
+        parse_history_query, ContractWhaleQualityBaseline, ContractWhaleQuery,
+        ContractWhaleResponseRuntime,
     },
     contract_whale_monitor::{
         config::{
