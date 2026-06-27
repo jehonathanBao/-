@@ -95,6 +95,19 @@ fn toml_contract_whale_monitor_flags_default_to_disabled_dry_run() {
 }
 
 #[test]
+fn env_example_documents_contract_whale_enabled_by_default() {
+    let contents =
+        fs::read_to_string(".env.example").expect("read .env.example for contract whale default");
+
+    assert!(
+        contents
+            .lines()
+            .any(|line| line.trim() == "CONTRACT_WHALE_ENABLED=true"),
+        ".env.example should document enabled contract whale monitoring by default"
+    );
+}
+
+#[test]
 fn env_contract_whale_monitor_flags_override_toml() {
     let _guard = ENV_LOCK.lock().expect("env lock poisoned");
     clear_config_env();
@@ -113,6 +126,27 @@ dry_run = false
 
     assert!(!config.contract_whale_monitor.enabled);
     assert!(config.contract_whale_monitor.dry_run);
+    clear_config_env();
+}
+
+#[test]
+fn env_contract_whale_monitor_true_overrides_disabled_toml() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    std::env::set_var("CONTRACT_WHALE_ENABLED", "true");
+    let config_path = write_config(
+        "cwm-env-true",
+        r#"
+[contract_whale_monitor]
+enabled = false
+dry_run = false
+"#,
+    );
+
+    let config = AppConfig::from_env_with_config_file(&config_path).expect("config");
+
+    assert!(config.contract_whale_monitor.enabled);
+    assert!(!config.contract_whale_monitor.dry_run);
     clear_config_env();
 }
 
