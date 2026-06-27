@@ -73,6 +73,43 @@ vi.mock("../api/contractWhale.js", () => ({
           extremeImpactConfirmed: false,
           reason: "合约主动买入与现货方向确认，主力建多概率提高。",
         },
+        noiseSuppression: {
+          rawCandidates: 6,
+          mergedEvents: 3,
+          lifecycleEvents: 2,
+          filteredEvents: 2,
+          tradeableSetups: 2,
+          suppressedDuplicates: 4,
+          noiseReductionPct: 67,
+        },
+        tradeOpportunities: [
+          {
+            signalId: "contract-whale-row",
+            rank: 1,
+            setupType: "主力拉盘",
+            action: "LONG",
+            directionBias: "buy",
+            tradeScore: 87,
+            confidence: 79,
+            severity: "s",
+            windowSec: 15,
+            regimeContext: "main_force_long_build",
+            rationale: "多窗口主买一致，价格顺势跟随，属于可交易级主力拉盘。",
+          },
+          {
+            signalId: "contract-whale-row-2",
+            rank: 2,
+            setupType: "下方吸收",
+            action: "LONG",
+            directionBias: "absorption",
+            tradeScore: 73,
+            confidence: 68,
+            severity: "high",
+            windowSec: 5,
+            regimeContext: "downside_absorption",
+            rationale: "卖压未能继续压低价格，吸收结构保持有效。",
+          },
+        ],
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -178,6 +215,43 @@ vi.mock("../api/contractWhale.js", () => ({
           extremeImpactConfirmed: false,
           reason: "合约主动买入与现货方向确认，主力建多概率提高。",
         },
+        noiseSuppression: {
+          rawCandidates: 6,
+          mergedEvents: 3,
+          lifecycleEvents: 2,
+          filteredEvents: 2,
+          tradeableSetups: 2,
+          suppressedDuplicates: 4,
+          noiseReductionPct: 67,
+        },
+        tradeOpportunities: [
+          {
+            signalId: "contract-whale-row",
+            rank: 1,
+            setupType: "主力拉盘",
+            action: "LONG",
+            directionBias: "buy",
+            tradeScore: 87,
+            confidence: 79,
+            severity: "s",
+            windowSec: 15,
+            regimeContext: "main_force_long_build",
+            rationale: "多窗口主买一致，价格顺势跟随，属于可交易级主力拉盘。",
+          },
+          {
+            signalId: "contract-whale-row-2",
+            rank: 2,
+            setupType: "下方吸收",
+            action: "LONG",
+            directionBias: "absorption",
+            tradeScore: 73,
+            confidence: 68,
+            severity: "high",
+            windowSec: 5,
+            regimeContext: "downside_absorption",
+            rationale: "卖压未能继续压低价格，吸收结构保持有效。",
+          },
+        ],
         trend60s: {
           buyVolumeBtc: 6200,
           sellVolumeBtc: 3800,
@@ -1204,6 +1278,16 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("FUNDING")).not.toBeInTheDocument();
     expect(screen.getByText("Whale Behavior Timeline")).toBeInTheDocument();
     expect(screen.getByText("主力行为轨迹（辅助）")).toBeInTheDocument();
+    expect(screen.getByText("Trade Opportunities")).toBeInTheDocument();
+    expect(screen.getByText("交易机会排序")).toBeInTheDocument();
+    expect(screen.getByText("原始候选")).toBeInTheDocument();
+    expect(screen.getByText("降噪后事件")).toBeInTheDocument();
+    expect(screen.getByText("可交易")).toBeInTheDocument();
+    expect(screen.getByText("67%")).toBeInTheDocument();
+    expect(screen.getAllByText("LONG").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
+    expect(screen.getByText(/多窗口主买一致，价格顺势跟随/)).toBeInTheDocument();
     expect(screen.getByText("Whale Entity List")).toBeInTheDocument();
     expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
     expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
@@ -1253,7 +1337,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Dry-run 1h")).toBeInTheDocument();
     expect(screen.getByText("would-send 3")).toBeInTheDocument();
     expect(screen.getByTestId("main-force-event-7")).toBeInTheDocument();
-    expect(screen.getByText("主力建多")).toBeInTheDocument();
+    expect(screen.getAllByText("主力建多").length).toBeGreaterThan(0);
     expect(screen.getByText("峰值主力评分")).toBeInTheDocument();
     expect(screen.getByText("非清算驱动")).toBeInTheDocument();
     expect(screen.getByText("已结束")).toBeInTheDocument();

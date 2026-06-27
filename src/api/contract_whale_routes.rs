@@ -35,10 +35,12 @@ use crate::{
             ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
             ContractWhaleLiquidationContext, ContractWhaleMarketCapability,
             ContractWhaleMarketContext, ContractWhaleMarketStructureLite, ContractWhaleMarketType,
-            ContractWhalePercentileThreshold, ContractWhalePlatformCapability,
+            ContractWhaleNoiseSuppressionSummary, ContractWhalePercentileThreshold,
+            ContractWhalePlatformCapability, ContractWhalePriceResponseType,
             ContractWhaleResponseMeta, ContractWhaleSeverity, ContractWhaleSignal,
             ContractWhaleSignalType, ContractWhaleSpotConfirmationContext, ContractWhaleSummary,
-            ContractWhaleTrend60s, ContractWhaleWindowStats, ExchangeFlowContribution,
+            ContractWhaleTradeOpportunity, ContractWhaleTrend60s,
+            ContractWhaleWindowStats, ExchangeFlowContribution,
         },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
@@ -2494,7 +2496,9 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
         "{} detector round summary",
         CWM_LOG_PREFIX
     );
+    let raw_candidates = items.len();
     items = merge_contract_whale_signals(items);
+    let merged_events = items.len();
     decorate_and_filter_price_deviated_signals(
         &mut items,
         current_market_price_from_flow_state(flow_state, symbol),
@@ -2503,7 +2507,9 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .max_price_deviation_pct,
     );
     items = apply_contract_whale_event_lifecycle(items, now);
+    let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -2515,7 +2521,21 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .then_with(|| right.ts.cmp(&left.ts))
     });
     items.truncate(limit);
-    let summary = build_summary(&items, now, enabled, dry_run, exchanges, warmup, trend_60s);
+    let summary = build_summary(
+        &items,
+        now,
+        enabled,
+        dry_run,
+        exchanges,
+        warmup,
+        trend_60s,
+        ContractWhaleSummaryBuildStats {
+            raw_candidates,
+            merged_events,
+            lifecycle_events,
+            filtered_events,
+        },
+    );
     ContractWhaleLatestResponse {
         summary,
         items,
@@ -2572,7 +2592,9 @@ pub fn build_contract_whale_history_response(
         };
     }
     items.retain(|signal| is_perp_signal(signal) && severity_matches(signal.severity, severity));
+    let raw_candidates = items.len();
     items = merge_contract_whale_signals(items);
+    let merged_events = items.len();
     decorate_and_filter_price_deviated_signals(
         &mut items,
         None,
@@ -2582,7 +2604,9 @@ pub fn build_contract_whale_history_response(
     );
     let lifecycle_reference_now = items.iter().map(|item| item.ts).max().unwrap_or(now);
     items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
+    let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -2601,6 +2625,12 @@ pub fn build_contract_whale_history_response(
         default_exchange_statuses(),
         warmup_state(now, enabled, None),
         empty_trend_60s(symbol),
+        ContractWhaleSummaryBuildStats {
+            raw_candidates,
+            merged_events,
+            lifecycle_events,
+            filtered_events,
+        },
     );
     ContractWhaleLatestResponse {
         summary,
@@ -2631,7 +2661,9 @@ pub fn build_contract_whale_items_response(
     }
     items.retain(is_perp_signal);
     decorate_signal_units(&mut items, symbol);
+    let raw_candidates = items.len();
     items = merge_contract_whale_signals(items);
+    let merged_events = items.len();
     decorate_and_filter_price_deviated_signals(
         &mut items,
         current_market_price_from_trend(&trend_60s),
@@ -2640,7 +2672,9 @@ pub fn build_contract_whale_items_response(
             .max_price_deviation_pct,
     );
     items = apply_contract_whale_event_lifecycle(items, now);
+    let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {
@@ -2659,6 +2693,12 @@ pub fn build_contract_whale_items_response(
         exchanges,
         warmup_state(now, enabled, None),
         trend_60s,
+        ContractWhaleSummaryBuildStats {
+            raw_candidates,
+            merged_events,
+            lifecycle_events,
+            filtered_events,
+        },
     );
     ContractWhaleLatestResponse {
         summary,
@@ -2714,6 +2754,7 @@ fn filter_latest_response_by_exchange(
             remaining_ms: response.summary.warmup_remaining_ms,
         },
         response.summary.trend_60s.clone(),
+        ContractWhaleSummaryBuildStats::from_visible_items(&response.items),
     );
     response
 }
@@ -3381,8 +3422,29 @@ fn disabled_summary(
             reason: "CWM 未启用，Market Structure Lite 不计算。".to_string(),
             ..Default::default()
         },
+        noise_suppression: ContractWhaleNoiseSuppressionSummary::default(),
+        trade_opportunities: Vec::new(),
         exchanges,
         platforms: build_platform_capabilities(&runtime_config),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ContractWhaleSummaryBuildStats {
+    raw_candidates: usize,
+    merged_events: usize,
+    lifecycle_events: usize,
+    filtered_events: usize,
+}
+
+impl ContractWhaleSummaryBuildStats {
+    fn from_visible_items(items: &[ContractWhaleSignal]) -> Self {
+        Self {
+            raw_candidates: items.len(),
+            merged_events: items.len(),
+            lifecycle_events: items.len(),
+            filtered_events: items.len(),
+        }
     }
 }
 
@@ -3394,6 +3456,7 @@ fn build_summary(
     exchanges: BTreeMap<String, ContractWhaleExchangeStatus>,
     warmup: ContractWhaleWarmupState,
     trend_60s: ContractWhaleTrend60s,
+    build_stats: ContractWhaleSummaryBuildStats,
 ) -> ContractWhaleSummary {
     let quantity_unit = trend_summary_unit(&trend_60s);
     let latest = items.first();
@@ -3425,6 +3488,13 @@ fn build_summary(
             now,
             warmup.active,
         );
+    let market_structure_lite = market_structure_lite_from_items(
+        items,
+        &ContractWhaleSpotConfirmationContext::default(),
+        overall_data_quality,
+    );
+    let trade_opportunities = build_trade_opportunities(items, &market_structure_lite);
+    let noise_suppression = build_noise_suppression_summary(build_stats, trade_opportunities.len());
     ContractWhaleSummary {
         status: if warmup.active {
             "warmup".to_string()
@@ -3470,14 +3540,185 @@ fn build_summary(
         warmup_remaining_ms: warmup.remaining_ms,
         trend_60s,
         discord_dry_run_stats: discord_dry_run_stats(items, now),
-        market_structure_lite: market_structure_lite_from_items(
-            items,
-            &ContractWhaleSpotConfirmationContext::default(),
-            overall_data_quality,
-        ),
+        market_structure_lite,
+        noise_suppression,
+        trade_opportunities,
         exchanges,
         platforms: build_platform_capabilities(&runtime_config),
     }
+}
+
+fn build_noise_suppression_summary(
+    build_stats: ContractWhaleSummaryBuildStats,
+    tradeable_setups: usize,
+) -> ContractWhaleNoiseSuppressionSummary {
+    let noise_reduction_pct = if build_stats.raw_candidates == 0 {
+        0
+    } else {
+        (((build_stats
+            .raw_candidates
+            .saturating_sub(build_stats.filtered_events)) as f64
+            / build_stats.raw_candidates as f64)
+            * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
+    };
+    ContractWhaleNoiseSuppressionSummary {
+        raw_candidates: build_stats.raw_candidates,
+        merged_events: build_stats.merged_events,
+        lifecycle_events: build_stats.lifecycle_events,
+        filtered_events: build_stats.filtered_events,
+        tradeable_setups,
+        suppressed_duplicates: build_stats
+            .raw_candidates
+            .saturating_sub(build_stats.lifecycle_events),
+        noise_reduction_pct,
+    }
+}
+
+fn build_trade_opportunities(
+    items: &[ContractWhaleSignal],
+    market_structure_lite: &ContractWhaleMarketStructureLite,
+) -> Vec<ContractWhaleTradeOpportunity> {
+    let mut ranked: Vec<ContractWhaleTradeOpportunity> = items
+        .iter()
+        .map(|signal| {
+            let trade_score = trade_score(signal);
+            let confidence = trade_confidence(signal, trade_score);
+            ContractWhaleTradeOpportunity {
+                signal_id: signal.id.clone(),
+                rank: 0,
+                setup_type: trade_setup_type(signal.signal_type).to_string(),
+                action: trade_action(signal.signal_type).to_string(),
+                direction_bias: direction_key(signal.direction).to_string(),
+                trade_score,
+                confidence,
+                severity: signal.severity,
+                window_sec: signal.window_sec,
+                regime_context: trade_regime_context(market_structure_lite),
+                rationale: trade_rationale(signal, market_structure_lite),
+            }
+        })
+        .filter(|opportunity| opportunity.trade_score >= 65)
+        .collect();
+
+    ranked.sort_by(|left, right| {
+        right
+            .trade_score
+            .cmp(&left.trade_score)
+            .then_with(|| right.confidence.cmp(&left.confidence))
+            .then_with(|| right.severity.rank().cmp(&left.severity.rank()))
+            .then_with(|| right.window_sec.cmp(&left.window_sec))
+    });
+    ranked.truncate(3);
+    for (index, opportunity) in ranked.iter_mut().enumerate() {
+        opportunity.rank = index + 1;
+    }
+    ranked
+}
+
+fn trade_score(signal: &ContractWhaleSignal) -> u8 {
+    let volume_strength = signal.main_force_score.unwrap_or(signal.score) as f64;
+    let price_response = match signal.price_response_type {
+        ContractWhalePriceResponseType::TrendFollowUp
+        | ContractWhalePriceResponseType::TrendFollowDown => 90.0,
+        ContractWhalePriceResponseType::DownsideAbsorption
+        | ContractWhalePriceResponseType::UpsideResistance => 82.0,
+        ContractWhalePriceResponseType::NoClearResponse => 45.0,
+    };
+    let dominance = (signal.dominance.clamp(0.0, 1.0) * 100.0).clamp(0.0, 100.0);
+    let persistence = ((signal.event_lifecycle.update_count.max(1) as f64) * 20.0).clamp(20.0, 100.0);
+    let cross_window_consistency = if signal.multi_exchange_confirmed && !signal.merged_from.is_empty() {
+        95.0
+    } else if signal.multi_exchange_confirmed {
+        82.0
+    } else if !signal.merged_from.is_empty() {
+        76.0
+    } else {
+        55.0
+    };
+    let severity_bonus = match signal.severity {
+        ContractWhaleSeverity::S => 12.0,
+        ContractWhaleSeverity::Critical => 9.0,
+        ContractWhaleSeverity::High => 6.0,
+        ContractWhaleSeverity::Medium => 0.0,
+        ContractWhaleSeverity::Calm => -15.0,
+    };
+    (
+        volume_strength * 0.35
+            + price_response * 0.20
+            + dominance * 0.20
+            + persistence * 0.10
+            + cross_window_consistency * 0.15
+            + severity_bonus
+    )
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+fn trade_confidence(signal: &ContractWhaleSignal, trade_score: u8) -> u8 {
+    let quality = (signal.event_quality.quality_score.clamp(0.0, 1.0) * 100.0).round();
+    (((trade_score as f64) * 0.65) + quality * 0.35)
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+fn trade_setup_type(signal_type: ContractWhaleSignalType) -> &'static str {
+    match signal_type {
+        ContractWhaleSignalType::AggressiveBuy => "主力拉盘",
+        ContractWhaleSignalType::AggressiveSell => "主力砸盘",
+        ContractWhaleSignalType::DownsideAbsorption => "下方吸收",
+        ContractWhaleSignalType::UpsideSuppression => "上方压制",
+    }
+}
+
+fn trade_action(signal_type: ContractWhaleSignalType) -> &'static str {
+    match signal_type {
+        ContractWhaleSignalType::AggressiveBuy | ContractWhaleSignalType::DownsideAbsorption => {
+            "LONG"
+        }
+        ContractWhaleSignalType::AggressiveSell
+        | ContractWhaleSignalType::UpsideSuppression => "SHORT",
+    }
+}
+
+fn trade_regime_context(market_structure_lite: &ContractWhaleMarketStructureLite) -> String {
+    if !market_structure_lite.regime_type.trim().is_empty() {
+        market_structure_lite.regime_type.clone()
+    } else if !market_structure_lite.status.trim().is_empty() {
+        market_structure_lite.status.clone()
+    } else {
+        "unclear".to_string()
+    }
+}
+
+fn trade_rationale(
+    signal: &ContractWhaleSignal,
+    market_structure_lite: &ContractWhaleMarketStructureLite,
+) -> String {
+    let mut evidence = Vec::new();
+    if !signal.merged_from.is_empty() {
+        evidence.push("多窗口一致".to_string());
+    }
+    if signal.multi_exchange_confirmed {
+        evidence.push("双交易所确认".to_string());
+    }
+    if signal.dominance >= 0.60 {
+        evidence.push(format!("方向占比 {:.1}%", signal.dominance * 100.0));
+    }
+    if let Some(price_move_pct) = signal.price_move_pct {
+        if price_move_pct.abs() >= 0.10 {
+            evidence.push(format!("价格响应 {:.2}%", price_move_pct));
+        }
+    }
+    if evidence.is_empty() {
+        evidence.push("结构强度满足交易观察阈值".to_string());
+    }
+    format!(
+        "{}，当前结构上下文为 {}。",
+        evidence.join("，"),
+        trade_regime_context(market_structure_lite)
+    )
 }
 
 fn build_platform_capabilities(

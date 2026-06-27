@@ -429,10 +429,20 @@ pub struct ContractWhaleWindowStats {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum ContractWhaleSeverity {
+    #[default]
     Calm,
     Medium,
     High,
@@ -1084,6 +1094,10 @@ pub struct ContractWhaleSummary {
     pub discord_dry_run_stats: ContractWhaleDiscordDryRunStats,
     #[serde(default)]
     pub market_structure_lite: ContractWhaleMarketStructureLite,
+    #[serde(default)]
+    pub noise_suppression: ContractWhaleNoiseSuppressionSummary,
+    #[serde(default)]
+    pub trade_opportunities: Vec<ContractWhaleTradeOpportunity>,
     pub exchanges: BTreeMap<String, ContractWhaleExchangeStatus>,
     #[serde(default)]
     pub platforms: BTreeMap<String, ContractWhalePlatformCapability>,
@@ -1091,6 +1105,52 @@ pub struct ContractWhaleSummary {
 
 fn default_contract_summary_market_type() -> String {
     "perp".to_string()
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleNoiseSuppressionSummary {
+    #[serde(default)]
+    pub raw_candidates: usize,
+    #[serde(default)]
+    pub merged_events: usize,
+    #[serde(default)]
+    pub lifecycle_events: usize,
+    #[serde(default)]
+    pub filtered_events: usize,
+    #[serde(default)]
+    pub tradeable_setups: usize,
+    #[serde(default)]
+    pub suppressed_duplicates: usize,
+    #[serde(default)]
+    pub noise_reduction_pct: u8,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradeOpportunity {
+    #[serde(default)]
+    pub signal_id: String,
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub setup_type: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub direction_bias: String,
+    #[serde(default)]
+    pub trade_score: u8,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub severity: ContractWhaleSeverity,
+    #[serde(default)]
+    pub window_sec: u64,
+    #[serde(default)]
+    pub regime_context: String,
+    #[serde(default)]
+    pub rationale: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

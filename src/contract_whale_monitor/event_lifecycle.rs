@@ -1,11 +1,6 @@
-use std::collections::BTreeMap;
-
 use sha2::{Digest, Sha256};
 
-use super::types::{
-    ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal,
-    ExchangeFlowContribution,
-};
+use super::types::{ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal};
 
 const EVENT_UPDATE_WINDOW_MS: i64 = 30_000;
 const EVENT_CLOSE_AFTER_MS: i64 = 120_000;
@@ -48,6 +43,7 @@ pub fn apply_contract_whale_event_lifecycle(
 
 fn same_lifecycle_event(existing: &ContractWhaleSignal, next: &ContractWhaleSignal) -> bool {
     existing.symbol.eq_ignore_ascii_case(&next.symbol)
+        && existing.direction == next.direction
         && existing.signal_type == next.signal_type
         && next
             .ts
@@ -70,6 +66,9 @@ fn start_lifecycle_event(mut signal: ContractWhaleSignal) -> ContractWhaleSignal
 }
 
 fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWhaleSignal) {
+    let suppress_medium_refresh = repeated_medium_refresh(existing, next);
+    let replace_snapshot = snapshot_is_better(next, existing);
+
     push_unique(&mut existing.merged_from, next.id.clone());
     for id in &next.merged_from {
         push_unique(&mut existing.merged_from, id.clone());
@@ -77,36 +76,153 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 
     existing.event_lifecycle.last_update_time =
         existing.event_lifecycle.last_update_time.max(next.ts);
-    existing.event_lifecycle.volume_accumulated += next.total_volume_btc;
-    existing.event_lifecycle.oi_accumulated += oi_delta_abs(next);
-    existing.event_lifecycle.update_count = existing
+    existing.event_lifecycle.volume_accumulated = existing
         .event_lifecycle
-        .update_count
-        .saturating_add(next.merged_from.len().saturating_add(1));
+        .volume_accumulated
+        .max(next.total_volume_btc);
+    existing.event_lifecycle.oi_accumulated = existing
+        .event_lifecycle
+        .oi_accumulated
+        .max(oi_delta_abs(next));
+    if !suppress_medium_refresh {
+        existing.event_lifecycle.update_count = existing
+            .event_lifecycle
+            .update_count
+            .saturating_add(next.merged_from.len().saturating_add(1));
+    }
 
-    existing.ts = existing.ts.max(next.ts);
-    existing.window_sec = existing.window_sec.max(next.window_sec);
-    existing.score = existing.score.max(next.score);
-    existing.main_force_score = max_option_u8(existing.main_force_score, next.main_force_score);
-    existing.spot_score = max_option_u8(existing.spot_score, next.spot_score);
-    existing.contract_score = max_option_u8(existing.contract_score, next.contract_score);
-    existing.data_quality = existing.data_quality.max(next.data_quality);
-    existing.total_volume_btc += next.total_volume_btc;
-    existing.net_volume_btc += next.net_volume_btc;
-    existing.total_notional_usd += next.total_notional_usd;
+    if replace_snapshot {
+        replace_snapshot_fields(existing, next);
+    } else {
+        existing.ts = existing.ts.max(next.ts);
+        existing.window_sec = existing.window_sec.max(next.window_sec);
+        existing.score = existing.score.max(next.score);
+        existing.main_force_score = max_option_u8(existing.main_force_score, next.main_force_score);
+        existing.spot_score = max_option_u8(existing.spot_score, next.spot_score);
+        existing.contract_score = max_option_u8(existing.contract_score, next.contract_score);
+        existing.data_quality = existing.data_quality.max(next.data_quality);
+        existing.multi_exchange_confirmed |= next.multi_exchange_confirmed;
+        existing.liquidation_suspected |= next.liquidation_suspected;
+        existing.liquidation_long_btc =
+            existing.liquidation_long_btc.max(next.liquidation_long_btc);
+        existing.liquidation_short_btc = existing
+            .liquidation_short_btc
+            .max(next.liquidation_short_btc);
+        existing.liquidation_notional_usd = existing
+            .liquidation_notional_usd
+            .max(next.liquidation_notional_usd);
+    }
+
     existing.total_volume = existing.total_volume_btc;
     existing.net_volume = existing.net_volume_btc;
     existing.dominance = dominance(existing.net_volume_btc.abs(), existing.total_volume_btc);
-    existing.multi_exchange_confirmed |= next.multi_exchange_confirmed;
-    existing.liquidation_suspected |= next.liquidation_suspected;
-    existing.liquidation_long_btc += next.liquidation_long_btc;
-    existing.liquidation_short_btc += next.liquidation_short_btc;
-    existing.liquidation_notional_usd += next.liquidation_notional_usd;
     existing.liquidation_ratio = (existing.total_volume_btc > f64::EPSILON).then_some(
         (existing.liquidation_long_btc + existing.liquidation_short_btc)
             / existing.total_volume_btc,
     );
-    merge_exchange_contributions(&mut existing.exchanges, &next.exchanges);
+}
+
+fn repeated_medium_refresh(existing: &ContractWhaleSignal, next: &ContractWhaleSignal) -> bool {
+    existing.severity == super::types::ContractWhaleSeverity::Medium
+        && next.severity == super::types::ContractWhaleSeverity::Medium
+        && existing.symbol.eq_ignore_ascii_case(&next.symbol)
+        && existing.direction == next.direction
+        && existing.signal_type == next.signal_type
+        && next
+            .ts
+            .saturating_sub(existing.event_lifecycle.last_update_time)
+            <= EVENT_UPDATE_WINDOW_MS
+}
+
+fn snapshot_is_better(candidate: &ContractWhaleSignal, current: &ContractWhaleSignal) -> bool {
+    current
+        .severity
+        .rank()
+        .cmp(&candidate.severity.rank())
+        .then_with(|| {
+            current
+                .total_volume_btc
+                .partial_cmp(&candidate.total_volume_btc)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| current.score.cmp(&candidate.score))
+        .then_with(|| current.window_sec.cmp(&candidate.window_sec))
+        .then_with(|| current.ts.cmp(&candidate.ts))
+        .is_lt()
+}
+
+fn replace_snapshot_fields(existing: &mut ContractWhaleSignal, next: &ContractWhaleSignal) {
+    existing.ts = next.ts;
+    existing.window_sec = next.window_sec;
+    existing.signal_type = next.signal_type;
+    existing.direction = next.direction;
+    existing.severity = next.severity;
+    existing.score = next.score;
+    existing.main_force_score = next.main_force_score;
+    existing.spot_score = next.spot_score;
+    existing.contract_score = next.contract_score;
+    existing.total_volume_btc = next.total_volume_btc;
+    existing.net_volume_btc = next.net_volume_btc;
+    existing.total_notional_usd = next.total_notional_usd;
+    existing.dominance = next.dominance;
+    existing.order_price_usd = next.order_price_usd;
+    existing.current_market_price_usd = next.current_market_price_usd;
+    existing.price_deviation_pct = next.price_deviation_pct;
+    existing.price_deviation_filtered = next.price_deviation_filtered;
+    existing.price_move_pct = next.price_move_pct;
+    existing.price_move_5s_pct = next.price_move_5s_pct;
+    existing.price_move_15s_pct = next.price_move_15s_pct;
+    existing.price_move_30s_pct = next.price_move_30s_pct;
+    existing.price_response_type = next.price_response_type;
+    existing.main_exchange = next.main_exchange.clone();
+    existing.market_type = next.market_type;
+    existing.source_role = next.source_role;
+    existing.exchanges = next.exchanges.clone();
+    existing.dominant_venue_net_contribution_share = next.dominant_venue_net_contribution_share;
+    existing.dynamic_multiple = next.dynamic_multiple;
+    existing.dynamic_baseline_btc = next.dynamic_baseline_btc;
+    existing.dynamic_threshold_level = next.dynamic_threshold_level.clone();
+    existing.percentile_level = next.percentile_level;
+    existing.multi_exchange_confirmed = next.multi_exchange_confirmed;
+    existing.liquidation_suspected = next.liquidation_suspected;
+    existing.liquidation_long_btc = next.liquidation_long_btc;
+    existing.liquidation_short_btc = next.liquidation_short_btc;
+    existing.liquidation_notional_usd = next.liquidation_notional_usd;
+    existing.liquidation_ratio = next.liquidation_ratio;
+    existing.price_reversal_ratio = next.price_reversal_ratio;
+    existing.oi_change_1m_btc = next.oi_change_1m_btc;
+    existing.oi_change_5m_btc = next.oi_change_5m_btc;
+    existing.oi_change_pct = next.oi_change_pct;
+    existing.oi_bias = next.oi_bias.clone();
+    existing.funding_rate = next.funding_rate;
+    existing.funding_bias = next.funding_bias.clone();
+    existing.data_quality = next.data_quality;
+    existing.score_breakdown = next.score_breakdown.clone();
+    existing.threshold_profile = next.threshold_profile.clone();
+    existing.threshold_profile_reason = next.threshold_profile_reason.clone();
+    existing.configured_contract_sources = next.configured_contract_sources.clone();
+    existing.eligible_contract_sources = next.eligible_contract_sources.clone();
+    existing.active_contract_sources = next.active_contract_sources.clone();
+    existing.active_sources = next.active_sources.clone();
+    existing.spot_confirmation = next.spot_confirmation.clone();
+    existing.discord_eligible = next.discord_eligible;
+    existing.discord_sent = next.discord_sent;
+    existing.discord_sent_at = next.discord_sent_at;
+    existing.discord_reason = next.discord_reason.clone();
+    existing.discord_would_send = next.discord_would_send;
+    existing.final_result = next.final_result.clone();
+    existing.cluster = next.cluster.clone();
+    existing.persistence = next.persistence.clone();
+    existing.whale_action = next.whale_action.clone();
+    existing.trajectory = next.trajectory.clone();
+    existing.liquidation_force = next.liquidation_force.clone();
+    existing.market_driver = next.market_driver.clone();
+    existing.event_quality = next.event_quality.clone();
+    existing.read_only = next.read_only;
+    existing.analysis_only = next.analysis_only;
+    existing.execution_enabled = next.execution_enabled;
+    existing.total_volume = next.total_volume;
+    existing.net_volume = next.net_volume;
 }
 
 fn lifecycle_event_id(signal: &ContractWhaleSignal) -> String {
@@ -147,65 +263,6 @@ fn dominance(net_abs: f64, total: f64) -> f64 {
         0.0
     }
 }
-
-fn merge_exchange_contributions(
-    keeper: &mut Vec<ExchangeFlowContribution>,
-    incoming_items: &[ExchangeFlowContribution],
-) {
-    if incoming_items.is_empty() {
-        return;
-    }
-    let mut by_exchange: BTreeMap<String, ExchangeFlowContribution> = keeper
-        .drain(..)
-        .map(|item| (item.exchange.to_ascii_lowercase(), item))
-        .collect();
-    for incoming in incoming_items {
-        let key = incoming.exchange.to_ascii_lowercase();
-        by_exchange
-            .entry(key)
-            .and_modify(|existing| {
-                existing.buy_volume_btc += incoming.buy_volume_btc;
-                existing.sell_volume_btc += incoming.sell_volume_btc;
-                existing.buy_notional_usd += incoming.buy_notional_usd;
-                existing.sell_notional_usd += incoming.sell_notional_usd;
-                existing.trade_count = existing.trade_count.saturating_add(incoming.trade_count);
-                refresh_exchange_contribution(existing);
-            })
-            .or_insert_with(|| {
-                let mut item = incoming.clone();
-                refresh_exchange_contribution(&mut item);
-                item
-            });
-    }
-    let total_abs_net: f64 = by_exchange
-        .values()
-        .map(|item| item.net_volume_btc.abs())
-        .sum();
-    *keeper = by_exchange.into_values().collect();
-    for item in keeper.iter_mut() {
-        item.net_contribution_share = if total_abs_net > f64::EPSILON {
-            item.net_volume_btc.abs() / total_abs_net
-        } else {
-            0.0
-        };
-    }
-    keeper.sort_by(|left, right| {
-        right
-            .total_volume_btc
-            .partial_cmp(&left.total_volume_btc)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-}
-
-fn refresh_exchange_contribution(item: &mut ExchangeFlowContribution) {
-    item.total_volume_btc = item.buy_volume_btc + item.sell_volume_btc;
-    item.net_volume_btc = item.buy_volume_btc - item.sell_volume_btc;
-    item.buy_share = dominance(item.buy_volume_btc, item.total_volume_btc);
-    item.sell_share = dominance(item.sell_volume_btc, item.total_volume_btc);
-    item.total_notional_usd = item.buy_notional_usd + item.sell_notional_usd;
-    item.dominance = dominance(item.net_volume_btc.abs(), item.total_volume_btc);
-}
-
 fn push_unique(values: &mut Vec<String>, value: String) {
     if value.is_empty() || values.iter().any(|existing| existing == &value) {
         return;

@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use super::types::{ContractWhaleSeverity, ContractWhaleSignal, ExchangeFlowContribution};
+use super::types::{ContractWhaleSeverity, ContractWhaleSignal};
 
 const MERGE_WINDOW_MS: u64 = 60_000;
 
@@ -45,6 +43,11 @@ fn same_merge_group(left: &ContractWhaleSignal, right: &ContractWhaleSignal) -> 
 fn representative_is_better(left: &ContractWhaleSignal, right: &ContractWhaleSignal) -> bool {
     severity_rank(left.severity)
         .cmp(&severity_rank(right.severity))
+        .then_with(|| {
+            left.total_volume_btc
+                .partial_cmp(&right.total_volume_btc)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .then_with(|| left.score.cmp(&right.score))
         .then_with(|| left.window_sec.cmp(&right.window_sec))
         .then_with(|| left.ts.cmp(&right.ts))
@@ -85,21 +88,21 @@ fn absorb_merged_signal(keeper: &mut ContractWhaleSignal, merged: &ContractWhale
     keeper.spot_score = max_option_u8(keeper.spot_score, merged.spot_score);
     keeper.contract_score = max_option_u8(keeper.contract_score, merged.contract_score);
     keeper.data_quality = keeper.data_quality.max(merged.data_quality);
-    keeper.total_volume_btc += merged.total_volume_btc;
-    keeper.net_volume_btc += merged.net_volume_btc;
-    keeper.total_notional_usd += merged.total_notional_usd;
     keeper.total_volume = keeper.total_volume_btc;
     keeper.net_volume = keeper.net_volume_btc;
     keeper.dominance = dominance(keeper.net_volume_btc.abs(), keeper.total_volume_btc);
     keeper.liquidation_suspected |= merged.liquidation_suspected;
-    keeper.liquidation_long_btc += merged.liquidation_long_btc;
-    keeper.liquidation_short_btc += merged.liquidation_short_btc;
-    keeper.liquidation_notional_usd += merged.liquidation_notional_usd;
+    keeper.liquidation_long_btc = keeper.liquidation_long_btc.max(merged.liquidation_long_btc);
+    keeper.liquidation_short_btc = keeper
+        .liquidation_short_btc
+        .max(merged.liquidation_short_btc);
+    keeper.liquidation_notional_usd = keeper
+        .liquidation_notional_usd
+        .max(merged.liquidation_notional_usd);
     keeper.liquidation_ratio = (keeper.total_volume_btc > f64::EPSILON).then_some(
         (keeper.liquidation_long_btc + keeper.liquidation_short_btc) / keeper.total_volume_btc,
     );
     keeper.multi_exchange_confirmed |= merged.multi_exchange_confirmed;
-    merge_exchange_contributions(&mut keeper.exchanges, &merged.exchanges);
 }
 
 fn push_unique(values: &mut Vec<String>, value: String) {
@@ -123,62 +126,4 @@ fn dominance(net_abs: f64, total: f64) -> f64 {
     } else {
         0.0
     }
-}
-
-fn merge_exchange_contributions(
-    keeper: &mut Vec<ExchangeFlowContribution>,
-    merged: &[ExchangeFlowContribution],
-) {
-    if merged.is_empty() {
-        return;
-    }
-    let mut by_exchange: BTreeMap<String, ExchangeFlowContribution> = keeper
-        .drain(..)
-        .map(|item| (item.exchange.to_ascii_lowercase(), item))
-        .collect();
-    for incoming in merged {
-        let key = incoming.exchange.to_ascii_lowercase();
-        by_exchange
-            .entry(key)
-            .and_modify(|existing| {
-                existing.buy_volume_btc += incoming.buy_volume_btc;
-                existing.sell_volume_btc += incoming.sell_volume_btc;
-                existing.buy_notional_usd += incoming.buy_notional_usd;
-                existing.sell_notional_usd += incoming.sell_notional_usd;
-                existing.trade_count = existing.trade_count.saturating_add(incoming.trade_count);
-                refresh_exchange_contribution(existing);
-            })
-            .or_insert_with(|| {
-                let mut item = incoming.clone();
-                refresh_exchange_contribution(&mut item);
-                item
-            });
-    }
-    let total_abs_net: f64 = by_exchange
-        .values()
-        .map(|item| item.net_volume_btc.abs())
-        .sum();
-    *keeper = by_exchange.into_values().collect();
-    for item in keeper.iter_mut() {
-        item.net_contribution_share = if total_abs_net > f64::EPSILON {
-            item.net_volume_btc.abs() / total_abs_net
-        } else {
-            0.0
-        };
-    }
-    keeper.sort_by(|left, right| {
-        right
-            .total_volume_btc
-            .partial_cmp(&left.total_volume_btc)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-}
-
-fn refresh_exchange_contribution(item: &mut ExchangeFlowContribution) {
-    item.total_volume_btc = item.buy_volume_btc + item.sell_volume_btc;
-    item.net_volume_btc = item.buy_volume_btc - item.sell_volume_btc;
-    item.buy_share = dominance(item.buy_volume_btc, item.total_volume_btc);
-    item.sell_share = dominance(item.sell_volume_btc, item.total_volume_btc);
-    item.total_notional_usd = item.buy_notional_usd + item.sell_notional_usd;
-    item.dominance = dominance(item.net_volume_btc.abs(), item.total_volume_btc);
 }

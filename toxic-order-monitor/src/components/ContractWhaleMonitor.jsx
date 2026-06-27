@@ -492,6 +492,7 @@ export default function ContractWhaleMonitor() {
       </p>
 
       <MarketStructureLitePanel summary={summary} />
+      <TradeOpportunitiesPanel summary={summary} />
 
       <PlatformCapabilitySection
         exchanges={summary.exchanges || {}}
@@ -1351,6 +1352,84 @@ function MainForceEventsSection({ events, symbol }) {
         </div>
       )}
     </section>
+  );
+}
+
+function TradeOpportunitiesPanel({ summary }) {
+  const opportunities = Array.isArray(summary?.tradeOpportunities) ? summary.tradeOpportunities : [];
+  const suppression = summary?.noiseSuppression || {};
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Trade Opportunities</p>
+          <h4 className="mt-1 text-sm font-bold text-white">交易机会排序</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            先把重复窗口与生命周期噪声压平，再给出当前最值得盯的主力合约 setup。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
+          <TradeSummaryPill label="原始候选" value={`${suppression.rawCandidates || 0}`} />
+          <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
+          <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} />
+          <TradeSummaryPill label="可交易" value={`${suppression.tradeableSetups || 0}`} tone="emerald" />
+          <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="cyan" />
+        </div>
+      </div>
+
+      {opportunities.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+          当前没有通过排序门槛的交易机会，系统保留结构观察但不建议直接出手。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {opportunities.map((opportunity) => (
+            <article
+              className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"
+              data-testid={`trade-opportunity-${opportunity.signalId}`}
+              key={opportunity.signalId}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Rank #{opportunity.rank}</p>
+                  <h5 className="mt-1 text-base font-bold text-white">{opportunity.setupType}</h5>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-bold ${tradeActionClass(opportunity.action)}`}>
+                  {opportunity.action}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                <TradeMetric label="交易评分" value={`${opportunity.tradeScore}/100`} />
+                <TradeMetric label="置信度" value={`${opportunity.confidence}%`} />
+                <TradeMetric label="方向偏置" value={directionLabel(opportunity.directionBias)} />
+                <TradeMetric label="事件窗口" value={`${opportunity.windowSec}s`} />
+                <TradeMetric label="结构上下文" value={regimeTypeLabel(opportunity.regimeContext)} />
+                <TradeMetric label="事件等级" value={severityLabel(opportunity.severity)} />
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">{opportunity.rationale}</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TradeSummaryPill({ label, value, tone = "slate" }) {
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${tradeSummaryPillClass(tone)}`}>
+      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-bold text-white">{value}</p>
+    </div>
+  );
+}
+
+function TradeMetric({ label, value }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-slate-100">{value}</p>
+    </div>
   );
 }
 
@@ -2366,6 +2445,21 @@ function compactPlatformDotClass(tone) {
   if (tone === "yellow") return "bg-yellow-300";
   if (tone === "red") return "bg-red-300";
   return "bg-slate-500";
+}
+
+function tradeSummaryPillClass(tone) {
+  if (tone === "emerald") return "border-emerald-500/30 bg-emerald-500/10";
+  if (tone === "cyan") return "border-cyan-500/30 bg-cyan-500/10";
+  if (tone === "yellow") return "border-yellow-500/30 bg-yellow-500/10";
+  if (tone === "red") return "border-red-500/30 bg-red-500/10";
+  return "border-slate-800 bg-slate-950/50";
+}
+
+function tradeActionClass(action) {
+  const value = String(action || "").toUpperCase();
+  if (value === "LONG") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (value === "SHORT") return "border border-red-500/40 bg-red-500/15 text-red-200";
+  return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
 }
 
 function snapshotStatusLabel(status) {

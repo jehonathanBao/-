@@ -522,7 +522,7 @@ fn detector_recovers_critical_when_dynamic_baseline_is_temporarily_unavailable()
 }
 
 #[test]
-fn detector_downgrades_fixed_threshold_signal_but_keeps_btc_medium_pushable() {
+fn detector_filters_low_price_response_medium_noise() {
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 900.0, false).unwrap(),
@@ -530,6 +530,24 @@ fn detector_downgrades_fixed_threshold_signal_but_keeps_btc_medium_pushable() {
     ];
     let buckets = aggregate_1s_buckets(&trades);
     let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.14), Some(4.2), 85)
+        .expect("window stats");
+    let signal = detect_contract_whale_signal(&stats);
+
+    assert!(
+        signal.is_none(),
+        "low price-response noise should not emit a Medium signal"
+    );
+}
+
+#[test]
+fn detector_keeps_medium_when_price_response_confirms_trend() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 900.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 80_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(4.2), 85)
         .expect("window stats");
     let signal = detect_contract_whale_signal(&stats).expect("medium signal");
 
@@ -668,7 +686,7 @@ fn detector_triggers_60s_high_threshold() {
 }
 
 #[test]
-fn detector_does_not_escalate_to_critical_when_dominance_is_weak() {
+fn detector_filters_weak_dominance_crossflow_noise() {
     let now = 1_700_000_015_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_000.0, false).unwrap(),
@@ -692,12 +710,12 @@ fn detector_does_not_escalate_to_critical_when_dominance_is_weak() {
     )
     .expect("weak dominance stats");
     stats.percentile_level = Some(99.9);
-    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("display signal");
+    let signal = detect_contract_whale_signal_with_config(&stats, &config);
 
-    assert!(signal.dominance < 0.55);
-    assert!(signal.severity < ContractWhaleSeverity::Critical);
-    assert!(signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "btc_all_contract_signals_gate");
+    assert!(
+        signal.is_none(),
+        "weak-dominance crossflow should no longer survive as a display signal"
+    );
 }
 
 #[test]

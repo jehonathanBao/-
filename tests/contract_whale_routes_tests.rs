@@ -23,7 +23,7 @@ use btc_toxic_flow_monitor_rs::{
     },
     core_event::final_store::final_event_store::{
         build_final_event_store_response_from_contract_whale_response,
-        build_final_events_from_contract_whale_signals,
+        build_final_events_from_contract_whale_signals, VolumeDisplayContext,
     },
     types::flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
 };
@@ -466,9 +466,22 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
     assert_eq!(response.items[0].severity, ContractWhaleSeverity::S);
     assert_eq!(response.items[0].window_sec, 15);
     assert_eq!(response.summary.signal_count, 1);
-    assert!(response.items[0].total_volume_btc > 6_100.0);
-    assert!(response.items[0].net_volume_btc > 4_900.0);
+    assert!(response.items[0].total_volume_btc >= 3_900.0);
+    assert!(response.items[0].total_volume_btc <= 6_100.0);
+    assert!(response.items[0].net_volume_btc >= 3_100.0);
+    assert!(response.items[0].net_volume_btc <= 4_900.0);
     assert_eq!(response.items[0].merged_from.len(), 1);
+    assert_eq!(response.summary.noise_suppression.raw_candidates, 2);
+    assert_eq!(response.summary.noise_suppression.merged_events, 1);
+    assert_eq!(response.summary.noise_suppression.lifecycle_events, 1);
+    assert_eq!(response.summary.noise_suppression.filtered_events, 1);
+    assert_eq!(response.summary.noise_suppression.suppressed_duplicates, 1);
+    assert_eq!(response.summary.noise_suppression.tradeable_setups, 1);
+    assert_eq!(response.summary.trade_opportunities.len(), 1);
+    assert_eq!(response.summary.trade_opportunities[0].rank, 1);
+    assert_eq!(response.summary.trade_opportunities[0].action, "LONG");
+    assert_eq!(response.summary.trade_opportunities[0].direction_bias, "buy");
+    assert!(response.summary.trade_opportunities[0].trade_score >= 70);
     assert!(response.items[0]
         .merged_from
         .iter()
@@ -509,9 +522,9 @@ fn contract_whale_history_response_merges_same_event_time_window_slices() {
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].window_sec, 15);
-    assert_eq!(response.items[0].total_volume_btc, 1_138.0);
-    assert_eq!(response.items[0].net_volume_btc, 1_050.0);
-    assert_eq!(response.items[0].total_notional_usd, 73_000_000.0);
+    assert_eq!(response.items[0].total_volume_btc, 665.0);
+    assert_eq!(response.items[0].net_volume_btc, 620.0);
+    assert_eq!(response.items[0].total_notional_usd, 43_000_000.0);
     assert_eq!(response.items[0].score, 52);
     assert_eq!(response.items[0].merged_from.len(), 1);
     assert!(response.items[0]
@@ -566,13 +579,13 @@ fn contract_whale_history_response_marks_active_and_closed_event_lifecycle() {
 #[test]
 fn contract_whale_history_response_updates_same_event_within_thirty_seconds() {
     let _guard = contract_whale_test_guard();
-    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::High);
     first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
     first.total_volume_btc = 300.0;
     first.total_volume = 300.0;
     first.net_volume_btc = 240.0;
     first.net_volume = 240.0;
-    let mut second = persisted_signal(1_700_000_020_000, ContractWhaleSeverity::Medium);
+    let mut second = persisted_signal(1_700_000_020_000, ContractWhaleSeverity::High);
     second.id = "contract-whale:BTC:15:1700000020000:buy".to_string();
     second.total_volume_btc = 500.0;
     second.total_volume = 500.0;
@@ -593,10 +606,47 @@ fn contract_whale_history_response_updates_same_event_within_thirty_seconds() {
     let items = items.as_array().expect("items array");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["eventLifecycle"]["status"], "active");
-    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 800.0);
+    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 500.0);
     assert_eq!(items[0]["eventLifecycle"]["updateCount"], 2);
-    assert_eq!(items[0]["totalVolumeBtc"], 800.0);
-    assert_eq!(items[0]["netVolumeBtc"], 650.0);
+    assert_eq!(items[0]["totalVolumeBtc"], 500.0);
+    assert_eq!(items[0]["netVolumeBtc"], 410.0);
+}
+
+#[test]
+fn contract_whale_history_response_suppresses_repeated_medium_updates_within_thirty_seconds() {
+    let _guard = contract_whale_test_guard();
+    let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
+    first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
+    first.total_volume_btc = 320.0;
+    first.total_volume = 320.0;
+    first.net_volume_btc = 260.0;
+    first.net_volume = 260.0;
+
+    let mut second = persisted_signal(1_700_000_010_000, ContractWhaleSeverity::Medium);
+    second.id = "contract-whale:BTC:15:1700000010000:buy".to_string();
+    second.total_volume_btc = 340.0;
+    second.total_volume = 340.0;
+    second.net_volume_btc = 280.0;
+    second.net_volume = 280.0;
+
+    let response = build_contract_whale_history_response(
+        vec![first, second],
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        None,
+    );
+
+    let items = serde_json::to_value(&response.items).expect("items json");
+    let items = items.as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["eventLifecycle"]["status"], "active");
+    assert_eq!(items[0]["eventLifecycle"]["updateCount"], 1);
+    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 340.0);
+    assert_eq!(items[0]["totalVolumeBtc"], 340.0);
+    assert_eq!(items[0]["netVolumeBtc"], 280.0);
 }
 
 #[test]
@@ -691,7 +741,10 @@ fn final_event_projection_is_single_truth_for_merged_contract_whale_event() {
         true,
         None,
     );
-    let final_events = build_final_events_from_contract_whale_signals(&response.items);
+    let final_events = build_final_events_from_contract_whale_signals(
+        &response.items,
+        VolumeDisplayContext::FinalLifecycleEvent,
+    );
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(final_events.len(), 1);
@@ -704,9 +757,9 @@ fn final_event_projection_is_single_truth_for_merged_contract_whale_event() {
     assert_eq!(event.event_type, "downside_absorption");
     assert_eq!(event.status, "active");
     assert_eq!(event.window_sec, 15);
-    assert_eq!(event.volume, 4_876.0);
-    assert_eq!(event.notional, 313_000_000.0);
-    assert_eq!(event.net_volume, -4_619.0);
+    assert_eq!(event.volume, 3_100.0);
+    assert_eq!(event.notional, 199_000_000.0);
+    assert_eq!(event.net_volume, -2_950.0);
     assert_eq!(event.direction_bias, "sell");
     assert!(event.quality_score > 0.80);
     assert_eq!(event.source_signal_ids.len(), 2);
@@ -1090,6 +1143,8 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
         status: None,
         range: None,
         cursor: None,
+        include_hidden: None,
+        hide_stale: None,
     };
 
     let parsed = parse_history_query(&query).expect("valid query");
@@ -1342,6 +1397,8 @@ fn empty_query() -> ContractWhaleQuery {
         status: None,
         range: None,
         cursor: None,
+        include_hidden: None,
+        hide_stale: None,
     }
 }
 

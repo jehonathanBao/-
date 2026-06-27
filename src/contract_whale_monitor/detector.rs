@@ -747,7 +747,10 @@ fn classify_severity(
         return ContractWhaleSeverity::High;
     }
 
-    if stats.total_volume_btc >= thresholds.high_btc * 0.5 || dynamic_multiple >= 4.0 {
+    let medium_price_confirmed =
+        stats.total_volume_btc >= thresholds.high_btc * 0.6 && same_direction_price_move >= 0.30;
+    let medium_dynamic_confirmed = dynamic_multiple >= 5.0 && stats.dominance >= 0.55;
+    if medium_price_confirmed || medium_dynamic_confirmed {
         return ContractWhaleSeverity::Medium;
     }
     ContractWhaleSeverity::Calm
@@ -772,13 +775,17 @@ fn reject_reason_for_calm(
     if runtime_warmup(stats, config) {
         return ContractWhaleDetectorRejectReason::Warmup;
     }
-    if stats.total_volume_btc < thresholds.high_btc * 0.5 && dynamic_multiple < 4.0 {
+    let medium_volume_threshold = thresholds.high_btc * 0.6;
+    let medium_volume_ok = stats.total_volume_btc >= medium_volume_threshold;
+    let medium_dynamic_ok = dynamic_multiple >= 5.0 && stats.dominance >= 0.55;
+
+    if !medium_volume_ok && !medium_dynamic_ok {
         return ContractWhaleDetectorRejectReason::BelowVolumeThreshold;
     }
     if stats.total_notional_usd < notional_thresholds.high {
         return ContractWhaleDetectorRejectReason::BelowNotionalThreshold;
     }
-    if stats.dynamic_multiple.is_some() && dynamic_multiple < 4.0 {
+    if stats.dynamic_multiple.is_some() && dynamic_multiple < 5.0 {
         return ContractWhaleDetectorRejectReason::DynamicMultipleTooLow;
     }
     if stats.percentile_level.is_some() && percentile_level < 99.0 {
@@ -790,10 +797,11 @@ fn reject_reason_for_calm(
     if stats.data_quality < 65 {
         return ContractWhaleDetectorRejectReason::DataQualityTooLow;
     }
-    if stats.exchange_count >= 2 && !multi_exchange_confirmed_with_config(stats, config, resolution) {
+    if stats.exchange_count >= 2 && !multi_exchange_confirmed_with_config(stats, config, resolution)
+    {
         return ContractWhaleDetectorRejectReason::MultiExchangeNotConfirmed;
     }
-    if same_direction_price_move <= 0.0 {
+    if medium_volume_ok && same_direction_price_move < 0.30 {
         return ContractWhaleDetectorRejectReason::SameDirectionPriceMoveTooLow;
     }
     ContractWhaleDetectorRejectReason::Unknown
