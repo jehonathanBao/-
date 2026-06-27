@@ -269,10 +269,14 @@ export async function fetchContractWhaleSummary(symbol = "BTC") {
   }
 }
 
-export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC") {
+export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", options = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
-    const query = buildContractWhaleQuery({ limit, symbol });
+    const query = buildContractWhaleQuery({
+      limit,
+      symbol,
+      hide_stale: (options.hide_stale ?? options.hideStale) ? "true" : undefined,
+    });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/latest?${query}`, {
       timeoutMs: 5_000,
     });
@@ -396,10 +400,12 @@ export async function fetchContractEventDebugCounts(filters = {}) {
       apiQuery: response.data?.apiQuery ?? response.data?.api_query ?? null,
       visibility: response.data?.visibility || null,
       latest: response.data?.latest || null,
+      latestStaleCount: numberOrNull(response.data?.latest?.staleCount ?? response.data?.latest?.stale_count),
       finalEventsV2: response.data?.finalEventsV2 ?? response.data?.final_events_v2 ?? null,
       latestVsHistory: Array.isArray(response.data?.latestVsHistory ?? response.data?.latest_vs_history)
         ? (response.data?.latestVsHistory ?? response.data?.latest_vs_history)
         : [],
+      latestItems: Array.isArray(response.data?.latest?.items) ? response.data.latest.items : [],
       finalEventsProjection:
         response.data?.finalEventsProjection ?? response.data?.final_events_projection ?? null,
       error: response.data?.error || null,
@@ -1056,6 +1062,9 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     discordReason: item.discordReason || "not_sent",
     discordWouldSend: Boolean(item.discordWouldSend),
     finalResult: item.finalResult || "contract whale flow candidate",
+    ageSec: numberOrNull(item.ageSec ?? item.age_sec),
+    isStale: Boolean(item.isStale ?? item.is_stale),
+    staleReason: item.staleReason ?? item.stale_reason ?? null,
     mergedFrom: Array.isArray(item.mergedFrom) ? item.mergedFrom.filter(Boolean).map(String) : [],
     cluster: normalizeSignalCluster(item.cluster),
     persistence: normalizePersistenceState(item.persistence),

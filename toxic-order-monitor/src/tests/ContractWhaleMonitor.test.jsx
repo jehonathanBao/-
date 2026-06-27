@@ -960,6 +960,135 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
   });
 
+  it("warns when BTC latest only contains stale snapshots and 24h history has no new signals", async () => {
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: {
+        status: "calm",
+        healthStatus: "healthy",
+        healthReason: "enabled_sources_recent",
+        thresholdProfile: "binance_bitfinex",
+        latestDirection: "neutral",
+        latestSeverity: "medium",
+        signalCount: 1,
+        enabled: true,
+        dryRun: true,
+        contractDataQuality: 95,
+        spotDataQuality: 78,
+        overallDataQuality: 88,
+        trend60s: {
+          buyVolumeBtc: 120,
+          sellVolumeBtc: 80,
+          totalVolumeBtc: 200,
+          netVolumeBtc: 40,
+          dominance: 0.2,
+          buyRatio: 0.6,
+          sellRatio: 0.4,
+          updatedAtMs: 1_700_000_000_000,
+        },
+        exchanges: {},
+        platforms: {},
+      },
+      items: [
+        {
+          id: "stale-latest-btc",
+          ts: 1_699_900_000_000,
+          symbol: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 40,
+          totalVolumeBtc: 300,
+          netVolumeBtc: 100,
+          totalNotionalUsd: 18_000_000,
+          dominance: 0.33,
+          mainExchange: "binance",
+          dataQuality: 82,
+          ageSec: 90_500,
+          isStale: true,
+          staleReason: "older_than_24h",
+        },
+      ],
+      error: null,
+    });
+    fetchContractEventDebugCounts.mockResolvedValueOnce({
+      symbol: "BTC",
+      range: "24h",
+      generatedAt: "2026-06-27T00:00:00Z",
+      db: {
+        contractWhaleSignalsTotal24h: 8,
+        contractWhaleSignalsBtc24h: 0,
+        oldestTs: null,
+        newestTs: null,
+      },
+      apiQuery: {
+        matchedBeforeFilter: 0,
+        matchedAfterSymbolFilter: 0,
+        matchedAfterRangeFilter: 0,
+        matchedAfterSeverityFilter: null,
+        matchedAfterWindowFilter: null,
+        matchedAfterDirectionFilter: null,
+        returnedItems: 0,
+        limit: 100,
+      },
+      visibility: {
+        visibleCount: 0,
+        hiddenCount: 0,
+        hiddenReasons: {
+          priceDeviationGt5pct: 0,
+          missingPrice: 0,
+          badQuality: 0,
+          disabledMonitor: 0,
+          unknown: 0,
+        },
+      },
+      latest: {
+        latestCount: 1,
+        staleCount: 1,
+        latestSymbols: ["BTC"],
+        items: [
+          {
+            eventId: "stale-latest-btc",
+            ts: 1_699_900_000_000,
+            ageSec: 90_500,
+            isStale: true,
+            staleReason: "older_than_24h",
+          },
+        ],
+      },
+      finalEventsV2: {
+        activeCount: 0,
+        closedCount: 0,
+      },
+      latestVsHistory: [
+        {
+          latestEventId: "stale-latest-btc",
+          symbol: "BTC",
+          ts: 1_699_900_000_000,
+          existsInHistory: false,
+          historyEventId: null,
+          notInHistoryReason: "outside_requested_range",
+        },
+      ],
+      finalEventsProjection: {
+        source: "contract_whale_signals",
+        rawSignals: 0,
+        afterFilter: 0,
+        mergedEvents: 0,
+        active: 0,
+        closed: 0,
+        range: "24h",
+      },
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(
+      await screen.findByText("BTC latest 为旧快照，最近 24h 没有新的 BTC 主力历史信号。"),
+    ).toBeInTheDocument();
+  });
+
   it("renders summary cards and latest contract whale signals", async () => {
     render(<ContractWhaleMonitor />);
 

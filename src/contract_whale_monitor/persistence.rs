@@ -160,11 +160,21 @@ pub async fn persist_contract_whale_signal_nonblocking(
     store: Option<SqliteStore>,
     signal: ContractWhaleSignal,
 ) -> ContractWhalePersistenceOutcome {
+    tracing::info!(
+        target: LOG_TARGET,
+        event = log_events::SIGNAL_GENERATED,
+        signal_id = signal.id.as_str(),
+        persist_attempt = true,
+        "{} signal persistence attempt",
+        LOG_PREFIX
+    );
     let Some(store) = store else {
         tracing::warn!(
             target: LOG_TARGET,
             event = log_events::SIGNAL_GENERATED,
             signal_id = signal.id.as_str(),
+            persist_attempt = false,
+            persist_skip_reason = "sqlite_store_unavailable",
             "{} signal persistence skipped: sqlite store unavailable",
             LOG_PREFIX
         );
@@ -173,12 +183,23 @@ pub async fn persist_contract_whale_signal_nonblocking(
 
     let signal_id = signal.id.clone();
     match tokio::task::spawn_blocking(move || store.upsert_contract_whale_signal(&signal)).await {
-        Ok(Ok(())) => ContractWhalePersistenceOutcome::success(1),
+        Ok(Ok(())) => {
+            tracing::info!(
+                target: LOG_TARGET,
+                event = log_events::SIGNAL_GENERATED,
+                signal_id = signal_id.as_str(),
+                persist_success = true,
+                "{} signal persistence success",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::success(1)
+        }
         Ok(Err(error)) => {
             tracing::warn!(
                 target: LOG_TARGET,
                 event = log_events::ERROR,
                 signal_id = signal_id.as_str(),
+                persist_success = false,
                 error = %error,
                 "{} signal persistence failed",
                 LOG_PREFIX
@@ -190,6 +211,7 @@ pub async fn persist_contract_whale_signal_nonblocking(
                 target: LOG_TARGET,
                 event = log_events::ERROR,
                 signal_id = signal_id.as_str(),
+                persist_success = false,
                 error = %error,
                 "{} signal persistence task failed",
                 LOG_PREFIX

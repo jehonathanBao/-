@@ -16,18 +16,24 @@ use crate::{
             compute_percentile_threshold, dynamic_multiple_for_volume,
             historical_window_average_btc_with_min_samples, liquidation_context_for_window,
             market_context_from_snapshots, percentile_level_for_volume,
+            rolling_window_stats_with_config, RollingWindowStatsOptions,
         },
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
-        detector::detect_contract_whale_signal,
+        detector::{
+            inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason,
+        },
         event_lifecycle::apply_contract_whale_event_lifecycle,
-        event_quality::apply_contract_whale_event_quality_filter,
+        event_quality::{
+            apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
+        },
         log_events,
         merge::merge_contract_whale_signals,
         trajectory::apply_contract_whale_trajectories,
         types::{
-            ContractWhaleDirection, ContractWhaleDiscordDryRunStats, ContractWhaleExchangeStatus,
-            ContractWhaleLatestResponse, ContractWhaleLiquidationContext,
+            ContractFlowBucket, ContractWhaleDirection, ContractWhaleDiscordDryRunStats,
+            ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
+            ContractWhaleLiquidationContext,
             ContractWhaleMarketCapability, ContractWhaleMarketContext,
             ContractWhaleMarketStructureLite, ContractWhaleMarketType,
             ContractWhalePercentileThreshold, ContractWhalePlatformCapability,
@@ -67,6 +73,7 @@ pub struct ContractWhaleQuery {
     pub to: Option<String>,
     pub offset: Option<String>,
     pub include_hidden: Option<String>,
+    pub hide_stale: Option<String>,
 }
 
 type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
@@ -77,6 +84,83 @@ pub struct ContractWhaleQualityBaseline {
     pub dynamic_baseline_btc: Option<f64>,
     pub dynamic_threshold_level: String,
     pub percentile_level: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhalePipelineDebugResponse {
+    symbol: String,
+    range: String,
+    raw_flow: PipelineRawFlowDebug,
+    rolling_windows: BTreeMap<String, PipelineRollingWindowDebug>,
+    detector: PipelineDetectorDebug,
+    persistence: PipelinePersistenceDebug,
+    history: PipelineHistoryDebug,
+    latest: PipelineLatestDebug,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineRawFlowDebug {
+    flow_1s_rows: usize,
+    oldest_ts: Option<i64>,
+    newest_ts: Option<i64>,
+    buy_volume_btc: f64,
+    sell_volume_btc: f64,
+    total_volume_btc: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineRollingWindowDebug {
+    windows: usize,
+    max_total_volume_btc: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineDetectorDebug {
+    input_windows: usize,
+    candidates: usize,
+    accepted: usize,
+    rejected: usize,
+    reject_reasons: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelinePersistenceDebug {
+    persist_attempts: usize,
+    persist_success: usize,
+    persist_skipped: usize,
+    skip_reasons: BTreeMap<String, usize>,
+    persist_errors: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineHistoryDebug {
+    contract_whale_signals_rows: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineLatestDebug {
+    latest_count: usize,
+    stale_count: usize,
+    max_age_sec: i64,
+    items: Vec<PipelineLatestItemDebug>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PipelineLatestItemDebug {
+    event_id: String,
+    ts: i64,
+    age_sec: i64,
+    is_stale: bool,
+    stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -166,6 +250,9 @@ pub async fn contract_whale_latest_route(
 ) -> ApiJsonResult {
     let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
     let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+    let hide_stale = parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
+    let range = query.range.clone().or_else(|| Some("24h".to_string()));
+    let stale_after_ts = parse_range_start_ms(range.as_deref())?;
     let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
     let flow_state = state.flow_state_for_symbol(&symbol);
     let venue_health = state.venue_health();
@@ -185,7 +272,12 @@ pub async fn contract_whale_latest_route(
             Some(meta),
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        return Ok(Json(serde_json::json!(response)));
+        return Ok(Json(with_latest_stale_annotations(
+            response,
+            stale_after_ts,
+            range.as_deref(),
+            hide_stale,
+        )));
     }
     if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
         let mut response = build_contract_whale_response_with_runtime(
@@ -198,7 +290,12 @@ pub async fn contract_whale_latest_route(
             Some(&venue_health),
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        return Ok(Json(serde_json::json!(response)));
+        return Ok(Json(with_latest_stale_annotations(
+            response,
+            stale_after_ts,
+            range.as_deref(),
+            hide_stale,
+        )));
     }
     if let Some(store) = store.as_ref() {
         match store.query_contract_whale_signals(&ContractWhaleSignalQuery {
@@ -231,7 +328,12 @@ pub async fn contract_whale_latest_route(
                     exchange_filter.as_deref(),
                 );
                 enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-                return Ok(Json(serde_json::json!(response)));
+                return Ok(Json(with_latest_stale_annotations(
+                    response,
+                    stale_after_ts,
+                    range.as_deref(),
+                    hide_stale,
+                )));
             }
             Ok(_) => {}
             Err(error) => {
@@ -275,7 +377,12 @@ pub async fn contract_whale_latest_route(
         exchange_filter.as_deref(),
     );
     enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-    Ok(Json(serde_json::json!(response)))
+    Ok(Json(with_latest_stale_annotations(
+        response,
+        stale_after_ts,
+        range.as_deref(),
+        hide_stale,
+    )))
 }
 
 pub fn build_contract_whale_response(
@@ -908,6 +1015,468 @@ pub async fn contract_whale_metrics_route(State(state): State<AppState>) -> impl
     )
 }
 
+pub async fn contract_whale_pipeline_debug_route(
+    State(state): State<AppState>,
+    Query(query): Query<ContractWhaleQuery>,
+) -> ApiJsonResult {
+    let response = contract_whale_pipeline_debug_for_query(state, query);
+    Ok(Json(serde_json::to_value(response).unwrap_or_else(|_| {
+        serde_json::json!({
+            "symbol": "BTC",
+            "range": "24h",
+            "error": "serialize_failed"
+        })
+    })))
+}
+
+fn contract_whale_pipeline_debug_for_query(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> ContractWhalePipelineDebugResponse {
+    let symbol = match parse_symbol_for_latest(query.symbol.as_deref()) {
+        Ok(value) => value,
+        Err(_) => {
+            return ContractWhalePipelineDebugResponse {
+                symbol: "BTC".to_string(),
+                range: query.range.unwrap_or_else(|| "24h".to_string()),
+                error: Some("bad_request".to_string()),
+                ..ContractWhalePipelineDebugResponse::default()
+            };
+        }
+    };
+    let history_query = match parse_history_query(&query) {
+        Ok(value) => value,
+        Err(_) => {
+            return ContractWhalePipelineDebugResponse {
+                symbol,
+                range: query.range.unwrap_or_else(|| "24h".to_string()),
+                error: Some("bad_request".to_string()),
+                ..ContractWhalePipelineDebugResponse::default()
+            };
+        }
+    };
+    let range = query.range.unwrap_or_else(|| "24h".to_string());
+    let now = history_query.to_ts.unwrap_or_else(now_ms);
+    let from_ts = history_query
+        .from_ts
+        .unwrap_or_else(|| now.saturating_sub(24 * 60 * 60 * 1000));
+    let Some(store) = state.contract_whale_store() else {
+        return ContractWhalePipelineDebugResponse {
+            symbol,
+            range,
+            error: Some("query_failed".to_string()),
+            ..ContractWhalePipelineDebugResponse::default()
+        };
+    };
+
+    let raw_flow_buckets = store
+        .list_contract_flow_buckets_between(&symbol, from_ts, now)
+        .unwrap_or_default();
+    let liquidation_buckets = store
+        .list_contract_liquidation_buckets_between(&symbol, from_ts, now)
+        .unwrap_or_default();
+    let oi_snapshots = store
+        .list_contract_oi_snapshots_between(&symbol, from_ts, now)
+        .unwrap_or_default();
+    let funding_snapshots = store
+        .list_contract_funding_snapshots_between(&symbol, from_ts, now)
+        .unwrap_or_default();
+    let history_rows = store
+        .query_contract_whale_signals(&history_query)
+        .unwrap_or_default();
+    let latest_rows = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some(symbol.clone()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap_or_default();
+
+    let raw_flow = summarize_pipeline_raw_flow(&raw_flow_buckets);
+    let latest = build_pipeline_latest_debug(&latest_rows, Some(from_ts), Some(&range), now);
+    let (rolling_windows, detector, accepted_signals) =
+        replay_pipeline_detector_debug(&store, &symbol, from_ts, now, &raw_flow_buckets, &liquidation_buckets, &oi_snapshots, &funding_snapshots);
+    let persistence = project_pipeline_persistence_debug(accepted_signals, history_rows.len());
+
+    tracing::info!(
+        target: CWM_LOG_TARGET,
+        event = log_events::SIGNAL_GENERATED,
+        symbol = symbol.as_str(),
+        range = range.as_str(),
+        raw_flow_rows = raw_flow.flow_1s_rows,
+        detector_input_windows = detector.input_windows,
+        detector_accepted = detector.accepted,
+        detector_rejected = detector.rejected,
+        history_rows = history_rows.len(),
+        stale_latest_count = latest.stale_count,
+        latest_max_age_sec = latest.max_age_sec,
+        "{} pipeline debug snapshot",
+        CWM_LOG_PREFIX
+    );
+
+    ContractWhalePipelineDebugResponse {
+        symbol,
+        range,
+        raw_flow,
+        rolling_windows,
+        detector,
+        persistence,
+        history: PipelineHistoryDebug {
+            contract_whale_signals_rows: history_rows.len(),
+        },
+        latest,
+        error: None,
+    }
+}
+
+fn summarize_pipeline_raw_flow(buckets: &[ContractFlowBucket]) -> PipelineRawFlowDebug {
+    let buy_volume_btc = buckets.iter().map(|bucket| bucket.buy_volume_btc).sum::<f64>();
+    let sell_volume_btc = buckets.iter().map(|bucket| bucket.sell_volume_btc).sum::<f64>();
+    PipelineRawFlowDebug {
+        flow_1s_rows: buckets.len(),
+        oldest_ts: buckets.iter().map(|bucket| bucket.ts_bucket).min(),
+        newest_ts: buckets.iter().map(|bucket| bucket.ts_bucket).max(),
+        buy_volume_btc: round_for_route(buy_volume_btc, 3),
+        sell_volume_btc: round_for_route(sell_volume_btc, 3),
+        total_volume_btc: round_for_route(buy_volume_btc + sell_volume_btc, 3),
+    }
+}
+
+fn replay_pipeline_detector_debug(
+    store: &impl ContractWhaleRepo,
+    symbol: &str,
+    from_ts: i64,
+    to_ts: i64,
+    raw_flow_buckets: &[ContractFlowBucket],
+    liquidation_buckets: &[crate::contract_whale_monitor::types::ContractLiquidationBucket],
+    oi_snapshots: &[crate::contract_whale_monitor::types::ContractOiSnapshot],
+    funding_snapshots: &[crate::contract_whale_monitor::types::ContractFundingSnapshot],
+) -> (
+    BTreeMap<String, PipelineRollingWindowDebug>,
+    PipelineDetectorDebug,
+    Vec<ContractWhaleSignal>,
+) {
+    let config = contract_whale_runtime_config();
+    let min_dynamic_samples = config.data_quality.min_dynamic_samples;
+    let lookback_from = to_ts.saturating_sub(7 * 24 * 60 * 60 * 1000);
+    let baseline_buckets = store
+        .list_contract_flow_buckets_between(symbol, lookback_from, to_ts)
+        .unwrap_or_else(|_| raw_flow_buckets.to_vec());
+    let mut rolling_windows = BTreeMap::new();
+    let mut detector = PipelineDetectorDebug::default();
+    let mut accepted_signals = Vec::new();
+
+    for window_sec in [5_u64, 15, 60] {
+        let threshold = compute_percentile_threshold(
+            &baseline_buckets,
+            symbol,
+            "all",
+            window_sec,
+            lookback_from,
+            to_ts,
+            to_ts,
+        );
+        let timestamps = detector_window_timestamps(raw_flow_buckets, symbol, from_ts, to_ts);
+        let mut window_debug = PipelineRollingWindowDebug::default();
+
+        for now_ts in timestamps.iter().copied() {
+            let current_price_move_pct =
+                price_move_pct_for_window(raw_flow_buckets, symbol, window_sec, now_ts);
+            let dynamic_to = now_ts.saturating_sub((window_sec as i64).saturating_mul(1000));
+            let dynamic_from = dynamic_to.saturating_sub(60 * 60 * 1000);
+            let dynamic_baseline_btc = historical_window_average_btc_with_min_samples(
+                &baseline_buckets,
+                symbol,
+                window_sec,
+                dynamic_from,
+                dynamic_to,
+                min_dynamic_samples,
+            );
+            let stats = rolling_window_stats_with_config(
+                raw_flow_buckets,
+                symbol,
+                window_sec,
+                now_ts,
+                RollingWindowStatsOptions {
+                    price_move_pct: current_price_move_pct,
+                    dynamic_multiple: None,
+                    dynamic_baseline_btc,
+                    dynamic_threshold_level: String::new(),
+                    data_quality: 0,
+                    config: &config,
+                },
+            );
+            let Some(mut stats) = stats else {
+                continue;
+            };
+            let dynamic_multiple =
+                dynamic_multiple_for_volume(stats.total_volume_btc, dynamic_baseline_btc);
+            let percentile_level = percentile_level_for_volume(stats.total_volume_btc, threshold.as_ref());
+            stats.dynamic_multiple = dynamic_multiple;
+            stats.dynamic_baseline_btc = dynamic_baseline_btc;
+            stats.dynamic_threshold_level = dynamic_threshold_level(dynamic_multiple, percentile_level);
+            stats.percentile_level = percentile_level;
+            stats.data_quality = detector_data_quality(stats.exchange_count);
+            stats.liquidation_context = liquidation_context_for_window(
+                liquidation_buckets,
+                symbol,
+                window_sec,
+                now_ts,
+                stats.total_volume_btc,
+            );
+            stats.market_context =
+                market_context_from_snapshots(oi_snapshots, funding_snapshots, symbol, now_ts);
+            detector.input_windows += 1;
+            detector.candidates += 1;
+            window_debug.windows += 1;
+            window_debug.max_total_volume_btc =
+                window_debug.max_total_volume_btc.max(stats.total_volume_btc);
+
+            let decision = inspect_contract_whale_signal_with_config(&stats, &config);
+            if let Some(signal) = decision.signal {
+                detector.accepted += 1;
+                accepted_signals.push(signal);
+            } else {
+                detector.rejected += 1;
+                let key = detector_reject_reason_key(decision.reject_reason);
+                *detector.reject_reasons.entry(key).or_default() += 1;
+            }
+        }
+
+        window_debug.max_total_volume_btc = round_for_route(window_debug.max_total_volume_btc, 3);
+        rolling_windows.insert(format!("{window_sec}s"), window_debug);
+    }
+
+    (rolling_windows, detector, accepted_signals)
+}
+
+fn detector_window_timestamps(
+    buckets: &[ContractFlowBucket],
+    symbol: &str,
+    from_ts: i64,
+    to_ts: i64,
+) -> Vec<i64> {
+    let mut timestamps = buckets
+        .iter()
+        .filter(|bucket| bucket.symbol.eq_ignore_ascii_case(symbol))
+        .map(|bucket| bucket.ts_bucket)
+        .filter(|ts| *ts >= from_ts && *ts <= to_ts)
+        .collect::<Vec<_>>();
+    timestamps.sort_unstable();
+    timestamps.dedup();
+    timestamps
+}
+
+fn detector_data_quality(exchange_count: usize) -> u8 {
+    match exchange_count {
+        0 => 40,
+        1 => 70,
+        _ => 85,
+    }
+}
+
+fn price_move_pct_for_window(
+    buckets: &[ContractFlowBucket],
+    symbol: &str,
+    window_sec: u64,
+    now_ts: i64,
+) -> Option<f64> {
+    let start_ts = now_ts.saturating_sub((window_sec as i64).saturating_mul(1000));
+    let mut prices = buckets
+        .iter()
+        .filter(|bucket| bucket.symbol.eq_ignore_ascii_case(symbol))
+        .filter(|bucket| bucket.ts_bucket >= start_ts && bucket.ts_bucket <= now_ts)
+        .filter_map(|bucket| bucket.vwap.map(|price| (bucket.ts_bucket, price)))
+        .collect::<Vec<_>>();
+    prices.sort_by_key(|(ts, _)| *ts);
+    let (_, first) = prices.first().copied()?;
+    let (_, last) = prices.last().copied()?;
+    if first <= f64::EPSILON || !first.is_finite() || !last.is_finite() {
+        return None;
+    }
+    Some(((last - first) / first) * 100.0)
+}
+
+fn detector_reject_reason_key(reason: Option<ContractWhaleDetectorRejectReason>) -> String {
+    match reason.unwrap_or(ContractWhaleDetectorRejectReason::Unknown) {
+        ContractWhaleDetectorRejectReason::BelowVolumeThreshold
+        | ContractWhaleDetectorRejectReason::ZeroVolume => "below_volume_threshold".to_string(),
+        ContractWhaleDetectorRejectReason::BelowNotionalThreshold => {
+            "below_notional_threshold".to_string()
+        }
+        ContractWhaleDetectorRejectReason::DynamicMultipleTooLow => {
+            "dynamic_multiple_too_low".to_string()
+        }
+        ContractWhaleDetectorRejectReason::PercentileTooLow => "percentile_too_low".to_string(),
+        ContractWhaleDetectorRejectReason::DominanceTooLow => "dominance_too_low".to_string(),
+        ContractWhaleDetectorRejectReason::DataQualityTooLow => "data_quality_too_low".to_string(),
+        ContractWhaleDetectorRejectReason::Warmup => "warmup".to_string(),
+        ContractWhaleDetectorRejectReason::MultiExchangeNotConfirmed => {
+            "multi_exchange_not_confirmed".to_string()
+        }
+        ContractWhaleDetectorRejectReason::SameDirectionPriceMoveTooLow => {
+            "same_direction_price_move_too_low".to_string()
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+fn project_pipeline_persistence_debug(
+    accepted_signals: Vec<ContractWhaleSignal>,
+    persisted_history_rows: usize,
+) -> PipelinePersistenceDebug {
+    if accepted_signals.is_empty() {
+        return PipelinePersistenceDebug::default();
+    }
+    let mut merged = merge_contract_whale_signals(accepted_signals);
+    let reference_now = merged.iter().map(|signal| signal.ts).max().unwrap_or_else(now_ms);
+    decorate_and_filter_price_deviated_signals(
+        &mut merged,
+        None,
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
+    let price_filtered = merged
+        .iter()
+        .filter(|signal| signal.price_deviation_filtered)
+        .count();
+    merged = apply_contract_whale_event_lifecycle(merged, reference_now);
+    let quality_decorated = decorate_contract_whale_event_quality(merged);
+    let quality_filtered = quality_decorated
+        .iter()
+        .filter(|signal| !signal.event_quality.valid)
+        .count();
+    let persist_attempts = quality_decorated
+        .iter()
+        .filter(|signal| !signal.price_deviation_filtered && signal.event_quality.valid)
+        .count();
+    let persist_success = persisted_history_rows.min(persist_attempts);
+    let mut skip_reasons = BTreeMap::new();
+    if price_filtered > 0 {
+        skip_reasons.insert("price_deviation_filtered".to_string(), price_filtered);
+    }
+    if quality_filtered > 0 {
+        skip_reasons.insert("bad_quality".to_string(), quality_filtered);
+    }
+    PipelinePersistenceDebug {
+        persist_attempts,
+        persist_success,
+        persist_skipped: price_filtered + quality_filtered,
+        skip_reasons,
+        persist_errors: 0,
+    }
+}
+
+fn build_pipeline_latest_debug(
+    latest_rows: &[ContractWhaleSignal],
+    stale_after_ts: Option<i64>,
+    range_label: Option<&str>,
+    now_ts: i64,
+) -> PipelineLatestDebug {
+    let items = latest_rows
+        .iter()
+        .map(|signal| stale_debug_item(signal, stale_after_ts, range_label, now_ts))
+        .collect::<Vec<_>>();
+    let stale_count = items.iter().filter(|item| item.is_stale).count();
+    let max_age_sec = items.iter().map(|item| item.age_sec).max().unwrap_or(0);
+    PipelineLatestDebug {
+        latest_count: items.len(),
+        stale_count,
+        max_age_sec,
+        items,
+    }
+}
+
+fn stale_debug_item(
+    signal: &ContractWhaleSignal,
+    stale_after_ts: Option<i64>,
+    range_label: Option<&str>,
+    now_ts: i64,
+) -> PipelineLatestItemDebug {
+    let age_sec = now_ts
+        .saturating_sub(signal.ts)
+        .max(0)
+        .saturating_div(1000);
+    let is_stale = stale_after_ts.is_some_and(|cutoff| signal.ts < cutoff);
+    PipelineLatestItemDebug {
+        event_id: if signal.event_lifecycle.event_id.is_empty() {
+            signal.id.clone()
+        } else {
+            signal.event_lifecycle.event_id.clone()
+        },
+        ts: signal.ts,
+        age_sec,
+        is_stale,
+        stale_reason: is_stale.then(|| stale_reason_for_range(range_label)),
+    }
+}
+
+fn stale_reason_for_range(range_label: Option<&str>) -> String {
+    match range_label
+        .unwrap_or("24h")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "15m" => "older_than_15m".to_string(),
+        "1h" => "older_than_1h".to_string(),
+        "4h" => "older_than_4h".to_string(),
+        "24h" => "older_than_24h".to_string(),
+        "7d" => "older_than_7d".to_string(),
+        _ => "older_than_requested_range".to_string(),
+    }
+}
+
+fn with_latest_stale_annotations(
+    response: ContractWhaleLatestResponse,
+    stale_after_ts: Option<i64>,
+    range_label: Option<&str>,
+    hide_stale: bool,
+) -> serde_json::Value {
+    let now = now_ms();
+    let latest_debug = build_pipeline_latest_debug(&response.items, stale_after_ts, range_label, now);
+    tracing::info!(
+        target: CWM_LOG_TARGET,
+        event = log_events::SIGNAL_GENERATED,
+        latest_count = latest_debug.latest_count,
+        stale_count = latest_debug.stale_count,
+        max_age_sec = latest_debug.max_age_sec,
+        "{} latest stale summary",
+        CWM_LOG_PREFIX
+    );
+    let mut value = serde_json::to_value(response).unwrap_or_else(|_| serde_json::json!({}));
+    let annotated_items = value
+        .get_mut("items")
+        .and_then(|items| items.as_array_mut())
+        .map(|items| {
+            let mut annotated = Vec::with_capacity(items.len());
+            for (item, stale) in items.drain(..).zip(latest_debug.items.iter()) {
+                if hide_stale && stale.is_stale {
+                    continue;
+                }
+                let mut object = item.as_object().cloned().unwrap_or_default();
+                object.insert("ageSec".to_string(), serde_json::json!(stale.age_sec));
+                object.insert("isStale".to_string(), serde_json::json!(stale.is_stale));
+                object.insert(
+                    "staleReason".to_string(),
+                    stale
+                        .stale_reason
+                        .as_ref()
+                        .map(|reason| serde_json::json!(reason))
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                annotated.push(serde_json::Value::Object(object));
+            }
+            annotated
+        })
+        .unwrap_or_default();
+    if let Some(items) = value.get_mut("items").and_then(|items| items.as_array_mut()) {
+        *items = annotated_items;
+    }
+    value
+}
+
 pub fn build_contract_whale_metrics_text(
     enabled: bool,
     exchanges: &BTreeMap<String, ContractWhaleExchangeStatus>,
@@ -1088,23 +1657,51 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
         };
     }
 
-    let mut items: Vec<ContractWhaleSignal> = [5_u64, 15, 60]
-        .into_iter()
-        .filter_map(|window_sec| flow_window_for_seconds(flow_state, window_sec))
-        .filter_map(|window| {
-            stats_from_flow_window(
-                window,
-                symbol,
-                now,
-                runtime.baselines,
-                runtime.liquidations,
-                runtime.market_context,
-                runtime.booted_at_ms,
-            )
-        })
-        .filter_map(|stats| detect_contract_whale_signal(&stats))
-        .filter(|signal| severity_matches(signal.severity, severity))
-        .collect();
+    let mut detector_reject_reasons: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut detector_input_windows = 0usize;
+    let mut detector_accepted = 0usize;
+    let mut items: Vec<ContractWhaleSignal> = Vec::new();
+    for window_sec in [5_u64, 15, 60] {
+        let Some(window) = flow_window_for_seconds(flow_state, window_sec) else {
+            continue;
+        };
+        let Some(stats) = stats_from_flow_window(
+            window,
+            symbol,
+            now,
+            runtime.baselines,
+            runtime.liquidations,
+            runtime.market_context,
+            runtime.booted_at_ms,
+        ) else {
+            continue;
+        };
+        detector_input_windows += 1;
+        let decision = inspect_contract_whale_signal_with_config(
+            &stats,
+            &contract_whale_runtime_config(),
+        );
+        if let Some(signal) = decision.signal {
+            detector_accepted += 1;
+            if severity_matches(signal.severity, severity) {
+                items.push(signal);
+            }
+        } else if let Some(reason) = decision.reject_reason {
+            *detector_reject_reasons.entry(reason.as_key()).or_default() += 1;
+        }
+    }
+    tracing::info!(
+        target: CWM_LOG_TARGET,
+        event = log_events::SIGNAL_GENERATED,
+        symbol = symbol,
+        input_windows = detector_input_windows,
+        candidates = detector_input_windows,
+        accepted = detector_accepted,
+        rejected = detector_input_windows.saturating_sub(detector_accepted),
+        reject_reasons = ?detector_reject_reasons,
+        "{} detector round summary",
+        CWM_LOG_PREFIX
+    );
     items = merge_contract_whale_signals(items);
     decorate_and_filter_price_deviated_signals(
         &mut items,

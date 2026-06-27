@@ -110,6 +110,90 @@ async fn contract_events_debug_counts_reports_filter_chain_and_projection_counts
     server.abort();
 }
 
+#[tokio::test]
+async fn contract_whale_pipeline_debug_reports_zero_history_and_stale_latest_for_btc() {
+    let state = seeded_pipeline_debug_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/pipeline-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("pipeline debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("pipeline debug json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert_eq!(payload["range"], "24h");
+    assert_eq!(payload["rawFlow"]["flow1sRows"], 0);
+    assert_eq!(payload["history"]["contractWhaleSignalsRows"], 0);
+    assert_eq!(payload["latest"]["latestCount"], 1);
+    assert_eq!(payload["latest"]["staleCount"], 1);
+    assert_eq!(payload["latest"]["items"][0]["isStale"], true);
+    assert_eq!(
+        payload["latest"]["items"][0]["staleReason"],
+        "older_than_24h"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_latest_marks_old_snapshots_stale_and_can_hide_them() {
+    let state = seeded_pipeline_debug_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latest?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("latest response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("latest json");
+    let items = payload["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["isStale"], true);
+    assert_eq!(items[0]["staleReason"], "older_than_24h");
+    assert!(items[0]["ageSec"].as_i64().unwrap_or_default() >= 24 * 60 * 60);
+
+    let hidden_response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latest?symbol=BTC&range=24h&hide_stale=true"
+        ))
+        .send()
+        .await
+        .expect("latest hide stale response");
+
+    assert_eq!(hidden_response.status(), StatusCode::OK);
+    let hidden_payload: serde_json::Value =
+        hidden_response.json().await.expect("latest hide stale json");
+    let hidden_items = hidden_payload["items"].as_array().expect("items array");
+    assert!(hidden_items.is_empty());
+
+    server.abort();
+}
+
 fn seeded_contract_event_state() -> AppState {
     let config = test_config(temp_sqlite_path("contract-event-routes"));
     let state = AppState::new(config);
@@ -139,6 +223,27 @@ fn seeded_contract_event_state() -> AppState {
     store.upsert_contract_whale_signal(&old_visible).unwrap();
     store.upsert_contract_whale_signal(&hidden_price).unwrap();
     store.upsert_contract_whale_signal(&hidden_quality).unwrap();
+
+    state
+}
+
+fn seeded_pipeline_debug_state() -> AppState {
+    let config = test_config(temp_sqlite_path("contract-whale-pipeline-debug"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let stale_signal = base_signal("btc-stale", now - 26 * 60 * 60 * 1000);
+    let fresh_eth = {
+        let mut signal = base_signal("eth-fresh", now - 5 * 60 * 1000);
+        signal.symbol = "ETH".to_string();
+        signal.base_asset = "ETH".to_string();
+        signal.quantity_unit = "ETH".to_string();
+        signal.id = format!("contract-whale:ETH:15:{}:eth-fresh", signal.ts);
+        signal
+    };
+
+    store.upsert_contract_whale_signal(&stale_signal).unwrap();
+    store.upsert_contract_whale_signal(&fresh_eth).unwrap();
 
     state
 }

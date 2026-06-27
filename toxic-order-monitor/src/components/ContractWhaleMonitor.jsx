@@ -438,6 +438,7 @@ export default function ContractWhaleMonitor() {
         contractEvents={state.contractEvents}
         debugCounts={state.contractEventDebugCounts}
         enabled={summary.enabled}
+        latestItems={state.items}
         finalEvents={state.finalEvents}
         finalEventsHasMore={state.finalEventsHasMore}
         hiddenContractEvents={state.hiddenContractEvents}
@@ -453,6 +454,7 @@ export default function ContractWhaleMonitor() {
         latestSignalTs={latestSignalTs}
         contractEventsLastEventTs={state.contractEventsLastEventTs}
         contractEventsHasMore={state.contractEventsHasMore}
+        symbol={filters.symbol}
       />
 
       <WhaleTrajectoryDashboard
@@ -734,6 +736,7 @@ function RawSignalDebugSection({
   contractEvents,
   debugCounts,
   enabled,
+  latestItems,
   finalEvents,
   finalEventsHasMore,
   hiddenContractEvents,
@@ -749,6 +752,7 @@ function RawSignalDebugSection({
   eventsSyncLag,
   latestSignalTs,
   contractEventsLastEventTs,
+  symbol,
 }) {
   const historicalVolumeLabel = "窗口总流量 BTC";
   const lifecycleVolumeLabel = "生命周期累计流量 BTC";
@@ -760,12 +764,16 @@ function RawSignalDebugSection({
   const hiddenCount = Number(debugCounts?.visibility?.hiddenCount ?? 0);
   const backendReturnedCount = Number(debugCounts?.apiQuery?.returnedItems ?? visibleCount);
   const latestCount = Number(debugCounts?.latest?.latestCount ?? 0);
+  const latestStaleCount = Number(
+    debugCounts?.latest?.staleCount ?? latestItems?.filter((item) => item?.isStale).length ?? 0,
+  );
   const finalActiveCount = Number(debugCounts?.finalEventsV2?.activeCount ?? activeItems.length ?? 0);
   const finalClosedCount = Number(debugCounts?.finalEventsV2?.closedCount ?? closedItems.length ?? 0);
   const rawDbCount = Number(debugCounts?.db?.contractWhaleSignalsBtc24h ?? 0);
   const hiddenReasons = debugCounts?.visibility?.hiddenReasons || {};
   const dominantHiddenReason = hiddenCount > 0 ? summarizeHiddenReasons(hiddenReasons) : null;
   const showLatestHistoryDriftHint = latestCount > visibleCount;
+  const showStaleLatestOnlyWarning = latestCount > 0 && latestStaleCount === latestCount && visibleCount === 0;
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -795,6 +803,11 @@ function RawSignalDebugSection({
               {showLatestHistoryDriftHint ? (
                 <p className="text-[11px] text-cyan-200/90">
                   latest 是实时快照，history 是持久化历史事件流；两者不是同一数据源，latest 里的信号可能尚未持久化、被过滤或被合并。
+                </p>
+              ) : null}
+              {showStaleLatestOnlyWarning ? (
+                <p className="text-[11px] text-amber-200/90">
+                  {symbol} latest 为旧快照，最近 24h 没有新的 {symbol} 主力历史信号。
                 </p>
               ) : null}
               {hiddenCount > 0 ? (

@@ -493,6 +493,36 @@ describe("contract whale api", () => {
     expect(payload.items.map((item) => item.id)).toEqual(["right-symbol"]);
   });
 
+  it("normalizes stale latest metadata and can request hide_stale filtering", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [
+          contractWhaleItem({
+            id: "stale-btc-row",
+            ts: 1_700_000_000_000,
+            ageSec: 90_100,
+            isStale: true,
+            staleReason: "older_than_24h",
+          }),
+        ],
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20, "BTC", { hide_stale: true });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/latest?limit=20&symbol=BTC&hide_stale=true",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(payload.items).toHaveLength(1);
+    expect(payload.items[0]).toMatchObject({
+      id: "stale-btc-row",
+      ageSec: 90_100,
+      isStale: true,
+      staleReason: "older_than_24h",
+    });
+  });
+
   it("fetches history with server-side filters", async () => {
     axios.get.mockResolvedValueOnce({
       data: {

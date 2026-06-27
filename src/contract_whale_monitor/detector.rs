@@ -17,6 +17,52 @@ use super::{
     LOG_PREFIX, LOG_TARGET,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractWhaleDetectorRejectReason {
+    SymbolDisabled,
+    NoActiveContractSources,
+    ZeroVolume,
+    DataQualityTooLow,
+    NeutralNetVolume,
+    BelowVolumeThreshold,
+    BelowNotionalThreshold,
+    DynamicMultipleTooLow,
+    PercentileTooLow,
+    DominanceTooLow,
+    Warmup,
+    MultiExchangeNotConfirmed,
+    SameDirectionPriceMoveTooLow,
+    Unknown,
+}
+
+impl ContractWhaleDetectorRejectReason {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::SymbolDisabled => "symbol_disabled",
+            Self::NoActiveContractSources => "no_active_contract_sources",
+            Self::ZeroVolume => "zero_volume",
+            Self::DataQualityTooLow => "data_quality_too_low",
+            Self::NeutralNetVolume => "neutral_net_volume",
+            Self::BelowVolumeThreshold => "below_volume_threshold",
+            Self::BelowNotionalThreshold => "below_notional_threshold",
+            Self::DynamicMultipleTooLow => "dynamic_multiple_too_low",
+            Self::PercentileTooLow => "percentile_too_low",
+            Self::DominanceTooLow => "dominance_too_low",
+            Self::Warmup => "warmup",
+            Self::MultiExchangeNotConfirmed => "multi_exchange_not_confirmed",
+            Self::SameDirectionPriceMoveTooLow => "same_direction_price_move_too_low",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleDetectionDecision {
+    pub signal: Option<ContractWhaleSignal>,
+    pub reject_reason: Option<ContractWhaleDetectorRejectReason>,
+}
+
 pub fn detect_contract_whale_signal(
     stats: &ContractWhaleWindowStats,
 ) -> Option<ContractWhaleSignal> {
@@ -27,27 +73,44 @@ pub fn detect_contract_whale_signal_with_config(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
 ) -> Option<ContractWhaleSignal> {
+    inspect_contract_whale_signal_with_config(stats, config).signal
+}
+
+pub fn inspect_contract_whale_signal_with_config(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> ContractWhaleDetectionDecision {
     if !config.symbol_enabled(&stats.symbol) {
-        return None;
+        return rejected(ContractWhaleDetectorRejectReason::SymbolDisabled);
     }
     let resolution = config.threshold_profile_resolution_for_observed_sources(
         stats.exchanges.iter().map(|item| item.exchange.clone()),
     );
     if resolution.active_contract_sources.is_empty() {
-        return None;
+        return rejected(ContractWhaleDetectorRejectReason::NoActiveContractSources);
     }
     let mut scoring_stats = stats.clone();
     scoring_stats.data_quality = effective_data_quality(&scoring_stats, config, &resolution);
-    if scoring_stats.total_volume_btc <= 0.0 || scoring_stats.data_quality < 50 {
-        return None;
+    if scoring_stats.total_volume_btc <= 0.0 {
+        return rejected(ContractWhaleDetectorRejectReason::ZeroVolume);
+    }
+    if scoring_stats.data_quality < 50 {
+        return rejected(ContractWhaleDetectorRejectReason::DataQualityTooLow);
     }
     let price_response_type = classify_price_response(&scoring_stats);
-    let signal_type = classify_signal_type(&scoring_stats, price_response_type)?;
+    let Some(signal_type) = classify_signal_type(&scoring_stats, price_response_type) else {
+        return rejected(ContractWhaleDetectorRejectReason::NeutralNetVolume);
+    };
     let liquidation_suspected = liquidation_suspected(&scoring_stats, config);
     scoring_stats.liquidation_driven = liquidation_suspected;
     let severity = classify_severity(&scoring_stats, signal_type, config, &resolution);
     if severity == ContractWhaleSeverity::Calm {
-        return None;
+        return rejected(reject_reason_for_calm(
+            &scoring_stats,
+            signal_type,
+            config,
+            &resolution,
+        ));
     }
     let score_breakdown = score_contract_whale_breakdown_with_profile(
         &scoring_stats,
@@ -212,7 +275,17 @@ pub fn detect_contract_whale_signal_with_config(
         "{} signal generated",
         LOG_PREFIX
     );
-    Some(signal)
+    ContractWhaleDetectionDecision {
+        signal: Some(signal),
+        reject_reason: None,
+    }
+}
+
+fn rejected(reason: ContractWhaleDetectorRejectReason) -> ContractWhaleDetectionDecision {
+    ContractWhaleDetectionDecision {
+        signal: None,
+        reject_reason: Some(reason),
+    }
 }
 
 fn signal_price_usd(stats: &ContractWhaleWindowStats) -> Option<f64> {
@@ -678,6 +751,52 @@ fn classify_severity(
         return ContractWhaleSeverity::Medium;
     }
     ContractWhaleSeverity::Calm
+}
+
+fn reject_reason_for_calm(
+    stats: &ContractWhaleWindowStats,
+    signal_type: ContractWhaleSignalType,
+    config: &ContractWhaleRuntimeConfig,
+    resolution: &ThresholdProfileResolution,
+) -> ContractWhaleDetectorRejectReason {
+    let thresholds = config.thresholds_for_symbol_window_with_profile(
+        &stats.symbol,
+        stats.window_sec,
+        resolution.profile,
+    );
+    let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
+    let dynamic_multiple = stats.dynamic_multiple.unwrap_or(0.0);
+    let percentile_level = stats.percentile_level.unwrap_or(0.0);
+    let same_direction_price_move = same_direction_price_move(stats, signal_type);
+
+    if runtime_warmup(stats, config) {
+        return ContractWhaleDetectorRejectReason::Warmup;
+    }
+    if stats.total_volume_btc < thresholds.high_btc * 0.5 && dynamic_multiple < 4.0 {
+        return ContractWhaleDetectorRejectReason::BelowVolumeThreshold;
+    }
+    if stats.total_notional_usd < notional_thresholds.high {
+        return ContractWhaleDetectorRejectReason::BelowNotionalThreshold;
+    }
+    if stats.dynamic_multiple.is_some() && dynamic_multiple < 4.0 {
+        return ContractWhaleDetectorRejectReason::DynamicMultipleTooLow;
+    }
+    if stats.percentile_level.is_some() && percentile_level < 99.0 {
+        return ContractWhaleDetectorRejectReason::PercentileTooLow;
+    }
+    if stats.dominance < 0.55 {
+        return ContractWhaleDetectorRejectReason::DominanceTooLow;
+    }
+    if stats.data_quality < 65 {
+        return ContractWhaleDetectorRejectReason::DataQualityTooLow;
+    }
+    if stats.exchange_count >= 2 && !multi_exchange_confirmed_with_config(stats, config, resolution) {
+        return ContractWhaleDetectorRejectReason::MultiExchangeNotConfirmed;
+    }
+    if same_direction_price_move <= 0.0 {
+        return ContractWhaleDetectorRejectReason::SameDirectionPriceMoveTooLow;
+    }
+    ContractWhaleDetectorRejectReason::Unknown
 }
 
 fn dynamic_threshold_pass(dynamic_multiple: Option<f64>, required_multiple: f64) -> bool {

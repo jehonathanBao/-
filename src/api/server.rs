@@ -75,6 +75,10 @@ pub fn router(state: AppState) -> Router {
             get(contract_whale_routes::contract_whale_history_route),
         )
         .route(
+            "/api/contract-whale/pipeline-debug",
+            get(contract_whale_routes::contract_whale_pipeline_debug_route),
+        )
+        .route(
             "/api/contract-whale/events",
             get(main_force_event_routes::main_force_events_route),
         )
