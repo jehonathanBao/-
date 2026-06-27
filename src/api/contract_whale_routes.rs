@@ -66,6 +66,7 @@ pub struct ContractWhaleQuery {
     pub from: Option<String>,
     pub to: Option<String>,
     pub offset: Option<String>,
+    pub include_hidden: Option<String>,
 }
 
 type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
@@ -457,8 +458,8 @@ fn refresh_response_summary_from_items(
     );
 }
 
-fn decorate_and_filter_price_deviated_signals(
-    items: &mut Vec<ContractWhaleSignal>,
+pub fn decorate_price_deviation_signals(
+    items: &mut [ContractWhaleSignal],
     current_market_price_usd: Option<f64>,
     max_deviation_pct: f64,
 ) {
@@ -487,6 +488,14 @@ fn decorate_and_filter_price_deviated_signals(
             .price_deviation_pct
             .is_some_and(|value| value > max_deviation_pct);
     }
+}
+
+fn decorate_and_filter_price_deviated_signals(
+    items: &mut Vec<ContractWhaleSignal>,
+    current_market_price_usd: Option<f64>,
+    max_deviation_pct: f64,
+) {
+    decorate_price_deviation_signals(items, current_market_price_usd, max_deviation_pct);
     items.retain(|signal| !signal.price_deviation_filtered);
 }
 

@@ -1,6 +1,7 @@
 import axios from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
@@ -844,6 +845,8 @@ describe("contract whale api", () => {
           volumeBtc: 4_876,
           isRetentionProtected: true,
           retentionReason: "net_volume_ge_500_btc",
+          isVisible: true,
+          hiddenReason: null,
         }),
       ],
       nextCursor: "100",
@@ -852,6 +855,121 @@ describe("contract whale api", () => {
       range: "24h",
       serverTime: 1_700_000_100_000,
       lastEventTs: 1_700_000_000_000,
+    });
+  });
+
+  it("fetches contract event debug counts for history diagnostics", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        symbol: "BTC",
+        range: "24h",
+        generatedAt: "2026-06-27T00:00:00Z",
+        db: {
+          contractWhaleSignalsTotal24h: 12,
+          contractWhaleSignalsBtc24h: 8,
+          oldestTs: 1_700_000_000_000,
+          newestTs: 1_700_000_100_000,
+        },
+        apiQuery: {
+          matchedBeforeFilter: 8,
+          matchedAfterSymbolFilter: 8,
+          matchedAfterRangeFilter: 8,
+          matchedAfterSeverityFilter: null,
+          matchedAfterWindowFilter: null,
+          matchedAfterDirectionFilter: null,
+          returnedItems: 1,
+          limit: 100,
+        },
+        visibility: {
+          visibleCount: 1,
+          hiddenCount: 7,
+          hiddenReasons: {
+            priceDeviationGt5pct: 6,
+            missingPrice: 0,
+            badQuality: 1,
+            disabledMonitor: 0,
+            unknown: 0,
+          },
+        },
+        latest: {
+          latestCount: 2,
+          latestSymbols: ["BTC", "BTC"],
+        },
+        finalEventsV2: {
+          activeCount: 1,
+          closedCount: 0,
+        },
+        latestVsHistory: [
+          {
+            latestEventId: "latest-1",
+            symbol: "BTC",
+            ts: 1_700_000_090_000,
+            existsInHistory: true,
+            historyEventId: "contract-event:btc:1",
+            notInHistoryReason: null,
+          },
+          {
+            latestEventId: "latest-2",
+            symbol: "BTC",
+            ts: 1_700_000_095_000,
+            existsInHistory: false,
+            historyEventId: null,
+            notInHistoryReason: "latest_snapshot_not_persisted_yet",
+          },
+        ],
+        finalEventsProjection: {
+          source: "contract_whale_signals",
+          rawSignals: 8,
+          afterFilter: 1,
+          mergedEvents: 1,
+          active: 1,
+          closed: 0,
+          range: "24h",
+        },
+      },
+    });
+
+    const payload = await fetchContractEventDebugCounts({
+      symbol: "BTC",
+      range: "24h",
+      includeHidden: true,
+    });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-events/debug-counts?symbol=BTC&range=24h&include_hidden=true",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(payload).toMatchObject({
+      symbol: "BTC",
+      range: "24h",
+      db: {
+        contractWhaleSignalsBtc24h: 8,
+      },
+      apiQuery: {
+        returnedItems: 1,
+      },
+      visibility: {
+        visibleCount: 1,
+        hiddenCount: 7,
+        hiddenReasons: {
+          priceDeviationGt5pct: 6,
+          badQuality: 1,
+        },
+      },
+      latest: {
+        latestCount: 2,
+      },
+      finalEventsV2: {
+        activeCount: 1,
+        closedCount: 0,
+      },
+      latestVsHistory: expect.arrayContaining([
+        expect.objectContaining({
+          latestEventId: "latest-2",
+          existsInHistory: false,
+          notInHistoryReason: "latest_snapshot_not_persisted_yet",
+        }),
+      ]),
     });
   });
 
@@ -1003,6 +1121,25 @@ describe("contract whale api", () => {
     expect(signal.sourceExchangeCount).toBe(2);
     expect(signal.sourceExchanges).toEqual(["binance", "bitfinex"]);
     expect(signal.mergedWindowsSec).toEqual([5, 15]);
+  });
+
+  it("derives impact mapping from legacy percentile and threshold metadata when normalized fields are absent", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "legacy-impact-signal",
+      symbol: "BTC",
+      windowSec: 15,
+      totalVolumeBtc: 4820,
+      dynamicMultiple: 9.4,
+      dynamicThresholdLevel: "critical",
+      percentileLevel: 99.9,
+    });
+
+    expect(signal.impactScore).toBe(9.4);
+    expect(signal.percentile).toBe(99.9);
+    expect(signal.impactLevel).toBe("S");
+    expect(signal.signalLevel).toBe("S");
+    expect(signal.signalLabel).toBe("SHOCK IMPACT EVENT");
+    expect(signal.normalizedStrength).toBe("EXTREME");
   });
 
   it("normalizes signal cluster and persistence metadata", () => {

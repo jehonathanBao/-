@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -7,20 +9,30 @@ use serde::Serialize;
 
 use crate::{
     api::contract_whale_routes::{
-        build_contract_whale_history_response, encode_contract_history_cursor, parse_history_query,
-        ContractWhaleQuery,
+        build_contract_whale_items_response, decorate_price_deviation_signals,
+        encode_contract_history_cursor, parse_history_query, ContractWhaleQuery,
     },
     app::AppState,
     contract_whale_monitor::{
+        cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
-        types::{ContractWhaleDirection, ContractWhaleSeverity},
+        event_lifecycle::apply_contract_whale_event_lifecycle,
+        event_quality::decorate_contract_whale_event_quality,
+        merge::merge_contract_whale_signals,
+        trajectory::apply_contract_whale_trajectories,
+        types::{
+            ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
+            ContractWhaleTrend60s,
+        },
     },
     core_event::final_store::final_event_store::{
         build_final_events_from_contract_whale_signals, FinalEvent, VolumeDisplayContext,
     },
+    normalizers::trade::now_ms,
     storage::{
         contract_whale_repo::{
-            ContractWhaleRepo, CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+            ContractWhaleRepo, ContractWhaleSignalQuery,
+            CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
         },
         SqliteStore,
     },
@@ -51,6 +63,9 @@ pub struct ContractEventItem {
     pub source: String,
     pub is_retention_protected: bool,
     pub retention_reason: Option<String>,
+    pub is_visible: bool,
+    pub hidden_reason: Option<String>,
+    pub hidden_detail: Option<String>,
     #[serde(flatten)]
     pub final_event: FinalEvent,
 }
@@ -112,12 +127,120 @@ pub struct ContractRetentionTables {
     pub main_force_events: RetentionTableStats,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractEventDebugCountsResponse {
+    pub symbol: String,
+    pub range: String,
+    pub generated_at: String,
+    pub db: DebugDbCounts,
+    pub api_query: ApiQueryDebugCounts,
+    pub visibility: VisibilityDebugCounts,
+    pub latest: LatestDebugCounts,
+    pub final_events_v2: FinalEventsDebugCounts,
+    pub latest_vs_history: Vec<LatestVsHistoryEntry>,
+    pub final_events_projection: FinalEventsProjectionDebug,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugDbCounts {
+    pub contract_whale_signals_total_24h: i64,
+    pub contract_whale_signals_btc_24h: i64,
+    pub oldest_ts: Option<i64>,
+    pub newest_ts: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiQueryDebugCounts {
+    pub matched_before_filter: usize,
+    pub matched_after_symbol_filter: usize,
+    pub matched_after_range_filter: usize,
+    pub matched_after_severity_filter: Option<usize>,
+    pub matched_after_window_filter: Option<usize>,
+    pub matched_after_direction_filter: Option<usize>,
+    pub returned_items: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibilityDebugCounts {
+    pub visible_count: usize,
+    pub hidden_count: usize,
+    pub hidden_reasons: HiddenReasonCounts,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenReasonCounts {
+    pub price_deviation_gt_5pct: usize,
+    pub missing_price: usize,
+    pub bad_quality: usize,
+    pub disabled_monitor: usize,
+    pub unknown: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestDebugCounts {
+    pub latest_count: usize,
+    pub latest_symbols: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalEventsDebugCounts {
+    pub active_count: usize,
+    pub closed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestVsHistoryEntry {
+    pub latest_event_id: String,
+    pub symbol: String,
+    pub ts: i64,
+    pub exists_in_history: bool,
+    pub history_event_id: Option<String>,
+    pub not_in_history_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalEventsProjectionDebug {
+    pub source: String,
+    pub raw_signals: usize,
+    pub after_filter: usize,
+    pub merged_events: usize,
+    pub active: usize,
+    pub closed: usize,
+    pub range: String,
+}
+
+#[derive(Debug, Clone)]
+struct ContractEventCandidate {
+    event: FinalEvent,
+    is_visible: bool,
+    hidden_reason: Option<String>,
+    hidden_detail: Option<String>,
+}
+
 pub async fn contract_events_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult<ContractEventPage> {
     let page = contract_event_page_for_query(state, query)?;
     Ok(Json(page))
+}
+
+pub async fn contract_events_debug_counts_route(
+    State(state): State<AppState>,
+    Query(query): Query<ContractWhaleQuery>,
+) -> ApiJsonResult<ContractEventDebugCountsResponse> {
+    Ok(Json(contract_event_debug_counts_for_query(state, query)))
 }
 
 pub async fn final_events_v2_route(
@@ -153,11 +276,10 @@ fn contract_event_page_for_query(
     mut query: ContractWhaleQuery,
 ) -> Result<ContractEventPage, (StatusCode, Json<serde_json::Value>)> {
     let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
+    let include_hidden = parse_include_hidden(query.include_hidden.as_deref())?;
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
-    let symbol = history_query.symbol.as_deref().unwrap_or("BTC").to_string();
-    let config = state.config().contract_whale_monitor;
     let raw_items = state
         .contract_whale_store()
         .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
@@ -175,24 +297,16 @@ fn contract_event_page_for_query(
         })
         .flatten();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
-    let response = build_contract_whale_history_response(
-        sliced_items,
-        &symbol,
-        requested_limit,
-        None,
-        config.enabled,
-        config.dry_run,
-        None,
-    );
-
     let requested_status = normalize_status_filter(query.status.as_deref());
-    let items = response
-        .items
-        .iter()
-        .map(FinalEvent::from_contract_signal)
-        .filter(|event| status_matches(requested_status.as_deref(), &event.status))
-        .map(contract_event_from_final_event)
-        .collect::<Vec<_>>();
+    let items =
+        project_contract_event_candidates(sliced_items, VolumeDisplayContext::ContractEventStream)
+            .into_iter()
+            .filter(|candidate| {
+                status_matches(requested_status.as_deref(), &candidate.event.status)
+            })
+            .filter(|candidate| include_hidden || candidate.is_visible)
+            .map(contract_event_from_candidate)
+            .collect::<Vec<_>>();
 
     Ok(ContractEventPage {
         items,
@@ -200,7 +314,7 @@ fn contract_event_page_for_query(
         has_more,
         limit: requested_limit,
         range,
-        server_time: crate::normalizers::trade::now_ms(),
+        server_time: now_ms(),
         last_event_ts,
     })
 }
@@ -213,8 +327,6 @@ fn final_events_v2_for_query(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
-    let symbol = history_query.symbol.as_deref().unwrap_or("BTC").to_string();
-    let config = state.config().contract_whale_monitor;
     let raw_items = state
         .contract_whale_store()
         .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
@@ -232,30 +344,21 @@ fn final_events_v2_for_query(
         })
         .flatten();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
-    let response = build_contract_whale_history_response(
-        sliced_items,
-        &symbol,
-        requested_limit,
-        None,
-        config.enabled,
-        config.dry_run,
-        None,
-    );
-
     let requested_status = normalize_status_filter(query.status.as_deref());
     let mut active = Vec::new();
     let mut closed = Vec::new();
-    for event in build_final_events_from_contract_whale_signals(
-        &response.items,
-        VolumeDisplayContext::FinalLifecycleEvent,
-    ) {
-        if !status_matches(requested_status.as_deref(), &event.status) {
+    for candidate in
+        project_contract_event_candidates(sliced_items, VolumeDisplayContext::FinalLifecycleEvent)
+    {
+        if !candidate.is_visible
+            || !status_matches(requested_status.as_deref(), &candidate.event.status)
+        {
             continue;
         }
-        if event.status.eq_ignore_ascii_case("closed") {
-            closed.push(event);
+        if candidate.event.status.eq_ignore_ascii_case("closed") {
+            closed.push(candidate.event);
         } else {
-            active.push(event);
+            active.push(candidate.event);
         }
     }
 
@@ -266,12 +369,348 @@ fn final_events_v2_for_query(
         has_more,
         limit: requested_limit,
         range,
-        server_time: crate::normalizers::trade::now_ms(),
+        server_time: now_ms(),
         last_event_ts,
     })
 }
 
-fn contract_event_from_final_event(event: FinalEvent) -> ContractEventItem {
+fn contract_event_debug_counts_for_query(
+    state: AppState,
+    mut query: ContractWhaleQuery,
+) -> ContractEventDebugCountsResponse {
+    let generated_at_ms = now_ms();
+    let requested_limit = parse_requested_limit(query.limit.as_deref(), 500, 500).unwrap_or(500);
+    let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
+    let symbol = query
+        .symbol
+        .clone()
+        .unwrap_or_else(|| "BTC".to_string())
+        .to_ascii_uppercase();
+    query.limit = Some(requested_limit.to_string());
+    let history_query = match parse_history_query(&query) {
+        Ok(history_query) => history_query,
+        Err(_) => {
+            return ContractEventDebugCountsResponse {
+                symbol,
+                range,
+                generated_at: generated_at_ms.to_string(),
+                db: DebugDbCounts::default(),
+                api_query: ApiQueryDebugCounts {
+                    limit: requested_limit,
+                    ..ApiQueryDebugCounts::default()
+                },
+                visibility: VisibilityDebugCounts::default(),
+                latest: LatestDebugCounts::default(),
+                final_events_v2: FinalEventsDebugCounts::default(),
+                latest_vs_history: Vec::new(),
+                final_events_projection: FinalEventsProjectionDebug::default(),
+                error: Some("bad_request".to_string()),
+            };
+        }
+    };
+    let Some(store) = state.contract_whale_store() else {
+        return ContractEventDebugCountsResponse {
+            symbol,
+            range,
+            generated_at: generated_at_ms.to_string(),
+            db: DebugDbCounts::default(),
+            api_query: ApiQueryDebugCounts {
+                limit: requested_limit,
+                ..ApiQueryDebugCounts::default()
+            },
+            visibility: VisibilityDebugCounts::default(),
+            latest: LatestDebugCounts::default(),
+            final_events_v2: FinalEventsDebugCounts::default(),
+            latest_vs_history: Vec::new(),
+            final_events_projection: FinalEventsProjectionDebug::default(),
+            error: Some("query_failed".to_string()),
+        };
+    };
+
+    let db = db_debug_counts(&store, &symbol, history_query.from_ts, history_query.to_ts)
+        .unwrap_or_default();
+    let db_contract_whale_signals_btc_24h = db.contract_whale_signals_btc_24h.max(0) as usize;
+    let raw_items = store
+        .query_contract_whale_signals(&history_query)
+        .unwrap_or_default();
+    let projected = project_contract_event_candidates(
+        raw_items.clone(),
+        VolumeDisplayContext::ContractEventStream,
+    );
+    let visibility = visibility_debug_counts(&projected);
+    let visible_events = projected
+        .iter()
+        .filter(|candidate| candidate.is_visible)
+        .map(|candidate| candidate.event.clone())
+        .collect::<Vec<_>>();
+    let final_counts = FinalEventsDebugCounts {
+        active_count: visible_events
+            .iter()
+            .filter(|event| event.status.eq_ignore_ascii_case("active"))
+            .count(),
+        closed_count: visible_events
+            .iter()
+            .filter(|event| event.status.eq_ignore_ascii_case("closed"))
+            .count(),
+    };
+    let final_active_count = final_counts.active_count;
+    let final_closed_count = final_counts.closed_count;
+
+    let latest_raw = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some(symbol.clone()),
+            limit: 50,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap_or_default();
+    let latest_response = build_contract_whale_items_response(
+        latest_raw,
+        &symbol,
+        50,
+        state.config().contract_whale_monitor.enabled,
+        state.config().contract_whale_monitor.dry_run,
+        BTreeMap::new(),
+        ContractWhaleTrend60s::default(),
+    );
+
+    ContractEventDebugCountsResponse {
+        symbol: symbol.clone(),
+        range: range.clone(),
+        generated_at: generated_at_ms.to_string(),
+        db,
+        api_query: ApiQueryDebugCounts {
+            matched_before_filter: db_contract_whale_signals_btc_24h,
+            matched_after_symbol_filter: db_contract_whale_signals_btc_24h,
+            matched_after_range_filter: raw_items.len(),
+            matched_after_severity_filter: history_query.severity.map(|_| raw_items.len()),
+            matched_after_window_filter: history_query.window_sec.map(|_| raw_items.len()),
+            matched_after_direction_filter: history_query.direction.map(|_| raw_items.len()),
+            returned_items: projected
+                .iter()
+                .filter(|candidate| candidate.is_visible)
+                .count(),
+            limit: requested_limit,
+        },
+        visibility,
+        latest: LatestDebugCounts {
+            latest_count: latest_response.items.len(),
+            latest_symbols: latest_response
+                .items
+                .iter()
+                .map(|item| item.symbol.clone())
+                .collect(),
+        },
+        final_events_v2: final_counts,
+        latest_vs_history: latest_vs_history(
+            &latest_response.items,
+            &projected,
+            history_query.from_ts,
+            history_query.to_ts,
+        ),
+        final_events_projection: FinalEventsProjectionDebug {
+            source: "contract_whale_signals".to_string(),
+            raw_signals: raw_items.len(),
+            after_filter: projected
+                .iter()
+                .filter(|candidate| candidate.is_visible)
+                .count(),
+            merged_events: visible_events.len(),
+            active: final_active_count,
+            closed: final_closed_count,
+            range,
+        },
+        error: None,
+    }
+}
+
+fn project_contract_event_candidates(
+    raw_items: Vec<ContractWhaleSignal>,
+    context: VolumeDisplayContext,
+) -> Vec<ContractEventCandidate> {
+    if raw_items.is_empty() {
+        return Vec::new();
+    }
+    let mut items = merge_contract_whale_signals(raw_items);
+    decorate_price_deviation_signals(
+        &mut items,
+        None,
+        contract_whale_runtime_config()
+            .toxic_order
+            .max_price_deviation_pct,
+    );
+    let lifecycle_reference_now = items
+        .iter()
+        .map(|item| item.ts)
+        .max()
+        .unwrap_or_else(now_ms);
+    items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
+    items = decorate_contract_whale_event_quality(items);
+    apply_contract_whale_signal_clusters(&mut items);
+    apply_contract_whale_trajectories(&mut items);
+    items.sort_by(|left, right| {
+        right
+            .ts
+            .cmp(&left.ts)
+            .then_with(|| right.severity.rank().cmp(&left.severity.rank()))
+            .then_with(|| right.score.cmp(&left.score))
+    });
+    let final_events = build_final_events_from_contract_whale_signals(&items, context);
+    items
+        .into_iter()
+        .zip(final_events)
+        .map(|(signal, event)| {
+            let (is_visible, hidden_reason, hidden_detail) = visibility_metadata(&signal);
+            ContractEventCandidate {
+                event,
+                is_visible,
+                hidden_reason,
+                hidden_detail,
+            }
+        })
+        .collect()
+}
+
+fn visibility_metadata(signal: &ContractWhaleSignal) -> (bool, Option<String>, Option<String>) {
+    if signal.price_deviation_filtered {
+        let detail = signal
+            .price_deviation_pct
+            .map(|value| format!("price deviation {:.2}% > max 5%", value))
+            .or_else(|| Some("price deviation exceeded configured max".to_string()));
+        return (false, Some("price_deviation_gt_5pct".to_string()), detail);
+    }
+    if !signal.event_quality.valid {
+        let detail = if signal.event_quality.false_event_flags.is_empty() {
+            format!(
+                "quality score {:.2} <= publish threshold",
+                signal.event_quality.quality_score
+            )
+        } else {
+            format!(
+                "quality rejected: {}",
+                signal.event_quality.false_event_flags.join(", ")
+            )
+        };
+        return (false, Some("bad_quality".to_string()), Some(detail));
+    }
+    (true, None, None)
+}
+
+fn visibility_debug_counts(candidates: &[ContractEventCandidate]) -> VisibilityDebugCounts {
+    let mut counts = VisibilityDebugCounts::default();
+    for candidate in candidates {
+        if candidate.is_visible {
+            counts.visible_count += 1;
+            continue;
+        }
+        counts.hidden_count += 1;
+        match candidate.hidden_reason.as_deref() {
+            Some("price_deviation_gt_5pct") => counts.hidden_reasons.price_deviation_gt_5pct += 1,
+            Some("missing_price") => counts.hidden_reasons.missing_price += 1,
+            Some("bad_quality") => counts.hidden_reasons.bad_quality += 1,
+            Some("disabled_monitor") => counts.hidden_reasons.disabled_monitor += 1,
+            _ => counts.hidden_reasons.unknown += 1,
+        }
+    }
+    counts
+}
+
+fn latest_vs_history(
+    latest_items: &[ContractWhaleSignal],
+    projected: &[ContractEventCandidate],
+    from_ts: Option<i64>,
+    to_ts: Option<i64>,
+) -> Vec<LatestVsHistoryEntry> {
+    latest_items
+        .iter()
+        .map(|item| {
+            let latest_event_id = if item.event_lifecycle.event_id.is_empty() {
+                item.id.clone()
+            } else {
+                item.event_lifecycle.event_id.clone()
+            };
+            let matching_candidate = projected.iter().find(|candidate| {
+                candidate.event.event_id == latest_event_id
+                    || candidate.event.source_signal.id == item.id
+                    || candidate
+                        .event
+                        .source_signal_ids
+                        .iter()
+                        .any(|id| id == &item.id)
+            });
+            if let Some(candidate) = matching_candidate {
+                return LatestVsHistoryEntry {
+                    latest_event_id,
+                    symbol: item.symbol.clone(),
+                    ts: item.ts,
+                    exists_in_history: candidate.is_visible,
+                    history_event_id: Some(candidate.event.event_id.clone()),
+                    not_in_history_reason: if candidate.is_visible {
+                        None
+                    } else {
+                        candidate.hidden_reason.clone()
+                    },
+                };
+            }
+
+            let not_in_history_reason = if from_ts.is_some_and(|from_ts| item.ts < from_ts) {
+                Some("outside_requested_range".to_string())
+            } else if to_ts.is_some_and(|to_ts| item.ts > to_ts) {
+                Some("outside_requested_range".to_string())
+            } else {
+                Some("latest_snapshot_not_persisted_yet".to_string())
+            };
+            LatestVsHistoryEntry {
+                latest_event_id,
+                symbol: item.symbol.clone(),
+                ts: item.ts,
+                exists_in_history: false,
+                history_event_id: None,
+                not_in_history_reason,
+            }
+        })
+        .collect()
+}
+
+fn db_debug_counts(
+    store: &SqliteStore,
+    symbol: &str,
+    from_ts: Option<i64>,
+    to_ts: Option<i64>,
+) -> anyhow::Result<DebugDbCounts> {
+    let start_ts = from_ts.unwrap_or_else(|| now_ms() - 24 * 60 * 60 * 1000);
+    let end_ts = to_ts.unwrap_or_else(now_ms);
+    store.with_connection(|conn| {
+        let total_24h = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_signals WHERE market_type = 'perp' AND ts >= ?1 AND ts <= ?2",
+            [start_ts, end_ts],
+            |row| row.get(0),
+        )?;
+        let symbol_24h = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            rusqlite::params![symbol, start_ts, end_ts],
+            |row| row.get(0),
+        )?;
+        let oldest_ts = conn.query_row(
+            "SELECT MIN(ts) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            rusqlite::params![symbol, start_ts, end_ts],
+            |row| row.get(0),
+        )?;
+        let newest_ts = conn.query_row(
+            "SELECT MAX(ts) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            rusqlite::params![symbol, start_ts, end_ts],
+            |row| row.get(0),
+        )?;
+        Ok(DebugDbCounts {
+            contract_whale_signals_total_24h: total_24h,
+            contract_whale_signals_btc_24h: symbol_24h,
+            oldest_ts,
+            newest_ts,
+        })
+    })
+}
+
+fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractEventItem {
+    let event = candidate.event;
     let source_signal = &event.source_signal;
     let exchange_spot_count = source_signal.active_sources.spot.len();
     let exchange_contract_count = source_signal.active_sources.contract.len();
@@ -310,6 +749,9 @@ fn contract_event_from_final_event(event: FinalEvent) -> ContractEventItem {
         source: "contract_whale_signals".to_string(),
         is_retention_protected,
         retention_reason,
+        is_visible: candidate.is_visible,
+        hidden_reason: candidate.hidden_reason,
+        hidden_detail: candidate.hidden_detail,
         final_event: event,
     }
 }
@@ -347,6 +789,17 @@ fn parse_requested_limit(
     Ok(parsed.clamp(1, max))
 }
 
+fn parse_include_hidden(
+    value: Option<&str>,
+) -> Result<bool, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(false),
+        Some("true") | Some("1") => Ok(true),
+        Some("false") | Some("0") => Ok(false),
+        Some(_) => Err(bad_request("include_hidden_invalid")),
+    }
+}
+
 fn normalize_status_filter(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -367,7 +820,7 @@ fn retention_tables(
     flow_days: i64,
     signal_days: i64,
 ) -> anyhow::Result<ContractRetentionTables> {
-    let now_ms = crate::normalizers::trade::now_ms();
+    let now_ms = now_ms();
     let flow_cutoff = now_ms.saturating_sub(flow_days.max(1) * 24 * 60 * 60 * 1000);
     let signal_cutoff = now_ms.saturating_sub(signal_days.max(1) * 24 * 60 * 60 * 1000);
     store.with_connection(|conn| {
@@ -375,7 +828,12 @@ fn retention_tables(
             oldest_ts: query_min_ts(conn, "contract_flow_1s", "ts_bucket")?,
             newest_ts: query_max_ts(conn, "contract_flow_1s", "ts_bucket")?,
             row_count: Some(query_count(conn, "contract_flow_1s")?),
-            rows_older_than_retention: Some(query_older_than(conn, "contract_flow_1s", "ts_bucket", flow_cutoff)?),
+            rows_older_than_retention: Some(query_older_than(
+                conn,
+                "contract_flow_1s",
+                "ts_bucket",
+                flow_cutoff,
+            )?),
             protected_s_count: None,
             protected_net_volume_count: None,
             has_retention_cleanup: None,
@@ -385,7 +843,12 @@ fn retention_tables(
             oldest_ts: query_min_ts(conn, "contract_whale_signals", "ts")?,
             newest_ts: query_max_ts(conn, "contract_whale_signals", "ts")?,
             row_count: Some(query_count(conn, "contract_whale_signals")?),
-            rows_older_than_retention: Some(query_older_than(conn, "contract_whale_signals", "ts", signal_cutoff)?),
+            rows_older_than_retention: Some(query_older_than(
+                conn,
+                "contract_whale_signals",
+                "ts",
+                signal_cutoff,
+            )?),
             protected_s_count: Some(conn.query_row(
                 "SELECT COUNT(*) FROM contract_whale_signals WHERE severity = 's'",
                 [],

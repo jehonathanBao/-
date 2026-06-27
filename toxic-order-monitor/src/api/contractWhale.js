@@ -337,17 +337,24 @@ export async function fetchContractWhaleEvents(filters = {}) {
 export async function fetchContractEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
-    const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
+    const includeHidden = Boolean(filters.includeHidden ?? filters.include_hidden);
+    const query = buildContractWhaleQuery({
+      ...filters,
+      include_hidden: includeHidden ? "true" : undefined,
+      includeHidden: undefined,
+      range: filters.range ?? "24h",
+      limit: filters.limit ?? 100,
+    });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events?${query}`, {
       timeoutMs: 6_000,
     });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
+    const normalizedItems = items
+      .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+      .map((item) => normalizeContractEvent(item, requestedSymbol));
     return {
-      items: items
-        .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
-        .map((item) => normalizeContractEvent(item, requestedSymbol))
-        .filter(isVisibleContractWhaleSignal),
+      items: includeHidden ? normalizedItems : normalizedItems.filter(isVisibleContractWhaleSignal),
       nextCursor: response.data?.nextCursor ?? response.data?.next_cursor ?? null,
       hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
       limit: numberOrNull(response.data?.limit) ?? filters.limit ?? 100,
@@ -366,6 +373,50 @@ export async function fetchContractEvents(filters = {}) {
       serverTime: null,
       lastEventTs: null,
       error: "contract_events_unavailable",
+    };
+  }
+}
+
+export async function fetchContractEventDebugCounts(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: filters.symbol || "BTC",
+      range: filters.range ?? "24h",
+      include_hidden: filters.includeHidden || filters.include_hidden ? "true" : undefined,
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events/debug-counts?${query}`, {
+      timeoutMs: 4_000,
+    });
+    return {
+      symbol: String(response.data?.symbol || filters.symbol || "BTC"),
+      range: String(response.data?.range || filters.range || "24h"),
+      generatedAt: response.data?.generatedAt ?? response.data?.generated_at ?? null,
+      db: response.data?.db || null,
+      apiQuery: response.data?.apiQuery ?? response.data?.api_query ?? null,
+      visibility: response.data?.visibility || null,
+      latest: response.data?.latest || null,
+      finalEventsV2: response.data?.finalEventsV2 ?? response.data?.final_events_v2 ?? null,
+      latestVsHistory: Array.isArray(response.data?.latestVsHistory ?? response.data?.latest_vs_history)
+        ? (response.data?.latestVsHistory ?? response.data?.latest_vs_history)
+        : [],
+      finalEventsProjection:
+        response.data?.finalEventsProjection ?? response.data?.final_events_projection ?? null,
+      error: response.data?.error || null,
+    };
+  } catch {
+    return {
+      symbol: String(filters.symbol || "BTC"),
+      range: String(filters.range || "24h"),
+      generatedAt: null,
+      db: null,
+      apiQuery: null,
+      visibility: null,
+      latest: null,
+      finalEventsV2: null,
+      latestVsHistory: [],
+      finalEventsProjection: null,
+      error: "debug_counts_unavailable",
     };
   }
 }
@@ -575,6 +626,88 @@ function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null) {
   };
 }
 
+function impactLevelFromLegacySignals(dynamicThresholdLevel, percentileLevel, impactScore) {
+  const percentile = numberOrNull(percentileLevel);
+  const score = numberOrNull(impactScore);
+  const threshold = String(dynamicThresholdLevel || "").toLowerCase();
+
+  if (percentile !== null) {
+    if (percentile > 97) return "S";
+    if (percentile >= 90) return "A";
+    if (percentile >= 80) return "B";
+  }
+
+  if (score !== null) {
+    if (score > 5) return "S";
+    if (score >= 3) return "A";
+    if (score >= 1.8) return "B";
+  }
+
+  if (threshold === "s") return "S";
+  if (threshold === "critical") return "A";
+  if (threshold === "high") return "B";
+  return "C";
+}
+
+function impactLevelToSignalLevel(impactLevel) {
+  if (impactLevel === "S") return "S";
+  if (impactLevel === "A") return "L3";
+  if (impactLevel === "B") return "L2";
+  return "L1";
+}
+
+function impactLevelToSignalLabel(impactLevel) {
+  if (impactLevel === "S") return "SHOCK IMPACT EVENT";
+  if (impactLevel === "A") return "HIGH IMPACT EVENT";
+  if (impactLevel === "B") return "MEDIUM IMPACT EVENT";
+  return "LOW IMPACT EVENT";
+}
+
+function impactLevelToNormalizedStrength(impactLevel) {
+  if (impactLevel === "S") return "EXTREME";
+  if (impactLevel === "A") return "HIGH";
+  if (impactLevel === "B") return "MEDIUM";
+  return "LOW";
+}
+
+function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impactScoreFallback = null, percentileFallback = null } = {}) {
+  const impactScore =
+    numberOrNull(item?.impactScore ?? item?.impact_score) ??
+    numberOrNull(impactScoreFallback);
+  const zScore = numberOrNull(item?.zScore ?? item?.z_score);
+  const percentile =
+    numberOrNull(item?.percentile ?? item?.percentile_level) ??
+    numberOrNull(percentileFallback);
+  const explicitImpactLevel = item?.impactLevel ?? item?.impact_level;
+  const impactLevel = explicitImpactLevel
+    ? String(explicitImpactLevel).toUpperCase()
+    : impactLevelFromLegacySignals(
+        dynamicThresholdLevel ?? item?.dynamicThresholdLevel ?? item?.dynamic_threshold_level,
+        percentile,
+        impactScore,
+      );
+  const explicitSignalLevel = item?.signalLevel ?? item?.signal_level;
+  const explicitSignalLabel = item?.signalLabel ?? item?.signal_label;
+  const explicitNormalizedStrength = item?.normalizedStrength ?? item?.normalized_strength;
+
+  return {
+    impactScore,
+    zScore,
+    percentile,
+    normalizedScore: clampRatio(numberOrNull(item?.normalizedScore ?? item?.normalized_score) ?? 0),
+    normalizedStrength: explicitNormalizedStrength
+      ? String(explicitNormalizedStrength).toUpperCase()
+      : impactLevelToNormalizedStrength(impactLevel),
+    impactLevel,
+    signalLevel: explicitSignalLevel
+      ? String(explicitSignalLevel).toUpperCase()
+      : impactLevelToSignalLevel(impactLevel),
+    signalLabel: explicitSignalLabel
+      ? String(explicitSignalLabel).toUpperCase()
+      : impactLevelToSignalLabel(impactLevel),
+  };
+}
+
 export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   const sourceSignal = item?.sourceSignal && typeof item.sourceSignal === "object" ? item.sourceSignal : {};
   const eventSymbol = item?.symbol || sourceSignal.symbol || fallbackSymbol || "BTC";
@@ -599,14 +732,11 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
   const priceMovePct = numberOrNull(item?.priceMovePct) ?? signal.priceMovePct;
   const dominance = clampRatio(numberOrNull(item?.dominance) ?? signal.dominance);
   const rawVolume = numberOrNull(item?.rawVolume) ?? volume;
-  const impactScore = numberOrNull(item?.impactScore) ?? 0;
-  const zScore = numberOrNull(item?.zScore) ?? 0;
-  const percentile = numberOrNull(item?.percentile) ?? 0;
-  const normalizedScore = clampRatio(numberOrNull(item?.normalizedScore) ?? 0);
-  const normalizedStrength = item?.normalizedStrength ? String(item.normalizedStrength).toUpperCase() : "LOW";
-  const impactLevel = item?.impactLevel ? String(item.impactLevel).toUpperCase() : "C";
-  const signalLevel = item?.signalLevel ? String(item.signalLevel).toUpperCase() : "L1";
-  const signalLabel = item?.signalLabel ? String(item.signalLabel).toUpperCase() : "LOW IMPACT EVENT";
+  const impact = resolveImpactNormalization(item, {
+    dynamicThresholdLevel: signal.dynamicThresholdLevel,
+    impactScoreFallback: signal.dynamicMultiple,
+    percentileFallback: signal.percentileLevel,
+  });
   const falseEventFlags = normalizeStringArray(item?.falseEventFlags);
   const mergedFrom = sourceSignalIds.length > 1 ? sourceSignalIds.slice(1) : signal.mergedFrom;
   const finalEvent = {
@@ -618,14 +748,14 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     status,
     windowSec: numberOrNull(item?.windowSec),
     rawVolume,
-    impactScore,
-    zScore,
-    percentile,
-    normalizedScore,
-    normalizedStrength,
-    impactLevel,
-    signalLevel,
-    signalLabel,
+    impactScore: impact.impactScore,
+    zScore: impact.zScore,
+    percentile: impact.percentile,
+    normalizedScore: impact.normalizedScore,
+    normalizedStrength: impact.normalizedStrength,
+    impactLevel: impact.impactLevel,
+    signalLevel: impact.signalLevel,
+    signalLabel: impact.signalLabel,
     volume,
     totalVolumeBtc: volume,
     netVolume,
@@ -663,14 +793,14 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     finalEventId: eventId,
     sourceSignalId: item?.sourceSignalId || signal.id,
     rawVolume,
-    impactScore,
-    zScore,
-    percentile,
-    normalizedScore,
-    normalizedStrength,
-    impactLevel,
-    signalLevel,
-    signalLabel,
+    impactScore: impact.impactScore,
+    zScore: impact.zScore,
+    percentile: impact.percentile,
+    normalizedScore: impact.normalizedScore,
+    normalizedStrength: impact.normalizedStrength,
+    impactLevel: impact.impactLevel,
+    signalLevel: impact.signalLevel,
+    signalLabel: impact.signalLabel,
     ts: numberOrNull(item?.endTime) ?? signal.ts,
     symbol: eventSymbol,
     baseAsset: eventSymbol,
@@ -789,6 +919,20 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
     source: item?.source ? String(item.source) : "contract_whale_signals",
     isRetentionProtected: Boolean(item?.isRetentionProtected ?? item?.is_retention_protected),
     retentionReason: item?.retentionReason ?? item?.retention_reason ?? null,
+    isVisible:
+      item?.isVisible ??
+      item?.is_visible ??
+      !(
+        Boolean(item?.priceDeviationFiltered ?? item?.price_deviation_filtered ?? normalized.priceDeviationFiltered) ||
+        Boolean(item?.hiddenReason ?? item?.hidden_reason)
+      ),
+    hiddenReason:
+      item?.hiddenReason ??
+      item?.hidden_reason ??
+      (Boolean(item?.priceDeviationFiltered ?? item?.price_deviation_filtered ?? normalized.priceDeviationFiltered)
+        ? "price_deviation_gt_5pct"
+        : null),
+    hiddenDetail: item?.hiddenDetail ?? item?.hidden_detail ?? null,
   };
 }
 
@@ -816,6 +960,11 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
   const priceDeviationFiltered =
     Boolean(item.priceDeviationFiltered) ||
     (priceDeviationPct !== null && priceDeviationPct > CWM_MAX_PRICE_DEVIATION_PCT);
+  const impact = resolveImpactNormalization(item, {
+    dynamicThresholdLevel: item?.dynamicThresholdLevel ?? item?.dynamic_threshold_level,
+    impactScoreFallback: item?.dynamicMultiple ?? item?.dynamic_multiple,
+    percentileFallback: item?.percentileLevel ?? item?.percentile_level,
+  });
   return {
     id: item.id || `${item.symbol || fallbackSymbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -861,6 +1010,14 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     dynamicBaselineBtc: numberOrNull(item.dynamicBaselineBtc),
     dynamicThresholdLevel: item.dynamicThresholdLevel ? String(item.dynamicThresholdLevel).toLowerCase() : "normal",
     percentileLevel: numberOrNull(item.percentileLevel),
+    impactScore: impact.impactScore,
+    zScore: impact.zScore,
+    percentile: impact.percentile,
+    normalizedScore: impact.normalizedScore,
+    normalizedStrength: impact.normalizedStrength,
+    impactLevel: impact.impactLevel,
+    signalLevel: impact.signalLevel,
+    signalLabel: impact.signalLabel,
     multiExchangeConfirmed: Boolean(item.multiExchangeConfirmed),
     liquidationSuspected: Boolean(item.liquidationSuspected),
     liquidationLongBtc: numberOrNull(item.liquidationLongBtc) || 0,
@@ -912,6 +1069,8 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
 }
 
 function isVisibleContractWhaleSignal(signal) {
+  if (signal?.isVisible === false) return false;
+  if (signal?.hiddenReason) return false;
   return !signal.priceDeviationFiltered;
 }
 

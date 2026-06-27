@@ -5,15 +5,20 @@ const QUALITY_PUBLISH_THRESHOLD: f64 = 0.6;
 pub fn apply_contract_whale_event_quality_filter(
     signals: Vec<ContractWhaleSignal>,
 ) -> Vec<ContractWhaleSignal> {
+    decorate_contract_whale_event_quality(signals)
+        .into_iter()
+        .filter(|signal| signal.event_quality.valid)
+        .collect()
+}
+
+pub fn decorate_contract_whale_event_quality(
+    signals: Vec<ContractWhaleSignal>,
+) -> Vec<ContractWhaleSignal> {
     signals
         .into_iter()
-        .filter_map(|mut signal| {
+        .map(|mut signal| {
             signal.event_quality = score_contract_whale_event(&signal);
-            if signal.event_quality.valid {
-                Some(signal)
-            } else {
-                None
-            }
+            signal
         })
         .collect()
 }

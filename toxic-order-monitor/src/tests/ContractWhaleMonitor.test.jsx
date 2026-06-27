@@ -5,6 +5,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import {
+  fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
@@ -592,6 +593,76 @@ vi.mock("../api/contractWhale.js", () => ({
       error: null,
     }),
   ),
+  fetchContractEventDebugCounts: vi.fn(() =>
+    Promise.resolve({
+      symbol: "BTC",
+      range: "24h",
+      generatedAt: "2026-06-27T00:00:00Z",
+      db: {
+        contractWhaleSignalsTotal24h: 1,
+        contractWhaleSignalsBtc24h: 1,
+        oldestTs: 1_700_000_000_000,
+        newestTs: 1_700_000_000_000,
+      },
+      apiQuery: {
+        matchedBeforeFilter: 1,
+        matchedAfterSymbolFilter: 1,
+        matchedAfterRangeFilter: 1,
+        matchedAfterSeverityFilter: null,
+        matchedAfterWindowFilter: null,
+        matchedAfterDirectionFilter: null,
+        returnedItems: 1,
+        limit: 100,
+      },
+      visibility: {
+        visibleCount: 1,
+        hiddenCount: 0,
+        hiddenReasons: {
+          priceDeviationGt5pct: 0,
+          missingPrice: 0,
+          badQuality: 0,
+          disabledMonitor: 0,
+          unknown: 0,
+        },
+      },
+      latest: {
+        latestCount: 2,
+        latestSymbols: ["BTC", "BTC"],
+      },
+      finalEventsV2: {
+        activeCount: 1,
+        closedCount: 0,
+      },
+      latestVsHistory: [
+        {
+          latestEventId: "latest-visible",
+          symbol: "BTC",
+          ts: 1_700_000_000_000,
+          existsInHistory: true,
+          historyEventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+          notInHistoryReason: null,
+        },
+        {
+          latestEventId: "latest-pending",
+          symbol: "BTC",
+          ts: 1_700_000_050_000,
+          existsInHistory: false,
+          historyEventId: null,
+          notInHistoryReason: "latest_snapshot_not_persisted_yet",
+        },
+      ],
+      finalEventsProjection: {
+        source: "contract_whale_signals",
+        rawSignals: 1,
+        afterFilter: 1,
+        mergedEvents: 1,
+        active: 1,
+        closed: 0,
+        range: "24h",
+      },
+      error: null,
+    }),
+  ),
   fetchFinalEvents: vi.fn(() =>
     Promise.resolve({
       count: 2,
@@ -857,6 +928,7 @@ describe("ContractWhaleMonitor", () => {
     fetchContractWhaleLatest.mockReturnValueOnce(new Promise(() => {}));
     fetchFinalEventsV2.mockReturnValueOnce(new Promise(() => {}));
     fetchContractEvents.mockReturnValueOnce(new Promise(() => {}));
+    fetchContractEventDebugCounts.mockReturnValueOnce(new Promise(() => {}));
     fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
 
     render(<ContractWhaleMonitor />);
@@ -866,6 +938,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByTestId("platform-status-chip-binance")).not.toHaveTextContent("离线");
     expect(screen.getByTestId("platform-status-chip-bitfinex")).not.toHaveTextContent("离线");
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
+    expect(fetchContractEventDebugCounts).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the core contract-whale content visible while retention stays deferred", async () => {
@@ -878,6 +951,7 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
     expect(fetchContractEvents).toHaveBeenCalledTimes(1);
     expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1);
+    expect(fetchContractEventDebugCounts).toHaveBeenCalledTimes(1);
     expect(fetchContractWhaleEvents).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByText("强异动")).toBeInTheDocument());
     expect(fetchContractRetentionStatus).not.toHaveBeenCalled();
@@ -926,6 +1000,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText("生命周期累计流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("市场冲击等级").length).toBeGreaterThan(0);
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getAllByText(/已加载 \d+ 条/).length).toBeGreaterThan(0);
@@ -949,6 +1024,9 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("67.6%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("9.4x").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P99.9").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("S / S");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("SHOCK IMPACT EVENT");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("9.40x · P99.9");
     expect(screen.getAllByText("+0.31%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("疑似强平 420 BTC / 8.7%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+900 BTC / +1.20% OI上升").length).toBeGreaterThan(0);
@@ -1495,6 +1573,246 @@ describe("ContractWhaleMonitor", () => {
     render(<ContractWhaleMonitor />);
 
     expect(await screen.findByText(/数据延迟：latest 已更新到/)).toBeInTheDocument();
+  });
+
+  it("shows contract event debug counts and explains latest versus history drift", async () => {
+    fetchContractEventDebugCounts.mockResolvedValueOnce({
+      symbol: "BTC",
+      range: "24h",
+      generatedAt: "2026-06-27T00:00:00Z",
+      db: {
+        contractWhaleSignalsTotal24h: 12,
+        contractWhaleSignalsBtc24h: 8,
+        oldestTs: 1_700_000_000_000,
+        newestTs: 1_700_000_100_000,
+      },
+      apiQuery: {
+        matchedBeforeFilter: 8,
+        matchedAfterSymbolFilter: 8,
+        matchedAfterRangeFilter: 8,
+        matchedAfterSeverityFilter: null,
+        matchedAfterWindowFilter: null,
+        matchedAfterDirectionFilter: null,
+        returnedItems: 1,
+        limit: 100,
+      },
+      visibility: {
+        visibleCount: 1,
+        hiddenCount: 7,
+        hiddenReasons: {
+          priceDeviationGt5pct: 6,
+          missingPrice: 0,
+          badQuality: 1,
+          disabledMonitor: 0,
+          unknown: 0,
+        },
+      },
+      latest: {
+        latestCount: 2,
+        latestSymbols: ["BTC", "BTC"],
+      },
+      finalEventsV2: {
+        activeCount: 1,
+        closedCount: 0,
+      },
+      latestVsHistory: [
+        {
+          latestEventId: "latest-visible",
+          symbol: "BTC",
+          ts: 1_700_000_000_000,
+          existsInHistory: true,
+          historyEventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+          notInHistoryReason: null,
+        },
+        {
+          latestEventId: "latest-pending",
+          symbol: "BTC",
+          ts: 1_700_000_050_000,
+          existsInHistory: false,
+          historyEventId: null,
+          notInHistoryReason: "latest_snapshot_not_persisted_yet",
+        },
+      ],
+      finalEventsProjection: {
+        source: "contract_whale_signals",
+        rawSignals: 8,
+        afterFilter: 1,
+        mergedEvents: 1,
+        active: 1,
+        closed: 0,
+        range: "24h",
+      },
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText(/24h BTC 历史事件：后端返回 1 条，可见 1 条，隐藏 7 条/)).toBeInTheDocument();
+    expect(screen.getByText(/latest 是实时快照，history 是持久化历史事件流/)).toBeInTheDocument();
+  });
+
+  it("can expand hidden contract events with explicit hidden reasons", async () => {
+    const user = userEvent.setup();
+    fetchContractEventDebugCounts.mockResolvedValueOnce({
+      symbol: "BTC",
+      range: "24h",
+      generatedAt: "2026-06-27T00:00:00Z",
+      db: {
+        contractWhaleSignalsTotal24h: 12,
+        contractWhaleSignalsBtc24h: 8,
+        oldestTs: 1_700_000_000_000,
+        newestTs: 1_700_000_100_000,
+      },
+      apiQuery: {
+        matchedBeforeFilter: 8,
+        matchedAfterSymbolFilter: 8,
+        matchedAfterRangeFilter: 8,
+        matchedAfterSeverityFilter: null,
+        matchedAfterWindowFilter: null,
+        matchedAfterDirectionFilter: null,
+        returnedItems: 1,
+        limit: 100,
+      },
+      visibility: {
+        visibleCount: 1,
+        hiddenCount: 7,
+        hiddenReasons: {
+          priceDeviationGt5pct: 6,
+          missingPrice: 0,
+          badQuality: 1,
+          disabledMonitor: 0,
+          unknown: 0,
+        },
+      },
+      latest: {
+        latestCount: 2,
+        latestSymbols: ["BTC", "BTC"],
+      },
+      finalEventsV2: {
+        activeCount: 1,
+        closedCount: 0,
+      },
+      latestVsHistory: [],
+      finalEventsProjection: {
+        source: "contract_whale_signals",
+        rawSignals: 8,
+        afterFilter: 1,
+        mergedEvents: 1,
+        active: 1,
+        closed: 0,
+        range: "24h",
+      },
+      error: null,
+    });
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-row",
+          eventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+          sourceSignalId: "contract-whale-row",
+          ts: 1_700_000_000_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "s",
+          volumeBtc: 4820,
+          netVolumeBtc: 3260,
+          notionalUsd: 337_000_000,
+          isVisible: true,
+          hiddenReason: null,
+          hiddenDetail: null,
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 50,
+      range: "24h",
+      serverTime: 1_700_000_060_000,
+      lastEventTs: 1_700_000_000_000,
+      error: null,
+    });
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-row",
+          eventId: "cwm-event:BTC:aggressive_buy:1700000000000",
+          sourceSignalId: "contract-whale-row",
+          ts: 1_700_000_000_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "s",
+          volumeBtc: 4820,
+          netVolumeBtc: 3260,
+          notionalUsd: 337_000_000,
+          isVisible: true,
+          hiddenReason: null,
+          hiddenDetail: null,
+        },
+        {
+          id: "contract-event-hidden-row",
+          eventId: "cwm-event:BTC:aggressive_sell:hidden",
+          sourceSignalId: "contract-whale-hidden-row",
+          ts: 1_700_000_030_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 5,
+          signalType: "aggressive_sell",
+          direction: "sell",
+          severity: "medium",
+          volumeBtc: 920,
+          netVolumeBtc: -640,
+          notionalUsd: 61_000_000,
+          price: 64_500,
+          priceDeviationPct: 7.3,
+          isVisible: false,
+          hiddenReason: "price_deviation_gt_5pct",
+          hiddenDetail: "price deviation 7.3% > max 5%",
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_060_000,
+      lastEventTs: 1_700_000_030_000,
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    const expandButton = await screen.findByRole("button", { name: "查看隐藏事件" });
+    await user.click(expandButton);
+
+    await waitFor(() =>
+      expect(fetchContractEvents).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          symbol: "BTC",
+          range: "24h",
+          limit: 100,
+          includeHidden: true,
+        }),
+      ),
+    );
+    expect(screen.getByText("隐藏事件")).toBeInTheDocument();
+    expect(await screen.findByText("price_deviation_gt_5pct")).toBeInTheDocument();
+    expect(await screen.findByText("price deviation 7.3% > max 5%")).toBeInTheDocument();
+  });
+
+  it("keeps the main historical event list visible when debug counts fail", async () => {
+    fetchContractEventDebugCounts.mockResolvedValueOnce({ error: "debug_counts_unavailable" });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByTestId("raw-contract-whale-signals")).toBeInTheDocument();
+    expect(screen.queryByText(/24h BTC 历史事件：后端返回/)).not.toBeInTheDocument();
   });
 
   it("shows a spot-only explanation when coinbase is selected in contract history", async () => {

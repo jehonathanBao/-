@@ -91,6 +91,10 @@ pub fn router(state: AppState) -> Router {
             get(contract_event_routes::contract_events_route),
         )
         .route(
+            "/api/contract-events/debug-counts",
+            get(contract_event_routes::contract_events_debug_counts_route),
+        )
+        .route(
             "/api/final-events-v2",
             get(contract_event_routes::final_events_v2_route),
         )

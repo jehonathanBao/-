@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
+  fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
@@ -33,12 +34,17 @@ export default function ContractWhaleMonitor() {
     contractEventsHasMore: false,
     contractEventsServerTime: null,
     contractEventsLastEventTs: null,
+    contractEventDebugCounts: null,
     finalEvents: { active: [], closed: [] },
     finalEventsCursor: null,
     finalEventsHasMore: false,
     finalEventsServerTime: null,
     finalEventsLastEventTs: null,
     events: [],
+    hiddenContractEvents: [],
+    hiddenContractEventsLoaded: false,
+    hiddenContractEventsExpanded: false,
+    hiddenContractEventsLoading: false,
     retentionStatus: null,
     meta: null,
     error: null,
@@ -57,6 +63,14 @@ export default function ContractWhaleMonitor() {
       if (cancelled) return;
       setState((previous) => updater(previous));
     };
+
+    updateState((previous) => ({
+      ...previous,
+      hiddenContractEvents: [],
+      hiddenContractEventsLoaded: false,
+      hiddenContractEventsExpanded: false,
+      hiddenContractEventsLoading: false,
+    }));
 
     const refreshSummary = async () => {
       const payload = await fetchContractWhaleSummary(filters.symbol);
@@ -91,6 +105,18 @@ export default function ContractWhaleMonitor() {
         contractEventsHasMore: payload.error ? previous.contractEventsHasMore : payload.hasMore,
         contractEventsServerTime: payload.error ? previous.contractEventsServerTime : payload.serverTime,
         contractEventsLastEventTs: payload.error ? previous.contractEventsLastEventTs : payload.lastEventTs,
+      }));
+    };
+
+    const refreshContractEventDebugCounts = async () => {
+      const payload = await fetchContractEventDebugCounts({
+        symbol: filters.symbol,
+        range: "24h",
+        includeHidden: true,
+      });
+      updateState((previous) => ({
+        ...previous,
+        contractEventDebugCounts: payload.error ? previous.contractEventDebugCounts : payload,
       }));
     };
 
@@ -151,6 +177,7 @@ export default function ContractWhaleMonitor() {
     void refreshSummary();
     void refreshLatest();
     void refreshContractEvents(50);
+    void refreshContractEventDebugCounts();
     void refreshFinalEvents(30);
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
@@ -291,6 +318,42 @@ export default function ContractWhaleMonitor() {
     }));
   }
 
+  async function toggleHiddenContractEvents() {
+    if (state.hiddenContractEventsExpanded) {
+      setState((previous) => ({
+        ...previous,
+        hiddenContractEventsExpanded: false,
+      }));
+      return;
+    }
+    if (state.hiddenContractEventsLoaded) {
+      setState((previous) => ({
+        ...previous,
+        hiddenContractEventsExpanded: true,
+      }));
+      return;
+    }
+    setState((previous) => ({
+      ...previous,
+      hiddenContractEventsLoading: true,
+    }));
+    const payload = await fetchContractEvents({
+      ...filters,
+      range: "24h",
+      limit: 100,
+      includeHidden: true,
+    });
+    setState((previous) => ({
+      ...previous,
+      hiddenContractEvents: payload.error
+        ? previous.hiddenContractEvents
+        : payload.items.filter((item) => item.isVisible === false),
+      hiddenContractEventsLoaded: !payload.error,
+      hiddenContractEventsExpanded: !payload.error,
+      hiddenContractEventsLoading: false,
+    }));
+  }
+
   async function loadMoreFinalEvents() {
     if (!state.finalEventsHasMore || !state.finalEventsCursor) return;
     const payload = await fetchFinalEventsV2({
@@ -373,13 +436,18 @@ export default function ContractWhaleMonitor() {
 
       <RawSignalDebugSection
         contractEvents={state.contractEvents}
+        debugCounts={state.contractEventDebugCounts}
         enabled={summary.enabled}
         finalEvents={state.finalEvents}
         finalEventsHasMore={state.finalEventsHasMore}
+        hiddenContractEvents={state.hiddenContractEvents}
+        hiddenContractEventsExpanded={state.hiddenContractEventsExpanded}
+        hiddenContractEventsLoading={state.hiddenContractEventsLoading}
         loading={state.loading}
         onLoadMoreContractEvents={loadMoreContractEvents}
         onLoadMoreFinalEvents={loadMoreFinalEvents}
         onOpenSignal={setSelectedSignalId}
+        onToggleHiddenContractEvents={toggleHiddenContractEvents}
         retentionStatus={state.retentionStatus}
         eventsSyncLag={eventsSyncLag}
         latestSignalTs={latestSignalTs}
@@ -664,13 +732,18 @@ function mergeUniqueById(previousItems, nextItems) {
 
 function RawSignalDebugSection({
   contractEvents,
+  debugCounts,
   enabled,
   finalEvents,
   finalEventsHasMore,
+  hiddenContractEvents,
+  hiddenContractEventsExpanded,
+  hiddenContractEventsLoading,
   loading,
   onLoadMoreContractEvents,
   onLoadMoreFinalEvents,
   onOpenSignal,
+  onToggleHiddenContractEvents,
   retentionStatus,
   contractEventsHasMore,
   eventsSyncLag,
@@ -683,6 +756,16 @@ function RawSignalDebugSection({
     "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
   const activeItems = finalEvents.active || [];
   const closedItems = finalEvents.closed || [];
+  const visibleCount = Number(debugCounts?.visibility?.visibleCount ?? contractEvents.length ?? 0);
+  const hiddenCount = Number(debugCounts?.visibility?.hiddenCount ?? 0);
+  const backendReturnedCount = Number(debugCounts?.apiQuery?.returnedItems ?? visibleCount);
+  const latestCount = Number(debugCounts?.latest?.latestCount ?? 0);
+  const finalActiveCount = Number(debugCounts?.finalEventsV2?.activeCount ?? activeItems.length ?? 0);
+  const finalClosedCount = Number(debugCounts?.finalEventsV2?.closedCount ?? closedItems.length ?? 0);
+  const rawDbCount = Number(debugCounts?.db?.contractWhaleSignalsBtc24h ?? 0);
+  const hiddenReasons = debugCounts?.visibility?.hiddenReasons || {};
+  const dominantHiddenReason = hiddenCount > 0 ? summarizeHiddenReasons(hiddenReasons) : null;
+  const showLatestHistoryDriftHint = latestCount > visibleCount;
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -700,6 +783,36 @@ function RawSignalDebugSection({
       <div className="space-y-4 border-t border-slate-800 p-3">
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
           <p>历史事件流不会被新的 latest 快照直接覆盖；事件离开 ACTIVE/CLOSED 视图，通常是状态切换、分页边界或筛选变化，不等于数据库删除。</p>
+          {debugCounts && !debugCounts.error ? (
+            <div className="mt-2 space-y-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-cyan-100">
+              <p>
+                24h BTC 历史事件：后端返回 {backendReturnedCount} 条，可见 {visibleCount} 条，隐藏 {hiddenCount} 条；latest 快照 {latestCount} 条。
+              </p>
+              <p className="text-[11px] text-cyan-200/90">
+                DB 原始 {rawDbCount} 条 · final-events active {finalActiveCount} 条 / closed {finalClosedCount} 条。
+                {dominantHiddenReason ? ` 隐藏主因：${dominantHiddenReason}。` : ""}
+              </p>
+              {showLatestHistoryDriftHint ? (
+                <p className="text-[11px] text-cyan-200/90">
+                  latest 是实时快照，history 是持久化历史事件流；两者不是同一数据源，latest 里的信号可能尚未持久化、被过滤或被合并。
+                </p>
+              ) : null}
+              {hiddenCount > 0 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10"
+                    onClick={onToggleHiddenContractEvents}
+                    type="button"
+                  >
+                    {hiddenContractEventsExpanded ? "收起隐藏事件" : "查看隐藏事件"}
+                  </button>
+                  <span className="text-[11px] text-cyan-200/80">
+                    价格偏离&gt;5% {Number(hiddenReasons.priceDeviationGt5pct ?? 0)} 条 · 坏质量 {Number(hiddenReasons.badQuality ?? 0)} 条
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {eventsSyncLag ? (
             <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
               数据延迟：latest 已更新到 {formatDateTime(latestSignalTs)}，历史事件流当前只同步到 {formatDateTime(contractEventsLastEventTs)}。
@@ -750,6 +863,12 @@ function RawSignalDebugSection({
             ) : null}
           </div>
         )}
+        {hiddenContractEventsExpanded ? (
+          <HiddenContractEventsPanel
+            items={hiddenContractEvents}
+            loading={hiddenContractEventsLoading}
+          />
+        ) : null}
 
         <EventLifecycleFeedGroup
           emptyText="暂无活跃合约事件"
@@ -775,6 +894,70 @@ function RawSignalDebugSection({
         />
       </div>
     </section>
+  );
+}
+
+function summarizeHiddenReasons(hiddenReasons) {
+  const buckets = [
+    ["priceDeviationGt5pct", "价格偏离 > 5%"],
+    ["badQuality", "质量过滤"],
+    ["missingPrice", "缺少价格"],
+    ["disabledMonitor", "监控关闭"],
+    ["unknown", "其他"],
+  ]
+    .map(([key, label]) => ({ label, count: Number(hiddenReasons?.[key] ?? 0) }))
+    .filter((item) => item.count > 0)
+    .sort((left, right) => right.count - left.count);
+  return buckets[0] ? `${buckets[0].label} ${buckets[0].count} 条` : null;
+}
+
+function HiddenContractEventsPanel({ items, loading }) {
+  return (
+    <div className="rounded-xl border border-amber-500/20 bg-slate-950/40">
+      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+        <p className="text-xs font-bold tracking-[0.18em] text-amber-200">隐藏事件</p>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
+          已加载 {items.length} 条
+        </span>
+      </div>
+      {loading ? (
+        <p className="px-3 py-4 text-xs text-slate-500">隐藏事件加载中...</p>
+      ) : items.length === 0 ? (
+        <p className="px-3 py-4 text-xs text-slate-500">当前没有可展开的隐藏事件。</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full table-fixed text-left text-xs">
+            <thead className="bg-slate-950/80 text-slate-400">
+              <tr>
+                <HeaderCell>隐藏原因</HeaderCell>
+                <HeaderCell>时间</HeaderCell>
+                <HeaderCell>价格</HeaderCell>
+                <HeaderCell>偏离比例</HeaderCell>
+                <HeaderCell>类型</HeaderCell>
+                <HeaderCell>等级</HeaderCell>
+                <HeaderCell>说明</HeaderCell>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800 text-slate-300">
+              {items.map((item) => (
+                <tr key={item.eventId || item.id}>
+                  <Cell>{item.hiddenReason || "unknown"}</Cell>
+                  <Cell>
+                    <span className="block whitespace-nowrap text-slate-200">{formatDate(item.ts)}</span>
+                    <span className="block whitespace-nowrap text-slate-500">{formatTime(item.ts)}</span>
+                  </Cell>
+                  <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
+                  <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
+                  <Cell>{signalTypeLabel(item.signalType)}</Cell>
+                  <Cell>{severityLabel(item.severity)}</Cell>
+                  <Cell>{item.hiddenDetail || "后端标记为隐藏事件"}</Cell>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -831,7 +1014,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
           <HeaderCell>等级</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
-          <HeaderCell>冲击</HeaderCell>
+          <HeaderCell>市场冲击等级</HeaderCell>
           <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
           <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
@@ -885,8 +1068,16 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
               </span>
             </Cell>
             <Cell>
-              <span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>
-                {severityLabel(item.severity)}
+              <span className="block whitespace-nowrap">
+                <span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>
+                  {severityLabel(item.severity)}
+                </span>
+                <span
+                  className={`mt-1 block text-[10px] font-bold ${signalLevelClass(resolveImpactDisplay(item).signalLevel)}`}
+                  title={`${resolveImpactDisplay(item).signalLabel} · ${impactMetricSummary(resolveImpactDisplay(item))}`}
+                >
+                  {resolveImpactDisplay(item).signalLevel} / {resolveImpactDisplay(item).impactLevel}
+                </span>
               </span>
             </Cell>
             <Cell>
@@ -1066,13 +1257,13 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ],
               ["跨交易所聚合", yesNoLabel(signal.isCrossExchangeAggregated ?? signal.finalEvent?.isCrossExchangeAggregated)],
               ["生命周期累计", yesNoLabel(signal.isLifecycleAccumulated ?? signal.finalEvent?.isLifecycleAccumulated)],
-              ["Impact Score", `${finiteNumber(signal.impactScore ?? signal.finalEvent?.impactScore).toFixed(2)}x`],
-              ["Z-score", finiteNumber(signal.zScore ?? signal.finalEvent?.zScore).toFixed(2)],
-              ["Percentile", `P${Math.round(finiteNumber(signal.percentile ?? signal.finalEvent?.percentile))}`],
-              ["Impact Level", String(signal.impactLevel || signal.finalEvent?.impactLevel || "C").toUpperCase()],
-                ["Signal Level", String(signal.signalLevel || signal.finalEvent?.signalLevel || "L1").toUpperCase()],
-                ["Signal Label", String(signal.signalLabel || signal.finalEvent?.signalLabel || "LOW IMPACT EVENT").toUpperCase()],
-                ["Normalized Strength", String(signal.normalizedStrength || signal.finalEvent?.normalizedStrength || "LOW").toUpperCase()],
+              ["Impact Score", impactScoreLabel(signal)],
+              ["Z-score", impactZScoreLabel(signal)],
+              ["Percentile", impactPercentileLabel(signal)],
+              ["Impact Level", resolveImpactDisplay(signal).impactLevel],
+                ["Signal Level", resolveImpactDisplay(signal).signalLevel],
+                ["Signal Label", resolveImpactDisplay(signal).signalLabel],
+                ["Normalized Strength", resolveImpactDisplay(signal).normalizedStrength],
                 ["事件质量", eventQualityLabel(signal)],
                 ["合并相似度", formatPct(Number(signal.eventQuality?.mergeSimilarityScore || 0) * 100)],
                 ["假事件标记", eventQualityFlagsLabel(signal)],
@@ -2390,24 +2581,131 @@ function eventQualityBadge(item) {
 }
 
 function impactNormalizationBadge(item) {
-  const impactLevel = String(item?.impactLevel || item?.finalEvent?.impactLevel || "C").toUpperCase();
-  const signalLevel = String(item?.signalLevel || item?.finalEvent?.signalLevel || "L1").toUpperCase();
-  const signalLabel = String(item?.signalLabel || item?.finalEvent?.signalLabel || "LOW IMPACT EVENT").toUpperCase();
-  const impactScore = finiteNumber(item?.impactScore ?? item?.finalEvent?.impactScore);
-  const zScore = finiteNumber(item?.zScore ?? item?.finalEvent?.zScore);
-  const percentile = Math.round(finiteNumber(item?.percentile ?? item?.finalEvent?.percentile));
+  const impact = resolveImpactDisplay(item);
 
   return (
     <span className="block whitespace-nowrap">
-      <span className={`block text-xs font-bold ${signalLevelClass(signalLevel)}`}>
-        {signalLevel} / {impactLevel}
+      <span className={`block text-xs font-bold ${signalLevelClass(impact.signalLevel)}`}>
+        {impact.signalLevel} / {impact.impactLevel}
       </span>
-      <span className="block text-[10px] uppercase tracking-wide text-slate-400">{signalLabel}</span>
+      <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span>
       <span className="block text-[10px] text-slate-500">
-        {impactScore.toFixed(2)}x · z {zScore.toFixed(2)} · P{percentile}
+        {impactMetricSummary(impact)}
       </span>
     </span>
   );
+}
+
+function resolveImpactDisplay(item) {
+  const impactScore = numberOrNull(item?.impactScore ?? item?.finalEvent?.impactScore ?? item?.dynamicMultiple);
+  const zScore = numberOrNull(item?.zScore ?? item?.finalEvent?.zScore);
+  const percentile = numberOrNull(
+    item?.percentile ??
+      item?.finalEvent?.percentile ??
+      item?.percentileLevel ??
+      item?.finalEvent?.percentileLevel,
+  );
+  const dynamicThresholdLevel = String(
+    item?.dynamicThresholdLevel ??
+      item?.finalEvent?.dynamicThresholdLevel ??
+      "normal",
+  ).toLowerCase();
+  const impactLevel = String(
+    item?.impactLevel ??
+      item?.finalEvent?.impactLevel ??
+      deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore),
+  ).toUpperCase();
+  const signalLevel = String(
+    item?.signalLevel ??
+      item?.finalEvent?.signalLevel ??
+      deriveSignalLevelFromImpact(impactLevel),
+  ).toUpperCase();
+  const signalLabel = String(
+    item?.signalLabel ??
+      item?.finalEvent?.signalLabel ??
+      deriveSignalLabelFromImpact(impactLevel),
+  ).toUpperCase();
+  const normalizedStrength = String(
+    item?.normalizedStrength ??
+      item?.finalEvent?.normalizedStrength ??
+      deriveNormalizedStrengthFromImpact(impactLevel),
+  ).toUpperCase();
+  return {
+    impactScore,
+    zScore,
+    percentile,
+    impactLevel,
+    signalLevel,
+    signalLabel,
+    normalizedStrength,
+  };
+}
+
+function impactMetricSummary(impact) {
+  const parts = [];
+  if (impact.impactScore !== null) {
+    parts.push(`${impact.impactScore.toFixed(2)}x`);
+  }
+  if (impact.zScore !== null) {
+    parts.push(`z ${impact.zScore.toFixed(2)}`);
+  }
+  if (impact.percentile !== null) {
+    parts.push(formatPercentile(impact.percentile));
+  }
+  return parts.join(" · ") || "impact pending";
+}
+
+function impactScoreLabel(signal) {
+  const impact = resolveImpactDisplay(signal);
+  return impact.impactScore === null ? "—" : `${impact.impactScore.toFixed(2)}x`;
+}
+
+function impactZScoreLabel(signal) {
+  const impact = resolveImpactDisplay(signal);
+  return impact.zScore === null ? "—" : impact.zScore.toFixed(2);
+}
+
+function impactPercentileLabel(signal) {
+  const impact = resolveImpactDisplay(signal);
+  return impact.percentile === null ? "—" : formatPercentile(impact.percentile);
+}
+
+function deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore) {
+  if (percentile !== null) {
+    if (percentile > 97) return "S";
+    if (percentile >= 90) return "A";
+    if (percentile >= 80) return "B";
+  }
+  if (impactScore !== null) {
+    if (impactScore > 5) return "S";
+    if (impactScore >= 3) return "A";
+    if (impactScore >= 1.8) return "B";
+  }
+  if (dynamicThresholdLevel === "s") return "S";
+  if (dynamicThresholdLevel === "critical") return "A";
+  if (dynamicThresholdLevel === "high") return "B";
+  return "C";
+}
+
+function deriveSignalLevelFromImpact(impactLevel) {
+  if (impactLevel === "S") return "S";
+  if (impactLevel === "A") return "L3";
+  if (impactLevel === "B") return "L2";
+  return "L1";
+}
+
+function deriveSignalLabelFromImpact(impactLevel) {
+  if (impactLevel === "S") return "SHOCK IMPACT EVENT";
+  if (impactLevel === "A") return "HIGH IMPACT EVENT";
+  if (impactLevel === "B") return "MEDIUM IMPACT EVENT";
+  return "LOW IMPACT EVENT";
+}
+
+function deriveNormalizedStrengthFromImpact(impactLevel) {
+  if (impactLevel === "S") return "EXTREME";
+  if (impactLevel === "A") return "HIGH";
+  if (impactLevel === "B") return "MEDIUM";
+  return "LOW";
 }
 
 function signalLevelClass(signalLevel) {
@@ -2415,6 +2713,11 @@ function signalLevelClass(signalLevel) {
   if (signalLevel === "L3") return "text-red-300";
   if (signalLevel === "L2") return "text-yellow-200";
   return "text-slate-400";
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function finiteNumber(value, fallback = 0) {
