@@ -11,6 +11,7 @@ import {
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
+  fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
   fetchFinalEvents,
   fetchFinalEventsV2,
@@ -455,6 +456,28 @@ vi.mock("../api/contractWhale.js", () => ({
           finalResult: "上一段主动卖出事件已结束",
         },
       ],
+      error: null,
+    }),
+  ),
+  fetchContractWhaleRawFlowDebug: vi.fn(() =>
+    Promise.resolve({
+      symbol: "BTC",
+      range: "24h",
+      config: {
+        appRequestedSymbol: "BTC-PERP",
+        querySymbol: "BTC",
+      },
+      normalizer: {
+        connectorSymbolMismatch: false,
+      },
+      contractFlow1s: {
+        exactSymbolRows: 12,
+      },
+      diagnosis: {
+        status: "raw_flow_available",
+        primaryReason: "raw_flow_present",
+        details: [],
+      },
       error: null,
     }),
   ),
@@ -1081,12 +1104,33 @@ describe("ContractWhaleMonitor", () => {
       },
       error: null,
     });
+    fetchContractWhaleRawFlowDebug.mockResolvedValueOnce({
+      symbol: "BTC",
+      range: "24h",
+      config: {
+        appRequestedSymbol: "ETH-PERP",
+        querySymbol: "BTC",
+      },
+      normalizer: {
+        connectorSymbolMismatch: true,
+      },
+      contractFlow1s: {
+        exactSymbolRows: 0,
+      },
+      diagnosis: {
+        status: "upstream_no_raw_flow",
+        primaryReason: "connector_requested_symbol_mismatch",
+        details: ["connector requested ETH-PERP while query symbol is BTC"],
+      },
+      error: null,
+    });
 
     render(<ContractWhaleMonitor />);
 
     expect(
       await screen.findByText("BTC latest 为旧快照，最近 24h 没有新的 BTC 主力历史信号。"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/上游诊断：connector_requested_symbol_mismatch/i)).toBeInTheDocument();
   });
 
   it("renders summary cards and latest contract whale signals", async () => {

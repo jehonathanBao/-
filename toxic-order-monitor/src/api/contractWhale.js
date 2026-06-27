@@ -427,6 +427,42 @@ export async function fetchContractEventDebugCounts(filters = {}) {
   }
 }
 
+export async function fetchContractWhaleRawFlowDebug(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: filters.symbol || "BTC",
+      range: filters.range ?? "24h",
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/raw-flow-debug?${query}`, {
+      timeoutMs: 4_000,
+    });
+    return {
+      symbol: String(response.data?.symbol || filters.symbol || "BTC"),
+      range: String(response.data?.range || filters.range || "24h"),
+      config: response.data?.config || null,
+      rawTradeIngest: response.data?.rawTradeIngest ?? response.data?.raw_trade_ingest ?? null,
+      normalizer: response.data?.normalizer || null,
+      aggregator: response.data?.aggregator || null,
+      contractFlow1s: response.data?.contractFlow1s ?? response.data?.contract_flow_1s ?? null,
+      diagnosis: response.data?.diagnosis || null,
+      error: response.data?.error || null,
+    };
+  } catch {
+    return {
+      symbol: String(filters.symbol || "BTC"),
+      range: String(filters.range || "24h"),
+      config: null,
+      rawTradeIngest: null,
+      normalizer: null,
+      aggregator: null,
+      contractFlow1s: null,
+      diagnosis: null,
+      error: "raw_flow_debug_unavailable",
+    };
+  }
+}
+
 export async function fetchFinalEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {

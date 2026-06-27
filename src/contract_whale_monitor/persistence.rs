@@ -62,6 +62,15 @@ pub async fn flush_contract_flow_buckets_nonblocking(
     };
 
     let count = buckets.len();
+    let mut per_symbol = std::collections::BTreeMap::<String, usize>::new();
+    for bucket in &buckets {
+        *per_symbol.entry(bucket.symbol.clone()).or_default() += 1;
+    }
+    let symbol_breakdown = per_symbol
+        .into_iter()
+        .map(|(symbol, rows)| format!("{symbol}:{rows}"))
+        .collect::<Vec<_>>()
+        .join(",");
     match tokio::task::spawn_blocking(move || store.upsert_contract_flow_buckets(&buckets)).await {
         Ok(Ok(written)) => {
             tracing::info!(
@@ -69,6 +78,7 @@ pub async fn flush_contract_flow_buckets_nonblocking(
                 event = log_events::BUCKET_FLUSHED,
                 bucket_count = count,
                 written = written,
+                symbols = symbol_breakdown.as_str(),
                 "{} bucket flushed",
                 LOG_PREFIX
             );

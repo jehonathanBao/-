@@ -149,6 +149,43 @@ async fn contract_whale_pipeline_debug_reports_zero_history_and_stale_latest_for
 }
 
 #[tokio::test]
+async fn contract_whale_raw_flow_debug_exposes_upstream_symbol_mismatch_diagnosis() {
+    let state = seeded_raw_flow_debug_state("ETH-PERP");
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/raw-flow-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("raw flow debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("raw flow debug json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert_eq!(payload["range"], "24h");
+    assert_eq!(payload["config"]["appRequestedSymbol"], "ETH-PERP");
+    assert_eq!(payload["config"]["querySymbol"], "BTC");
+    assert_eq!(payload["normalizer"]["connectorSymbolMismatch"], true);
+    assert_eq!(payload["contractFlow1s"]["exactSymbolRows"], 0);
+    assert_eq!(
+        payload["diagnosis"]["primaryReason"],
+        "connector_requested_symbol_mismatch"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_whale_latest_marks_old_snapshots_stale_and_can_hide_them() {
     let state = seeded_pipeline_debug_state();
     let app = router(state);
@@ -228,7 +265,10 @@ fn seeded_contract_event_state() -> AppState {
 }
 
 fn seeded_pipeline_debug_state() -> AppState {
-    let config = test_config(temp_sqlite_path("contract-whale-pipeline-debug"));
+    let config = test_config_with_symbol(
+        temp_sqlite_path("contract-whale-pipeline-debug"),
+        "BTC-PERP",
+    );
     let state = AppState::new(config);
     let store = state.contract_whale_store().expect("contract whale store");
     let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
@@ -245,6 +285,16 @@ fn seeded_pipeline_debug_state() -> AppState {
     store.upsert_contract_whale_signal(&stale_signal).unwrap();
     store.upsert_contract_whale_signal(&fresh_eth).unwrap();
 
+    state
+}
+
+fn seeded_raw_flow_debug_state(app_symbol: &str) -> AppState {
+    let config = test_config_with_symbol(temp_sqlite_path("contract-whale-raw-flow-debug"), app_symbol);
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let stale_signal = base_signal("btc-stale", now - 26 * 60 * 60 * 1000);
+    store.upsert_contract_whale_signal(&stale_signal).unwrap();
     state
 }
 
@@ -281,12 +331,16 @@ fn temp_sqlite_path(name: &str) -> String {
 }
 
 fn test_config(sqlite_path: String) -> AppConfig {
+    test_config_with_symbol(sqlite_path, "BTC-PERP")
+}
+
+fn test_config_with_symbol(sqlite_path: String, symbol: &str) -> AppConfig {
     AppConfig {
         app_env: "test".to_string(),
         read_only: true,
         api_host: "127.0.0.1".parse().expect("valid ip"),
         api_port: 0,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         toxic_volume_alert_btc: 1000.0,
         windows_ms: vec![1000, 5000, 15000, 60000],
         markout_horizons_ms: vec![1000, 5000, 15000],

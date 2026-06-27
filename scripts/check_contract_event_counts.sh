@@ -5,26 +5,46 @@ BASE="${BASE:-http://127.0.0.1:5173}"
 SYMBOL="${SYMBOL:-BTC}"
 RANGE="${RANGE:-24h}"
 
-echo "== contract-events =="
-curl -sS "$BASE/api/contract-events?symbol=$SYMBOL&range=$RANGE&limit=50" | head -c 2000
-echo
-echo
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 
-echo "== contract-events include_hidden =="
-curl -sS "$BASE/api/contract-events?symbol=$SYMBOL&range=$RANGE&limit=50&include_hidden=true" | head -c 3000
-echo
-echo
+print_json_preview() {
+  local name="$1"
+  local url="$2"
+  local limit="$3"
+  local outfile="$tmp_dir/${name}.json"
+  echo "== $name =="
+  curl -sS "$url" -o "$outfile"
+  head -c "$limit" "$outfile"
+  echo
+  echo
+}
 
-echo "== debug-counts =="
-curl -sS "$BASE/api/contract-events/debug-counts?symbol=$SYMBOL&range=$RANGE&include_hidden=true" | head -c 4000
-echo
-echo
-
-echo "== final-events-v2 =="
-curl -sS "$BASE/api/final-events-v2?symbol=$SYMBOL&range=4h&limit=50" | head -c 3000
-echo
-echo
-
-echo "== latest =="
-curl -sS "$BASE/api/contract-whale/latest?symbol=$SYMBOL" | head -c 3000
-echo
+print_json_preview \
+  "contract-events" \
+  "$BASE/api/contract-events?symbol=$SYMBOL&range=$RANGE&limit=50" \
+  2000
+print_json_preview \
+  "contract-events include_hidden" \
+  "$BASE/api/contract-events?symbol=$SYMBOL&range=$RANGE&limit=50&include_hidden=true" \
+  3000
+print_json_preview \
+  "debug-counts" \
+  "$BASE/api/contract-events/debug-counts?symbol=$SYMBOL&range=$RANGE&include_hidden=true" \
+  4000
+print_json_preview \
+  "pipeline-debug" \
+  "$BASE/api/contract-whale/pipeline-debug?symbol=$SYMBOL&range=$RANGE" \
+  4000
+print_json_preview \
+  "raw-flow-debug" \
+  "$BASE/api/contract-whale/raw-flow-debug?symbol=$SYMBOL&range=$RANGE" \
+  4000
+print_json_preview \
+  "final-events-v2" \
+  "$BASE/api/final-events-v2?symbol=$SYMBOL&range=4h&limit=50" \
+  3000
+print_json_preview \
+  "latest" \
+  "$BASE/api/contract-whale/latest?symbol=$SYMBOL" \
+  3000

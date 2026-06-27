@@ -6,6 +6,7 @@ import {
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
   fetchContractWhaleLatest,
+  fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
@@ -35,6 +36,7 @@ export default function ContractWhaleMonitor() {
     contractEventsServerTime: null,
     contractEventsLastEventTs: null,
     contractEventDebugCounts: null,
+    rawFlowDebug: null,
     finalEvents: { active: [], closed: [] },
     finalEventsCursor: null,
     finalEventsHasMore: false,
@@ -120,6 +122,17 @@ export default function ContractWhaleMonitor() {
       }));
     };
 
+    const refreshRawFlowDebug = async () => {
+      const payload = await fetchContractWhaleRawFlowDebug({
+        symbol: filters.symbol,
+        range: "24h",
+      });
+      updateState((previous) => ({
+        ...previous,
+        rawFlowDebug: payload.error ? previous.rawFlowDebug : payload,
+      }));
+    };
+
     const refreshFinalEvents = async (limit = 30) => {
       const payload = await fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit });
       updateState((previous) => ({
@@ -178,6 +191,7 @@ export default function ContractWhaleMonitor() {
     void refreshLatest();
     void refreshContractEvents(50);
     void refreshContractEventDebugCounts();
+    void refreshRawFlowDebug();
     void refreshFinalEvents(30);
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
@@ -437,6 +451,7 @@ export default function ContractWhaleMonitor() {
       <RawSignalDebugSection
         contractEvents={state.contractEvents}
         debugCounts={state.contractEventDebugCounts}
+        rawFlowDebug={state.rawFlowDebug}
         enabled={summary.enabled}
         latestItems={state.items}
         finalEvents={state.finalEvents}
@@ -735,6 +750,7 @@ function mergeUniqueById(previousItems, nextItems) {
 function RawSignalDebugSection({
   contractEvents,
   debugCounts,
+  rawFlowDebug,
   enabled,
   latestItems,
   finalEvents,
@@ -774,6 +790,7 @@ function RawSignalDebugSection({
   const dominantHiddenReason = hiddenCount > 0 ? summarizeHiddenReasons(hiddenReasons) : null;
   const showLatestHistoryDriftHint = latestCount > visibleCount;
   const showStaleLatestOnlyWarning = latestCount > 0 && latestStaleCount === latestCount && visibleCount === 0;
+  const showRawFlowDiagnosis = showStaleLatestOnlyWarning && rawFlowDebug?.diagnosis?.primaryReason;
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -809,6 +826,14 @@ function RawSignalDebugSection({
                 <p className="text-[11px] text-amber-200/90">
                   {symbol} latest 为旧快照，最近 24h 没有新的 {symbol} 主力历史信号。
                 </p>
+              ) : null}
+              {showRawFlowDiagnosis ? (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
+                  <p>上游诊断：{rawFlowDebug.diagnosis.primaryReason}</p>
+                  {Array.isArray(rawFlowDebug.diagnosis.details) && rawFlowDebug.diagnosis.details.length > 0 ? (
+                    <p className="mt-1 text-amber-200/90">{rawFlowDebug.diagnosis.details[0]}</p>
+                  ) : null}
+                </div>
               ) : null}
               {hiddenCount > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">

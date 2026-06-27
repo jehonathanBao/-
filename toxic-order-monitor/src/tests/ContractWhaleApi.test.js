@@ -7,6 +7,7 @@ import {
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
+  fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
   fetchFinalEvents,
   fetchFinalEventsV2,
@@ -520,6 +521,54 @@ describe("contract whale api", () => {
       ageSec: 90_100,
       isStale: true,
       staleReason: "older_than_24h",
+    });
+  });
+
+  it("fetches raw flow debug diagnostics for a symbol and preserves diagnosis fields", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        symbol: "BTC",
+        range: "24h",
+        config: {
+          appRequestedSymbol: "ETH-PERP",
+          querySymbol: "BTC",
+        },
+        normalizer: {
+          connectorSymbolMismatch: true,
+        },
+        contractFlow1s: {
+          exactSymbolRows: 0,
+        },
+        diagnosis: {
+          status: "upstream_no_raw_flow",
+          primaryReason: "connector_requested_symbol_mismatch",
+          details: ["connector requested ETH-PERP while query symbol is BTC"],
+        },
+      },
+    });
+
+    const payload = await fetchContractWhaleRawFlowDebug({ symbol: "BTC", range: "24h" });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/raw-flow-debug?symbol=BTC&range=24h",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(payload).toMatchObject({
+      symbol: "BTC",
+      range: "24h",
+      config: {
+        appRequestedSymbol: "ETH-PERP",
+        querySymbol: "BTC",
+      },
+      normalizer: {
+        connectorSymbolMismatch: true,
+      },
+      contractFlow1s: {
+        exactSymbolRows: 0,
+      },
+      diagnosis: {
+        primaryReason: "connector_requested_symbol_mismatch",
+      },
     });
   });
 

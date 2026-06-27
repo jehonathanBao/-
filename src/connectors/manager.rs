@@ -62,6 +62,13 @@ impl ConnectorManager {
                 self.update_health(health);
                 continue;
             }
+            tracing::info!(
+                venue = venue.as_key(),
+                requested_symbol = self.symbol.as_str(),
+                venue_symbol = ?health.venue_symbol,
+                symbol_mapping_status = health.symbol_mapping_status.as_str(),
+                "connector start requested"
+            );
             self.update_health(VenueHealth::start_attempted_with_symbol(
                 venue,
                 &self.symbol,

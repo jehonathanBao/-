@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::{
     app::AppState,
+    config::AppConfig,
     contract_whale_monitor::{
         aggregator::{
             compute_percentile_threshold, dynamic_multiple_for_volume,
@@ -161,6 +162,113 @@ struct PipelineLatestItemDebug {
     age_sec: i64,
     is_stale: bool,
     stale_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleRawFlowDebugResponse {
+    symbol: String,
+    range: String,
+    config: RawFlowConfigDebug,
+    raw_trade_ingest: RawTradeIngestDebug,
+    normalizer: RawFlowNormalizerDebug,
+    aggregator: RawFlowAggregatorDebug,
+    contract_flow_1s: RawFlowPersistenceDebug,
+    diagnosis: RawFlowDiagnosisDebug,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowConfigDebug {
+    app_requested_symbol: String,
+    app_requested_symbol_base: String,
+    query_symbol: String,
+    query_symbol_enabled: bool,
+    runtime_enabled: bool,
+    runtime_dry_run: bool,
+    runtime_enabled_symbols: Vec<String>,
+    windows_sec: Vec<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawTradeIngestDebug {
+    venue_count: usize,
+    ws_connected_count: usize,
+    trade_active_count: usize,
+    total_trade_messages: u64,
+    exchanges: Vec<RawTradeIngestVenueDebug>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawTradeIngestVenueDebug {
+    venue: String,
+    requested_symbol: String,
+    venue_symbol: Option<String>,
+    symbol_mapping_status: String,
+    symbol_mapping_error: Option<String>,
+    ws_connected: bool,
+    trade_subscribe_acked: bool,
+    trade_message_count: u64,
+    last_trade_ts: Option<i64>,
+    trade_active: bool,
+    activity_status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowNormalizerDebug {
+    query_symbol: String,
+    normalized_query_symbol: String,
+    app_requested_symbol: String,
+    app_requested_symbol_base: String,
+    app_requested_symbol_matches_query: bool,
+    connector_symbol_mismatch: bool,
+    query_venue_symbols: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowAggregatorDebug {
+    flow_state_symbol: String,
+    updated_at: i64,
+    windows: BTreeMap<String, RawFlowAggregatorWindowDebug>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowAggregatorWindowDebug {
+    trade_count: u64,
+    buy_volume_btc: f64,
+    sell_volume_btc: f64,
+    total_volume_btc: f64,
+    active_venues: Vec<String>,
+    stale_venues: Vec<String>,
+    has_trades: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowPersistenceDebug {
+    exact_symbol_rows: usize,
+    sibling_symbol_rows: usize,
+    oldest_ts: Option<i64>,
+    newest_ts: Option<i64>,
+    buy_volume_btc: f64,
+    sell_volume_btc: f64,
+    total_volume_btc: f64,
+    distinct_symbols: Vec<String>,
+    distinct_product_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawFlowDiagnosisDebug {
+    status: String,
+    primary_reason: String,
+    details: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1029,6 +1137,20 @@ pub async fn contract_whale_pipeline_debug_route(
     })))
 }
 
+pub async fn contract_whale_raw_flow_debug_route(
+    State(state): State<AppState>,
+    Query(query): Query<ContractWhaleQuery>,
+) -> ApiJsonResult {
+    let response = contract_whale_raw_flow_debug_for_query(state, query);
+    Ok(Json(serde_json::to_value(response).unwrap_or_else(|_| {
+        serde_json::json!({
+            "symbol": "BTC",
+            "range": "24h",
+            "error": "serialize_failed"
+        })
+    })))
+}
+
 fn contract_whale_pipeline_debug_for_query(
     state: AppState,
     query: ContractWhaleQuery,
@@ -1129,6 +1251,87 @@ fn contract_whale_pipeline_debug_for_query(
     }
 }
 
+fn contract_whale_raw_flow_debug_for_query(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> ContractWhaleRawFlowDebugResponse {
+    let symbol = match parse_symbol_for_latest(query.symbol.as_deref()) {
+        Ok(value) => value,
+        Err(_) => {
+            return ContractWhaleRawFlowDebugResponse {
+                symbol: "BTC".to_string(),
+                range: query.range.unwrap_or_else(|| "24h".to_string()),
+                error: Some("bad_request".to_string()),
+                ..ContractWhaleRawFlowDebugResponse::default()
+            };
+        }
+    };
+    let history_query = match parse_history_query(&query) {
+        Ok(value) => value,
+        Err(_) => {
+            return ContractWhaleRawFlowDebugResponse {
+                symbol,
+                range: query.range.unwrap_or_else(|| "24h".to_string()),
+                error: Some("bad_request".to_string()),
+                ..ContractWhaleRawFlowDebugResponse::default()
+            };
+        }
+    };
+    let range = query.range.unwrap_or_else(|| "24h".to_string());
+    let now = history_query.to_ts.unwrap_or_else(now_ms);
+    let from_ts = history_query
+        .from_ts
+        .unwrap_or_else(|| now.saturating_sub(24 * 60 * 60 * 1000));
+    let Some(store) = state.contract_whale_store() else {
+        return ContractWhaleRawFlowDebugResponse {
+            symbol,
+            range,
+            error: Some("query_failed".to_string()),
+            ..ContractWhaleRawFlowDebugResponse::default()
+        };
+    };
+
+    let runtime = contract_whale_runtime_config();
+    let app_requested_symbol = state.config().symbol.clone();
+    let config = build_raw_flow_config_debug(&symbol, &app_requested_symbol, state.config(), &runtime);
+    let venue_health = state.venue_health();
+    let raw_trade_ingest = build_raw_trade_ingest_debug(&venue_health);
+    let normalizer = build_raw_flow_normalizer_debug(&symbol, &app_requested_symbol);
+    let aggregator = build_raw_flow_aggregator_debug(&state.flow_state_for_symbol(&symbol));
+    let contract_flow_1s =
+        query_raw_flow_persistence_debug(&store, &symbol, from_ts, now).unwrap_or_default();
+    let diagnosis =
+        build_raw_flow_diagnosis(&config, &raw_trade_ingest, &normalizer, &aggregator, &contract_flow_1s);
+
+    tracing::info!(
+        target: CWM_LOG_TARGET,
+        event = log_events::BUCKET_FLUSHED,
+        symbol = symbol.as_str(),
+        range = range.as_str(),
+        app_requested_symbol = config.app_requested_symbol.as_str(),
+        connector_symbol_mismatch = normalizer.connector_symbol_mismatch,
+        total_trade_messages = raw_trade_ingest.total_trade_messages,
+        flow_state_symbol = aggregator.flow_state_symbol.as_str(),
+        exact_symbol_rows = contract_flow_1s.exact_symbol_rows,
+        sibling_symbol_rows = contract_flow_1s.sibling_symbol_rows,
+        diagnosis = diagnosis.primary_reason.as_str(),
+        "{} raw flow debug snapshot",
+        CWM_LOG_PREFIX
+    );
+
+    ContractWhaleRawFlowDebugResponse {
+        symbol,
+        range,
+        config,
+        raw_trade_ingest,
+        normalizer,
+        aggregator,
+        contract_flow_1s,
+        diagnosis,
+        error: None,
+    }
+}
+
 fn summarize_pipeline_raw_flow(buckets: &[ContractFlowBucket]) -> PipelineRawFlowDebug {
     let buy_volume_btc = buckets.iter().map(|bucket| bucket.buy_volume_btc).sum::<f64>();
     let sell_volume_btc = buckets.iter().map(|bucket| bucket.sell_volume_btc).sum::<f64>();
@@ -1140,6 +1343,326 @@ fn summarize_pipeline_raw_flow(buckets: &[ContractFlowBucket]) -> PipelineRawFlo
         sell_volume_btc: round_for_route(sell_volume_btc, 3),
         total_volume_btc: round_for_route(buy_volume_btc + sell_volume_btc, 3),
     }
+}
+
+fn build_raw_flow_config_debug(
+    query_symbol: &str,
+    app_requested_symbol: &str,
+    app_config: &AppConfig,
+    runtime: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+) -> RawFlowConfigDebug {
+    let mut runtime_enabled_symbols = runtime
+        .symbols
+        .iter()
+        .filter(|(_, symbol_config)| symbol_config.enabled)
+        .map(|(symbol, _)| symbol.clone())
+        .collect::<Vec<_>>();
+    runtime_enabled_symbols.sort();
+    RawFlowConfigDebug {
+        app_requested_symbol: app_requested_symbol.to_string(),
+        app_requested_symbol_base: symbol_base_prefix(app_requested_symbol),
+        query_symbol: query_symbol.to_string(),
+        query_symbol_enabled: runtime.symbol_enabled(query_symbol),
+        runtime_enabled: app_config.contract_whale_monitor.enabled,
+        runtime_dry_run: app_config.contract_whale_monitor.dry_run,
+        runtime_enabled_symbols,
+        windows_sec: app_config
+            .windows_ms
+            .iter()
+            .copied()
+            .filter(|window_ms| matches!(*window_ms, 5_000 | 15_000 | 60_000))
+            .map(|window_ms| window_ms / 1000)
+            .collect(),
+    }
+}
+
+fn build_raw_trade_ingest_debug(venue_health: &VenueHealthMap) -> RawTradeIngestDebug {
+    let mut exchanges = venue_health
+        .values()
+        .map(|health| RawTradeIngestVenueDebug {
+            venue: health.venue.as_key().to_string(),
+            requested_symbol: health.requested_symbol.clone(),
+            venue_symbol: health.venue_symbol.clone(),
+            symbol_mapping_status: health.symbol_mapping_status.clone(),
+            symbol_mapping_error: health.symbol_mapping_error.clone(),
+            ws_connected: health.ws_connected,
+            trade_subscribe_acked: health.trade_subscribe_acked,
+            trade_message_count: health.trade_message_count,
+            last_trade_ts: health.last_trade_ts,
+            trade_active: health.trade_active,
+            activity_status: health.activity_status.clone(),
+        })
+        .collect::<Vec<_>>();
+    exchanges.sort_by(|left, right| left.venue.cmp(&right.venue));
+    RawTradeIngestDebug {
+        venue_count: exchanges.len(),
+        ws_connected_count: exchanges.iter().filter(|item| item.ws_connected).count(),
+        trade_active_count: exchanges.iter().filter(|item| item.trade_active).count(),
+        total_trade_messages: exchanges.iter().map(|item| item.trade_message_count).sum(),
+        exchanges,
+    }
+}
+
+fn build_raw_flow_normalizer_debug(
+    query_symbol: &str,
+    app_requested_symbol: &str,
+) -> RawFlowNormalizerDebug {
+    let app_requested_symbol_base = symbol_base_prefix(app_requested_symbol);
+    let normalized_query_symbol = symbol_base_prefix(query_symbol);
+    let query_venue_symbols = [("binance", "BTC"), ("bybit", "BTC"), ("okx", "BTC"), ("bitfinex", "BTC")]
+        .into_iter()
+        .map(|(venue_key, _)| {
+            let venue = match venue_key {
+                "binance" => crate::types::market::Venue::Binance,
+                "bybit" => crate::types::market::Venue::Bybit,
+                "okx" => crate::types::market::Venue::Okx,
+                _ => crate::types::market::Venue::Bitfinex,
+            };
+            (
+                venue_key.to_string(),
+                crate::types::market::venue_symbol_mapping(venue, query_symbol)
+                    .venue_symbol
+                    .unwrap_or_else(|| "unmapped".to_string()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    RawFlowNormalizerDebug {
+        query_symbol: query_symbol.to_string(),
+        normalized_query_symbol: normalized_query_symbol.clone(),
+        app_requested_symbol: app_requested_symbol.to_string(),
+        app_requested_symbol_base: app_requested_symbol_base.clone(),
+        app_requested_symbol_matches_query: app_requested_symbol_base == normalized_query_symbol,
+        connector_symbol_mismatch: app_requested_symbol_base != normalized_query_symbol,
+        query_venue_symbols,
+    }
+}
+
+fn build_raw_flow_aggregator_debug(flow_state: &FlowState) -> RawFlowAggregatorDebug {
+    let windows = flow_state
+        .windows
+        .iter()
+        .filter_map(|(window_key, window)| {
+            let seconds = window_key.parse::<u64>().ok()?.saturating_div(1000);
+            if !matches!(seconds, 5 | 15 | 60) {
+                return None;
+            }
+            Some((
+                format!("{seconds}s"),
+                RawFlowAggregatorWindowDebug {
+                    trade_count: window.trade_count,
+                    buy_volume_btc: round_for_route(window.aggressive_buy_btc, 3),
+                    sell_volume_btc: round_for_route(window.aggressive_sell_btc, 3),
+                    total_volume_btc: round_for_route(window.abs_aggressive_btc, 3),
+                    active_venues: window.data_quality.active_venues.clone(),
+                    stale_venues: window.data_quality.stale_venues.clone(),
+                    has_trades: window.trade_count > 0,
+                },
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    RawFlowAggregatorDebug {
+        flow_state_symbol: flow_state.symbol.clone(),
+        updated_at: flow_state.updated_at,
+        windows,
+    }
+}
+
+fn query_raw_flow_persistence_debug(
+    store: &crate::storage::SqliteStore,
+    query_symbol: &str,
+    from_ts: i64,
+    to_ts: i64,
+) -> anyhow::Result<RawFlowPersistenceDebug> {
+    let query_prefix = format!("{}%", symbol_base_prefix(query_symbol));
+    store.with_connection(|conn| {
+        let exact_symbol_rows = conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM contract_flow_1s
+            WHERE market_type = 'perp'
+              AND symbol = ?1
+              AND ts_bucket BETWEEN ?2 AND ?3
+            "#,
+            rusqlite::params![query_symbol, from_ts, to_ts],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let sibling_symbol_rows = conn.query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM contract_flow_1s
+            WHERE market_type = 'perp'
+              AND ts_bucket BETWEEN ?2 AND ?3
+              AND (
+                    symbol LIKE ?1
+                 OR product_id LIKE ?1
+              )
+              AND symbol <> ?4
+            "#,
+            rusqlite::params![query_prefix, from_ts, to_ts, query_symbol],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let (oldest_ts, newest_ts, buy_volume_btc, sell_volume_btc): (
+            Option<i64>,
+            Option<i64>,
+            Option<f64>,
+            Option<f64>,
+        ) = conn.query_row(
+            r#"
+            SELECT MIN(ts_bucket), MAX(ts_bucket), SUM(buy_volume_btc), SUM(sell_volume_btc)
+            FROM contract_flow_1s
+            WHERE market_type = 'perp'
+              AND symbol = ?1
+              AND ts_bucket BETWEEN ?2 AND ?3
+            "#,
+            rusqlite::params![query_symbol, from_ts, to_ts],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+
+        let mut distinct_symbols_stmt = conn.prepare(
+            r#"
+            SELECT DISTINCT symbol
+            FROM contract_flow_1s
+            WHERE market_type = 'perp'
+              AND ts_bucket BETWEEN ?2 AND ?3
+              AND (
+                    symbol LIKE ?1
+                 OR product_id LIKE ?1
+              )
+            ORDER BY symbol ASC
+            "#,
+        )?;
+        let distinct_symbols = distinct_symbols_stmt
+            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| row.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+
+        let mut distinct_product_ids_stmt = conn.prepare(
+            r#"
+            SELECT DISTINCT product_id
+            FROM contract_flow_1s
+            WHERE market_type = 'perp'
+              AND ts_bucket BETWEEN ?2 AND ?3
+              AND product_id IS NOT NULL
+              AND (
+                    symbol LIKE ?1
+                 OR product_id LIKE ?1
+              )
+            ORDER BY product_id ASC
+            "#,
+        )?;
+        let distinct_product_ids = distinct_product_ids_stmt
+            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| row.get::<_, String>(0))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+
+        let buy_volume_btc = buy_volume_btc.unwrap_or(0.0);
+        let sell_volume_btc = sell_volume_btc.unwrap_or(0.0);
+        Ok(RawFlowPersistenceDebug {
+            exact_symbol_rows,
+            sibling_symbol_rows,
+            oldest_ts,
+            newest_ts,
+            buy_volume_btc: round_for_route(buy_volume_btc, 3),
+            sell_volume_btc: round_for_route(sell_volume_btc, 3),
+            total_volume_btc: round_for_route(buy_volume_btc + sell_volume_btc, 3),
+            distinct_symbols,
+            distinct_product_ids,
+        })
+    })
+}
+
+fn build_raw_flow_diagnosis(
+    config: &RawFlowConfigDebug,
+    raw_trade_ingest: &RawTradeIngestDebug,
+    normalizer: &RawFlowNormalizerDebug,
+    aggregator: &RawFlowAggregatorDebug,
+    contract_flow_1s: &RawFlowPersistenceDebug,
+) -> RawFlowDiagnosisDebug {
+    let window_has_trades = aggregator.windows.values().any(|window| window.trade_count > 0);
+    let mut details = Vec::new();
+
+    if normalizer.connector_symbol_mismatch && contract_flow_1s.exact_symbol_rows == 0 {
+        details.push(format!(
+            "connector requested {} while query symbol is {}",
+            config.app_requested_symbol, config.query_symbol
+        ));
+        if contract_flow_1s.sibling_symbol_rows > 0 {
+            details.push(format!(
+                "contract_flow_1s has {} sibling rows under {}-like symbols/products",
+                contract_flow_1s.sibling_symbol_rows, config.query_symbol
+            ));
+        }
+        return RawFlowDiagnosisDebug {
+            status: "upstream_no_raw_flow".to_string(),
+            primary_reason: "connector_requested_symbol_mismatch".to_string(),
+            details,
+        };
+    }
+
+    if raw_trade_ingest.total_trade_messages == 0 && contract_flow_1s.exact_symbol_rows == 0 {
+        details.push("venue health reports zero parsed trade messages".to_string());
+        return RawFlowDiagnosisDebug {
+            status: "upstream_no_raw_flow".to_string(),
+            primary_reason: "no_trade_ingest_activity".to_string(),
+            details,
+        };
+    }
+
+    if raw_trade_ingest.total_trade_messages > 0 && !window_has_trades && contract_flow_1s.exact_symbol_rows == 0 {
+        details.push("trade messages exist but 5s/15s/60s flow windows are empty".to_string());
+        return RawFlowDiagnosisDebug {
+            status: "upstream_no_raw_flow".to_string(),
+            primary_reason: "aggregator_not_producing_symbol_flow".to_string(),
+            details,
+        };
+    }
+
+    if window_has_trades && contract_flow_1s.exact_symbol_rows == 0 {
+        details.push("rolling windows have trades but contract_flow_1s has no matching persisted rows".to_string());
+        return RawFlowDiagnosisDebug {
+            status: "upstream_no_raw_flow".to_string(),
+            primary_reason: "contract_flow_not_persisted".to_string(),
+            details,
+        };
+    }
+
+    if contract_flow_1s.exact_symbol_rows > 0 {
+        details.push(format!(
+            "contract_flow_1s contains {} exact {} rows in requested range",
+            contract_flow_1s.exact_symbol_rows, config.query_symbol
+        ));
+        return RawFlowDiagnosisDebug {
+            status: "raw_flow_available".to_string(),
+            primary_reason: "raw_flow_present".to_string(),
+            details,
+        };
+    }
+
+    RawFlowDiagnosisDebug {
+        status: "upstream_no_raw_flow".to_string(),
+        primary_reason: "unknown".to_string(),
+        details: vec!["raw flow unavailable but no dominant reason inferred".to_string()],
+    }
+}
+
+fn symbol_base_prefix(symbol: &str) -> String {
+    let upper = symbol.trim().to_ascii_uppercase();
+    let head = upper
+        .split([':', '/', '_'])
+        .next()
+        .unwrap_or(upper.as_str())
+        .split('-')
+        .next()
+        .unwrap_or(upper.as_str())
+        .to_string();
+    ["PERP", "USDT", "USD", "F0"]
+        .into_iter()
+        .fold(head, |current, suffix| {
+            current
+                .strip_suffix(suffix)
+                .map(str::to_string)
+                .unwrap_or(current)
+        })
 }
 
 fn replay_pipeline_detector_debug(
