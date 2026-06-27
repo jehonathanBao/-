@@ -4,12 +4,12 @@ import {
   fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
+  fetchContractWhaleIntelligenceTerminal,
   fetchContractWhaleLatencyDebug,
   fetchContractWhaleEvents,
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
-  fetchContractWhaleTradingDecisions,
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
@@ -57,7 +57,7 @@ export default function ContractWhaleMonitor() {
     finalEventsProjectionLagSec: null,
     finalEventsCacheAgeSec: null,
     finalEventsCacheTtlSec: null,
-    tradingDecisions: null,
+    intelligenceTerminal: null,
     events: [],
     hiddenContractEvents: [],
     hiddenContractEventsLoaded: false,
@@ -81,7 +81,7 @@ export default function ContractWhaleMonitor() {
     let latestTimer = null;
     let contractEventsTimer = null;
     let finalEventsTimer = null;
-    let tradingTimer = null;
+    let intelligenceTimer = null;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -216,14 +216,14 @@ export default function ContractWhaleMonitor() {
       }));
     };
 
-    const refreshTradingDecisions = async () => {
-      const payload = await fetchContractWhaleTradingDecisions({
+    const refreshIntelligenceTerminal = async () => {
+      const payload = await fetchContractWhaleIntelligenceTerminal({
         symbol: filters.symbol,
         range: "24h",
       });
       updateState((previous) => ({
         ...previous,
-        tradingDecisions: payload.error ? previous.tradingDecisions : payload,
+        intelligenceTerminal: payload.error ? previous.intelligenceTerminal : payload,
       }));
     };
 
@@ -249,12 +249,12 @@ export default function ContractWhaleMonitor() {
       if (latestTimer) window.clearInterval(latestTimer);
       if (contractEventsTimer) window.clearInterval(contractEventsTimer);
       if (finalEventsTimer) window.clearInterval(finalEventsTimer);
-      if (tradingTimer) window.clearInterval(tradingTimer);
+      if (intelligenceTimer) window.clearInterval(intelligenceTimer);
       summaryTimer = null;
       latestTimer = null;
       contractEventsTimer = null;
       finalEventsTimer = null;
-      tradingTimer = null;
+      intelligenceTimer = null;
     };
 
     const configurePolling = () => {
@@ -264,7 +264,7 @@ export default function ContractWhaleMonitor() {
       latestTimer = window.setInterval(refreshLatest, LATEST_REFRESH_MS);
       contractEventsTimer = window.setInterval(refreshContractEvents, CONTRACT_EVENTS_REFRESH_MS);
       finalEventsTimer = window.setInterval(refreshFinalEvents, FINAL_EVENTS_REFRESH_MS);
-      tradingTimer = window.setInterval(refreshTradingDecisions, SUMMARY_REFRESH_MS);
+      intelligenceTimer = window.setInterval(refreshIntelligenceTerminal, SUMMARY_REFRESH_MS);
     };
 
     const handleVisibilityChange = () => {
@@ -274,7 +274,7 @@ export default function ContractWhaleMonitor() {
         refreshLatest();
         refreshContractEvents(50);
         refreshFinalEvents(30);
-        refreshTradingDecisions();
+        refreshIntelligenceTerminal();
       }
     };
 
@@ -285,7 +285,7 @@ export default function ContractWhaleMonitor() {
     void refreshRawFlowDebug();
     void refreshLatencyDebug();
     void refreshFinalEvents(30);
-    void refreshTradingDecisions();
+    void refreshIntelligenceTerminal();
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
       void refreshRetention();
@@ -511,8 +511,7 @@ export default function ContractWhaleMonitor() {
       </p>
 
       <MarketStructureLitePanel summary={summary} />
-      <TradingDecisionLayerPanel decisions={state.tradingDecisions} />
-      <TradeOpportunitiesPanel summary={summary} />
+      <InstitutionalAnalysisTerminalPanel intelligence={state.intelligenceTerminal} />
 
       <PlatformCapabilitySection
         exchanges={summary.exchanges || {}}
@@ -1431,6 +1430,161 @@ function TradeOpportunitiesPanel({ summary }) {
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function InstitutionalAnalysisTerminalPanel({ intelligence }) {
+  const regime = intelligence?.marketRegime || {
+    regime: "RANGING",
+    confidence: 0,
+    reason: "当前缺少足够的主力历史信号。",
+  };
+  const liquidityBehaviors = Array.isArray(intelligence?.liquidityBehaviors)
+    ? intelligence.liquidityBehaviors
+    : [];
+  const rankedEvents = Array.isArray(intelligence?.rankedEvents) ? intelligence.rankedEvents : [];
+  const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
+  const suppression = intelligence?.noiseSuppression || {};
+
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Institutional Analysis Terminal</p>
+          <h4 className="mt-1 text-sm font-bold text-white">半机构级分析终端</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            不输出买卖建议、entry/exit 或止损，只展示市场状态、流动性行为、强度排序和结构机会。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
+          <TradeSummaryPill label="原始候选" value={`${suppression.rawCandidates || 0}`} />
+          <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
+          <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} tone="cyan" />
+          <TradeSummaryPill label="结构机会" value={`${opportunityMap.length}`} tone="emerald" />
+          <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="yellow" />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_1fr]">
+        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Market Regime</p>
+              <h5 className="mt-1 text-lg font-bold text-white">{regime.regime}</h5>
+            </div>
+            <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100">
+              Regime {regime.confidence}%
+            </span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-300">{regime.reason}</p>
+        </article>
+
+        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Opportunity Map</p>
+              <h5 className="mt-1 text-base font-bold text-white">结构机会分布</h5>
+            </div>
+            <span className="text-xs text-slate-500">{opportunityMap.length} zones</span>
+          </div>
+          {opportunityMap.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有明确的结构机会区域，保留观察。
+            </p>
+          ) : (
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              {opportunityMap.map((zone) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{zone.label}</p>
+                      <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+                      {zone.strengthScore}/100
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </div>
+
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Liquidity Behavior</p>
+              <h5 className="mt-1 text-base font-bold text-white">流动性行为</h5>
+            </div>
+            <span className="text-xs text-slate-500">{liquidityBehaviors.length} patterns</span>
+          </div>
+          {liquidityBehaviors.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有可解释的主导流动性行为。
+            </p>
+          ) : (
+            <div className="mt-3 grid gap-3">
+              {liquidityBehaviors.map((behavior) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${behavior.behavior}-${behavior.rangeLabel}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{behavior.label}</p>
+                      <p className="mt-1 text-xs text-cyan-200">{behavior.rangeLabel}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-300">
+                      <p>{behavior.strengthScore}/100</p>
+                      <p className="mt-1 text-slate-500">Conf {behavior.confidence}%</p>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{behavior.reason}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Strength Ranking</p>
+              <h5 className="mt-1 text-base font-bold text-white">强度排序</h5>
+            </div>
+            <span className="text-xs text-slate-500">{rankedEvents.length} ranked</span>
+          </div>
+          {rankedEvents.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有通过排序门槛的结构事件。
+            </p>
+          ) : (
+            <div className="mt-3 grid gap-3">
+              {rankedEvents.map((event) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={event.signalId}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{event.rank}</p>
+                      <p className="mt-1 text-sm font-semibold text-white">{event.eventType}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-300">
+                      <p>{event.strengthLabel}</p>
+                      <p className="mt-1 text-cyan-200">{event.strengthScore}/100</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                    <TradeMetric label="方向" value={event.directionBias} />
+                    <TradeMetric label="窗口" value={`${event.windowSec}s`} />
+                    <TradeMetric label="Regime" value={event.regimeAlignment} />
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{event.rationale}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </div>
     </section>
   );
 }

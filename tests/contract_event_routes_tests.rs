@@ -223,6 +223,42 @@ async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_tra
 }
 
 #[tokio::test]
+async fn contract_whale_intelligence_terminal_route_exposes_read_only_market_analysis() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/intelligence-terminal?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("intelligence terminal response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("intelligence terminal json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert!(payload["timestamp"].as_i64().is_some());
+    assert!(payload["marketRegime"].is_object());
+    assert!(payload["liquidityBehaviors"].is_array());
+    assert!(payload["rankedEvents"].is_array());
+    assert!(payload["opportunityMap"].is_array());
+    assert!(payload["noiseSuppression"].is_object());
+    assert!(payload.get("topSetups").is_none());
+    assert!(payload.get("noTradeZones").is_none());
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn final_events_v2_expose_projection_latency_metadata() {
     let state = seeded_contract_event_state();
     let app = router(state);

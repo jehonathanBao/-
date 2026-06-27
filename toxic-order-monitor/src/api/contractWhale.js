@@ -327,6 +327,25 @@ export async function fetchContractWhaleTradingDecisions(filters = {}) {
   }
 }
 
+export async function fetchContractWhaleIntelligenceTerminal(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  const requestedSymbol = filters.symbol || "BTC";
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: requestedSymbol,
+      range: filters.range ?? "24h",
+      limit: filters.limit ?? 50,
+      exchange: filters.exchange,
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/intelligence-terminal?${query}`, {
+      timeoutMs: 5_000,
+    });
+    return normalizeContractWhaleIntelligenceResponse(response.data, requestedSymbol);
+  } catch {
+    return normalizeContractWhaleIntelligenceResponse(null, requestedSymbol, "intelligence_terminal_unavailable");
+  }
+}
+
 export async function fetchContractWhaleHistory(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
@@ -697,6 +716,78 @@ function normalizeNoTradeZone(zone = {}) {
     rangeLabel: zone.rangeLabel || zone.range_label || "",
     lowPrice: Number(zone.lowPrice ?? zone.low_price ?? 0),
     highPrice: Number(zone.highPrice ?? zone.high_price ?? 0),
+  };
+}
+
+function normalizeContractWhaleIntelligenceResponse(payload, symbol = "BTC", fallbackError = null) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  return {
+    symbol: String(data.symbol || symbol),
+    timestamp: numberOrNull(data.timestamp),
+    marketRegime: {
+      regime: String(data.marketRegime?.regime ?? data.market_regime?.regime ?? "RANGING"),
+      confidence: numberOrNull(data.marketRegime?.confidence ?? data.market_regime?.confidence) ?? 0,
+      reason: String(data.marketRegime?.reason ?? data.market_regime?.reason ?? "当前缺少足够的主力结构信号。"),
+    },
+    liquidityBehaviors: Array.isArray(data.liquidityBehaviors ?? data.liquidity_behaviors)
+      ? (data.liquidityBehaviors ?? data.liquidity_behaviors).map(normalizeLiquidityBehavior)
+      : [],
+    rankedEvents: Array.isArray(data.rankedEvents ?? data.ranked_events)
+      ? (data.rankedEvents ?? data.ranked_events).map(normalizeRankedEvent)
+      : [],
+    opportunityMap: Array.isArray(data.opportunityMap ?? data.opportunity_map)
+      ? (data.opportunityMap ?? data.opportunity_map).map(normalizeOpportunityZone)
+      : [],
+    noiseSuppression: data.noiseSuppression ?? data.noise_suppression ?? {
+      rawCandidates: 0,
+      mergedEvents: 0,
+      lifecycleEvents: 0,
+      filteredEvents: 0,
+      tradeableSetups: 0,
+      suppressedDuplicates: 0,
+      noiseReductionPct: 0,
+    },
+    error: fallbackError || data.error || null,
+  };
+}
+
+function normalizeLiquidityBehavior(item = {}) {
+  return {
+    behavior: item.behavior || "order_block_behavior",
+    label: item.label || "Order Block",
+    strengthScore: Number(item.strengthScore ?? item.strength_score ?? 0),
+    confidence: Number(item.confidence ?? 0),
+    reason: item.reason || "当前结构暂无额外解释。",
+    rangeLabel: item.rangeLabel || item.range_label || "N/A",
+    lowPrice: Number(item.lowPrice ?? item.low_price ?? 0),
+    highPrice: Number(item.highPrice ?? item.high_price ?? 0),
+  };
+}
+
+function normalizeRankedEvent(item = {}) {
+  return {
+    signalId: item.signalId || item.signal_id || "",
+    rank: Number(item.rank || 0),
+    eventType: item.eventType || item.event_type || "结构事件",
+    directionBias: item.directionBias || item.direction_bias || "NEUTRAL",
+    strengthScore: Number(item.strengthScore ?? item.strength_score ?? 0),
+    strengthLabel: item.strengthLabel || item.strength_label || "LOW",
+    regimeAlignment: item.regimeAlignment || item.regime_alignment || "mixed",
+    liquidityBehavior: item.liquidityBehavior || item.liquidity_behavior || "order_block_behavior",
+    windowSec: Number(item.windowSec ?? item.window_sec ?? 0),
+    rationale: item.rationale || "当前结构机会仍需结合上下文理解。",
+  };
+}
+
+function normalizeOpportunityZone(item = {}) {
+  return {
+    zoneType: item.zoneType || item.zone_type || "order_block_zone",
+    label: item.label || "Order Block",
+    lowPrice: Number(item.lowPrice ?? item.low_price ?? 0),
+    highPrice: Number(item.highPrice ?? item.high_price ?? 0),
+    rangeLabel: item.rangeLabel || item.range_label || "N/A",
+    strengthScore: Number(item.strengthScore ?? item.strength_score ?? 0),
+    description: item.description || "当前结构机会暂无补充说明。",
   };
 }
 

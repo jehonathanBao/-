@@ -14,6 +14,7 @@ import {
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
+  fetchContractWhaleIntelligenceTerminal,
   fetchContractWhaleTradingDecisions,
   fetchFinalEvents,
   fetchFinalEventsV2,
@@ -214,6 +215,90 @@ vi.mock("../api/contractWhale.js", () => ({
           highPrice: 70040,
         },
       ],
+    }),
+  ),
+  fetchContractWhaleIntelligenceTerminal: vi.fn(() =>
+    Promise.resolve({
+      symbol: "BTC",
+      timestamp: 1_700_000_000_000,
+      marketRegime: {
+        regime: "RANGING",
+        confidence: 78,
+        reason: "成交量活跃但价格延续性一般，结构更接近区间整理。",
+      },
+      liquidityBehaviors: [
+        {
+          behavior: "absorption",
+          label: "Absorption",
+          strengthScore: 84,
+          confidence: 80,
+          reason: "买方承接稳定，价格没有继续下破。",
+          rangeLabel: "69,760 - 69,890",
+        },
+        {
+          behavior: "fake_breakout",
+          label: "Fake Breakout",
+          strengthScore: 68,
+          confidence: 61,
+          reason: "冲高成交放大，但价格跟随不足。",
+          rangeLabel: "69,980 - 70,040",
+        },
+      ],
+      rankedEvents: [
+        {
+          signalId: "contract-whale-row",
+          rank: 1,
+          eventType: "主力拉盘",
+          directionBias: "BUY",
+          strengthScore: 87,
+          strengthLabel: "HIGH",
+          regimeAlignment: "aligned",
+          liquidityBehavior: "breakout_pressure",
+          windowSec: 15,
+          rationale: "多窗口主买一致，且价格顺势跟随。",
+        },
+        {
+          signalId: "contract-whale-row-2",
+          rank: 2,
+          eventType: "下方吸收",
+          directionBias: "ABSORPTION",
+          strengthScore: 81,
+          strengthLabel: "HIGH",
+          regimeAlignment: "supportive",
+          liquidityBehavior: "absorption",
+          windowSec: 5,
+          rationale: "卖压释放后价格守住关键区间。",
+        },
+      ],
+      opportunityMap: [
+        {
+          zoneType: "absorption_zone",
+          label: "Absorption Zone",
+          lowPrice: 69760,
+          highPrice: 69890,
+          rangeLabel: "69,760 - 69,890",
+          strengthScore: 84,
+          description: "该区间出现稳定承接，适合作为结构观察点。",
+        },
+        {
+          zoneType: "fake_breakout_risk_zone",
+          label: "Fake Breakout Risk",
+          lowPrice: 69980,
+          highPrice: 70040,
+          rangeLabel: "69,980 - 70,040",
+          strengthScore: 68,
+          description: "冲高但价格未能延续，警惕假突破。",
+        },
+      ],
+      noiseSuppression: {
+        rawCandidates: 6,
+        mergedEvents: 3,
+        lifecycleEvents: 2,
+        filteredEvents: 2,
+        tradeableSetups: 2,
+        suppressedDuplicates: 4,
+        noiseReductionPct: 67,
+      },
     }),
   ),
   fetchContractWhaleLatest: vi.fn(() =>
@@ -1328,26 +1413,29 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("FUNDING")).not.toBeInTheDocument();
     expect(screen.getByText("Whale Behavior Timeline")).toBeInTheDocument();
     expect(screen.getByText("主力行为轨迹（辅助）")).toBeInTheDocument();
-    expect(screen.getByText("Trade Opportunities")).toBeInTheDocument();
-    expect(screen.getByText("交易机会排序")).toBeInTheDocument();
-    expect(screen.getByText("Trading Decision Layer")).toBeInTheDocument();
-    expect(screen.getByText("交易决策层")).toBeInTheDocument();
-    expect(screen.getByText("BULLISH")).toBeInTheDocument();
-    expect(screen.getByText("Bias 82%")).toBeInTheDocument();
-    expect(screen.getByText("Entry Zone")).toBeInTheDocument();
-    expect(screen.getByText("69,810 - 69,950")).toBeInTheDocument();
-    expect(screen.getByText("Invalidation")).toBeInTheDocument();
-    expect(screen.getByText("$69,640")).toBeInTheDocument();
-    expect(screen.getAllByText("No-trade Zones").length).toBeGreaterThan(0);
-    expect(screen.getByText("69,900 - 70,040")).toBeInTheDocument();
+    expect(screen.getByText("Institutional Analysis Terminal")).toBeInTheDocument();
+    expect(screen.getByText("半机构级分析终端")).toBeInTheDocument();
+    expect(screen.getByText("Market Regime")).toBeInTheDocument();
+    expect(screen.getByText("Liquidity Behavior")).toBeInTheDocument();
+    expect(screen.getByText("Signal Strength Ranking")).toBeInTheDocument();
+    expect(screen.getByText("Opportunity Map")).toBeInTheDocument();
+    expect(screen.getByText("RANGING")).toBeInTheDocument();
+    expect(screen.getByText("Regime 78%")).toBeInTheDocument();
+    expect(screen.getByText("Absorption")).toBeInTheDocument();
+    expect(screen.getByText("Fake Breakout")).toBeInTheDocument();
+    expect(screen.getByText("Absorption Zone")).toBeInTheDocument();
+    expect(screen.getByText("Fake Breakout Risk")).toBeInTheDocument();
+    expect(screen.getAllByText("69,760 - 69,890").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("69,980 - 70,040").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Entry Zone")).not.toBeInTheDocument();
+    expect(screen.queryByText("Invalidation")).not.toBeInTheDocument();
     expect(screen.getByText("原始候选")).toBeInTheDocument();
     expect(screen.getByText("降噪后事件")).toBeInTheDocument();
-    expect(screen.getByText("可交易")).toBeInTheDocument();
+    expect(screen.getByText("结构机会")).toBeInTheDocument();
     expect(screen.getByText("67%")).toBeInTheDocument();
-    expect(screen.getAllByText("LONG").length).toBeGreaterThan(0);
     expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
-    expect(screen.getByText(/多窗口主买一致，价格顺势跟随/)).toBeInTheDocument();
+    expect(screen.getByText(/多窗口主买一致/)).toBeInTheDocument();
     expect(screen.getByText("Whale Entity List")).toBeInTheDocument();
     expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
     expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
@@ -1415,12 +1503,13 @@ describe("ContractWhaleMonitor", () => {
         limit: 30,
       }),
     );
-    expect(fetchContractWhaleTradingDecisions).toHaveBeenCalledWith(
+    expect(fetchContractWhaleIntelligenceTerminal).toHaveBeenCalledWith(
       expect.objectContaining({
         symbol: "BTC",
         range: "24h",
       }),
     );
+    expect(fetchContractWhaleTradingDecisions).not.toHaveBeenCalled();
   });
 
   it("uses the signal symbol as the base unit for ETH contract flow values", async () => {

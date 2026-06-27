@@ -27,6 +27,7 @@ use crate::{
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
         },
+        intelligence,
         log_events,
         merge::merge_contract_whale_signals,
         trading,
@@ -34,6 +35,7 @@ use crate::{
         types::{
             ContractFlowBucket, ContractWhaleDirection, ContractWhaleDiscordDryRunStats,
             ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
+            ContractWhaleIntelligenceResponse,
             ContractWhaleLiquidationContext, ContractWhaleMarketCapability,
             ContractWhaleMarketContext, ContractWhaleMarketStructureLite, ContractWhaleMarketType,
             ContractWhaleNoiseSuppressionSummary, ContractWhalePercentileThreshold,
@@ -715,6 +717,189 @@ pub async fn contract_whale_trading_decisions_route(
         "topSetups": [],
         "noTradeZones": [],
     }))))
+}
+
+pub async fn contract_whale_intelligence_terminal_route(
+    State(state): State<AppState>,
+    Query(query): Query<ContractWhaleQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+    let range = query.range.clone().or_else(|| Some("24h".to_string()));
+    let stale_after_ts = parse_range_start_ms(range.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+    let flow_state = state.flow_state_for_symbol(&symbol);
+    let venue_health = state.venue_health();
+    let config = state.config().contract_whale_monitor;
+    let store = state.contract_whale_store();
+    let cwm_runtime_config = contract_whale_runtime_config();
+
+    let response = if let Some(meta) =
+        contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
+    {
+        let mut response = build_contract_whale_history_response(
+            Vec::new(),
+            &symbol,
+            limit,
+            None,
+            config.enabled,
+            config.dry_run,
+            Some(meta),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        response
+    } else if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
+        let mut response = build_contract_whale_response_with_runtime(
+            &flow_state,
+            &symbol,
+            limit,
+            None,
+            false,
+            config.dry_run,
+            Some(&venue_health),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        response
+    } else if let Some(store) = store.as_ref() {
+        match store.query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some(symbol.clone()),
+            exchange: exchange_filter.clone(),
+            limit,
+            ..ContractWhaleSignalQuery::default()
+        }) {
+            Ok(items) if !items.is_empty() => {
+                let now = if flow_state.updated_at > 0 {
+                    flow_state.updated_at
+                } else {
+                    now_ms()
+                };
+                let mut response = filter_latest_response_by_exchange(
+                    build_contract_whale_items_response(
+                        items,
+                        &symbol,
+                        limit,
+                        config.enabled,
+                        config.dry_run,
+                        contract_exchange_statuses(
+                            &flow_state,
+                            Some(&venue_health),
+                            config.enabled,
+                            now,
+                        ),
+                        trend_60s_from_flow_state(&flow_state, &symbol, now),
+                    ),
+                    exchange_filter.as_deref(),
+                );
+                enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+                response
+            }
+            _ => {
+                let baselines = load_quality_baselines(store, &flow_state, &symbol);
+                let liquidations = load_liquidation_contexts(store, &flow_state, &symbol);
+                let market_context = load_market_context(store, &flow_state, &symbol);
+                let mut response = filter_latest_response_by_exchange(
+                    build_contract_whale_response_with_runtime_and_baselines(
+                        &flow_state,
+                        &symbol,
+                        limit,
+                        None,
+                        config.enabled,
+                        config.dry_run,
+                        ContractWhaleResponseRuntime {
+                            venue_health: Some(&venue_health),
+                            baselines: &baselines,
+                            liquidations: &liquidations,
+                            market_context: &market_context,
+                            booted_at_ms: Some(state.booted_at_ms()),
+                        },
+                    ),
+                    exchange_filter.as_deref(),
+                );
+                enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+                response
+            }
+        }
+    } else {
+        let mut response = filter_latest_response_by_exchange(
+            build_contract_whale_response_with_runtime_and_baselines(
+                &flow_state,
+                &symbol,
+                limit,
+                None,
+                config.enabled,
+                config.dry_run,
+                ContractWhaleResponseRuntime {
+                    venue_health: Some(&venue_health),
+                    baselines: &BTreeMap::new(),
+                    liquidations: &BTreeMap::new(),
+                    market_context: &ContractWhaleMarketContext::default(),
+                    booted_at_ms: Some(state.booted_at_ms()),
+                },
+            ),
+            exchange_filter.as_deref(),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        response
+    };
+
+    let now = now_ms();
+    let latest_debug =
+        build_pipeline_latest_debug(&response.items, stale_after_ts, range.as_deref(), now);
+    let fresh_items = response
+        .items
+        .into_iter()
+        .zip(latest_debug.items.iter())
+        .filter_map(|(item, debug)| (!debug.is_stale).then_some(item))
+        .collect::<Vec<_>>();
+    let mut intelligence = build_contract_whale_intelligence_response(
+        &symbol,
+        &fresh_items,
+        &response.summary.market_structure_lite,
+        response.summary.noise_suppression.clone(),
+        now,
+    );
+
+    if fresh_items.is_empty() && latest_debug.stale_count > 0 {
+        intelligence.market_regime.regime = "RANGING".to_string();
+        intelligence.market_regime.confidence = 0;
+        intelligence.market_regime.reason = format!(
+            "{symbol} latest 为旧快照，最近 {} 没有新的 {} 主力历史信号。",
+            range.clone().unwrap_or_else(|| "24h".to_string()),
+            symbol
+        );
+    }
+
+    Ok(Json(serde_json::to_value(intelligence).unwrap_or_else(
+        |_| serde_json::json!({
+            "symbol": symbol,
+            "timestamp": now,
+            "marketRegime": {
+                "regime": "RANGING",
+                "confidence": 0,
+                "reason": "serialize_failed"
+            },
+            "liquidityBehaviors": [],
+            "rankedEvents": [],
+            "opportunityMap": [],
+            "noiseSuppression": ContractWhaleNoiseSuppressionSummary::default(),
+        }),
+    )))
+}
+
+pub fn build_contract_whale_intelligence_response(
+    symbol: &str,
+    items: &[ContractWhaleSignal],
+    market_structure_lite: &ContractWhaleMarketStructureLite,
+    noise_suppression: ContractWhaleNoiseSuppressionSummary,
+    timestamp: i64,
+) -> ContractWhaleIntelligenceResponse {
+    intelligence::build_intelligence_response(
+        symbol,
+        items,
+        market_structure_lite,
+        noise_suppression,
+        timestamp,
+    )
 }
 
 pub fn build_contract_whale_response(
