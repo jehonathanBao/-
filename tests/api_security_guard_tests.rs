@@ -8,6 +8,7 @@ use btc_toxic_flow_monitor_rs::{
     },
     app::AppState,
     config::{
+        system_mode::SystemModeConfig,
         venues::{VenueConfig, VenueConfigs},
         AppConfig,
     },
@@ -164,6 +165,29 @@ async fn lan_bound_scan_log_get_without_token_is_rejected() {
     assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
     let payload: serde_json::Value = rejected.json().await.expect("guard json");
     assert_eq!(payload["reason"], "operator_token_required");
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
+async fn lan_bound_raw_flow_debug_get_without_token_is_rejected_with_json() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("0.0.0.0")).await;
+
+    let rejected = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-whale/raw-flow-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("raw flow debug guard response");
+    assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: serde_json::Value = rejected.json().await.expect("guard json");
+    assert_eq!(payload["reason"], "operator_token_required");
+    assert_eq!(payload["readOnly"], true);
 
     server.abort();
     clear_operator_env();
@@ -570,6 +594,7 @@ fn test_config(api_host: &str) -> AppConfig {
         liq_hunt_watch_score: 30.0,
         book_stale_ms: 5000,
         max_buffer_age_ms: 120000,
+        system_mode: SystemModeConfig::default(),
         contract_whale_monitor:
             btc_toxic_flow_monitor_rs::config::env::ContractWhaleMonitorConfig {
                 enabled: false,

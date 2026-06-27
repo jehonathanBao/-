@@ -16,7 +16,7 @@ use btc_toxic_flow_monitor_rs::{
         config::reset_contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
-        types::ContractWhaleSignal,
+        types::{ContractFlowBucket, ContractWhaleSignal},
     },
     storage::contract_whale_repo::ContractWhaleRepo,
     types::{market::Venue, toxic::ToxicSeverity},
@@ -186,6 +186,73 @@ async fn contract_whale_raw_flow_debug_exposes_upstream_symbol_mismatch_diagnosi
 }
 
 #[tokio::test]
+async fn contract_whale_raw_flow_debug_reports_persisted_btc_flow_when_rows_exist() {
+    let config = test_config_with_symbol(
+        temp_sqlite_path("contract-whale-raw-flow-debug-persisted"),
+        "BTC-PERP",
+    );
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    store
+        .upsert_contract_flow_buckets(&[
+            ContractFlowBucket {
+                ts_bucket: now - 2_000,
+                exchange: "binance".to_string(),
+                symbol: "BTC".to_string(),
+                buy_volume_btc: 0.42,
+                sell_volume_btc: 0.18,
+                buy_notional_usd: 25_000.0,
+                sell_notional_usd: 10_000.0,
+                trade_count: 2,
+                max_single_trade_btc: 0.31,
+                vwap: Some(60_100.0),
+                ..ContractFlowBucket::default()
+            },
+            ContractFlowBucket {
+                ts_bucket: now - 1_000,
+                exchange: "bitfinex".to_string(),
+                symbol: "BTC".to_string(),
+                buy_volume_btc: 0.15,
+                sell_volume_btc: 0.22,
+                buy_notional_usd: 9_000.0,
+                sell_notional_usd: 13_000.0,
+                trade_count: 3,
+                max_single_trade_btc: 0.12,
+                vwap: Some(60_120.0),
+                ..ContractFlowBucket::default()
+            },
+        ])
+        .expect("seed contract flow buckets");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/raw-flow-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("raw flow debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("raw flow debug json");
+    assert_eq!(payload["contractFlow1s"]["exactSymbolRows"], 2);
+    assert_eq!(payload["diagnosis"]["primaryReason"], "raw_flow_present");
+    assert_eq!(payload["diagnosis"]["status"], "raw_flow_available");
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_whale_latest_marks_old_snapshots_stale_and_can_hide_them() {
     let state = seeded_pipeline_debug_state();
     let app = router(state);
@@ -223,8 +290,10 @@ async fn contract_whale_latest_marks_old_snapshots_stale_and_can_hide_them() {
         .expect("latest hide stale response");
 
     assert_eq!(hidden_response.status(), StatusCode::OK);
-    let hidden_payload: serde_json::Value =
-        hidden_response.json().await.expect("latest hide stale json");
+    let hidden_payload: serde_json::Value = hidden_response
+        .json()
+        .await
+        .expect("latest hide stale json");
     let hidden_items = hidden_payload["items"].as_array().expect("items array");
     assert!(hidden_items.is_empty());
 
@@ -289,7 +358,10 @@ fn seeded_pipeline_debug_state() -> AppState {
 }
 
 fn seeded_raw_flow_debug_state(app_symbol: &str) -> AppState {
-    let config = test_config_with_symbol(temp_sqlite_path("contract-whale-raw-flow-debug"), app_symbol);
+    let config = test_config_with_symbol(
+        temp_sqlite_path("contract-whale-raw-flow-debug"),
+        app_symbol,
+    );
     let state = AppState::new(config);
     let store = state.contract_whale_store().expect("contract whale store");
     let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();

@@ -28,12 +28,15 @@ use crate::{
     config::AppConfig,
     connectors::manager::ConnectorManager,
     contract_whale_monitor::{
+        aggregator::aggregate_1s_buckets,
         config::contract_whale_runtime_config,
         discord_notifier::{notify_contract_whale_discord, ContractWhaleDiscordSettings},
         log_events as cwm_log_events,
         persistence::{
-            persist_contract_whale_signal_nonblocking, spawn_contract_whale_retention_task,
+            flush_contract_flow_buckets_nonblocking, persist_contract_whale_signal_nonblocking,
+            spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
         },
+        types::{ContractExchange, ContractTrade, ContractTradeSide},
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
@@ -95,6 +98,7 @@ struct AppStateInner {
     alert_service: AlertService,
     snapshot_service: SnapshotService,
     contract_whale_store: Option<SqliteStore>,
+    contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
@@ -331,6 +335,9 @@ impl AppState {
                 alert_service,
                 snapshot_service,
                 contract_whale_store,
+                contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
+                    std::collections::BTreeMap::new(),
+                )),
                 signal_history_service,
                 whale_flow_candidate_history_service,
                 spot_whale_service,
@@ -627,6 +634,9 @@ impl AppState {
             .map(|(symbol, _)| symbol.clone())
             .collect::<Vec<_>>();
         for symbol in symbols {
+            let _ = self
+                .flush_live_contract_flow_buckets_for_symbol(&symbol)
+                .await;
             let flow_state = self.flow_state_for_symbol(&symbol);
             let store = self.contract_whale_store();
             let baselines = store
@@ -682,6 +692,129 @@ impl AppState {
                 );
             }
         }
+    }
+
+    async fn flush_live_contract_flow_buckets_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> ContractWhalePersistenceOutcome {
+        let now = crate::normalizers::trade::now_ms();
+        let canonical_symbol = contract_flow_base_asset(symbol);
+        let last_flushed_ts = self
+            .inner
+            .contract_whale_flow_flush_cursor_ms
+            .read()
+            .get(&canonical_symbol)
+            .copied();
+        let lookback_from = last_flushed_ts
+            .map(|ts| ts.saturating_sub(contract_flow_flush_rewind_ms()))
+            .unwrap_or_else(|| now.saturating_sub(contract_flow_initial_lookback_ms()));
+        let trades = self.inner.flow_service.get_trades_since(lookback_from);
+        let contract_trades = trades
+            .iter()
+            .filter_map(|trade| normalized_trade_to_contract_trade(trade, &canonical_symbol))
+            .collect::<Vec<_>>();
+        if contract_trades.is_empty() {
+            tracing::debug!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_live_flush",
+                symbol = canonical_symbol.as_str(),
+                status = "empty",
+                reason = "no_pending_buckets",
+                "{} live flow flush empty",
+                CWM_LOG_PREFIX
+            );
+            return ContractWhalePersistenceOutcome {
+                attempted: true,
+                succeeded: true,
+                written: 0,
+            };
+        }
+
+        let buckets = aggregate_1s_buckets(&contract_trades);
+        if buckets.is_empty() {
+            tracing::debug!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_live_flush",
+                symbol = canonical_symbol.as_str(),
+                status = "empty",
+                reason = "no_aggregated_buckets",
+                "{} live flow flush empty",
+                CWM_LOG_PREFIX
+            );
+            return ContractWhalePersistenceOutcome {
+                attempted: true,
+                succeeded: true,
+                written: 0,
+            };
+        }
+
+        let bucket_count = buckets.len();
+        let buy_volume_btc = buckets
+            .iter()
+            .map(|bucket| bucket.buy_volume_btc)
+            .sum::<f64>();
+        let sell_volume_btc = buckets
+            .iter()
+            .map(|bucket| bucket.sell_volume_btc)
+            .sum::<f64>();
+        let max_ts_bucket = buckets.iter().map(|bucket| bucket.ts_bucket).max();
+        let started_at = std::time::Instant::now();
+        let outcome =
+            flush_contract_flow_buckets_nonblocking(self.contract_whale_store(), buckets).await;
+
+        if outcome.succeeded {
+            if let Some(max_ts_bucket) = max_ts_bucket {
+                let mut cursors = self.inner.contract_whale_flow_flush_cursor_ms.write();
+                let entry = cursors
+                    .entry(canonical_symbol.clone())
+                    .or_insert(max_ts_bucket);
+                *entry = (*entry).max(max_ts_bucket);
+            }
+            tracing::info!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_live_flush",
+                symbol = canonical_symbol.as_str(),
+                status = "ok",
+                rows = outcome.written,
+                bucket_count = bucket_count,
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                "{} live flow flush ok",
+                CWM_LOG_PREFIX
+            );
+            tracing::info!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_bucket_breakdown",
+                symbol = canonical_symbol.as_str(),
+                rows = bucket_count,
+                buy_volume_btc = buy_volume_btc,
+                sell_volume_btc = sell_volume_btc,
+                "{} live flow bucket breakdown",
+                CWM_LOG_PREFIX
+            );
+        } else if outcome.attempted {
+            tracing::warn!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_live_flush",
+                symbol = canonical_symbol.as_str(),
+                status = "error",
+                pending_rows = bucket_count,
+                "{} live flow flush failed",
+                CWM_LOG_PREFIX
+            );
+        } else {
+            tracing::debug!(
+                target: CWM_LOG_TARGET,
+                event = "contract_flow_live_flush",
+                symbol = canonical_symbol.as_str(),
+                status = "skipped",
+                reason = "sqlite_store_unavailable",
+                "{} live flow flush skipped",
+                CWM_LOG_PREFIX
+            );
+        }
+
+        outcome
     }
 
     async fn evaluate_discord_auto_push_once(&self) {
@@ -965,6 +1098,68 @@ fn contract_whale_auto_push_interval() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+fn contract_flow_initial_lookback_ms() -> i64 {
+    120_000
+}
+
+fn contract_flow_flush_rewind_ms() -> i64 {
+    5_000
+}
+
+fn normalized_trade_to_contract_trade(
+    trade: &NormalizedTrade,
+    requested_symbol: &str,
+) -> Option<ContractTrade> {
+    let canonical_symbol = contract_flow_base_asset(&trade.symbol);
+    if !canonical_symbol.eq_ignore_ascii_case(requested_symbol) {
+        return None;
+    }
+    let exchange = match trade.venue {
+        Venue::Binance => ContractExchange::Binance,
+        Venue::Okx => ContractExchange::Okx,
+        Venue::Bitfinex => ContractExchange::Bitfinex,
+        Venue::Bybit => return None,
+    };
+    if trade.ts <= 0
+        || !trade.price.is_finite()
+        || trade.price <= 0.0
+        || !trade.size_btc.is_finite()
+        || trade.size_btc <= 0.0
+        || !trade.size_usd.is_finite()
+        || trade.size_usd <= 0.0
+    {
+        return None;
+    }
+    Some(ContractTrade {
+        ts: trade.ts,
+        exchange,
+        symbol: canonical_symbol,
+        market: "perp".to_string(),
+        price: trade.price,
+        qty_btc: trade.size_btc,
+        notional_usd: trade.size_usd,
+        side: match trade.aggressor_side {
+            crate::types::market::AggressorSide::Buy => ContractTradeSide::Buy,
+            crate::types::market::AggressorSide::Sell => ContractTradeSide::Sell,
+        },
+        raw_trade_count: Some(1),
+    })
+}
+
+fn contract_flow_base_asset(symbol: &str) -> String {
+    let upper = symbol.trim().to_ascii_uppercase();
+    let first = upper
+        .split([':', '/', '_'])
+        .next()
+        .unwrap_or(upper.as_str());
+    let base = first.split('-').next().unwrap_or(first);
+    base.trim_end_matches("PERP")
+        .trim_end_matches("USDT")
+        .trim_end_matches("USD")
+        .trim_end_matches("F0")
+        .to_string()
+}
+
 fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificationRequest {
     let mut request = DiscordNotificationRequest {
         alert_family: None,
@@ -1037,5 +1232,170 @@ fn format_trigger_price_range(price: f64) -> String {
         format!("${price:.2}")
     } else {
         format!("${price:.4}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use crate::{
+        config::{
+            env::{ContractWhaleMonitorConfig, SpotWhaleMonitorConfig},
+            system_mode::SystemModeConfig,
+            venues::{VenueConfig, VenueConfigs},
+            AppConfig,
+        },
+        storage::contract_whale_repo::ContractWhaleRepo,
+        types::{
+            market::{AggressorSide, NormalizedTrade, Venue},
+            toxic::ToxicSeverity,
+        },
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn live_contract_flow_flush_persists_canonical_btc_buckets() {
+        let state = AppState::new(test_config(temp_sqlite_path("live-contract-flow-flush")));
+        let now = crate::normalizers::trade::now_ms();
+        let flow_service = state.flow_service_for_tests();
+        flow_service.add_trade_for_tests(NormalizedTrade {
+            venue: Venue::Binance,
+            symbol: "BTC-PERP".to_string(),
+            ts: now - 2_000,
+            price: 60_000.0,
+            size_btc: 0.42,
+            size_usd: 25_200.0,
+            aggressor_side: AggressorSide::Buy,
+            trade_id: Some("binance-btc-1".to_string()),
+        });
+        flow_service.add_trade_for_tests(NormalizedTrade {
+            venue: Venue::Bitfinex,
+            symbol: "BTC-PERP".to_string(),
+            ts: now - 1_000,
+            price: 60_010.0,
+            size_btc: 0.33,
+            size_usd: 19_803.3,
+            aggressor_side: AggressorSide::Sell,
+            trade_id: Some("bitfinex-btc-1".to_string()),
+        });
+
+        let outcome = state
+            .flush_live_contract_flow_buckets_for_symbol("BTC")
+            .await;
+        assert!(outcome.attempted);
+        assert!(outcome.succeeded);
+
+        let store = state.contract_whale_store().expect("sqlite store");
+        let buckets = store
+            .list_contract_flow_buckets_between("BTC", now - 60_000, now + 1_000)
+            .expect("contract flow rows");
+        assert!(!buckets.is_empty(), "expected persisted BTC flow buckets");
+        assert!(buckets.iter().all(|bucket| bucket.symbol == "BTC"));
+
+        let second_outcome = state
+            .flush_live_contract_flow_buckets_for_symbol("BTC")
+            .await;
+        assert!(second_outcome.succeeded);
+        let buckets_after_second_flush = store
+            .list_contract_flow_buckets_between("BTC", now - 60_000, now + 1_000)
+            .expect("contract flow rows after second flush");
+        assert_eq!(
+            buckets.len(),
+            buckets_after_second_flush.len(),
+            "repeated flush should upsert rather than duplicate rows"
+        );
+    }
+
+    fn temp_sqlite_path(name: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "btc-toxic-flow-{name}-{unique}-{}.sqlite",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn test_config(sqlite_path: String) -> AppConfig {
+        AppConfig {
+            app_env: "test".to_string(),
+            read_only: true,
+            api_host: "127.0.0.1".parse().expect("valid ip"),
+            api_port: 0,
+            symbol: "BTC-PERP".to_string(),
+            toxic_volume_alert_btc: 1000.0,
+            windows_ms: vec![1000, 5000, 15000, 60000],
+            markout_horizons_ms: vec![1000, 5000, 15000],
+            sweep_windows_ms: vec![1000, 5000, 15000],
+            venues: VenueConfigs {
+                binance: VenueConfig {
+                    venue: Venue::Binance,
+                    enabled: false,
+                },
+                bybit: VenueConfig {
+                    venue: Venue::Bybit,
+                    enabled: false,
+                },
+                okx: VenueConfig {
+                    venue: Venue::Okx,
+                    enabled: false,
+                },
+            },
+            flow_compute_interval_ms: 50,
+            markout_resolve_interval_ms: 50,
+            sweep_compute_interval_ms: 50,
+            toxic_compute_interval_ms: 50,
+            telegram_enabled: false,
+            telegram_bot_token: String::new(),
+            telegram_chat_id: String::new(),
+            alert_dedup_window_ms: 30_000,
+            alert_min_severity: ToxicSeverity::Alert,
+            alert_require_cross_venue: true,
+            alert_require_markout: true,
+            alert_require_liquidity_drain: false,
+            sqlite_enabled: true,
+            sqlite_path,
+            snapshot_persist_interval_ms: 1000,
+            raw_snapshot_enabled: false,
+            raw_snapshot_sample_rate_ms: 1000,
+            replay_enabled: false,
+            replay_report_dir: ".runtime/reports".to_string(),
+            vpin_enabled: true,
+            vpin_bucket_size_btc: 100.0,
+            vpin_lookback_buckets: 50,
+            vpin_min_buckets: 10,
+            vpin_spike_zscore: 2.5,
+            vpin_high_threshold: 0.70,
+            vpin_extreme_threshold: 0.85,
+            vpin_persist_buckets: true,
+            liquidation_enabled: true,
+            liquidation_lookback_ms: 120_000,
+            liquidation_cluster_band_bps: 6.0,
+            liquidation_min_cluster_distance_bps: 5.0,
+            liquidation_max_cluster_distance_bps: 150.0,
+            liquidation_proximity_threshold_bps: 25.0,
+            liquidation_min_cluster_touches: 3,
+            liquidation_pressure_threshold: 0.65,
+            liq_hunt_cluster_large_notional_usd: 50_000_000.0,
+            liq_hunt_near_distance_bps: 25.0,
+            liq_hunt_active_score: 75.0,
+            liq_hunt_likely_score: 50.0,
+            liq_hunt_watch_score: 30.0,
+            book_stale_ms: 5000,
+            max_buffer_age_ms: 120000,
+            system_mode: SystemModeConfig::default(),
+            contract_whale_monitor: ContractWhaleMonitorConfig {
+                enabled: true,
+                dry_run: true,
+            },
+            spot_whale_monitor: SpotWhaleMonitorConfig {
+                enabled: false,
+                dry_run: true,
+            },
+        }
     }
 }

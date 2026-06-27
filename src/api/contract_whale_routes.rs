@@ -21,9 +21,7 @@ use crate::{
         },
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
-        detector::{
-            inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason,
-        },
+        detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
         event_lifecycle::apply_contract_whale_event_lifecycle,
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
@@ -34,9 +32,8 @@ use crate::{
         types::{
             ContractFlowBucket, ContractWhaleDirection, ContractWhaleDiscordDryRunStats,
             ContractWhaleExchangeStatus, ContractWhaleLatestResponse,
-            ContractWhaleLiquidationContext,
-            ContractWhaleMarketCapability, ContractWhaleMarketContext,
-            ContractWhaleMarketStructureLite, ContractWhaleMarketType,
+            ContractWhaleLiquidationContext, ContractWhaleMarketCapability,
+            ContractWhaleMarketContext, ContractWhaleMarketStructureLite, ContractWhaleMarketType,
             ContractWhalePercentileThreshold, ContractWhalePlatformCapability,
             ContractWhaleResponseMeta, ContractWhaleSeverity, ContractWhaleSignal,
             ContractWhaleSignalType, ContractWhaleSpotConfirmationContext, ContractWhaleSummary,
@@ -358,7 +355,8 @@ pub async fn contract_whale_latest_route(
 ) -> ApiJsonResult {
     let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
     let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
-    let hide_stale = parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
+    let hide_stale =
+        parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
     let range = query.range.clone().or_else(|| Some("24h".to_string()));
     let stale_after_ts = parse_range_start_ms(range.as_deref())?;
     let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
@@ -1216,8 +1214,16 @@ fn contract_whale_pipeline_debug_for_query(
 
     let raw_flow = summarize_pipeline_raw_flow(&raw_flow_buckets);
     let latest = build_pipeline_latest_debug(&latest_rows, Some(from_ts), Some(&range), now);
-    let (rolling_windows, detector, accepted_signals) =
-        replay_pipeline_detector_debug(&store, &symbol, from_ts, now, &raw_flow_buckets, &liquidation_buckets, &oi_snapshots, &funding_snapshots);
+    let (rolling_windows, detector, accepted_signals) = replay_pipeline_detector_debug(
+        &store,
+        &symbol,
+        from_ts,
+        now,
+        &raw_flow_buckets,
+        &liquidation_buckets,
+        &oi_snapshots,
+        &funding_snapshots,
+    );
     let persistence = project_pipeline_persistence_debug(accepted_signals, history_rows.len());
 
     tracing::info!(
@@ -1293,15 +1299,21 @@ fn contract_whale_raw_flow_debug_for_query(
 
     let runtime = contract_whale_runtime_config();
     let app_requested_symbol = state.config().symbol.clone();
-    let config = build_raw_flow_config_debug(&symbol, &app_requested_symbol, state.config(), &runtime);
+    let config =
+        build_raw_flow_config_debug(&symbol, &app_requested_symbol, state.config(), &runtime);
     let venue_health = state.venue_health();
     let raw_trade_ingest = build_raw_trade_ingest_debug(&venue_health);
     let normalizer = build_raw_flow_normalizer_debug(&symbol, &app_requested_symbol);
     let aggregator = build_raw_flow_aggregator_debug(&state.flow_state_for_symbol(&symbol));
     let contract_flow_1s =
         query_raw_flow_persistence_debug(&store, &symbol, from_ts, now).unwrap_or_default();
-    let diagnosis =
-        build_raw_flow_diagnosis(&config, &raw_trade_ingest, &normalizer, &aggregator, &contract_flow_1s);
+    let diagnosis = build_raw_flow_diagnosis(
+        &config,
+        &raw_trade_ingest,
+        &normalizer,
+        &aggregator,
+        &contract_flow_1s,
+    );
 
     tracing::info!(
         target: CWM_LOG_TARGET,
@@ -1333,8 +1345,14 @@ fn contract_whale_raw_flow_debug_for_query(
 }
 
 fn summarize_pipeline_raw_flow(buckets: &[ContractFlowBucket]) -> PipelineRawFlowDebug {
-    let buy_volume_btc = buckets.iter().map(|bucket| bucket.buy_volume_btc).sum::<f64>();
-    let sell_volume_btc = buckets.iter().map(|bucket| bucket.sell_volume_btc).sum::<f64>();
+    let buy_volume_btc = buckets
+        .iter()
+        .map(|bucket| bucket.buy_volume_btc)
+        .sum::<f64>();
+    let sell_volume_btc = buckets
+        .iter()
+        .map(|bucket| bucket.sell_volume_btc)
+        .sum::<f64>();
     PipelineRawFlowDebug {
         flow_1s_rows: buckets.len(),
         oldest_ts: buckets.iter().map(|bucket| bucket.ts_bucket).min(),
@@ -1409,23 +1427,28 @@ fn build_raw_flow_normalizer_debug(
 ) -> RawFlowNormalizerDebug {
     let app_requested_symbol_base = symbol_base_prefix(app_requested_symbol);
     let normalized_query_symbol = symbol_base_prefix(query_symbol);
-    let query_venue_symbols = [("binance", "BTC"), ("bybit", "BTC"), ("okx", "BTC"), ("bitfinex", "BTC")]
-        .into_iter()
-        .map(|(venue_key, _)| {
-            let venue = match venue_key {
-                "binance" => crate::types::market::Venue::Binance,
-                "bybit" => crate::types::market::Venue::Bybit,
-                "okx" => crate::types::market::Venue::Okx,
-                _ => crate::types::market::Venue::Bitfinex,
-            };
-            (
-                venue_key.to_string(),
-                crate::types::market::venue_symbol_mapping(venue, query_symbol)
-                    .venue_symbol
-                    .unwrap_or_else(|| "unmapped".to_string()),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let query_venue_symbols = [
+        ("binance", "BTC"),
+        ("bybit", "BTC"),
+        ("okx", "BTC"),
+        ("bitfinex", "BTC"),
+    ]
+    .into_iter()
+    .map(|(venue_key, _)| {
+        let venue = match venue_key {
+            "binance" => crate::types::market::Venue::Binance,
+            "bybit" => crate::types::market::Venue::Bybit,
+            "okx" => crate::types::market::Venue::Okx,
+            _ => crate::types::market::Venue::Bitfinex,
+        };
+        (
+            venue_key.to_string(),
+            crate::types::market::venue_symbol_mapping(venue, query_symbol)
+                .venue_symbol
+                .unwrap_or_else(|| "unmapped".to_string()),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
     RawFlowNormalizerDebug {
         query_symbol: query_symbol.to_string(),
         normalized_query_symbol: normalized_query_symbol.clone(),
@@ -1532,7 +1555,9 @@ fn query_raw_flow_persistence_debug(
             "#,
         )?;
         let distinct_symbols = distinct_symbols_stmt
-            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| row.get::<_, String>(0))?
+            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| {
+                row.get::<_, String>(0)
+            })?
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
 
@@ -1551,7 +1576,9 @@ fn query_raw_flow_persistence_debug(
             "#,
         )?;
         let distinct_product_ids = distinct_product_ids_stmt
-            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| row.get::<_, String>(0))?
+            .query_map(rusqlite::params![query_prefix, from_ts, to_ts], |row| {
+                row.get::<_, String>(0)
+            })?
             .filter_map(Result::ok)
             .collect::<Vec<_>>();
 
@@ -1578,7 +1605,10 @@ fn build_raw_flow_diagnosis(
     aggregator: &RawFlowAggregatorDebug,
     contract_flow_1s: &RawFlowPersistenceDebug,
 ) -> RawFlowDiagnosisDebug {
-    let window_has_trades = aggregator.windows.values().any(|window| window.trade_count > 0);
+    let window_has_trades = aggregator
+        .windows
+        .values()
+        .any(|window| window.trade_count > 0);
     let mut details = Vec::new();
 
     if normalizer.connector_symbol_mismatch && contract_flow_1s.exact_symbol_rows == 0 {
@@ -1608,7 +1638,10 @@ fn build_raw_flow_diagnosis(
         };
     }
 
-    if raw_trade_ingest.total_trade_messages > 0 && !window_has_trades && contract_flow_1s.exact_symbol_rows == 0 {
+    if raw_trade_ingest.total_trade_messages > 0
+        && !window_has_trades
+        && contract_flow_1s.exact_symbol_rows == 0
+    {
         details.push("trade messages exist but 5s/15s/60s flow windows are empty".to_string());
         return RawFlowDiagnosisDebug {
             status: "upstream_no_raw_flow".to_string(),
@@ -1618,7 +1651,10 @@ fn build_raw_flow_diagnosis(
     }
 
     if window_has_trades && contract_flow_1s.exact_symbol_rows == 0 {
-        details.push("rolling windows have trades but contract_flow_1s has no matching persisted rows".to_string());
+        details.push(
+            "rolling windows have trades but contract_flow_1s has no matching persisted rows"
+                .to_string(),
+        );
         return RawFlowDiagnosisDebug {
             status: "upstream_no_raw_flow".to_string(),
             primary_reason: "contract_flow_not_persisted".to_string(),
@@ -1734,10 +1770,12 @@ fn replay_pipeline_detector_debug(
             };
             let dynamic_multiple =
                 dynamic_multiple_for_volume(stats.total_volume_btc, dynamic_baseline_btc);
-            let percentile_level = percentile_level_for_volume(stats.total_volume_btc, threshold.as_ref());
+            let percentile_level =
+                percentile_level_for_volume(stats.total_volume_btc, threshold.as_ref());
             stats.dynamic_multiple = dynamic_multiple;
             stats.dynamic_baseline_btc = dynamic_baseline_btc;
-            stats.dynamic_threshold_level = dynamic_threshold_level(dynamic_multiple, percentile_level);
+            stats.dynamic_threshold_level =
+                dynamic_threshold_level(dynamic_multiple, percentile_level);
             stats.percentile_level = percentile_level;
             stats.data_quality = detector_data_quality(stats.exchange_count);
             stats.liquidation_context = liquidation_context_for_window(
@@ -1752,8 +1790,9 @@ fn replay_pipeline_detector_debug(
             detector.input_windows += 1;
             detector.candidates += 1;
             window_debug.windows += 1;
-            window_debug.max_total_volume_btc =
-                window_debug.max_total_volume_btc.max(stats.total_volume_btc);
+            window_debug.max_total_volume_btc = window_debug
+                .max_total_volume_btc
+                .max(stats.total_volume_btc);
 
             let decision = inspect_contract_whale_signal_with_config(&stats, &config);
             if let Some(signal) = decision.signal {
@@ -1852,7 +1891,11 @@ fn project_pipeline_persistence_debug(
         return PipelinePersistenceDebug::default();
     }
     let mut merged = merge_contract_whale_signals(accepted_signals);
-    let reference_now = merged.iter().map(|signal| signal.ts).max().unwrap_or_else(now_ms);
+    let reference_now = merged
+        .iter()
+        .map(|signal| signal.ts)
+        .max()
+        .unwrap_or_else(now_ms);
     decorate_and_filter_price_deviated_signals(
         &mut merged,
         None,
@@ -1917,10 +1960,7 @@ fn stale_debug_item(
     range_label: Option<&str>,
     now_ts: i64,
 ) -> PipelineLatestItemDebug {
-    let age_sec = now_ts
-        .saturating_sub(signal.ts)
-        .max(0)
-        .saturating_div(1000);
+    let age_sec = now_ts.saturating_sub(signal.ts).max(0).saturating_div(1000);
     let is_stale = stale_after_ts.is_some_and(|cutoff| signal.ts < cutoff);
     PipelineLatestItemDebug {
         event_id: if signal.event_lifecycle.event_id.is_empty() {
@@ -1958,7 +1998,8 @@ fn with_latest_stale_annotations(
     hide_stale: bool,
 ) -> serde_json::Value {
     let now = now_ms();
-    let latest_debug = build_pipeline_latest_debug(&response.items, stale_after_ts, range_label, now);
+    let latest_debug =
+        build_pipeline_latest_debug(&response.items, stale_after_ts, range_label, now);
     tracing::info!(
         target: CWM_LOG_TARGET,
         event = log_events::SIGNAL_GENERATED,
@@ -1994,7 +2035,10 @@ fn with_latest_stale_annotations(
             annotated
         })
         .unwrap_or_default();
-    if let Some(items) = value.get_mut("items").and_then(|items| items.as_array_mut()) {
+    if let Some(items) = value
+        .get_mut("items")
+        .and_then(|items| items.as_array_mut())
+    {
         *items = annotated_items;
     }
     value
@@ -2200,10 +2244,8 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             continue;
         };
         detector_input_windows += 1;
-        let decision = inspect_contract_whale_signal_with_config(
-            &stats,
-            &contract_whale_runtime_config(),
-        );
+        let decision =
+            inspect_contract_whale_signal_with_config(&stats, &contract_whale_runtime_config());
         if let Some(signal) = decision.signal {
             detector_accepted += 1;
             if severity_matches(signal.severity, severity) {
