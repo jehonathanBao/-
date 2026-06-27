@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -58,8 +59,13 @@ impl SqliteStore {
     }
 
     fn open_connection(&self) -> anyhow::Result<Connection> {
-        Connection::open(&self.path)
-            .with_context(|| format!("failed to open sqlite {}", self.path.display()))
+        let conn = Connection::open(&self.path)
+            .with_context(|| format!("failed to open sqlite {}", self.path.display()))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .context("failed to set sqlite busy_timeout")?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("failed to enable sqlite WAL journal mode")?;
+        Ok(conn)
     }
 }
 

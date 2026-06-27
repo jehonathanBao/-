@@ -606,6 +606,47 @@ impl ContractWhaleRepo for SqliteStore {
         &self,
         query: &ContractWhaleSignalQuery,
     ) -> anyhow::Result<Vec<ContractWhaleSignal>> {
+        if query.symbol.is_some()
+            && query.severity.is_none()
+            && query.signal_type.is_none()
+            && query.direction.is_none()
+            && query.discord_sent.is_none()
+            && query.window_sec.is_none()
+            && query.exchange.is_none()
+            && query.min_abs_net_volume_btc.is_none()
+            && query.from_ts.is_none()
+            && query.to_ts.is_none()
+            && query.cursor_ts.is_none()
+            && query.cursor_signal_id.is_none()
+        {
+            return self.with_connection(|conn| {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
+                           active_sources_json, threshold_profile
+                    FROM contract_whale_signals
+                    WHERE market_type = 'perp'
+                      AND symbol = ?1
+                    ORDER BY ts DESC, signal_id DESC
+                    LIMIT ?2 OFFSET ?3
+                    "#,
+                )?;
+                let rows = stmt.query_map(
+                    params![
+                        query.symbol.as_deref(),
+                        query.limit as i64,
+                        query.offset as i64
+                    ],
+                    decode_signal_row,
+                )?;
+                let mut signals = Vec::new();
+                for row in rows {
+                    signals.push(row?);
+                }
+                Ok(signals)
+            });
+        }
+
         let severity = query.severity.map(enum_value).transpose()?;
         let signal_type = query.signal_type.map(enum_value).transpose()?;
         let direction = query.direction.map(enum_value).transpose()?;
