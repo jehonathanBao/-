@@ -18,6 +18,7 @@ pub mod normalizer;
 pub mod persistence;
 pub mod replay;
 pub mod scoring;
+pub mod trading;
 pub mod trajectory;
 pub mod types;
 

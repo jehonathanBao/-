@@ -14,6 +14,7 @@ import {
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
+  fetchContractWhaleTradingDecisions,
   fetchFinalEvents,
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
@@ -164,6 +165,55 @@ vi.mock("../api/contractWhale.js", () => ({
         },
       },
       error: null,
+    }),
+  ),
+  fetchContractWhaleTradingDecisions: vi.fn(() =>
+    Promise.resolve({
+      symbol: "BTC",
+      timestamp: 1_700_000_000_000,
+      marketBias: "BULLISH",
+      biasConfidence: 82,
+      biasReason: "多头高分 setup 明显占优，且结构上下文为主力建多。",
+      noiseSuppression: {
+        rawCandidates: 6,
+        mergedEvents: 3,
+        lifecycleEvents: 2,
+        filteredEvents: 2,
+        tradeableSetups: 2,
+        suppressedDuplicates: 4,
+        noiseReductionPct: 67,
+      },
+      topSetups: [
+        {
+          signalId: "contract-whale-row",
+          rank: 1,
+          direction: "LONG",
+          setupType: "主力拉盘",
+          score: 87,
+          confidence: 79,
+          confidenceLabel: "HIGH",
+          regimeContext: "main_force_long_build",
+          windowSec: 15,
+          entryZone: {
+            lowPrice: 69810,
+            highPrice: 69950,
+            label: "69,810 - 69,950",
+          },
+          invalidation: {
+            priceLevel: 69640,
+            reason: "跌破主力吸收参考位，说明顺势跟随失效。",
+          },
+          reasons: ["多窗口主买一致", "价格顺势跟随", "双交易所确认"],
+        },
+      ],
+      noTradeZones: [
+        {
+          reason: "价格响应不足，当前更像低分震荡 chop。",
+          rangeLabel: "69,900 - 70,040",
+          lowPrice: 69900,
+          highPrice: 70040,
+        },
+      ],
     }),
   ),
   fetchContractWhaleLatest: vi.fn(() =>
@@ -1280,6 +1330,16 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主力行为轨迹（辅助）")).toBeInTheDocument();
     expect(screen.getByText("Trade Opportunities")).toBeInTheDocument();
     expect(screen.getByText("交易机会排序")).toBeInTheDocument();
+    expect(screen.getByText("Trading Decision Layer")).toBeInTheDocument();
+    expect(screen.getByText("交易决策层")).toBeInTheDocument();
+    expect(screen.getByText("BULLISH")).toBeInTheDocument();
+    expect(screen.getByText("Bias 82%")).toBeInTheDocument();
+    expect(screen.getByText("Entry Zone")).toBeInTheDocument();
+    expect(screen.getByText("69,810 - 69,950")).toBeInTheDocument();
+    expect(screen.getByText("Invalidation")).toBeInTheDocument();
+    expect(screen.getByText("$69,640")).toBeInTheDocument();
+    expect(screen.getAllByText("No-trade Zones").length).toBeGreaterThan(0);
+    expect(screen.getByText("69,900 - 70,040")).toBeInTheDocument();
     expect(screen.getByText("原始候选")).toBeInTheDocument();
     expect(screen.getByText("降噪后事件")).toBeInTheDocument();
     expect(screen.getByText("可交易")).toBeInTheDocument();
@@ -1353,6 +1413,12 @@ describe("ContractWhaleMonitor", () => {
         symbol: "BTC",
         range: "24h",
         limit: 30,
+      }),
+    );
+    expect(fetchContractWhaleTradingDecisions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: "BTC",
+        range: "24h",
       }),
     );
   });

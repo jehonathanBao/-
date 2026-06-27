@@ -176,6 +176,53 @@ async fn contract_whale_latest_exposes_staleness_summary_metadata() {
 }
 
 #[tokio::test]
+async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_trade_zones() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/trading-decisions?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("trading decisions response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("trading decisions json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert!(payload["timestamp"].as_i64().is_some());
+    assert!(payload["marketBias"].as_str().is_some());
+    assert!(payload["biasConfidence"].as_u64().is_some());
+    assert!(payload["noiseSuppression"].is_object());
+    assert!(payload["topSetups"].is_array());
+    assert!(payload["noTradeZones"].is_array());
+    if let Some(first_setup) = payload["topSetups"].as_array().and_then(|items| items.first()) {
+        assert!(first_setup["direction"].as_str().is_some());
+        assert!(first_setup["score"].as_u64().is_some());
+        assert!(first_setup["entryZone"]["label"].as_str().is_some());
+        assert!(first_setup["invalidation"]["priceLevel"].is_number());
+        assert!(first_setup["reasons"].is_array());
+    } else {
+        let first_zone = payload["noTradeZones"]
+            .as_array()
+            .and_then(|items| items.first())
+            .expect("no-trade zone");
+        assert!(first_zone["reason"].as_str().is_some());
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn final_events_v2_expose_projection_latency_metadata() {
     let state = seeded_contract_event_state();
     let app = router(state);

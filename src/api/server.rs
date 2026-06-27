@@ -71,6 +71,10 @@ pub fn router(state: AppState) -> Router {
             get(contract_whale_routes::contract_whale_latest_route),
         )
         .route(
+            "/api/contract-whale/trading-decisions",
+            get(contract_whale_routes::contract_whale_trading_decisions_route),
+        )
+        .route(
             "/api/contract-whale/history",
             get(contract_whale_routes::contract_whale_history_route),
         )

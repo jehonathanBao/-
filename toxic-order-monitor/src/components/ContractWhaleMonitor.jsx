@@ -9,6 +9,7 @@ import {
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
+  fetchContractWhaleTradingDecisions,
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
@@ -56,6 +57,7 @@ export default function ContractWhaleMonitor() {
     finalEventsProjectionLagSec: null,
     finalEventsCacheAgeSec: null,
     finalEventsCacheTtlSec: null,
+    tradingDecisions: null,
     events: [],
     hiddenContractEvents: [],
     hiddenContractEventsLoaded: false,
@@ -79,6 +81,7 @@ export default function ContractWhaleMonitor() {
     let latestTimer = null;
     let contractEventsTimer = null;
     let finalEventsTimer = null;
+    let tradingTimer = null;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -213,6 +216,17 @@ export default function ContractWhaleMonitor() {
       }));
     };
 
+    const refreshTradingDecisions = async () => {
+      const payload = await fetchContractWhaleTradingDecisions({
+        symbol: filters.symbol,
+        range: "24h",
+      });
+      updateState((previous) => ({
+        ...previous,
+        tradingDecisions: payload.error ? previous.tradingDecisions : payload,
+      }));
+    };
+
     const refreshWhaleEvents = async () => {
       const payload = await fetchContractWhaleEvents({ symbol: filters.symbol, limit: 12 });
       updateState((previous) => ({
@@ -235,10 +249,12 @@ export default function ContractWhaleMonitor() {
       if (latestTimer) window.clearInterval(latestTimer);
       if (contractEventsTimer) window.clearInterval(contractEventsTimer);
       if (finalEventsTimer) window.clearInterval(finalEventsTimer);
+      if (tradingTimer) window.clearInterval(tradingTimer);
       summaryTimer = null;
       latestTimer = null;
       contractEventsTimer = null;
       finalEventsTimer = null;
+      tradingTimer = null;
     };
 
     const configurePolling = () => {
@@ -248,6 +264,7 @@ export default function ContractWhaleMonitor() {
       latestTimer = window.setInterval(refreshLatest, LATEST_REFRESH_MS);
       contractEventsTimer = window.setInterval(refreshContractEvents, CONTRACT_EVENTS_REFRESH_MS);
       finalEventsTimer = window.setInterval(refreshFinalEvents, FINAL_EVENTS_REFRESH_MS);
+      tradingTimer = window.setInterval(refreshTradingDecisions, SUMMARY_REFRESH_MS);
     };
 
     const handleVisibilityChange = () => {
@@ -257,6 +274,7 @@ export default function ContractWhaleMonitor() {
         refreshLatest();
         refreshContractEvents(50);
         refreshFinalEvents(30);
+        refreshTradingDecisions();
       }
     };
 
@@ -267,6 +285,7 @@ export default function ContractWhaleMonitor() {
     void refreshRawFlowDebug();
     void refreshLatencyDebug();
     void refreshFinalEvents(30);
+    void refreshTradingDecisions();
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
       void refreshRetention();
@@ -492,6 +511,7 @@ export default function ContractWhaleMonitor() {
       </p>
 
       <MarketStructureLitePanel summary={summary} />
+      <TradingDecisionLayerPanel decisions={state.tradingDecisions} />
       <TradeOpportunitiesPanel summary={summary} />
 
       <PlatformCapabilitySection
@@ -1411,6 +1431,106 @@ function TradeOpportunitiesPanel({ summary }) {
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function TradingDecisionLayerPanel({ decisions }) {
+  const topSetups = Array.isArray(decisions?.topSetups) ? decisions.topSetups : [];
+  const noTradeZones = Array.isArray(decisions?.noTradeZones) ? decisions.noTradeZones : [];
+  const bias = decisions?.marketBias || "NEUTRAL";
+  const biasConfidence = Number(decisions?.biasConfidence || 0);
+  const biasReason = decisions?.biasReason || "当前没有通过交易门槛的 setup，保持中性观察。";
+
+  return (
+    <section className="mt-4 rounded-2xl border border-fuchsia-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-300">Trading Decision Layer</p>
+          <h4 className="mt-1 text-sm font-bold text-white">交易决策层</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            在现有主力事件链路之上，给出只读的方向偏置、参考进场区和失效线，不做任何自动执行。
+          </p>
+        </div>
+        <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-3">
+          <TradeSummaryPill label="Market Bias" value={bias} tone={bias === "BULLISH" ? "emerald" : bias === "BEARISH" ? "red" : "slate"} />
+          <TradeSummaryPill label="Bias Confidence" value={`Bias ${biasConfidence}%`} tone="cyan" />
+          <TradeSummaryPill label="No-trade Zones" value={`${noTradeZones.length}`} tone="yellow" />
+        </div>
+      </div>
+
+      <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-300">
+        {biasReason}
+      </p>
+
+      {topSetups.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+          当前没有通过交易门槛的 setup，系统只保留结构观察与 no-trade 区提示。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {topSetups.map((setup) => (
+            <article
+              className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"
+              data-testid={`trading-decision-${setup.signalId}`}
+              key={setup.signalId}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Rank #{setup.rank}</p>
+                  <h5 className="mt-1 text-base font-bold text-white">{setup.setupType}</h5>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-bold ${tradeActionClass(setup.direction)}`}>
+                  {setup.direction}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                <TradeMetric label="Score" value={`${setup.score}/100`} />
+                <TradeMetric label="Confidence" value={`${setup.confidenceLabel} ${setup.confidence}%`} />
+                <TradeMetric label="Entry Zone" value={formatDecisionRange(setup.entryZone)} />
+                <TradeMetric label="Invalidation" value={formatPrice(setup.invalidation?.priceLevel)} />
+                <TradeMetric label="结构上下文" value={regimeTypeLabel(setup.regimeContext)} />
+                <TradeMetric label="事件窗口" value={`${setup.windowSec}s`} />
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">{setup.invalidation?.reason || "暂无失效说明"}</p>
+              {setup.reasons?.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {setup.reasons.map((reason) => (
+                    <span key={`${setup.signalId}-${reason}`} className="rounded-full border border-slate-700 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-300">
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-yellow-300">No-trade Zones</p>
+          <span className="text-xs text-slate-500">{noTradeZones.length} zones</span>
+        </div>
+        {noTradeZones.length === 0 ? (
+          <p className="mt-2 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
+            当前没有明显的 chop / 无响应区。
+          </p>
+        ) : (
+          <div className="mt-2 grid gap-3 lg:grid-cols-2">
+            {noTradeZones.map((zone, index) => (
+              <article className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4" key={`${zone.rangeLabel}-${index}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-yellow-100">{zone.reason}</p>
+                  <span className="rounded-full border border-yellow-400/30 px-2 py-1 text-[11px] text-yellow-200">
+                    {zone.rangeLabel || formatDecisionRange(zone)}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -2785,6 +2905,17 @@ function formatPrice(value) {
   if (number >= 1000) return `$${Math.round(number).toLocaleString("en-US")}`;
   if (number >= 1) return `$${number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return `$${number.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
+}
+
+function formatDecisionRange(zone) {
+  if (!zone) return "N/A";
+  if (zone.label) return zone.label;
+  const low = Number(zone.lowPrice ?? zone.low_price ?? 0);
+  const high = Number(zone.highPrice ?? zone.high_price ?? 0);
+  if (!Number.isFinite(low) || low <= 0 || !Number.isFinite(high) || high <= 0) return "N/A";
+  const lowText = formatPrice(low).replace(/^\$/, "");
+  const highText = formatPrice(high).replace(/^\$/, "");
+  return `${lowText} - ${highText}`;
 }
 
 function formatPct(value) {

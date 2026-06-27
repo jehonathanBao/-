@@ -308,6 +308,25 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
   }
 }
 
+export async function fetchContractWhaleTradingDecisions(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  const requestedSymbol = filters.symbol || "BTC";
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: requestedSymbol,
+      range: filters.range ?? "24h",
+      limit: filters.limit ?? 50,
+      exchange: filters.exchange,
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/trading-decisions?${query}`, {
+      timeoutMs: 5_000,
+    });
+    return normalizeTradingDecisionResponse(response.data, requestedSymbol);
+  } catch {
+    return normalizeTradingDecisionResponse(null, requestedSymbol, "trading_decisions_unavailable");
+  }
+}
+
 export async function fetchContractWhaleHistory(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
@@ -619,6 +638,66 @@ export async function fetchContractRetentionStatus() {
       error: "retention_status_unavailable",
     };
   }
+}
+
+function normalizeTradingDecisionResponse(payload, symbol = "BTC", fallbackError = null) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  return {
+    symbol: String(data.symbol || symbol),
+    timestamp: numberOrNull(data.timestamp),
+    marketBias: String(data.marketBias || data.market_bias || "NEUTRAL"),
+    biasConfidence: numberOrNull(data.biasConfidence ?? data.bias_confidence) ?? 0,
+    biasReason: String(data.biasReason || data.bias_reason || "当前没有通过交易门槛的 setup，保持中性观察。"),
+    noiseSuppression: data.noiseSuppression ?? data.noise_suppression ?? {
+      rawCandidates: 0,
+      mergedEvents: 0,
+      lifecycleEvents: 0,
+      filteredEvents: 0,
+      tradeableSetups: 0,
+      suppressedDuplicates: 0,
+      noiseReductionPct: 0,
+    },
+    topSetups: Array.isArray(data.topSetups ?? data.top_setups)
+      ? (data.topSetups ?? data.top_setups).map(normalizeTradingSetup)
+      : [],
+    noTradeZones: Array.isArray(data.noTradeZones ?? data.no_trade_zones)
+      ? (data.noTradeZones ?? data.no_trade_zones).map(normalizeNoTradeZone)
+      : [],
+    error: fallbackError || data.error || null,
+  };
+}
+
+function normalizeTradingSetup(setup = {}) {
+  return {
+    signalId: setup.signalId || setup.signal_id || "",
+    rank: Number(setup.rank || 0),
+    direction: setup.direction || "NO_TRADE",
+    setupType: setup.setupType || setup.setup_type || "结构观察",
+    score: Number(setup.score || 0),
+    confidence: Number(setup.confidence || 0),
+    confidenceLabel: setup.confidenceLabel || setup.confidence_label || "LOW",
+    regimeContext: setup.regimeContext || setup.regime_context || "unclear",
+    windowSec: Number(setup.windowSec ?? setup.window_sec ?? 0),
+    entryZone: {
+      lowPrice: Number(setup.entryZone?.lowPrice ?? setup.entryZone?.low_price ?? 0),
+      highPrice: Number(setup.entryZone?.highPrice ?? setup.entryZone?.high_price ?? 0),
+      label: setup.entryZone?.label || "",
+    },
+    invalidation: {
+      priceLevel: Number(setup.invalidation?.priceLevel ?? setup.invalidation?.price_level ?? 0),
+      reason: setup.invalidation?.reason || "暂无失效说明",
+    },
+    reasons: Array.isArray(setup.reasons) ? setup.reasons : [],
+  };
+}
+
+function normalizeNoTradeZone(zone = {}) {
+  return {
+    reason: zone.reason || "当前不满足交易门槛，保留为观察区。",
+    rangeLabel: zone.rangeLabel || zone.range_label || "",
+    lowPrice: Number(zone.lowPrice ?? zone.low_price ?? 0),
+    highPrice: Number(zone.highPrice ?? zone.high_price ?? 0),
+  };
 }
 
 function volumeDisplayLabelForContext(context) {

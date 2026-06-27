@@ -1155,6 +1155,89 @@ pub struct ContractWhaleTradeOpportunity {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradingEntryZone {
+    #[serde(default)]
+    pub low_price: f64,
+    #[serde(default)]
+    pub high_price: f64,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradingInvalidation {
+    #[serde(default)]
+    pub price_level: f64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradingSetup {
+    #[serde(default)]
+    pub signal_id: String,
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
+    pub setup_type: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub confidence_label: String,
+    #[serde(default)]
+    pub regime_context: String,
+    #[serde(default)]
+    pub window_sec: u64,
+    #[serde(default)]
+    pub entry_zone: ContractWhaleTradingEntryZone,
+    #[serde(default)]
+    pub invalidation: ContractWhaleTradingInvalidation,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleNoTradeZone {
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub range_label: String,
+    #[serde(default)]
+    pub low_price: f64,
+    #[serde(default)]
+    pub high_price: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradingDecisionResponse {
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub timestamp: i64,
+    #[serde(default)]
+    pub market_bias: String,
+    #[serde(default)]
+    pub bias_confidence: u8,
+    #[serde(default)]
+    pub bias_reason: String,
+    #[serde(default)]
+    pub noise_suppression: ContractWhaleNoiseSuppressionSummary,
+    #[serde(default)]
+    pub top_setups: Vec<ContractWhaleTradingSetup>,
+    #[serde(default)]
+    pub no_trade_zones: Vec<ContractWhaleNoTradeZone>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleTrend60s {
     #[serde(default)]
     pub symbol: String,
