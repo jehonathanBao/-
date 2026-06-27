@@ -68,6 +68,40 @@ async fn contract_events_include_hidden_exposes_visibility_metadata() {
 }
 
 #[tokio::test]
+async fn contract_events_expose_latency_metadata_fields() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    assert!(payload["serverTime"].as_i64().is_some());
+    assert!(payload["maxEventTs"].as_i64().is_some());
+    assert!(payload["maxPersistedAt"].is_number() || payload["maxPersistedAt"].is_null());
+    assert!(payload["historyLagSec"].as_i64().is_some());
+    assert!(payload["latestLagSec"].as_i64().is_some());
+    assert!(payload["cacheAgeSec"].as_i64().is_some());
+    assert!(payload["cacheTtlSec"].as_i64().is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_events_debug_counts_reports_filter_chain_and_projection_counts() {
     let state = seeded_contract_event_state();
     let app = router(state);
@@ -108,6 +142,146 @@ async fn contract_events_debug_counts_reports_filter_chain_and_projection_counts
     assert!(payload["finalEventsProjection"].is_object());
 
     server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_latest_exposes_staleness_summary_metadata() {
+    let state = seeded_pipeline_debug_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latest?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("latest response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("latest json");
+    assert!(payload["serverTime"].as_i64().is_some());
+    assert!(payload["maxTs"].as_i64().is_some());
+    assert!(payload["maxAgeSec"].as_i64().is_some());
+    assert!(payload["staleCount"].as_u64().is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn final_events_v2_expose_projection_latency_metadata() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("final events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("final events json");
+    assert!(payload["serverTime"].as_i64().is_some());
+    assert!(payload["maxEventTs"].as_i64().is_some());
+    assert!(payload["generatedAt"].as_i64().is_some());
+    assert!(payload["cacheAgeSec"].as_i64().is_some());
+    assert!(payload["cacheTtlSec"].as_i64().is_some());
+    assert!(payload["projectionLagSec"].as_i64().is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_latency_debug_reports_layer_and_reason() {
+    std::env::set_var("OPERATOR_TOKEN", "test-operator-token");
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latency-debug?symbol=BTC&range=1h"
+        ))
+        .header("Authorization", "Bearer test-operator-token")
+        .send()
+        .await
+        .expect("latency debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("latency debug json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert_eq!(payload["range"], "1h");
+    assert!(payload["serverTime"].as_i64().is_some());
+    assert!(payload["latest"]["ageSec"].as_i64().is_some());
+    assert!(payload["contractEvents"]["lagVsLatestSec"]
+        .as_i64()
+        .is_some());
+    assert!(payload["finalEventsV2"]["projectionLagSec"]
+        .as_i64()
+        .is_some());
+    assert!(payload["flow"]["flowLagSec"].as_i64().is_some());
+    assert!(payload["diagnosis"]["layer"].as_str().is_some());
+    assert!(payload["diagnosis"]["reason"].as_str().is_some());
+
+    server.abort();
+    std::env::remove_var("OPERATOR_TOKEN");
+}
+
+#[tokio::test]
+async fn contract_whale_latency_debug_reports_no_recent_signal_when_empty() {
+    std::env::set_var("OPERATOR_TOKEN", "test-operator-token");
+    let config = test_config(temp_sqlite_path("contract-whale-latency-empty"));
+    let state = AppState::new(config);
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latency-debug?symbol=BTC&range=1h"
+        ))
+        .header("Authorization", "Bearer test-operator-token")
+        .send()
+        .await
+        .expect("latency debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("latency debug json");
+    assert_eq!(payload["diagnosis"]["layer"], "ok");
+    assert_eq!(payload["diagnosis"]["reason"], "no_recent_signal");
+
+    server.abort();
+    std::env::remove_var("OPERATOR_TOKEN");
 }
 
 #[tokio::test]

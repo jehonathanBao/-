@@ -8,6 +8,7 @@ import {
   fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
+  fetchContractWhaleLatencyDebug,
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
   fetchContractWhaleLatest,
@@ -477,6 +478,45 @@ vi.mock("../api/contractWhale.js", () => ({
         status: "raw_flow_available",
         primaryReason: "raw_flow_present",
         details: [],
+      },
+      error: null,
+    }),
+  ),
+  fetchContractWhaleLatencyDebug: vi.fn(() =>
+    Promise.resolve({
+      symbol: "BTC",
+      range: "24h",
+      serverTime: 1_700_000_000_000,
+      latest: {
+        count: 1,
+        maxTs: 1_700_000_000_000,
+        ageSec: 0,
+        staleCount: 0,
+      },
+      contractEvents: {
+        count: 1,
+        maxEventTs: 1_700_000_000_000,
+        lagSec: 0,
+        lagVsLatestSec: 0,
+        cacheAgeSec: 0,
+        cacheTtlSec: 5,
+      },
+      finalEventsV2: {
+        activeCount: 1,
+        closedCount: 0,
+        maxEventTs: 1_700_000_000_000,
+        projectionLagSec: 0,
+        cacheAgeSec: 0,
+        cacheTtlSec: 10,
+        generatedAt: 1_700_000_000_000,
+      },
+      flow: {
+        updatedAt: 1_700_000_000_000,
+        flowLagSec: 0,
+      },
+      diagnosis: {
+        layer: "ok",
+        reason: "in_sync",
       },
       error: null,
     }),
@@ -1748,6 +1788,46 @@ describe("ContractWhaleMonitor", () => {
     expect(await screen.findByText(/数据延迟：latest 已更新到/)).toBeInTheDocument();
   });
 
+  it("shows a lifecycle sync warning when final-events lags behind history", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_060_500,
+      lastEventTs: 1_700_000_040_000,
+      maxEventTs: 1_700_000_040_000,
+      historyLagSec: 20,
+      latestLagSec: 0,
+      cacheAgeSec: 1,
+      cacheTtlSec: 5,
+      error: null,
+    });
+    fetchFinalEventsV2.mockResolvedValueOnce({
+      active: [],
+      closed: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_060_500,
+      lastEventTs: 1_700_000_010_000,
+      maxEventTs: 1_700_000_010_000,
+      generatedAt: 1_700_000_060_000,
+      cacheAgeSec: 1,
+      cacheTtlSec: 10,
+      projectionLagSec: 30,
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(
+      await screen.findByText("生命周期视图同步中：落后历史事件流 30 秒，不代表数据丢失。"),
+    ).toBeInTheDocument();
+  });
+
   it("shows contract event debug counts and explains latest versus history drift", async () => {
     fetchContractEventDebugCounts.mockResolvedValueOnce({
       symbol: "BTC",
@@ -2114,7 +2194,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主力合约监控数据暂时不可用，已保留上一次结果。")).toBeInTheDocument();
   });
 
-  it("polls summary every 5s and latest signals every 10s while visible", async () => {
+  it("polls summary every 5s and latest signals every 3s while visible", async () => {
     vi.useFakeTimers();
 
     render(<ContractWhaleMonitor />);
@@ -2127,12 +2207,12 @@ describe("ContractWhaleMonitor", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(2);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
-    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(3);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
-    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(2);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(4);
   });
 
   it("keeps latest requests scoped to ETH after symbol switch", async () => {

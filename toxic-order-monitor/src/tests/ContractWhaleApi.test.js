@@ -6,6 +6,7 @@ import {
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
+  fetchContractWhaleLatencyDebug,
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
@@ -1081,6 +1082,59 @@ describe("contract whale api", () => {
       range: "24h",
       serverTime: 1_700_000_200_000,
       lastEventTs: 1_700_000_010_000,
+    });
+  });
+
+  it("maps latest latency metadata for contract whale snapshots", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {},
+        items: [],
+        serverTime: 1_700_000_300_000,
+        maxTs: 1_700_000_290_000,
+        maxAgeSec: 10,
+        staleCount: 2,
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20, "BTC");
+
+    expect(payload).toMatchObject({
+      serverTime: 1_700_000_300_000,
+      maxTs: 1_700_000_290_000,
+      maxAgeSec: 10,
+      staleCount: 2,
+    });
+  });
+
+  it("fetches latency debug diagnostics for contract whale layers", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        symbol: "BTC",
+        range: "1h",
+        serverTime: 1_700_000_300_000,
+        latest: { count: 2, maxTs: 1_700_000_299_000, ageSec: 1, staleCount: 0 },
+        contractEvents: { count: 2, maxEventTs: 1_700_000_298_000, lagVsLatestSec: 1 },
+        finalEventsV2: { activeCount: 1, closedCount: 0, projectionLagSec: 2 },
+        flow: { updatedAt: 1_700_000_299_500, flowLagSec: 0 },
+        diagnosis: { layer: "ok", reason: "in_sync" },
+      },
+    });
+
+    const payload = await fetchContractWhaleLatencyDebug({ symbol: "BTC", range: "1h" });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/latency-debug?symbol=BTC&range=1h",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(payload).toMatchObject({
+      symbol: "BTC",
+      range: "1h",
+      serverTime: 1_700_000_300_000,
+      latest: expect.objectContaining({ ageSec: 1 }),
+      contractEvents: expect.objectContaining({ lagVsLatestSec: 1 }),
+      finalEventsV2: expect.objectContaining({ projectionLagSec: 2 }),
+      diagnosis: expect.objectContaining({ layer: "ok", reason: "in_sync" }),
     });
   });
 

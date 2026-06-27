@@ -80,6 +80,12 @@ pub struct ContractEventPage {
     pub range: String,
     pub server_time: i64,
     pub last_event_ts: Option<i64>,
+    pub max_event_ts: Option<i64>,
+    pub max_persisted_at: Option<i64>,
+    pub history_lag_sec: i64,
+    pub latest_lag_sec: i64,
+    pub cache_age_sec: i64,
+    pub cache_ttl_sec: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -93,6 +99,11 @@ pub struct FinalEventsV2Response {
     pub range: String,
     pub server_time: i64,
     pub last_event_ts: Option<i64>,
+    pub max_event_ts: Option<i64>,
+    pub generated_at: i64,
+    pub cache_age_sec: i64,
+    pub cache_ttl_sec: i64,
+    pub projection_lag_sec: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,7 +282,7 @@ pub async fn contract_retention_status_route(
     }))
 }
 
-fn contract_event_page_for_query(
+pub(crate) fn contract_event_page_for_query(
     state: AppState,
     mut query: ContractWhaleQuery,
 ) -> Result<ContractEventPage, (StatusCode, Json<serde_json::Value>)> {
@@ -296,7 +307,53 @@ fn contract_event_page_for_query(
                 .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
         })
         .flatten();
+    let now = now_ms();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
+    let max_event_ts = sliced_items.first().map(|signal| signal.ts);
+    let max_persisted_at = state.contract_whale_store().and_then(|store| {
+        let Some(symbol) = history_query.symbol.clone() else {
+            return None;
+        };
+        store
+            .with_connection(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT MAX(created_at) FROM contract_whale_signals WHERE symbol = ?1",
+                )?;
+                let value =
+                    stmt.query_row([symbol.as_str()], |row| row.get::<_, Option<i64>>(0))?;
+                Ok(value)
+            })
+            .ok()
+            .flatten()
+    });
+    let history_lag_sec = max_event_ts
+        .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
+        .unwrap_or(0);
+    let cache_age_sec = max_persisted_at
+        .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
+        .unwrap_or(history_lag_sec);
+    let latest_lag_sec = state
+        .contract_whale_store()
+        .and_then(|store| {
+            let Some(symbol) = history_query.symbol.clone() else {
+                return None;
+            };
+            store
+                .query_contract_whale_signals(&ContractWhaleSignalQuery {
+                    symbol: Some(symbol),
+                    limit: 1,
+                    ..ContractWhaleSignalQuery::default()
+                })
+                .ok()
+        })
+        .and_then(|rows| rows.first().map(|signal| signal.ts))
+        .map(|latest_ts| {
+            latest_ts
+                .saturating_sub(max_event_ts.unwrap_or(latest_ts))
+                .max(0)
+                .saturating_div(1000)
+        })
+        .unwrap_or(0);
     let requested_status = normalize_status_filter(query.status.as_deref());
     let items =
         project_contract_event_candidates(sliced_items, VolumeDisplayContext::ContractEventStream)
@@ -314,12 +371,18 @@ fn contract_event_page_for_query(
         has_more,
         limit: requested_limit,
         range,
-        server_time: now_ms(),
+        server_time: now,
         last_event_ts,
+        max_event_ts,
+        max_persisted_at,
+        history_lag_sec,
+        latest_lag_sec,
+        cache_age_sec,
+        cache_ttl_sec: 5,
     })
 }
 
-fn final_events_v2_for_query(
+pub(crate) fn final_events_v2_for_query(
     state: AppState,
     mut query: ContractWhaleQuery,
 ) -> Result<FinalEventsV2Response, (StatusCode, Json<serde_json::Value>)> {
@@ -343,7 +406,9 @@ fn final_events_v2_for_query(
                 .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
         })
         .flatten();
+    let now = now_ms();
     let last_event_ts = sliced_items.last().map(|signal| signal.ts);
+    let max_event_ts = sliced_items.first().map(|signal| signal.ts);
     let requested_status = normalize_status_filter(query.status.as_deref());
     let mut active = Vec::new();
     let mut closed = Vec::new();
@@ -369,8 +434,13 @@ fn final_events_v2_for_query(
         has_more,
         limit: requested_limit,
         range,
-        server_time: now_ms(),
+        server_time: now,
         last_event_ts,
+        max_event_ts,
+        generated_at: now,
+        cache_age_sec: 0,
+        cache_ttl_sec: 10,
+        projection_lag_sec: 0,
     })
 }
 

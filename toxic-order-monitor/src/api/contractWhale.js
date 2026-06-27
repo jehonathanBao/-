@@ -287,11 +287,24 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
         .filter((item) => signalMatchesRequestedSymbol(item, symbol))
         .map((item) => normalizeContractWhaleSignal(item, symbol))
         .filter(isVisibleContractWhaleSignal),
+      serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
+      maxTs: numberOrNull(response.data?.maxTs ?? response.data?.max_ts),
+      maxAgeSec: numberOrNull(response.data?.maxAgeSec ?? response.data?.max_age_sec),
+      staleCount: numberOrNull(response.data?.staleCount ?? response.data?.stale_count),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
   } catch {
-    return { summary: fallbackSummary(symbol), items: [], meta: null, error: "latest_unavailable" };
+    return {
+      summary: fallbackSummary(symbol),
+      items: [],
+      serverTime: null,
+      maxTs: null,
+      maxAgeSec: null,
+      staleCount: null,
+      meta: null,
+      error: "latest_unavailable",
+    };
   }
 }
 
@@ -365,6 +378,12 @@ export async function fetchContractEvents(filters = {}) {
       range: String(response.data?.range || filters.range || "24h"),
       serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
       lastEventTs: numberOrNull(response.data?.lastEventTs ?? response.data?.last_event_ts),
+      maxEventTs: numberOrNull(response.data?.maxEventTs ?? response.data?.max_event_ts),
+      maxPersistedAt: numberOrNull(response.data?.maxPersistedAt ?? response.data?.max_persisted_at),
+      historyLagSec: numberOrNull(response.data?.historyLagSec ?? response.data?.history_lag_sec),
+      latestLagSec: numberOrNull(response.data?.latestLagSec ?? response.data?.latest_lag_sec),
+      cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
+      cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       error: null,
     };
   } catch {
@@ -376,6 +395,12 @@ export async function fetchContractEvents(filters = {}) {
       range: filters.range || "24h",
       serverTime: null,
       lastEventTs: null,
+      maxEventTs: null,
+      maxPersistedAt: null,
+      historyLagSec: null,
+      latestLagSec: null,
+      cacheAgeSec: null,
+      cacheTtlSec: null,
       error: "contract_events_unavailable",
     };
   }
@@ -509,6 +534,11 @@ export async function fetchFinalEventsV2(filters = {}) {
       range: String(response.data?.range || filters.range || "24h"),
       serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
       lastEventTs: numberOrNull(response.data?.lastEventTs ?? response.data?.last_event_ts),
+      maxEventTs: numberOrNull(response.data?.maxEventTs ?? response.data?.max_event_ts),
+      generatedAt: numberOrNull(response.data?.generatedAt ?? response.data?.generated_at),
+      cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
+      cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
+      projectionLagSec: numberOrNull(response.data?.projectionLagSec ?? response.data?.projection_lag_sec),
       error: null,
     };
   } catch {
@@ -521,7 +551,48 @@ export async function fetchFinalEventsV2(filters = {}) {
       range: filters.range || "24h",
       serverTime: null,
       lastEventTs: null,
+      maxEventTs: null,
+      generatedAt: null,
+      cacheAgeSec: null,
+      cacheTtlSec: null,
+      projectionLagSec: null,
       error: "final_events_v2_unavailable",
+    };
+  }
+}
+
+export async function fetchContractWhaleLatencyDebug(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: filters.symbol || "BTC",
+      range: filters.range ?? "24h",
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/latency-debug?${query}`, {
+      timeoutMs: 4_000,
+    });
+    return {
+      symbol: String(response.data?.symbol || filters.symbol || "BTC"),
+      range: String(response.data?.range || filters.range || "24h"),
+      serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
+      latest: response.data?.latest || null,
+      contractEvents: response.data?.contractEvents ?? response.data?.contract_events ?? null,
+      finalEventsV2: response.data?.finalEventsV2 ?? response.data?.final_events_v2 ?? null,
+      flow: response.data?.flow || null,
+      diagnosis: response.data?.diagnosis || null,
+      error: response.data?.error || null,
+    };
+  } catch {
+    return {
+      symbol: String(filters.symbol || "BTC"),
+      range: String(filters.range || "24h"),
+      serverTime: null,
+      latest: null,
+      contractEvents: null,
+      finalEventsV2: null,
+      flow: null,
+      diagnosis: null,
+      error: "latency_debug_unavailable",
     };
   }
 }

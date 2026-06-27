@@ -4,6 +4,7 @@ import {
   fetchContractEventDebugCounts,
   fetchContractEvents,
   fetchContractRetentionStatus,
+  fetchContractWhaleLatencyDebug,
   fetchContractWhaleEvents,
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
@@ -12,7 +13,9 @@ import {
 } from "../api/contractWhale.js";
 
 const SUMMARY_REFRESH_MS = 5_000;
-const LATEST_REFRESH_MS = 10_000;
+const LATEST_REFRESH_MS = 3_000;
+const CONTRACT_EVENTS_REFRESH_MS = 5_000;
+const FINAL_EVENTS_REFRESH_MS = 10_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_FILTERS = {
   symbol: "BTC",
@@ -35,19 +38,34 @@ export default function ContractWhaleMonitor() {
     contractEventsHasMore: false,
     contractEventsServerTime: null,
     contractEventsLastEventTs: null,
+    contractEventsMaxEventTs: null,
+    contractEventsHistoryLagSec: null,
+    contractEventsLatestLagSec: null,
+    contractEventsCacheAgeSec: null,
+    contractEventsCacheTtlSec: null,
     contractEventDebugCounts: null,
     rawFlowDebug: null,
+    latencyDebug: null,
     finalEvents: { active: [], closed: [] },
     finalEventsCursor: null,
     finalEventsHasMore: false,
     finalEventsServerTime: null,
     finalEventsLastEventTs: null,
+    finalEventsMaxEventTs: null,
+    finalEventsGeneratedAt: null,
+    finalEventsProjectionLagSec: null,
+    finalEventsCacheAgeSec: null,
+    finalEventsCacheTtlSec: null,
     events: [],
     hiddenContractEvents: [],
     hiddenContractEventsLoaded: false,
     hiddenContractEventsExpanded: false,
     hiddenContractEventsLoading: false,
     retentionStatus: null,
+    latestServerTime: null,
+    latestMaxTs: null,
+    latestMaxAgeSec: null,
+    latestStaleCount: null,
     meta: null,
     error: null,
   });
@@ -59,6 +77,8 @@ export default function ContractWhaleMonitor() {
     let cancelled = false;
     let summaryTimer = null;
     let latestTimer = null;
+    let contractEventsTimer = null;
+    let finalEventsTimer = null;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -87,27 +107,56 @@ export default function ContractWhaleMonitor() {
 
     const refreshLatest = async () => {
       const payload = await fetchContractWhaleLatest(50, filters.symbol);
-      updateState((previous) => ({
-        ...previous,
-        loading: false,
-        summary: payload.error ? previous.summary : payload.summary,
-        items: payload.error ? previous.items : payload.items,
-        meta: payload.error ? previous.meta : (payload.meta || previous.meta),
-        error: payload.error || null,
-      }));
+      let shouldRefreshHistory = false;
+      updateState((previous) => {
+        shouldRefreshHistory =
+          !payload.error &&
+          Number.isFinite(payload.maxTs) &&
+          Number(payload.maxTs) > Number(previous.latestMaxTs || 0);
+        return {
+          ...previous,
+          loading: false,
+          summary: payload.error ? previous.summary : payload.summary,
+          items: payload.error ? previous.items : payload.items,
+          latestServerTime: payload.error ? previous.latestServerTime : payload.serverTime,
+          latestMaxTs: payload.error ? previous.latestMaxTs : payload.maxTs,
+          latestMaxAgeSec: payload.error ? previous.latestMaxAgeSec : payload.maxAgeSec,
+          latestStaleCount: payload.error ? previous.latestStaleCount : payload.staleCount,
+          meta: payload.error ? previous.meta : (payload.meta || previous.meta),
+          error: payload.error || null,
+        };
+      });
+      if (shouldRefreshHistory) {
+        void refreshContractEvents(50);
+      }
     };
 
     const refreshContractEvents = async (limit = 50) => {
       const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
-      updateState((previous) => ({
-        ...previous,
-        loading: false,
-        contractEvents: payload.error ? previous.contractEvents : payload.items,
-        contractEventsCursor: payload.error ? previous.contractEventsCursor : payload.nextCursor,
-        contractEventsHasMore: payload.error ? previous.contractEventsHasMore : payload.hasMore,
-        contractEventsServerTime: payload.error ? previous.contractEventsServerTime : payload.serverTime,
-        contractEventsLastEventTs: payload.error ? previous.contractEventsLastEventTs : payload.lastEventTs,
-      }));
+      let shouldRefreshFinalEvents = false;
+      updateState((previous) => {
+        shouldRefreshFinalEvents =
+          !payload.error &&
+          Number.isFinite(payload.maxEventTs) &&
+          Number(payload.maxEventTs) > Number(previous.contractEventsMaxEventTs || 0);
+        return {
+          ...previous,
+          loading: false,
+          contractEvents: payload.error ? previous.contractEvents : payload.items,
+          contractEventsCursor: payload.error ? previous.contractEventsCursor : payload.nextCursor,
+          contractEventsHasMore: payload.error ? previous.contractEventsHasMore : payload.hasMore,
+          contractEventsServerTime: payload.error ? previous.contractEventsServerTime : payload.serverTime,
+          contractEventsLastEventTs: payload.error ? previous.contractEventsLastEventTs : payload.lastEventTs,
+          contractEventsMaxEventTs: payload.error ? previous.contractEventsMaxEventTs : payload.maxEventTs,
+          contractEventsHistoryLagSec: payload.error ? previous.contractEventsHistoryLagSec : payload.historyLagSec,
+          contractEventsLatestLagSec: payload.error ? previous.contractEventsLatestLagSec : payload.latestLagSec,
+          contractEventsCacheAgeSec: payload.error ? previous.contractEventsCacheAgeSec : payload.cacheAgeSec,
+          contractEventsCacheTtlSec: payload.error ? previous.contractEventsCacheTtlSec : payload.cacheTtlSec,
+        };
+      });
+      if (shouldRefreshFinalEvents) {
+        void refreshFinalEvents(30);
+      }
     };
 
     const refreshContractEventDebugCounts = async () => {
@@ -133,6 +182,17 @@ export default function ContractWhaleMonitor() {
       }));
     };
 
+    const refreshLatencyDebug = async () => {
+      const payload = await fetchContractWhaleLatencyDebug({
+        symbol: filters.symbol,
+        range: "24h",
+      });
+      updateState((previous) => ({
+        ...previous,
+        latencyDebug: payload.error ? previous.latencyDebug : payload,
+      }));
+    };
+
     const refreshFinalEvents = async (limit = 30) => {
       const payload = await fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit });
       updateState((previous) => ({
@@ -145,6 +205,11 @@ export default function ContractWhaleMonitor() {
         finalEventsHasMore: payload.error ? previous.finalEventsHasMore : payload.hasMore,
         finalEventsServerTime: payload.error ? previous.finalEventsServerTime : payload.serverTime,
         finalEventsLastEventTs: payload.error ? previous.finalEventsLastEventTs : payload.lastEventTs,
+        finalEventsMaxEventTs: payload.error ? previous.finalEventsMaxEventTs : payload.maxEventTs,
+        finalEventsGeneratedAt: payload.error ? previous.finalEventsGeneratedAt : payload.generatedAt,
+        finalEventsProjectionLagSec: payload.error ? previous.finalEventsProjectionLagSec : payload.projectionLagSec,
+        finalEventsCacheAgeSec: payload.error ? previous.finalEventsCacheAgeSec : payload.cacheAgeSec,
+        finalEventsCacheTtlSec: payload.error ? previous.finalEventsCacheTtlSec : payload.cacheTtlSec,
       }));
     };
 
@@ -168,8 +233,12 @@ export default function ContractWhaleMonitor() {
     const clearTimers = () => {
       if (summaryTimer) window.clearInterval(summaryTimer);
       if (latestTimer) window.clearInterval(latestTimer);
+      if (contractEventsTimer) window.clearInterval(contractEventsTimer);
+      if (finalEventsTimer) window.clearInterval(finalEventsTimer);
       summaryTimer = null;
       latestTimer = null;
+      contractEventsTimer = null;
+      finalEventsTimer = null;
     };
 
     const configurePolling = () => {
@@ -177,6 +246,8 @@ export default function ContractWhaleMonitor() {
       if (document.visibilityState === "hidden") return;
       summaryTimer = window.setInterval(refreshSummary, SUMMARY_REFRESH_MS);
       latestTimer = window.setInterval(refreshLatest, LATEST_REFRESH_MS);
+      contractEventsTimer = window.setInterval(refreshContractEvents, CONTRACT_EVENTS_REFRESH_MS);
+      finalEventsTimer = window.setInterval(refreshFinalEvents, FINAL_EVENTS_REFRESH_MS);
     };
 
     const handleVisibilityChange = () => {
@@ -184,6 +255,8 @@ export default function ContractWhaleMonitor() {
       if (document.visibilityState !== "hidden") {
         refreshSummary();
         refreshLatest();
+        refreshContractEvents(50);
+        refreshFinalEvents(30);
       }
     };
 
@@ -192,6 +265,7 @@ export default function ContractWhaleMonitor() {
     void refreshContractEvents(50);
     void refreshContractEventDebugCounts();
     void refreshRawFlowDebug();
+    void refreshLatencyDebug();
     void refreshFinalEvents(30);
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
@@ -468,6 +542,12 @@ export default function ContractWhaleMonitor() {
         eventsSyncLag={eventsSyncLag}
         latestSignalTs={latestSignalTs}
         contractEventsLastEventTs={state.contractEventsLastEventTs}
+        latestMaxTs={state.latestMaxTs}
+        contractEventsMaxEventTs={state.contractEventsMaxEventTs}
+        contractEventsLatestLagSec={state.contractEventsLatestLagSec}
+        contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
+        finalEventsMaxEventTs={state.finalEventsMaxEventTs}
+        finalEventsProjectionLagSec={state.finalEventsProjectionLagSec}
         contractEventsHasMore={state.contractEventsHasMore}
         symbol={filters.symbol}
       />
@@ -768,6 +848,12 @@ function RawSignalDebugSection({
   eventsSyncLag,
   latestSignalTs,
   contractEventsLastEventTs,
+  latestMaxTs,
+  contractEventsMaxEventTs,
+  contractEventsLatestLagSec,
+  contractEventsHistoryLagSec,
+  finalEventsMaxEventTs,
+  finalEventsProjectionLagSec,
   symbol,
 }) {
   const historicalVolumeLabel = "窗口总流量 BTC";
@@ -791,6 +877,14 @@ function RawSignalDebugSection({
   const showLatestHistoryDriftHint = latestCount > visibleCount;
   const showStaleLatestOnlyWarning = latestCount > 0 && latestStaleCount === latestCount && visibleCount === 0;
   const showRawFlowDiagnosis = showStaleLatestOnlyWarning && rawFlowDebug?.diagnosis?.primaryReason;
+  const layeredLatestTs = Number(latestMaxTs ?? latestSignalTs) || null;
+  const layeredHistoryTs = Number(contractEventsMaxEventTs ?? contractEventsLastEventTs) || null;
+  const layeredHistoryLagSec = Number(contractEventsLatestLagSec ?? 0);
+  const layeredHistoryAgeSec = Number(contractEventsHistoryLagSec ?? 0);
+  const layeredFinalTs = Number(finalEventsMaxEventTs ?? 0) || null;
+  const layeredProjectionLagSec = Number(finalEventsProjectionLagSec ?? 0);
+  const showHistorySyncWarning = layeredHistoryLagSec > 15;
+  const showProjectionSyncWarning = layeredProjectionLagSec > 10;
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -808,6 +902,27 @@ function RawSignalDebugSection({
       <div className="space-y-4 border-t border-slate-800 p-3">
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
           <p>历史事件流不会被新的 latest 快照直接覆盖；事件离开 ACTIVE/CLOSED 视图，通常是状态切换、分页边界或筛选变化，不等于数据库删除。</p>
+          {(layeredLatestTs || layeredHistoryTs || layeredFinalTs) ? (
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                <p className="console-label">实时快照</p>
+                <p className="mt-1 text-xs text-slate-100">{formatDateTime(layeredLatestTs)}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                <p className="console-label">历史事件流</p>
+                <p className="mt-1 text-xs text-slate-100">
+                  {formatDateTime(layeredHistoryTs)}，落后 latest {layeredHistoryLagSec} 秒
+                </p>
+                <p className="mt-1 text-[11px] text-slate-400">历史最新事件距今 {layeredHistoryAgeSec} 秒</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                <p className="console-label">生命周期视图</p>
+                <p className="mt-1 text-xs text-slate-100">
+                  {formatDateTime(layeredFinalTs)}，落后历史 {layeredProjectionLagSec} 秒
+                </p>
+              </div>
+            </div>
+          ) : null}
           {debugCounts && !debugCounts.error ? (
             <div className="mt-2 space-y-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-cyan-100">
               <p>
@@ -834,6 +949,16 @@ function RawSignalDebugSection({
                     <p className="mt-1 text-amber-200/90">{rawFlowDebug.diagnosis.details[0]}</p>
                   ) : null}
                 </div>
+              ) : null}
+              {showHistorySyncWarning ? (
+                <p className="text-[11px] text-amber-200/90">
+                  历史事件流同步中：落后 latest {layeredHistoryLagSec} 秒，已自动触发刷新。
+                </p>
+              ) : null}
+              {showProjectionSyncWarning ? (
+                <p className="text-[11px] text-amber-200/90">
+                  生命周期视图同步中：落后历史事件流 {layeredProjectionLagSec} 秒，不代表数据丢失。
+                </p>
               ) : null}
               {hiddenCount > 0 ? (
                 <div className="flex flex-wrap items-center gap-2">

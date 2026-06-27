@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Deserialize;
 
 use crate::{
+    api::contract_event_routes::{contract_event_page_for_query, final_events_v2_for_query},
     app::AppState,
     config::AppConfig,
     contract_whale_monitor::{
@@ -159,6 +160,65 @@ struct PipelineLatestItemDebug {
     age_sec: i64,
     is_stale: bool,
     stale_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyDebugResponse {
+    symbol: String,
+    range: String,
+    server_time: i64,
+    latest: ContractWhaleLatencyLatestDebug,
+    contract_events: ContractWhaleLatencyLayerDebug,
+    final_events_v2: ContractWhaleLatencyProjectionDebug,
+    flow: ContractWhaleLatencyFlowDebug,
+    diagnosis: ContractWhaleLatencyDiagnosis,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyLatestDebug {
+    count: usize,
+    max_ts: Option<i64>,
+    age_sec: i64,
+    stale_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyLayerDebug {
+    count: usize,
+    max_event_ts: Option<i64>,
+    lag_sec: i64,
+    lag_vs_latest_sec: i64,
+    cache_age_sec: i64,
+    cache_ttl_sec: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyProjectionDebug {
+    active_count: usize,
+    closed_count: usize,
+    max_event_ts: Option<i64>,
+    projection_lag_sec: i64,
+    cache_age_sec: i64,
+    cache_ttl_sec: i64,
+    generated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyFlowDebug {
+    updated_at: Option<i64>,
+    flow_lag_sec: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContractWhaleLatencyDiagnosis {
+    layer: String,
+    reason: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -1149,6 +1209,118 @@ pub async fn contract_whale_raw_flow_debug_route(
     })))
 }
 
+pub async fn contract_whale_latency_debug_route(
+    State(state): State<AppState>,
+    Query(query): Query<ContractWhaleQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
+    let stale_after_ts = parse_range_start_ms(Some(&range))?;
+    let now = now_ms();
+
+    let latest_rows = state
+        .contract_whale_store()
+        .and_then(|store| {
+            store
+                .query_contract_whale_signals(&ContractWhaleSignalQuery {
+                    symbol: Some(symbol.clone()),
+                    limit: 50,
+                    ..ContractWhaleSignalQuery::default()
+                })
+                .ok()
+        })
+        .unwrap_or_default();
+    let latest_debug = build_pipeline_latest_debug(&latest_rows, stale_after_ts, Some(&range), now);
+    let latest_max_ts = latest_debug.items.iter().map(|item| item.ts).max();
+    let latest_age_sec = latest_max_ts
+        .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
+        .unwrap_or(0);
+
+    let contract_events = contract_event_page_for_query(
+        state.clone(),
+        ContractWhaleQuery {
+            symbol: Some(symbol.clone()),
+            range: Some(range.clone()),
+            limit: Some("100".to_string()),
+            include_hidden: Some("true".to_string()),
+            ..ContractWhaleQuery::default()
+        },
+    )?;
+    let final_events = final_events_v2_for_query(
+        state.clone(),
+        ContractWhaleQuery {
+            symbol: Some(symbol.clone()),
+            range: Some(range.clone()),
+            limit: Some("100".to_string()),
+            ..ContractWhaleQuery::default()
+        },
+    )?;
+    let flow_state = state.flow_state_for_symbol(&symbol);
+    let flow_updated_at = (flow_state.updated_at > 0).then_some(flow_state.updated_at);
+    let flow_lag_sec = flow_updated_at
+        .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
+        .unwrap_or(0);
+    let diagnosis = diagnose_contract_whale_latency(
+        latest_max_ts,
+        contract_events.max_event_ts,
+        final_events.max_event_ts,
+        flow_updated_at,
+        now,
+    );
+
+    Ok(Json(
+        serde_json::to_value(ContractWhaleLatencyDebugResponse {
+            symbol: symbol.clone(),
+            range: range.clone(),
+            server_time: now,
+            latest: ContractWhaleLatencyLatestDebug {
+                count: latest_debug.latest_count,
+                max_ts: latest_max_ts,
+                age_sec: latest_age_sec,
+                stale_count: latest_debug.stale_count,
+            },
+            contract_events: ContractWhaleLatencyLayerDebug {
+                count: contract_events.items.len(),
+                max_event_ts: contract_events.max_event_ts,
+                lag_sec: contract_events.history_lag_sec,
+                lag_vs_latest_sec: contract_events.latest_lag_sec,
+                cache_age_sec: contract_events.cache_age_sec,
+                cache_ttl_sec: contract_events.cache_ttl_sec,
+            },
+            final_events_v2: ContractWhaleLatencyProjectionDebug {
+                active_count: final_events.active.len(),
+                closed_count: final_events.closed.len(),
+                max_event_ts: final_events.max_event_ts,
+                projection_lag_sec: latest_max_ts
+                    .zip(final_events.max_event_ts)
+                    .map(|(latest, projection)| {
+                        latest
+                            .saturating_sub(projection)
+                            .max(0)
+                            .saturating_div(1000)
+                    })
+                    .unwrap_or(final_events.projection_lag_sec),
+                cache_age_sec: final_events.cache_age_sec,
+                cache_ttl_sec: final_events.cache_ttl_sec,
+                generated_at: Some(final_events.generated_at),
+            },
+            flow: ContractWhaleLatencyFlowDebug {
+                updated_at: flow_updated_at,
+                flow_lag_sec,
+            },
+            diagnosis,
+        })
+        .unwrap_or_else(|_| {
+            serde_json::json!({
+                "symbol": symbol,
+                "range": range,
+                "serverTime": now,
+                "error": "serialize_failed"
+            })
+        }),
+    ))
+}
+
 fn contract_whale_pipeline_debug_for_query(
     state: AppState,
     query: ContractWhaleQuery,
@@ -1991,6 +2163,54 @@ fn stale_reason_for_range(range_label: Option<&str>) -> String {
     }
 }
 
+fn diagnose_contract_whale_latency(
+    latest_max_ts: Option<i64>,
+    history_max_ts: Option<i64>,
+    final_max_ts: Option<i64>,
+    flow_updated_at: Option<i64>,
+    now: i64,
+) -> ContractWhaleLatencyDiagnosis {
+    let Some(latest_ts) = latest_max_ts else {
+        return ContractWhaleLatencyDiagnosis {
+            layer: "ok".to_string(),
+            reason: "no_recent_signal".to_string(),
+        };
+    };
+    if history_max_ts.is_none() {
+        return ContractWhaleLatencyDiagnosis {
+            layer: "history".to_string(),
+            reason: "latest_ahead_of_history".to_string(),
+        };
+    }
+    let history_ts = history_max_ts.unwrap_or(latest_ts);
+    if latest_ts.saturating_sub(history_ts) > 15_000 {
+        return ContractWhaleLatencyDiagnosis {
+            layer: "history".to_string(),
+            reason: "history_persist_lagging_latest".to_string(),
+        };
+    }
+    if let Some(final_ts) = final_max_ts {
+        if history_ts.saturating_sub(final_ts) > 15_000 {
+            return ContractWhaleLatencyDiagnosis {
+                layer: "final_events_v2".to_string(),
+                reason: "projection_lagging_history".to_string(),
+            };
+        }
+    }
+    if let Some(flow_ts) = flow_updated_at {
+        if now.saturating_sub(flow_ts) > 30_000 {
+            return ContractWhaleLatencyDiagnosis {
+                layer: "flow".to_string(),
+                reason: "flow_state_stale".to_string(),
+            };
+        }
+    }
+    ContractWhaleLatencyDiagnosis {
+        layer: "ok".to_string(),
+        reason: "in_sync".to_string(),
+    }
+}
+
 fn with_latest_stale_annotations(
     response: ContractWhaleLatestResponse,
     stale_after_ts: Option<i64>,
@@ -2041,6 +2261,13 @@ fn with_latest_stale_annotations(
     {
         *items = annotated_items;
     }
+    let max_ts = latest_debug.items.iter().map(|item| item.ts).max();
+    value["serverTime"] = serde_json::json!(now);
+    value["maxTs"] = max_ts
+        .map(serde_json::Value::from)
+        .unwrap_or(serde_json::Value::Null);
+    value["maxAgeSec"] = serde_json::json!(latest_debug.max_age_sec);
+    value["staleCount"] = serde_json::json!(latest_debug.stale_count);
     value
 }
 
