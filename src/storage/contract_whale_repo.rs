@@ -75,6 +75,10 @@ pub trait ContractWhaleRepo {
         to_ts: i64,
     ) -> anyhow::Result<Vec<ContractFundingSnapshot>>;
     fn upsert_contract_whale_signal(&self, signal: &ContractWhaleSignal) -> anyhow::Result<()>;
+    fn upsert_contract_whale_signals(
+        &self,
+        signals: &[ContractWhaleSignal],
+    ) -> anyhow::Result<usize>;
     fn list_contract_whale_signals(
         &self,
         symbol: &str,
@@ -507,16 +511,20 @@ impl ContractWhaleRepo for SqliteStore {
     }
 
     fn upsert_contract_whale_signal(&self, signal: &ContractWhaleSignal) -> anyhow::Result<()> {
-        let signal_type = enum_value(signal.signal_type)?;
-        let direction = enum_value(signal.direction)?;
-        let severity = enum_value(signal.severity)?;
-        let market_type = enum_value(signal.market_type)?;
-        let source_role = enum_value(signal.source_role)?;
-        let exchanges_json = serde_json::to_string(&signal.exchanges)?;
-        let active_sources_json = serde_json::to_string(&signal.active_sources)?;
-        let payload_json = serde_json::to_string(signal)?;
+        self.upsert_contract_whale_signals(std::slice::from_ref(signal))
+            .map(|_| ())
+    }
+
+    fn upsert_contract_whale_signals(
+        &self,
+        signals: &[ContractWhaleSignal],
+    ) -> anyhow::Result<usize> {
+        if signals.is_empty() {
+            return Ok(0);
+        }
         self.with_connection(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
                 r#"
                 INSERT INTO contract_whale_signals (
                   signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
@@ -554,37 +562,54 @@ impl ContractWhaleRepo for SqliteStore {
                   payload_json = excluded.payload_json,
                   created_at = excluded.created_at
                 "#,
-                params![
-                    signal.id,
-                    signal.ts,
-                    signal.symbol,
-                    signal.window_sec as i64,
-                    signal_type,
-                    direction,
-                    severity,
-                    signal.score as i64,
-                    signal.total_volume_btc,
-                    signal.net_volume_btc,
-                    signal.total_notional_usd,
-                    signal.dominance,
-                    signal.price_move_pct,
-                    signal.main_exchange,
-                    market_type,
-                    source_role,
-                    exchanges_json,
-                    active_sources_json,
-                    signal.threshold_profile,
-                    signal.dynamic_multiple,
-                    signal.data_quality as i64,
-                    bool_to_int(signal.discord_eligible),
-                    bool_to_int(signal.discord_sent),
-                    signal.discord_sent_at,
-                    payload_json,
-                    crate::normalizers::trade::now_ms(),
-                ],
-            )
-            .context("failed to upsert contract whale signal")?;
-            Ok(())
+            )?;
+            let now = crate::normalizers::trade::now_ms();
+            let mut written = 0;
+            for signal in signals {
+                let signal_type = enum_value(signal.signal_type)?;
+                let direction = enum_value(signal.direction)?;
+                let severity = enum_value(signal.severity)?;
+                let market_type = enum_value(signal.market_type)?;
+                let source_role = enum_value(signal.source_role)?;
+                let exchanges_json = serde_json::to_string(&signal.exchanges)?;
+                let active_sources_json = serde_json::to_string(&signal.active_sources)?;
+                let payload_json = serde_json::to_string(signal)?;
+                stmt.execute(
+                    params![
+                        signal.id,
+                        signal.ts,
+                        signal.symbol,
+                        signal.window_sec as i64,
+                        signal_type,
+                        direction,
+                        severity,
+                        signal.score as i64,
+                        signal.total_volume_btc,
+                        signal.net_volume_btc,
+                        signal.total_notional_usd,
+                        signal.dominance,
+                        signal.price_move_pct,
+                        signal.main_exchange,
+                        market_type,
+                        source_role,
+                        exchanges_json,
+                        active_sources_json,
+                        signal.threshold_profile,
+                        signal.dynamic_multiple,
+                        signal.data_quality as i64,
+                        bool_to_int(signal.discord_eligible),
+                        bool_to_int(signal.discord_sent),
+                        signal.discord_sent_at,
+                        payload_json,
+                        now,
+                    ],
+                )
+                .context("failed to upsert contract whale signal")?;
+                written += 1;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
         })
     }
 

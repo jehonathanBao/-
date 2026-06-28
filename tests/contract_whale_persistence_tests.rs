@@ -17,6 +17,7 @@ use btc_toxic_flow_monitor_rs::{
             normalize_okx_open_interest_json,
         },
         persistence::flush_contract_flow_buckets_nonblocking,
+        persistence::persist_contract_whale_signals_nonblocking,
         types::{
             ContractFlowBucket, ContractWhaleDirection, ContractWhaleMarketType,
             ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleSourceRole,
@@ -158,6 +159,42 @@ async fn contract_flow_nonblocking_flush_writes_buckets() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn contract_whale_signal_nonblocking_batch_persists_multiple_signals() {
+    let store = temp_store("contract-whale-signal-batch");
+    let first = sample_s_signal();
+    let mut second = first.clone();
+    second.id = "contract-whale:BTC:15:1700000016000:buy".to_string();
+    second.ts += 1_000;
+    second.discord_sent = true;
+    second.discord_sent_at = Some(second.ts + 500);
+
+    let outcome = persist_contract_whale_signals_nonblocking(
+        Some(store.clone()),
+        vec![first.clone(), second.clone()],
+    )
+    .await;
+
+    assert!(outcome.attempted);
+    assert!(outcome.succeeded);
+    assert_eq!(outcome.written, 2);
+
+    let rows = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    let ids = rows
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert!(ids.contains(&first.id.as_str()));
+    assert!(ids.contains(&second.id.as_str()));
 }
 
 #[test]

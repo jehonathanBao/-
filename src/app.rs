@@ -33,7 +33,7 @@ use crate::{
         discord_notifier::{notify_contract_whale_discord, ContractWhaleDiscordSettings},
         log_events as cwm_log_events,
         persistence::{
-            flush_contract_flow_buckets_nonblocking, persist_contract_whale_signal_nonblocking,
+            flush_contract_flow_buckets_nonblocking, persist_contract_whale_signals_nonblocking,
             spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
         },
         types::{ContractExchange, ContractTrade, ContractTradeSide},
@@ -668,9 +668,10 @@ impl AppState {
                 },
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
-            for signal in response.items {
-                let _ =
-                    persist_contract_whale_signal_nonblocking(store.clone(), signal.clone()).await;
+            let signals = response.items;
+            let _ =
+                persist_contract_whale_signals_nonblocking(store.clone(), signals.clone()).await;
+            for signal in signals {
                 let outcome =
                     notify_contract_whale_discord(&settings, &signal, store.clone()).await;
                 self.record_scan_log(

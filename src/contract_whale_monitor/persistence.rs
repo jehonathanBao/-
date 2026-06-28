@@ -231,6 +231,87 @@ pub async fn persist_contract_whale_signal_nonblocking(
     }
 }
 
+pub async fn persist_contract_whale_signals_nonblocking(
+    store: Option<SqliteStore>,
+    signals: Vec<ContractWhaleSignal>,
+) -> ContractWhalePersistenceOutcome {
+    if signals.is_empty() {
+        return ContractWhalePersistenceOutcome::success(0);
+    }
+    let signal_count = signals.len();
+    let symbols = signals
+        .iter()
+        .map(|signal| signal.symbol.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+    tracing::info!(
+        target: LOG_TARGET,
+        event = log_events::SIGNAL_GENERATED,
+        signal_count,
+        symbols = symbols.as_str(),
+        persist_attempt = true,
+        "{} signal batch persistence attempt",
+        LOG_PREFIX
+    );
+    let Some(store) = store else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            event = log_events::SIGNAL_GENERATED,
+            signal_count,
+            symbols = symbols.as_str(),
+            persist_attempt = false,
+            persist_skip_reason = "sqlite_store_unavailable",
+            "{} signal batch persistence skipped: sqlite store unavailable",
+            LOG_PREFIX
+        );
+        return ContractWhalePersistenceOutcome::skipped();
+    };
+
+    match tokio::task::spawn_blocking(move || store.upsert_contract_whale_signals(&signals)).await {
+        Ok(Ok(written)) => {
+            tracing::info!(
+                target: LOG_TARGET,
+                event = log_events::SIGNAL_GENERATED,
+                signal_count,
+                symbols = symbols.as_str(),
+                persist_success = true,
+                written,
+                "{} signal batch persistence success",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::success(written)
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                signal_count,
+                symbols = symbols.as_str(),
+                persist_success = false,
+                error = %error,
+                "{} signal batch persistence failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                signal_count,
+                symbols = symbols.as_str(),
+                persist_success = false,
+                error = %error,
+                "{} signal batch persistence task failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+    }
+}
+
 pub fn spawn_contract_whale_retention_task(
     store: Option<SqliteStore>,
     flow_1s_days: i64,
