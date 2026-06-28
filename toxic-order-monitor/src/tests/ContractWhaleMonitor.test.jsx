@@ -1273,27 +1273,32 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
   });
 
-  it("promotes historical events ahead of analysis and lifecycle sections", async () => {
+  it("promotes historical events into the pro desk primary view", async () => {
     render(<ContractWhaleMonitor />);
 
     const historical = await screen.findByText("HISTORICAL EVENTS (24h stream)");
-    const analysis = screen.getByText("Institutional Analysis Terminal");
-    const active = screen.getByText("ACTIVE EVENTS (updated)");
+    const structure = screen.getByText("Market Structure");
+    const setups = screen.getByText("Trade Setups");
+    const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
 
-    expect(historical.compareDocumentPosition(analysis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(analysis.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(historical.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(structure.compareDocumentPosition(setups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(setups.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historicalPanel).toHaveClass("min-h-[50vh]");
+    expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
   });
 
-  it("renders jump navigation links for event-first sections", async () => {
+  it("renders jump navigation links for the pro desk sections", async () => {
     render(<ContractWhaleMonitor />);
 
     await screen.findByText("HISTORICAL EVENTS (24h stream)");
 
     expect(screen.getByRole("link", { name: "Events" })).toHaveAttribute("href", "#contract-whale-events");
-    expect(screen.getByRole("link", { name: "Market" })).toHaveAttribute("href", "#contract-whale-market");
-    expect(screen.getByRole("link", { name: "Active" })).toHaveAttribute("href", "#contract-whale-lifecycle");
+    expect(screen.getByRole("link", { name: "Structure" })).toHaveAttribute("href", "#contract-whale-structure");
+    expect(screen.getByRole("link", { name: "Liquidity" })).toHaveAttribute("href", "#contract-whale-liquidity");
+    expect(screen.getByRole("link", { name: "Setups" })).toHaveAttribute("href", "#contract-whale-setups");
+    expect(screen.getByRole("link", { name: "Risk" })).toHaveAttribute("href", "#contract-whale-risk");
     expect(screen.getByRole("link", { name: "Status" })).toHaveAttribute("href", "#contract-whale-status");
   });
 
@@ -1453,7 +1458,7 @@ describe("ContractWhaleMonitor", () => {
     expect(await screen.findByText("主力合约监控")).toBeInTheDocument();
     expect(screen.getByText("强异动")).toBeInTheDocument();
     expect(screen.getByText("健康")).toBeInTheDocument();
-    expect(screen.getByText("Dry-run")).toBeInTheDocument();
+    expect(screen.getAllByText("Dry-run").length).toBeGreaterThan(0);
     expect(screen.getByText("Buy 62.0% / Sell 38.0%")).toBeInTheDocument();
     expect(screen.getByText("总量 10,000 BTC · dominance 24.0%")).toBeInTheDocument();
     expect(screen.getAllByText("Binance+Bitfinex").length).toBeGreaterThan(0);
@@ -1478,33 +1483,34 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("FUNDING")).not.toBeInTheDocument();
     expect(screen.getByText("Whale Behavior Timeline")).toBeInTheDocument();
     expect(screen.getByText("主力行为轨迹（辅助）")).toBeInTheDocument();
-    expect(screen.getByText("Institutional Analysis Terminal")).toBeInTheDocument();
-    expect(screen.getByText("半机构级分析终端")).toBeInTheDocument();
+    expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
+    expect(screen.getByText("Market Structure")).toBeInTheDocument();
+    expect(screen.getByText("Liquidity Map")).toBeInTheDocument();
+    expect(screen.getByText("Trade Setups")).toBeInTheDocument();
+    expect(screen.getByText("Risk Context")).toBeInTheDocument();
     expect(screen.getByText("Market Regime")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Market Intelligence" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Trade Ideas" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Risk / No-Trade" })).toBeInTheDocument();
-    expect(screen.getByText("Liquidity Behavior")).toBeInTheDocument();
+    expect(screen.getAllByText("Liquidity Behavior").length).toBeGreaterThan(0);
     expect(screen.getByText("Signal Strength Ranking")).toBeInTheDocument();
     expect(screen.getByText("Opportunity Map")).toBeInTheDocument();
-    expect(screen.getByText("RANGING")).toBeInTheDocument();
+    expect(screen.getAllByText("RANGING").length).toBeGreaterThan(0);
     expect(screen.getByText("Regime 78%")).toBeInTheDocument();
     expect(screen.getByText("Absorption")).toBeInTheDocument();
     expect(screen.getByText("Fake Breakout")).toBeInTheDocument();
-    expect(screen.getByText("Absorption Zone")).toBeInTheDocument();
-    expect(screen.getByText("Fake Breakout Risk")).toBeInTheDocument();
+    expect(screen.getAllByText("Absorption Zone").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Fake Breakout Risk").length).toBeGreaterThan(0);
     expect(screen.getAllByText("69,760 - 69,890").length).toBeGreaterThan(0);
     expect(screen.getAllByText("69,980 - 70,040").length).toBeGreaterThan(0);
     expect(screen.queryByText("Entry Zone")).not.toBeInTheDocument();
     expect(screen.queryByText("Invalidation")).not.toBeInTheDocument();
-    expect(screen.getByText("原始候选")).toBeInTheDocument();
-    expect(screen.getByText("降噪后事件")).toBeInTheDocument();
-    expect(screen.getByText("结构机会")).toBeInTheDocument();
-    expect(screen.getByText("压缩质量")).toBeInTheDocument();
-    expect(screen.getByText("67%")).toBeInTheDocument();
+    expect(screen.getByText("Top Setups")).toBeInTheDocument();
+    expect(screen.getByText("当前 Regime")).toBeInTheDocument();
+    expect(screen.getByText("Desk Mode")).toBeInTheDocument();
     expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
     expect(screen.getByText(/多窗口主买一致/)).toBeInTheDocument();
+    expect(screen.getByText("Absorption continuation")).toBeInTheDocument();
+    expect(screen.getByText("HIGH CONF")).toBeInTheDocument();
+    expect(screen.getAllByText("当前风险").length).toBeGreaterThan(0);
     expect(screen.getByText("Whale Entity List")).toBeInTheDocument();
     expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
     expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
@@ -1944,26 +1950,20 @@ describe("ContractWhaleMonitor", () => {
     );
   });
 
-  it("switches institutional terminal tabs into trade ideas and risk context without execution wording", async () => {
-    const user = userEvent.setup();
+  it("renders dedicated trade setups and risk context panels without execution wording", async () => {
     render(<ContractWhaleMonitor />);
 
-    expect(await screen.findByText("Institutional Analysis Terminal")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Trade Ideas" }));
-    expect(screen.getByText("Trade Ideas")).toBeInTheDocument();
-    expect(screen.getByText("方向偏置")).toBeInTheDocument();
-    expect(screen.getByText("参考区")).toBeInTheDocument();
-    expect(screen.getByText("失效参考位")).toBeInTheDocument();
-    expect(screen.getByText("BULLISH_BIAS")).toBeInTheDocument();
-    expect(screen.getByText("69,810 - 69,950")).toBeInTheDocument();
-    expect(screen.getByText("跌破主力吸收参考位，说明当前结构支持减弱。")).toBeInTheDocument();
+    expect(await screen.findByText("Trade Setups")).toBeInTheDocument();
+    expect(screen.getByText("交易机会")).toBeInTheDocument();
+    expect(screen.getByText("LONG BIAS")).toBeInTheDocument();
+    expect(screen.getByText("HIGH CONF")).toBeInTheDocument();
+    expect(screen.getByText(/跌破主力吸收参考位/)).toBeInTheDocument();
     expect(screen.queryByText("立即做多")).not.toBeInTheDocument();
     expect(screen.queryByText("立即做空")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Risk / No-Trade" }));
-    expect(screen.getByText("No-trade Zones")).toBeInTheDocument();
-    expect(screen.getByText("HIGH")).toBeInTheDocument();
+    expect(screen.getByText("Risk Context")).toBeInTheDocument();
+    expect(screen.getByText("No-Trade Zones")).toBeInTheDocument();
+    expect(screen.getAllByText("HIGH RISK").length).toBeGreaterThan(0);
     expect(screen.getByText("当前存在较强假突破风险，交易参考需要让位于风险抑制。")).toBeInTheDocument();
     expect(screen.getAllByText("69,900 - 70,040").length).toBeGreaterThan(0);
   });
