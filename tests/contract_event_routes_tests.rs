@@ -19,7 +19,10 @@ use btc_toxic_flow_monitor_rs::{
         types::{ContractFlowBucket, ContractWhaleSignal},
     },
     storage::contract_whale_repo::ContractWhaleRepo,
-    types::{market::Venue, toxic::ToxicSeverity},
+    types::{
+        market::{AggressorSide, NormalizedBook, NormalizedTrade, Venue},
+        toxic::ToxicSeverity,
+    },
 };
 use reqwest::StatusCode;
 
@@ -205,7 +208,10 @@ async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_tra
     assert!(payload["noiseSuppression"].is_object());
     assert!(payload["topSetups"].is_array());
     assert!(payload["noTradeZones"].is_array());
-    if let Some(first_setup) = payload["topSetups"].as_array().and_then(|items| items.first()) {
+    if let Some(first_setup) = payload["topSetups"]
+        .as_array()
+        .and_then(|items| items.first())
+    {
         assert!(first_setup["direction"].as_str().is_some());
         assert!(first_setup["score"].as_u64().is_some());
         assert!(first_setup["entryZone"]["label"].as_str().is_some());
@@ -223,7 +229,8 @@ async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_tra
 }
 
 #[tokio::test]
-async fn contract_whale_intelligence_terminal_route_exposes_signal_compression_trade_ideas_and_risk_context() {
+async fn contract_whale_intelligence_terminal_route_exposes_signal_compression_trade_ideas_and_risk_context(
+) {
     let state = seeded_contract_event_state();
     let app = router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -255,7 +262,10 @@ async fn contract_whale_intelligence_terminal_route_exposes_signal_compression_t
     assert!(payload["signalCompression"].is_object());
     assert!(payload["tradeIdeas"].is_array());
     assert!(payload["riskContext"].is_object());
-    if let Some(first_idea) = payload["tradeIdeas"].as_array().and_then(|items| items.first()) {
+    if let Some(first_idea) = payload["tradeIdeas"]
+        .as_array()
+        .and_then(|items| items.first())
+    {
         assert!(first_idea["directionBias"].as_str().is_some());
         assert!(first_idea["entryZone"]["label"].as_str().is_some());
         assert!(first_idea["invalidation"]["priceLevel"].is_number());
@@ -564,6 +574,51 @@ async fn contract_whale_latest_marks_old_snapshots_stale_and_can_hide_them() {
     server.abort();
 }
 
+#[tokio::test]
+async fn contract_whale_latest_does_not_replay_stale_persisted_items_when_live_flow_is_authoritative(
+) {
+    let config = test_config_with_symbol(
+        temp_sqlite_path("contract-whale-latest-prefers-live"),
+        "ETH-PERP",
+    );
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let stale_signal = base_signal("btc-stale", now - 26 * 60 * 60 * 1000);
+    store.upsert_contract_whale_signal(&stale_signal).unwrap();
+    seed_live_btc_flow_for_tests(&state, now);
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/latest?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("latest response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("latest json");
+    let items = payload["items"].as_array().expect("items array");
+    assert!(
+        items.is_empty(),
+        "authoritative live flow should not replay stale persisted latest rows; payload={payload}"
+    );
+    assert_eq!(payload["staleCount"], 0);
+    assert!(payload["maxTs"].is_null());
+
+    server.abort();
+}
+
 fn seeded_contract_event_state() -> AppState {
     let config = test_config(temp_sqlite_path("contract-event-routes"));
     let state = AppState::new(config);
@@ -632,6 +687,92 @@ fn seeded_raw_flow_debug_state(app_symbol: &str) -> AppState {
     let stale_signal = base_signal("btc-stale", now - 26 * 60 * 60 * 1000);
     store.upsert_contract_whale_signal(&stale_signal).unwrap();
     state
+}
+
+fn seed_live_btc_flow_for_tests(state: &AppState, now: i64) {
+    let flow_service = state.flow_service_for_tests();
+    for (venue, earlier_mid, later_mid) in [
+        (Venue::Binance, 60_000.0, 60_360.0),
+        (Venue::Bitfinex, 60_010.0, 60_380.0),
+    ] {
+        flow_service.add_book_for_tests(NormalizedBook {
+            venue,
+            symbol: "BTC".to_string(),
+            ts: now - 4_500,
+            best_bid: earlier_mid - 5.0,
+            best_ask: earlier_mid + 5.0,
+            bids: vec![(earlier_mid - 5.0, 500.0)],
+            asks: vec![(earlier_mid + 5.0, 500.0)],
+            mid: earlier_mid,
+            spread_bps: 1.7,
+            bid_depth_btc_10bps: 500.0,
+            ask_depth_btc_10bps: 500.0,
+            bid_depth_usd_10bps: earlier_mid * 500.0,
+            ask_depth_usd_10bps: earlier_mid * 500.0,
+            imbalance_10bps: 0.0,
+        });
+        flow_service.add_book_for_tests(NormalizedBook {
+            venue,
+            symbol: "BTC".to_string(),
+            ts: now - 1_000,
+            best_bid: later_mid - 5.0,
+            best_ask: later_mid + 5.0,
+            bids: vec![(later_mid - 5.0, 500.0)],
+            asks: vec![(later_mid + 5.0, 500.0)],
+            mid: later_mid,
+            spread_bps: 1.7,
+            bid_depth_btc_10bps: 500.0,
+            ask_depth_btc_10bps: 500.0,
+            bid_depth_usd_10bps: later_mid * 500.0,
+            ask_depth_usd_10bps: later_mid * 500.0,
+            imbalance_10bps: 0.0,
+        });
+    }
+
+    for trade in [
+        NormalizedTrade {
+            venue: Venue::Binance,
+            symbol: "BTC".to_string(),
+            ts: now - 3_500,
+            price: 60_250.0,
+            size_btc: 1_150.0,
+            size_usd: 69_287_500.0,
+            aggressor_side: AggressorSide::Buy,
+            trade_id: Some("live-btc-binance-1".to_string()),
+        },
+        NormalizedTrade {
+            venue: Venue::Bitfinex,
+            symbol: "BTC".to_string(),
+            ts: now - 2_500,
+            price: 60_310.0,
+            size_btc: 980.0,
+            size_usd: 59_103_800.0,
+            aggressor_side: AggressorSide::Buy,
+            trade_id: Some("live-btc-bitfinex-1".to_string()),
+        },
+        NormalizedTrade {
+            venue: Venue::Binance,
+            symbol: "BTC".to_string(),
+            ts: now - 1_500,
+            price: 60_360.0,
+            size_btc: 910.0,
+            size_usd: 54_927_600.0,
+            aggressor_side: AggressorSide::Buy,
+            trade_id: Some("live-btc-binance-2".to_string()),
+        },
+        NormalizedTrade {
+            venue: Venue::Bitfinex,
+            symbol: "BTC".to_string(),
+            ts: now - 900,
+            price: 60_340.0,
+            size_btc: 120.0,
+            size_usd: 7_240_800.0,
+            aggressor_side: AggressorSide::Sell,
+            trade_id: Some("live-btc-bitfinex-2".to_string()),
+        },
+    ] {
+        flow_service.add_trade_for_tests(trade);
+    }
 }
 
 fn base_signal(suffix: &str, ts: i64) -> ContractWhaleSignal {
