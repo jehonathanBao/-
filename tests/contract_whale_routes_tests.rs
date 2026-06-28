@@ -5,12 +5,11 @@ use std::{
 
 use btc_toxic_flow_monitor_rs::{
     api::contract_whale_routes::{
-        build_contract_whale_history_response, build_contract_whale_items_response,
-        build_contract_whale_metrics_text, build_contract_whale_response,
-        build_contract_whale_response_with_runtime_and_baselines,
-        build_contract_whale_intelligence_response, build_trading_decision_response,
-        encode_contract_history_cursor, parse_history_query, ContractWhaleQualityBaseline,
-        ContractWhaleQuery, ContractWhaleResponseRuntime,
+        build_contract_whale_history_response, build_contract_whale_intelligence_response,
+        build_contract_whale_items_response, build_contract_whale_metrics_text,
+        build_contract_whale_response, build_contract_whale_response_with_runtime_and_baselines,
+        build_trading_decision_response, encode_contract_history_cursor, parse_history_query,
+        ContractWhaleQualityBaseline, ContractWhaleQuery, ContractWhaleResponseRuntime,
     },
     contract_whale_monitor::{
         config::{
@@ -18,8 +17,8 @@ use btc_toxic_flow_monitor_rs::{
             ContractWhaleRuntimeConfig,
         },
         types::{
-            ContractWhaleDirection, ContractWhaleLiquidationContext,
-            ContractWhaleMarketContext, ContractWhaleMarketStructureLite, ContractWhaleMarketType,
+            ContractWhaleDirection, ContractWhaleLiquidationContext, ContractWhaleMarketContext,
+            ContractWhaleMarketStructureLite, ContractWhaleMarketType,
             ContractWhaleNoiseSuppressionSummary, ContractWhalePriceResponseType,
             ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleTrend60s,
         },
@@ -483,7 +482,10 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
     assert_eq!(response.summary.trade_opportunities.len(), 1);
     assert_eq!(response.summary.trade_opportunities[0].rank, 1);
     assert_eq!(response.summary.trade_opportunities[0].action, "LONG");
-    assert_eq!(response.summary.trade_opportunities[0].direction_bias, "buy");
+    assert_eq!(
+        response.summary.trade_opportunities[0].direction_bias,
+        "buy"
+    );
     assert!(response.summary.trade_opportunities[0].trade_score >= 70);
     assert!(response.items[0]
         .merged_from
@@ -667,9 +669,13 @@ fn institutional_analysis_response_surfaces_regime_strength_and_opportunities() 
     assert!(response
         .opportunity_map
         .iter()
-        .any(|item| item.zone_type == "absorption_zone" || item.zone_type == "breakout_pressure_zone"));
+        .any(|item| item.zone_type == "absorption_zone"
+            || item.zone_type == "breakout_pressure_zone"));
     assert_eq!(response.noise_suppression.filtered_events, 1);
-    assert_eq!(response.signal_compression.top_signal_count, response.trade_ideas.len());
+    assert_eq!(
+        response.signal_compression.top_signal_count,
+        response.trade_ideas.len()
+    );
     assert!(response.trade_ideas.len() <= 3);
     assert!(response.signal_compression.quality_score <= 100);
     assert!(!response.risk_context.fake_breakout_risk.is_empty());
@@ -720,6 +726,145 @@ fn intelligence_response_includes_signal_compression_trade_ideas_and_risk_contex
     assert!(response.signal_compression.quality_score <= 100);
     assert!(response.trade_ideas.len() <= 3);
     assert!(response.risk_context.no_trade_zones.len() <= 3);
+}
+
+#[test]
+fn intelligence_response_fine_tuning_filters_ranging_noise_out_of_ranked_and_trade_ideas() {
+    let _guard = contract_whale_test_guard();
+    let mut confirmed_trend = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::High);
+    confirmed_trend.id = "contract-whale:BTC:15:confirmed-trend".to_string();
+    confirmed_trend.signal_type = ContractWhaleSignalType::AggressiveBuy;
+    confirmed_trend.direction = ContractWhaleDirection::Buy;
+    confirmed_trend.total_volume_btc = 2_640.0;
+    confirmed_trend.total_notional_usd = 168_000_000.0;
+    confirmed_trend.net_volume_btc = 1_920.0;
+    confirmed_trend.price_move_pct = Some(0.28);
+    confirmed_trend.current_market_price_usd = Some(60_420.0);
+    confirmed_trend.order_price_usd = Some(60_390.0);
+    confirmed_trend.main_force_score = Some(90);
+    confirmed_trend.dominance = 0.73;
+    confirmed_trend.multi_exchange_confirmed = true;
+    confirmed_trend.event_lifecycle.update_count = 3;
+    confirmed_trend.event_quality.quality_score = 0.88;
+    confirmed_trend.merged_from = vec!["contract-whale:BTC:5:confirmed-trend".to_string()];
+
+    let mut clean_absorption = persisted_signal(1_700_000_025_000, ContractWhaleSeverity::High);
+    clean_absorption.id = "contract-whale:BTC:5:clean-absorption".to_string();
+    clean_absorption.signal_type = ContractWhaleSignalType::DownsideAbsorption;
+    clean_absorption.direction = ContractWhaleDirection::Absorption;
+    clean_absorption.total_volume_btc = 1_960.0;
+    clean_absorption.total_notional_usd = 121_000_000.0;
+    clean_absorption.net_volume_btc = 1_180.0;
+    clean_absorption.price_move_pct = Some(0.15);
+    clean_absorption.price_response_type = ContractWhalePriceResponseType::DownsideAbsorption;
+    clean_absorption.current_market_price_usd = Some(60_405.0);
+    clean_absorption.order_price_usd = Some(60_380.0);
+    clean_absorption.main_force_score = Some(82);
+    clean_absorption.dominance = 0.61;
+    clean_absorption.multi_exchange_confirmed = true;
+    clean_absorption.event_lifecycle.update_count = 2;
+    clean_absorption.event_quality.quality_score = 0.83;
+    clean_absorption.merged_from = vec!["contract-whale:BTC:15:clean-absorption".to_string()];
+
+    let mut ranging_noise = persisted_signal(1_700_000_035_000, ContractWhaleSeverity::High);
+    ranging_noise.id = "contract-whale:BTC:15:ranging-noise".to_string();
+    ranging_noise.signal_type = ContractWhaleSignalType::DownsideAbsorption;
+    ranging_noise.direction = ContractWhaleDirection::Absorption;
+    ranging_noise.total_volume_btc = 2_100.0;
+    ranging_noise.total_notional_usd = 133_000_000.0;
+    ranging_noise.net_volume_btc = 1_240.0;
+    ranging_noise.price_move_pct = Some(0.03);
+    ranging_noise.price_response_type = ContractWhalePriceResponseType::DownsideAbsorption;
+    ranging_noise.current_market_price_usd = Some(60_410.0);
+    ranging_noise.order_price_usd = Some(60_404.0);
+    ranging_noise.main_force_score = Some(87);
+    ranging_noise.dominance = 0.59;
+    ranging_noise.multi_exchange_confirmed = false;
+    ranging_noise.event_lifecycle.update_count = 1;
+    ranging_noise.event_quality.quality_score = 0.84;
+    ranging_noise.merged_from = vec!["contract-whale:BTC:5:ranging-noise".to_string()];
+
+    let response = build_contract_whale_intelligence_response(
+        "BTC",
+        &[confirmed_trend, clean_absorption, ranging_noise],
+        &ContractWhaleMarketStructureLite {
+            status: "confirmed".to_string(),
+            regime_type: "range_rotation".to_string(),
+            main_force_score: 58,
+            confidence: 70,
+            ..Default::default()
+        },
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 3,
+            merged_events: 3,
+            lifecycle_events: 3,
+            filtered_events: 0,
+            tradeable_setups: 3,
+            suppressed_duplicates: 0,
+            noise_reduction_pct: 0,
+        },
+        1_700_000_090_000,
+    );
+
+    assert_eq!(response.trade_ideas.len(), 2);
+    assert_eq!(response.ranked_events.len(), 2);
+    assert!(response
+        .trade_ideas
+        .iter()
+        .all(|idea| idea.signal_id != "contract-whale:BTC:15:ranging-noise"));
+    assert!(response
+        .ranked_events
+        .iter()
+        .all(|item| item.signal_id != "contract-whale:BTC:15:ranging-noise"));
+}
+
+#[test]
+fn intelligence_response_fine_tuning_downgrades_high_confidence_without_multi_window_or_persistence(
+) {
+    let _guard = contract_whale_test_guard();
+    let mut fragile_breakout = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::High);
+    fragile_breakout.id = "contract-whale:BTC:15:fragile-breakout".to_string();
+    fragile_breakout.signal_type = ContractWhaleSignalType::AggressiveBuy;
+    fragile_breakout.direction = ContractWhaleDirection::Buy;
+    fragile_breakout.total_volume_btc = 3_420.0;
+    fragile_breakout.total_notional_usd = 215_000_000.0;
+    fragile_breakout.net_volume_btc = 2_890.0;
+    fragile_breakout.price_move_pct = Some(0.24);
+    fragile_breakout.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+    fragile_breakout.current_market_price_usd = Some(60_520.0);
+    fragile_breakout.order_price_usd = Some(60_470.0);
+    fragile_breakout.main_force_score = Some(98);
+    fragile_breakout.dominance = 0.84;
+    fragile_breakout.multi_exchange_confirmed = true;
+    fragile_breakout.event_lifecycle.update_count = 2;
+    fragile_breakout.event_quality.quality_score = 0.91;
+    fragile_breakout.merged_from.clear();
+
+    let response = build_contract_whale_intelligence_response(
+        "BTC",
+        &[fragile_breakout],
+        &ContractWhaleMarketStructureLite {
+            status: "confirmed".to_string(),
+            regime_type: "main_force_long_build".to_string(),
+            main_force_score: 82,
+            confidence: 75,
+            ..Default::default()
+        },
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 1,
+            merged_events: 1,
+            lifecycle_events: 1,
+            filtered_events: 0,
+            tradeable_setups: 1,
+            suppressed_duplicates: 0,
+            noise_reduction_pct: 0,
+        },
+        1_700_000_090_000,
+    );
+
+    assert_eq!(response.trade_ideas.len(), 1);
+    assert_ne!(response.trade_ideas[0].confidence_label, "HIGH");
+    assert!(response.trade_ideas[0].confidence < 85);
 }
 
 #[test]

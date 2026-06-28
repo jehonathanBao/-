@@ -51,7 +51,10 @@ pub fn evaluate_tradeability(signal: &ContractWhaleSignal, score: u8) -> NoiseFi
     }
 }
 
-pub fn to_no_trade_zone(signal: &ContractWhaleSignal, reason: &str) -> Option<ContractWhaleNoTradeZone> {
+pub fn to_no_trade_zone(
+    signal: &ContractWhaleSignal,
+    reason: &str,
+) -> Option<ContractWhaleNoTradeZone> {
     let anchor = signal
         .order_price_usd
         .or(signal.current_market_price_usd)
@@ -59,7 +62,8 @@ pub fn to_no_trade_zone(signal: &ContractWhaleSignal, reason: &str) -> Option<Co
     if anchor <= 0.0 {
         return None;
     }
-    let band_pct = (signal.price_move_pct.unwrap_or(0.12).abs().max(0.12) / 100.0).clamp(0.0012, 0.0040);
+    let band_pct =
+        (signal.price_move_pct.unwrap_or(0.12).abs().max(0.12) / 100.0).clamp(0.0012, 0.0040);
     let low_price = round2(anchor * (1.0 - band_pct));
     let high_price = round2(anchor * (1.0 + band_pct));
     Some(ContractWhaleNoTradeZone {
@@ -72,6 +76,9 @@ pub fn to_no_trade_zone(signal: &ContractWhaleSignal, reason: &str) -> Option<Co
 
 fn human_reason(reason: &str) -> &'static str {
     match reason {
+        "chop_regime_low_follow_through" => "当前更像区间震荡里的弱跟随，不纳入可交易 setup。",
+        "high_volume_low_follow_through" => "成交放大但价格没有跟上，先按噪声放量处理。",
+        "fake_breakout_risk_high" => "假突破风险偏高，当前不进入交易观察清单。",
         "price_response_missing" => "价格响应不足，当前更像低分震荡 chop。",
         "single_window_spike_only" => "只有单窗口脉冲，没有形成跨窗口确认。",
         "dominance_below_threshold" => "净方向占比不足，暂时不具备交易优势。",

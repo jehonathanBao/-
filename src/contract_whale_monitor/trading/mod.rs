@@ -1,5 +1,6 @@
 pub mod bias;
 pub mod classifier;
+pub mod fine_tune;
 pub mod noise_filter;
 pub mod scoring;
 
@@ -13,8 +14,12 @@ use crate::contract_whale_monitor::types::{
 use self::{
     bias::derive_market_bias,
     classifier::{classify_direction, setup_type_label, TradingDirection},
+    fine_tune::{
+        adjusted_trade_score, fine_tune_reject_reason, recalibrated_confidence,
+        should_prune_similar_setup,
+    },
     noise_filter::{evaluate_tradeability, to_no_trade_zone},
-    scoring::{confidence_from_score, confidence_label, score_signal},
+    scoring::{confidence_label, score_signal},
 };
 
 pub fn build_trading_decision_response(
@@ -28,7 +33,19 @@ pub fn build_trading_decision_response(
     let mut no_trade_zones = Vec::new();
 
     for signal in items {
-        let score = score_signal(signal);
+        let base_score = score_signal(signal);
+        let liquidity_behavior =
+            crate::contract_whale_monitor::intelligence::liquidity::behavior_for_signal(signal);
+        let regime_context = regime_context_label(market_structure_lite);
+        let score = adjusted_trade_score(signal, base_score, &regime_context, liquidity_behavior);
+        if let Some(reason) =
+            fine_tune_reject_reason(signal, score, &regime_context, liquidity_behavior)
+        {
+            if let Some(zone) = to_no_trade_zone(signal, reason) {
+                push_unique_no_trade_zone(&mut no_trade_zones, zone);
+            }
+            continue;
+        }
         let filter_result = evaluate_tradeability(signal, score);
         if !filter_result.accepted {
             if let Some(zone) = to_no_trade_zone(signal, &filter_result.reason) {
@@ -45,7 +62,7 @@ pub fn build_trading_decision_response(
             continue;
         }
 
-        let confidence = confidence_from_score(signal, score);
+        let confidence = recalibrated_confidence(signal, score, liquidity_behavior);
         top_setups.push(ContractWhaleTradingSetup {
             signal_id: signal.id.clone(),
             rank: 0,
@@ -69,7 +86,36 @@ pub fn build_trading_decision_response(
             .then_with(|| right.confidence.cmp(&left.confidence))
             .then_with(|| right.window_sec.cmp(&left.window_sec))
     });
-    top_setups.truncate(3);
+    let mut pruned_setups = Vec::new();
+    for setup in top_setups {
+        let candidate_signal = items.iter().find(|item| item.id == setup.signal_id);
+        let should_prune = pruned_setups
+            .iter()
+            .any(|kept: &ContractWhaleTradingSetup| {
+                let Some(kept_signal) = items.iter().find(|item| item.id == kept.signal_id) else {
+                    return false;
+                };
+                let Some(candidate_signal) = candidate_signal else {
+                    return false;
+                };
+                should_prune_similar_setup(
+                    kept_signal,
+                    &kept.direction,
+                    kept.score,
+                    candidate_signal,
+                    &setup.direction,
+                    setup.score,
+                )
+            });
+        if should_prune {
+            continue;
+        }
+        pruned_setups.push(setup);
+        if pruned_setups.len() >= 3 {
+            break;
+        }
+    }
+    top_setups = pruned_setups;
     for (index, setup) in top_setups.iter_mut().enumerate() {
         setup.rank = index + 1;
     }
@@ -116,8 +162,8 @@ fn build_invalidation(
     if anchor <= 0.0 {
         return ContractWhaleTradingInvalidation::default();
     }
-    let distance_pct = ((signal.price_move_pct.unwrap_or(0.20).abs() / 100.0) * 1.35)
-        .clamp(0.0025, 0.0080);
+    let distance_pct =
+        ((signal.price_move_pct.unwrap_or(0.20).abs() / 100.0) * 1.35).clamp(0.0025, 0.0080);
     let price_level = match direction {
         TradingDirection::Long => round2(anchor * (1.0 - distance_pct)),
         TradingDirection::Short => round2(anchor * (1.0 + distance_pct)),

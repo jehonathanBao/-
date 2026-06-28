@@ -7,6 +7,9 @@ use super::{
     liquidity::behavior_for_signal,
     strength::{direction_bias_label, score_signal_strength, strength_label},
 };
+use crate::contract_whale_monitor::trading::fine_tune::{
+    adjusted_trade_score, fine_tune_reject_reason, should_prune_similar_setup,
+};
 
 pub fn rank_market_events(
     items: &[ContractWhaleSignal],
@@ -15,8 +18,8 @@ pub fn rank_market_events(
 ) -> Vec<ContractWhaleRankedEvent> {
     let mut ranked = items
         .iter()
-        .map(|signal| {
-            let strength_score = score_signal_strength(signal);
+        .filter_map(|signal| {
+            let base_strength = score_signal_strength(signal);
             let regime_alignment = regime_alignment(regime, signal);
             let liquidity_behavior = behavior_for_signal(signal);
             let behavior_boost = liquidity_behaviors
@@ -24,9 +27,17 @@ pub fn rank_market_events(
                 .find(|item| item.behavior == liquidity_behavior)
                 .map(|item| item.confidence / 10)
                 .unwrap_or_default();
-            let final_strength = strength_score.saturating_add(behavior_boost).min(100);
+            let boosted_strength = base_strength.saturating_add(behavior_boost).min(100);
+            let final_strength =
+                adjusted_trade_score(signal, boosted_strength, &regime.regime, liquidity_behavior);
 
-            ContractWhaleRankedEvent {
+            if fine_tune_reject_reason(signal, final_strength, &regime.regime, liquidity_behavior)
+                .is_some()
+            {
+                return None;
+            }
+
+            Some(ContractWhaleRankedEvent {
                 signal_id: signal.id.clone(),
                 rank: 0,
                 event_type: event_type_label(signal.signal_type).to_string(),
@@ -37,7 +48,7 @@ pub fn rank_market_events(
                 liquidity_behavior: liquidity_behavior.to_string(),
                 window_sec: signal.window_sec,
                 rationale: build_rationale(signal, liquidity_behavior, regime_alignment),
-            }
+            })
         })
         .collect::<Vec<_>>();
 
@@ -47,7 +58,34 @@ pub fn rank_market_events(
             .cmp(&left.strength_score)
             .then_with(|| right.window_sec.cmp(&left.window_sec))
     });
-    ranked.truncate(3);
+    let mut pruned = Vec::new();
+    for candidate in ranked {
+        let candidate_signal = items.iter().find(|item| item.id == candidate.signal_id);
+        let should_prune = pruned.iter().any(|kept: &ContractWhaleRankedEvent| {
+            let Some(kept_signal) = items.iter().find(|item| item.id == kept.signal_id) else {
+                return false;
+            };
+            let Some(candidate_signal) = candidate_signal else {
+                return false;
+            };
+            should_prune_similar_setup(
+                kept_signal,
+                &kept.direction_bias,
+                kept.strength_score,
+                candidate_signal,
+                &candidate.direction_bias,
+                candidate.strength_score,
+            )
+        });
+        if should_prune {
+            continue;
+        }
+        pruned.push(candidate);
+        if pruned.len() >= 3 {
+            break;
+        }
+    }
+    ranked = pruned;
     for (index, item) in ranked.iter_mut().enumerate() {
         item.rank = index + 1;
     }
@@ -63,14 +101,18 @@ fn event_type_label(signal_type: ContractWhaleSignalType) -> &'static str {
     }
 }
 
-fn regime_alignment(regime: &ContractWhaleRegimeSnapshot, signal: &ContractWhaleSignal) -> &'static str {
+fn regime_alignment(
+    regime: &ContractWhaleRegimeSnapshot,
+    signal: &ContractWhaleSignal,
+) -> &'static str {
     match regime.regime.as_str() {
         "TRENDING_UP" if signal.net_volume_btc > 0.0 => "aligned",
         "TRENDING_DOWN" if signal.net_volume_btc < 0.0 => "aligned",
         "RANGING"
             if matches!(
                 signal.signal_type,
-                ContractWhaleSignalType::DownsideAbsorption | ContractWhaleSignalType::UpsideSuppression
+                ContractWhaleSignalType::DownsideAbsorption
+                    | ContractWhaleSignalType::UpsideSuppression
             ) =>
         {
             "aligned"

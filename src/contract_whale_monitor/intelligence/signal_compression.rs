@@ -1,10 +1,15 @@
 use std::collections::BTreeSet;
 
 use crate::contract_whale_monitor::{
+    intelligence::liquidity::behavior_for_signal,
     trading::{
         classifier::{classify_direction, setup_type_label, TradingDirection},
+        fine_tune::{
+            adjusted_trade_score, fine_tune_reject_reason, recalibrated_confidence,
+            should_prune_similar_setup,
+        },
         noise_filter::evaluate_tradeability,
-        scoring::{confidence_from_score, confidence_label, score_signal},
+        scoring::{confidence_label, score_signal},
     },
     types::{
         ContractWhaleMarketStructureLite, ContractWhaleRankedEvent, ContractWhaleSignal,
@@ -20,12 +25,22 @@ pub fn build_trade_ideas(
 ) -> Vec<ContractWhaleTradeIdea> {
     let mut ideas = Vec::new();
     let mut seen = BTreeSet::new();
+    let regime_context = regime_context_label(market_structure_lite);
 
     for ranked_event in ranked_events {
         let Some(signal) = items.iter().find(|item| item.id == ranked_event.signal_id) else {
             continue;
         };
-        let score = score_signal(signal);
+        let liquidity_behavior = behavior_for_signal(signal);
+        let score = adjusted_trade_score(
+            signal,
+            score_signal(signal),
+            &regime_context,
+            liquidity_behavior,
+        );
+        if fine_tune_reject_reason(signal, score, &regime_context, liquidity_behavior).is_some() {
+            continue;
+        }
         let filter_result = evaluate_tradeability(signal, score);
         if !filter_result.accepted {
             continue;
@@ -44,8 +59,8 @@ pub fn build_trade_ideas(
         if !seen.insert(dedup_key) {
             continue;
         }
-        let confidence = confidence_from_score(signal, score);
-        ideas.push(ContractWhaleTradeIdea {
+        let confidence = recalibrated_confidence(signal, score, liquidity_behavior);
+        let candidate = ContractWhaleTradeIdea {
             signal_id: signal.id.clone(),
             rank: 0,
             setup_type: setup_family.to_string(),
@@ -56,9 +71,26 @@ pub fn build_trade_ideas(
             entry_zone: build_entry_zone(signal),
             invalidation: build_invalidation(signal, direction),
             structure_context: ranked_event.rationale.clone(),
-            regime_context: regime_context_label(market_structure_lite),
+            regime_context: regime_context.clone(),
             window_sec: signal.window_sec,
+        };
+        let should_prune = ideas.iter().any(|kept: &ContractWhaleTradeIdea| {
+            let Some(kept_signal) = items.iter().find(|item| item.id == kept.signal_id) else {
+                return false;
+            };
+            should_prune_similar_setup(
+                kept_signal,
+                &kept.direction_bias,
+                kept.score,
+                signal,
+                &candidate.direction_bias,
+                candidate.score,
+            )
         });
+        if should_prune {
+            continue;
+        }
+        ideas.push(candidate);
         if ideas.len() >= 3 {
             break;
         }
@@ -77,7 +109,10 @@ pub fn build_signal_compression_summary(
     let quality_score = if trade_ideas.is_empty() {
         0
     } else {
-        (trade_ideas.iter().map(|item| item.confidence as u32).sum::<u32>() as f64
+        (trade_ideas
+            .iter()
+            .map(|item| item.confidence as u32)
+            .sum::<u32>() as f64
             / trade_ideas.len() as f64)
             .round()
             .clamp(0.0, 100.0) as u8
@@ -121,8 +156,8 @@ fn build_invalidation(
     if anchor <= 0.0 {
         return ContractWhaleTradingInvalidation::default();
     }
-    let distance_pct = ((signal.price_move_pct.unwrap_or(0.20).abs() / 100.0) * 1.35)
-        .clamp(0.0025, 0.0080);
+    let distance_pct =
+        ((signal.price_move_pct.unwrap_or(0.20).abs() / 100.0) * 1.35).clamp(0.0025, 0.0080);
     let price_level = match direction {
         TradingDirection::Long => round2(anchor * (1.0 - distance_pct)),
         TradingDirection::Short => round2(anchor * (1.0 + distance_pct)),
