@@ -112,6 +112,21 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.queryByTestId("alt-contract-row-bacm-doge-small")).not.toBeInTheDocument();
   });
 
+  it("surfaces the alt contract event stream before downstream analysis panels", async () => {
+    render(<BinanceAltContractMonitor />);
+
+    const eventHeading = await screen.findByText("Alt Contract Event Stream");
+    const flowHeading = screen.getByText("60s Alt Contract Flow");
+    const auditHeading = screen.getByText("SMAF System Audit");
+
+    expect(
+      eventHeading.compareDocumentPosition(flowHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      eventHeading.compareDocumentPosition(auditHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("uses history when severity filter is selected", async () => {
     const user = userEvent.setup();
     render(<BinanceAltContractMonitor />);

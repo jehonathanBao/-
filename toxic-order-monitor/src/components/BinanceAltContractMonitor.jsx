@@ -125,22 +125,6 @@ export default function BinanceAltContractMonitor() {
         </div>
       </div>
 
-      <AltTrendBar trend={summary.trend60s} />
-      <RuntimeSummary summary={summary} />
-      <SmafAuditCard report={summary.smafReport} />
-      <SmllLearningCard report={summary.smllReport} />
-      <AtcaAgentCard report={summary.atcaReport} />
-      <AmiosOsCard report={summary.amiosReport} />
-      <p className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100">
-        相对冲击展示：AIS ≥ 70 才进入列表，AIS ≥ 85 才进入 Discord gate，AIS ≥ 90 才允许 S 级；旧名义额门槛仅兼容历史信号。
-      </p>
-
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
-        <CollapsedUniverseSummary summary={summary} />
-        <ExchangeStatus status={summary.exchanges?.binance} />
-      </div>
-      <DryRunAndUniverse summary={summary} />
-
       {state.error ? (
         <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
           山寨合约监控数据暂时不可用，已保留上一次结果。
@@ -156,116 +140,146 @@ export default function BinanceAltContractMonitor() {
         symbolOptions={symbolOptions}
       />
 
-      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/30">
-        {state.loading ? (
-          <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
-            山寨合约监控载入中...
-          </p>
-        ) : visibleItems.length === 0 ? (
-          <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
-            {summary.enabled ? "暂无山寨合约异常" : "山寨合约异常监控未启用"}
-          </p>
-        ) : (
-          <table className="min-w-full table-fixed text-left text-xs">
-            <thead className="bg-slate-950/80 text-slate-400">
-              <tr>
-                <HeaderCell>时间</HeaderCell>
-                <HeaderCell>币种 / 价格</HeaderCell>
-                <HeaderCell>市场层级</HeaderCell>
-                <HeaderCell>MCSS</HeaderCell>
-                <HeaderCell>Regime</HeaderCell>
-                <HeaderCell>Lifecycle</HeaderCell>
-                <HeaderCell>Prediction</HeaderCell>
-                <HeaderCell>类型</HeaderCell>
-                <HeaderCell>等级</HeaderCell>
-                <HeaderCell>窗口</HeaderCell>
-                <HeaderCell>异常分</HeaderCell>
-                <HeaderCell>建仓分</HeaderCell>
-                <HeaderCell>方向</HeaderCell>
-                <HeaderCell>1m 名义额</HeaderCell>
-                <HeaderCell>AIS</HeaderCell>
-                <HeaderCell>市场冲击</HeaderCell>
-                <HeaderCell>异常倍数</HeaderCell>
-                <HeaderCell>OI</HeaderCell>
-                <HeaderCell>价格变化</HeaderCell>
-                <HeaderCell>清算</HeaderCell>
-                <HeaderCell>Gate 类型</HeaderCell>
-                <HeaderCell>Discord</HeaderCell>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800 text-slate-300">
-              {visibleItems.map((item) => (
-                <tr
-                  className="console-row"
-                  data-testid={`alt-contract-row-${item.id}`}
-                  key={item.id}
-                  onClick={() => setSelectedSignalId(item.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedSignalId(item.id);
-                    }
-                  }}
-                  tabIndex={0}
-                >
-                  <Cell>{formatTime(item.ts)}</Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-slate-100">{item.symbol}</span>
-                      <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(item.triggerPriceUsd)}</span>
-                    </span>
-                  </Cell>
-                  <Cell>{marketTierLabel(item.marketTier)}</Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-cyan-100">{formatMcss(item.masterCapitalStrength?.mcss)}</span>
-                      <span className="mt-1 text-[11px] text-slate-500">{item.masterCapitalStrength?.interpretation || "N/A"}</span>
-                    </span>
-                  </Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-slate-100">{marketRegimeLabel(item.marketRegime?.regime)}</span>
-                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.marketRegime?.confidence)}</span>
-                    </span>
-                  </Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-emerald-100">{lifecycleStateLabel(item.smartMoneyLifecycle?.lifecycleState)}</span>
-                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyLifecycle?.stateConfidence)}</span>
-                    </span>
-                  </Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-sky-100">{lifecycleStateLabel(item.smartMoneyPrediction?.nextState)}</span>
-                      <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyPrediction?.probability)}</span>
-                    </span>
-                  </Cell>
-                  <Cell>
-                    <span className="flex flex-col leading-tight">
-                      <span className="font-semibold text-slate-100">{item.semantic?.title || signalTypeLabel(item.signalType)}</span>
-                      <span className="mt-1 text-[11px] text-slate-500">{semanticLayerLabel(item.semantic?.layer)}</span>
-                    </span>
-                  </Cell>
-                  <Cell><span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>{severityLabel(item.severity)}</span></Cell>
-                  <Cell>{item.windowSec}s</Cell>
-                  <Cell>{item.abnormalScore}/100</Cell>
-                  <Cell>{item.buildScore}/100</Cell>
-                  <Cell>{directionLabel(item.direction)} {signedNumber(item.directionBias)}</Cell>
-                  <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
-                  <Cell>{formatImpactScore(item.altImpactScore)}</Cell>
-                  <Cell>{formatImpactRatio(item.altImpactScore?.marketImpactRatio)}</Cell>
-                  <Cell>{item.dynamicMultiple ? `${item.dynamicMultiple.toFixed(1)}x` : "N/A"}</Cell>
-                  <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
-                  <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
-                  <Cell>{item.liquidationSuspected ? "疑似" : "否"}</Cell>
-                  <Cell>{discordAlertKindLabel(item.discordAlertKind)}</Cell>
-                  <Cell>{discordStatus(item)}</Cell>
+      <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/6 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="console-label text-cyan-300">Alt Contract Event Stream</p>
+            <h4 className="mt-2 text-base font-bold text-white">山寨合约事件流</h4>
+            <p className="mt-1 max-w-3xl text-xs leading-6 text-slate-400">
+              先看市场发生了什么，再往下看 60s flow、审计、自学习和 Agent 解释层；避免核心异动被说明卡挤到第二屏。
+            </p>
+          </div>
+          <span className="rounded-full border border-slate-700 bg-slate-950/60 px-3 py-1 text-[11px] font-semibold text-slate-300">
+            {state.loading ? "同步中" : `当前展示 ${visibleItems.length} 条`}
+          </span>
+        </div>
+        <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/30">
+          {state.loading ? (
+            <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
+              山寨合约监控载入中...
+            </p>
+          ) : visibleItems.length === 0 ? (
+            <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
+              {summary.enabled ? "暂无山寨合约异常" : "山寨合约异常监控未启用"}
+            </p>
+          ) : (
+            <table className="min-w-full table-fixed text-left text-xs">
+              <thead className="bg-slate-950/80 text-slate-400">
+                <tr>
+                  <HeaderCell>时间</HeaderCell>
+                  <HeaderCell>币种 / 价格</HeaderCell>
+                  <HeaderCell>市场层级</HeaderCell>
+                  <HeaderCell>MCSS</HeaderCell>
+                  <HeaderCell>Regime</HeaderCell>
+                  <HeaderCell>Lifecycle</HeaderCell>
+                  <HeaderCell>Prediction</HeaderCell>
+                  <HeaderCell>类型</HeaderCell>
+                  <HeaderCell>等级</HeaderCell>
+                  <HeaderCell>窗口</HeaderCell>
+                  <HeaderCell>异常分</HeaderCell>
+                  <HeaderCell>建仓分</HeaderCell>
+                  <HeaderCell>方向</HeaderCell>
+                  <HeaderCell>1m 名义额</HeaderCell>
+                  <HeaderCell>AIS</HeaderCell>
+                  <HeaderCell>市场冲击</HeaderCell>
+                  <HeaderCell>异常倍数</HeaderCell>
+                  <HeaderCell>OI</HeaderCell>
+                  <HeaderCell>价格变化</HeaderCell>
+                  <HeaderCell>清算</HeaderCell>
+                  <HeaderCell>Gate 类型</HeaderCell>
+                  <HeaderCell>Discord</HeaderCell>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody className="divide-y divide-slate-800 text-slate-300">
+                {visibleItems.map((item) => (
+                  <tr
+                    className="console-row"
+                    data-testid={`alt-contract-row-${item.id}`}
+                    key={item.id}
+                    onClick={() => setSelectedSignalId(item.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedSignalId(item.id);
+                      }
+                    }}
+                    tabIndex={0}
+                  >
+                    <Cell>{formatTime(item.ts)}</Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-slate-100">{item.symbol}</span>
+                        <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(item.triggerPriceUsd)}</span>
+                      </span>
+                    </Cell>
+                    <Cell>{marketTierLabel(item.marketTier)}</Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-cyan-100">{formatMcss(item.masterCapitalStrength?.mcss)}</span>
+                        <span className="mt-1 text-[11px] text-slate-500">{item.masterCapitalStrength?.interpretation || "N/A"}</span>
+                      </span>
+                    </Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-slate-100">{marketRegimeLabel(item.marketRegime?.regime)}</span>
+                        <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.marketRegime?.confidence)}</span>
+                      </span>
+                    </Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-emerald-100">{lifecycleStateLabel(item.smartMoneyLifecycle?.lifecycleState)}</span>
+                        <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyLifecycle?.stateConfidence)}</span>
+                      </span>
+                    </Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-sky-100">{lifecycleStateLabel(item.smartMoneyPrediction?.nextState)}</span>
+                        <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyPrediction?.probability)}</span>
+                      </span>
+                    </Cell>
+                    <Cell>
+                      <span className="flex flex-col leading-tight">
+                        <span className="font-semibold text-slate-100">{item.semantic?.title || signalTypeLabel(item.signalType)}</span>
+                        <span className="mt-1 text-[11px] text-slate-500">{semanticLayerLabel(item.semantic?.layer)}</span>
+                      </span>
+                    </Cell>
+                    <Cell><span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>{severityLabel(item.severity)}</span></Cell>
+                    <Cell>{item.windowSec}s</Cell>
+                    <Cell>{item.abnormalScore}/100</Cell>
+                    <Cell>{item.buildScore}/100</Cell>
+                    <Cell>{directionLabel(item.direction)} {signedNumber(item.directionBias)}</Cell>
+                    <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
+                    <Cell>{formatImpactScore(item.altImpactScore)}</Cell>
+                    <Cell>{formatImpactRatio(item.altImpactScore?.marketImpactRatio)}</Cell>
+                    <Cell>{item.dynamicMultiple ? `${item.dynamicMultiple.toFixed(1)}x` : "N/A"}</Cell>
+                    <Cell>{formatSignedBase(item.oiChange1mBase ?? item.oiChange5mBase, item.symbol)}</Cell>
+                    <Cell>{formatSignedPct(item.priceMovePct)}</Cell>
+                    <Cell>{item.liquidationSuspected ? "疑似" : "否"}</Cell>
+                    <Cell>{discordAlertKindLabel(item.discordAlertKind)}</Cell>
+                    <Cell>{discordStatus(item)}</Cell>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
+
+      <AltTrendBar trend={summary.trend60s} />
+      <RuntimeSummary summary={summary} />
+      <SmafAuditCard report={summary.smafReport} />
+      <SmllLearningCard report={summary.smllReport} />
+      <AtcaAgentCard report={summary.atcaReport} />
+      <AmiosOsCard report={summary.amiosReport} />
+      <p className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-100">
+        相对冲击展示：AIS ≥ 70 才进入列表，AIS ≥ 85 才进入 Discord gate，AIS ≥ 90 才允许 S 级；旧名义额门槛仅兼容历史信号。
+      </p>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
+        <CollapsedUniverseSummary summary={summary} />
+        <ExchangeStatus status={summary.exchanges?.binance} />
+      </div>
+      <DryRunAndUniverse summary={summary} />
 
       {selectedSignal ? (
         <AltSignalDetail onClose={() => setSelectedSignalId(null)} signal={selectedSignal} summary={summary} />
