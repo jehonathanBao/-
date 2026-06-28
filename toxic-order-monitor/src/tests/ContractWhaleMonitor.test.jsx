@@ -299,6 +299,47 @@ vi.mock("../api/contractWhale.js", () => ({
         suppressedDuplicates: 4,
         noiseReductionPct: 67,
       },
+      signalCompression: {
+        qualityScore: 82,
+        topSignalCount: 2,
+        discardedCount: 4,
+        compressionReason: "cross-window dedup + quality gating",
+      },
+      tradeIdeas: [
+        {
+          signalId: "contract-whale-row",
+          rank: 1,
+          setupType: "Absorption continuation",
+          directionBias: "BULLISH_BIAS",
+          score: 87,
+          confidence: 84,
+          confidenceLabel: "HIGH",
+          entryZone: {
+            lowPrice: 69810,
+            highPrice: 69950,
+            label: "69,810 - 69,950",
+          },
+          invalidation: {
+            priceLevel: 69640,
+            reason: "跌破主力吸收参考位，说明当前结构支持减弱。",
+          },
+          structureContext: "absorption + dominance + sweep",
+          regimeContext: "TRENDING_UP",
+          windowSec: 15,
+        },
+      ],
+      riskContext: {
+        fakeBreakoutRisk: "HIGH",
+        summary: "当前存在较强假突破风险，交易参考需要让位于风险抑制。",
+        noTradeZones: [
+          {
+            reason: "价格响应不足，当前更像低分震荡 chop。",
+            rangeLabel: "69,900 - 70,040",
+            lowPrice: 69900,
+            highPrice: 70040,
+          },
+        ],
+      },
     }),
   ),
   fetchContractWhaleLatest: vi.fn(() =>
@@ -1416,6 +1457,9 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Institutional Analysis Terminal")).toBeInTheDocument();
     expect(screen.getByText("半机构级分析终端")).toBeInTheDocument();
     expect(screen.getByText("Market Regime")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Market Intelligence" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Trade Ideas" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Risk / No-Trade" })).toBeInTheDocument();
     expect(screen.getByText("Liquidity Behavior")).toBeInTheDocument();
     expect(screen.getByText("Signal Strength Ranking")).toBeInTheDocument();
     expect(screen.getByText("Opportunity Map")).toBeInTheDocument();
@@ -1432,6 +1476,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("原始候选")).toBeInTheDocument();
     expect(screen.getByText("降噪后事件")).toBeInTheDocument();
     expect(screen.getByText("结构机会")).toBeInTheDocument();
+    expect(screen.getByText("压缩质量")).toBeInTheDocument();
     expect(screen.getByText("67%")).toBeInTheDocument();
     expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
     expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
@@ -1873,6 +1918,30 @@ describe("ContractWhaleMonitor", () => {
         limit: 12,
       }),
     );
+  });
+
+  it("switches institutional terminal tabs into trade ideas and risk context without execution wording", async () => {
+    const user = userEvent.setup();
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText("Institutional Analysis Terminal")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Trade Ideas" }));
+    expect(screen.getByText("Trade Ideas")).toBeInTheDocument();
+    expect(screen.getByText("方向偏置")).toBeInTheDocument();
+    expect(screen.getByText("参考区")).toBeInTheDocument();
+    expect(screen.getByText("失效参考位")).toBeInTheDocument();
+    expect(screen.getByText("BULLISH_BIAS")).toBeInTheDocument();
+    expect(screen.getByText("69,810 - 69,950")).toBeInTheDocument();
+    expect(screen.getByText("跌破主力吸收参考位，说明当前结构支持减弱。")).toBeInTheDocument();
+    expect(screen.queryByText("立即做多")).not.toBeInTheDocument();
+    expect(screen.queryByText("立即做空")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Risk / No-Trade" }));
+    expect(screen.getByText("No-trade Zones")).toBeInTheDocument();
+    expect(screen.getByText("HIGH")).toBeInTheDocument();
+    expect(screen.getByText("当前存在较强假突破风险，交易参考需要让位于风险抑制。")).toBeInTheDocument();
+    expect(screen.getAllByText("69,900 - 70,040").length).toBeGreaterThan(0);
   });
 
   it("renders contract market event rows from the FinalEventStore projection", async () => {

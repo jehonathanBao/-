@@ -1435,6 +1435,7 @@ function TradeOpportunitiesPanel({ summary }) {
 }
 
 function InstitutionalAnalysisTerminalPanel({ intelligence }) {
+  const [activeTab, setActiveTab] = useState("market-intelligence");
   const regime = intelligence?.marketRegime || {
     regime: "RANGING",
     confidence: 0,
@@ -1446,6 +1447,15 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
   const rankedEvents = Array.isArray(intelligence?.rankedEvents) ? intelligence.rankedEvents : [];
   const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
   const suppression = intelligence?.noiseSuppression || {};
+  const signalCompression = intelligence?.signalCompression || {};
+  const tradeIdeas = Array.isArray(intelligence?.tradeIdeas) ? intelligence.tradeIdeas : [];
+  const riskContext = intelligence?.riskContext || {};
+  const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones : [];
+  const tabs = [
+    { id: "market-intelligence", label: "Market Intelligence" },
+    { id: "trade-ideas", label: "Trade Ideas" },
+    { id: "risk-no-trade", label: "Risk / No-Trade" },
+  ];
 
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
@@ -1462,229 +1472,289 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
           <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
           <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} tone="cyan" />
           <TradeSummaryPill label="结构机会" value={`${opportunityMap.length}`} tone="emerald" />
+          <TradeSummaryPill label="压缩质量" value={`${signalCompression.qualityScore || 0}%`} tone="cyan" />
+          <TradeSummaryPill label="保留信号" value={`${signalCompression.topSignalCount || 0}`} tone="emerald" />
+          <TradeSummaryPill label="丢弃信号" value={`${signalCompression.discardedCount || 0}`} tone="red" />
           <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="yellow" />
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_1fr]">
-        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Market Regime</p>
-              <h5 className="mt-1 text-lg font-bold text-white">{regime.regime}</h5>
-            </div>
-            <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100">
-              Regime {regime.confidence}%
-            </span>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-slate-300">{regime.reason}</p>
-        </article>
-
-        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Opportunity Map</p>
-              <h5 className="mt-1 text-base font-bold text-white">结构机会分布</h5>
-            </div>
-            <span className="text-xs text-slate-500">{opportunityMap.length} zones</span>
-          </div>
-          {opportunityMap.length === 0 ? (
-            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
-              当前没有明确的结构机会区域，保留观察。
-            </p>
-          ) : (
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              {opportunityMap.map((zone) => (
-                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-white">{zone.label}</p>
-                      <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
-                    </div>
-                    <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
-                      {zone.strengthScore}/100
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-      </div>
-
-      <div className="mt-4 grid gap-3 xl:grid-cols-2">
-        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Liquidity Behavior</p>
-              <h5 className="mt-1 text-base font-bold text-white">流动性行为</h5>
-            </div>
-            <span className="text-xs text-slate-500">{liquidityBehaviors.length} patterns</span>
-          </div>
-          {liquidityBehaviors.length === 0 ? (
-            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
-              当前没有可解释的主导流动性行为。
-            </p>
-          ) : (
-            <div className="mt-3 grid gap-3">
-              {liquidityBehaviors.map((behavior) => (
-                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${behavior.behavior}-${behavior.rangeLabel}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-white">{behavior.label}</p>
-                      <p className="mt-1 text-xs text-cyan-200">{behavior.rangeLabel}</p>
-                    </div>
-                    <div className="text-right text-xs text-slate-300">
-                      <p>{behavior.strengthScore}/100</p>
-                      <p className="mt-1 text-slate-500">Conf {behavior.confidence}%</p>
-                    </div>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-400">{behavior.reason}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-
-        <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Strength Ranking</p>
-              <h5 className="mt-1 text-base font-bold text-white">强度排序</h5>
-            </div>
-            <span className="text-xs text-slate-500">{rankedEvents.length} ranked</span>
-          </div>
-          {rankedEvents.length === 0 ? (
-            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
-              当前没有通过排序门槛的结构事件。
-            </p>
-          ) : (
-            <div className="mt-3 grid gap-3">
-              {rankedEvents.map((event) => (
-                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={event.signalId}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{event.rank}</p>
-                      <p className="mt-1 text-sm font-semibold text-white">{event.eventType}</p>
-                    </div>
-                    <div className="text-right text-xs text-slate-300">
-                      <p>{event.strengthLabel}</p>
-                      <p className="mt-1 text-cyan-200">{event.strengthScore}/100</p>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
-                    <TradeMetric label="方向" value={event.directionBias} />
-                    <TradeMetric label="窗口" value={`${event.windowSec}s`} />
-                    <TradeMetric label="Regime" value={event.regimeAlignment} />
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-400">{event.rationale}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-      </div>
-    </section>
-  );
-}
-
-function TradingDecisionLayerPanel({ decisions }) {
-  const topSetups = Array.isArray(decisions?.topSetups) ? decisions.topSetups : [];
-  const noTradeZones = Array.isArray(decisions?.noTradeZones) ? decisions.noTradeZones : [];
-  const bias = decisions?.marketBias || "NEUTRAL";
-  const biasConfidence = Number(decisions?.biasConfidence || 0);
-  const biasReason = decisions?.biasReason || "当前没有通过交易门槛的 setup，保持中性观察。";
-
-  return (
-    <section className="mt-4 rounded-2xl border border-fuchsia-500/20 bg-slate-950/35 p-4">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-fuchsia-300">Trading Decision Layer</p>
-          <h4 className="mt-1 text-sm font-bold text-white">交易决策层</h4>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
-            在现有主力事件链路之上，给出只读的方向偏置、参考进场区和失效线，不做任何自动执行。
-          </p>
-        </div>
-        <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-3">
-          <TradeSummaryPill label="Market Bias" value={bias} tone={bias === "BULLISH" ? "emerald" : bias === "BEARISH" ? "red" : "slate"} />
-          <TradeSummaryPill label="Bias Confidence" value={`Bias ${biasConfidence}%`} tone="cyan" />
-          <TradeSummaryPill label="No-trade Zones" value={`${noTradeZones.length}`} tone="yellow" />
-        </div>
-      </div>
-
-      <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-300">
-        {biasReason}
-      </p>
-
-      {topSetups.length === 0 ? (
-        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
-          当前没有通过交易门槛的 setup，系统只保留结构观察与 no-trade 区提示。
-        </p>
-      ) : (
-        <div className="mt-4 grid gap-3 xl:grid-cols-3">
-          {topSetups.map((setup) => (
-            <article
-              className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"
-              data-testid={`trading-decision-${setup.signalId}`}
-              key={setup.signalId}
+      <div className="mt-4 flex flex-wrap gap-2 border-b border-slate-800 pb-3" role="tablist" aria-label="Institutional terminal views">
+        {tabs.map((tab) => {
+          const selected = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              id={`institutional-terminal-tab-${tab.id}`}
+              role="tab"
+              type="button"
+              aria-selected={selected}
+              aria-controls={`institutional-terminal-panel-${tab.id}`}
+              className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${
+                selected
+                  ? "border-cyan-400/70 bg-cyan-500/10 text-cyan-100"
+                  : "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-100"
+              }`}
+              onClick={() => setActiveTab(tab.id)}
             >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "market-intelligence" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-market-intelligence"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-market-intelligence"
+        >
+          <div className="grid gap-3 xl:grid-cols-[1.05fr_1fr]">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Rank #{setup.rank}</p>
-                  <h5 className="mt-1 text-base font-bold text-white">{setup.setupType}</h5>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Market Regime</p>
+                  <h5 className="mt-1 text-lg font-bold text-white">{regime.regime}</h5>
                 </div>
-                <span className={`rounded-full px-2 py-1 text-xs font-bold ${tradeActionClass(setup.direction)}`}>
-                  {setup.direction}
+                <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100">
+                  Regime {regime.confidence}%
                 </span>
               </div>
-              <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
-                <TradeMetric label="Score" value={`${setup.score}/100`} />
-                <TradeMetric label="Confidence" value={`${setup.confidenceLabel} ${setup.confidence}%`} />
-                <TradeMetric label="Entry Zone" value={formatDecisionRange(setup.entryZone)} />
-                <TradeMetric label="Invalidation" value={formatPrice(setup.invalidation?.priceLevel)} />
-                <TradeMetric label="结构上下文" value={regimeTypeLabel(setup.regimeContext)} />
-                <TradeMetric label="事件窗口" value={`${setup.windowSec}s`} />
+              <p className="mt-3 text-sm leading-6 text-slate-300">{regime.reason}</p>
+              <p className="mt-3 text-[11px] text-slate-500">
+                {signalCompression.compressionReason || "cross-window dedup + quality gating"}
+              </p>
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Opportunity Map</p>
+                  <h5 className="mt-1 text-base font-bold text-white">结构机会分布</h5>
+                </div>
+                <span className="text-xs text-slate-500">{opportunityMap.length} zones</span>
               </div>
-              <p className="mt-3 text-sm leading-6 text-slate-300">{setup.invalidation?.reason || "暂无失效说明"}</p>
-              {setup.reasons?.length ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {setup.reasons.map((reason) => (
-                    <span key={`${setup.signalId}-${reason}`} className="rounded-full border border-slate-700 bg-slate-950/70 px-2 py-1 text-[11px] text-slate-300">
-                      {reason}
-                    </span>
+              {opportunityMap.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有明确的结构机会区域，保留观察。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {opportunityMap.map((zone) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{zone.label}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
+                        </div>
+                        <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+                          {zone.strengthScore}/100
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
+                    </div>
                   ))}
                 </div>
-              ) : null}
+              )}
             </article>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-yellow-300">No-trade Zones</p>
-          <span className="text-xs text-slate-500">{noTradeZones.length} zones</span>
-        </div>
-        {noTradeZones.length === 0 ? (
-          <p className="mt-2 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
-            当前没有明显的 chop / 无响应区。
-          </p>
-        ) : (
-          <div className="mt-2 grid gap-3 lg:grid-cols-2">
-            {noTradeZones.map((zone, index) => (
-              <article className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4" key={`${zone.rangeLabel}-${index}`}>
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-yellow-100">{zone.reason}</p>
-                  <span className="rounded-full border border-yellow-400/30 px-2 py-1 text-[11px] text-yellow-200">
-                    {zone.rangeLabel || formatDecisionRange(zone)}
-                  </span>
-                </div>
-              </article>
-            ))}
           </div>
-        )}
-      </div>
+
+          <div className="mt-4 grid gap-3 xl:grid-cols-2">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Liquidity Behavior</p>
+                  <h5 className="mt-1 text-base font-bold text-white">流动性行为</h5>
+                </div>
+                <span className="text-xs text-slate-500">{liquidityBehaviors.length} patterns</span>
+              </div>
+              {liquidityBehaviors.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有可解释的主导流动性行为。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3">
+                  {liquidityBehaviors.map((behavior) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${behavior.behavior}-${behavior.rangeLabel}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{behavior.label}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{behavior.rangeLabel}</p>
+                        </div>
+                        <div className="text-right text-xs text-slate-300">
+                          <p>{behavior.strengthScore}/100</p>
+                          <p className="mt-1 text-slate-500">Conf {behavior.confidence}%</p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{behavior.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Strength Ranking</p>
+                  <h5 className="mt-1 text-base font-bold text-white">强度排序</h5>
+                </div>
+                <span className="text-xs text-slate-500">{rankedEvents.length} ranked</span>
+              </div>
+              {rankedEvents.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有通过排序门槛的结构事件。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3">
+                  {rankedEvents.map((event) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={event.signalId}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{event.rank}</p>
+                          <p className="mt-1 text-sm font-semibold text-white">{event.eventType}</p>
+                        </div>
+                        <div className="text-right text-xs text-slate-300">
+                          <p>{event.strengthLabel}</p>
+                          <p className="mt-1 text-cyan-200">{event.strengthScore}/100</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                        <TradeMetric label="方向" value={event.directionBias} />
+                        <TradeMetric label="窗口" value={`${event.windowSec}s`} />
+                        <TradeMetric label="Regime" value={event.regimeAlignment} />
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{event.rationale}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "trade-ideas" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-trade-ideas"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-trade-ideas"
+        >
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Compression View</p>
+                <h5 className="mt-1 text-base font-bold text-white">结构机会压缩视图</h5>
+                <p className="mt-2 text-xs leading-5 text-slate-400">
+                  这里只提供结构化参考，不生成自动执行指令；所有区间都属于分析终端的只读投影。
+                </p>
+              </div>
+              <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-3">
+                <TradeSummaryPill label="压缩质量" value={`${signalCompression.qualityScore || 0}%`} tone="cyan" />
+                <TradeSummaryPill label="Top Ideas" value={`${tradeIdeas.length}`} tone="emerald" />
+                <TradeSummaryPill label="Discarded" value={`${signalCompression.discardedCount || 0}`} tone="yellow" />
+              </div>
+            </div>
+
+            {tradeIdeas.length === 0 ? (
+              <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                当前没有通过压缩门槛的结构机会，系统只保留市场解释层。
+              </p>
+            ) : (
+              <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                {tradeIdeas.map((idea) => (
+                  <article className="rounded-xl border border-slate-800 bg-slate-950/50 p-4" key={idea.signalId}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{idea.rank}</p>
+                        <h6 className="mt-1 text-sm font-semibold text-white">{idea.setupType}</h6>
+                      </div>
+                      <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100">
+                        {idea.confidenceLabel}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                      <TradeMetric label="方向偏置" value={idea.directionBias} />
+                      <TradeMetric label="强度评分" value={`${idea.score}/100`} />
+                      <TradeMetric label="参考区" value={idea.entryZone?.label || "N/A"} />
+                      <TradeMetric label="失效参考位" value={formatPrice(idea.invalidation?.priceLevel)} />
+                      <TradeMetric label="Regime" value={idea.regimeContext || "N/A"} />
+                      <TradeMetric label="事件窗口" value={`${idea.windowSec || 0}s`} />
+                    </div>
+                    <p className="mt-3 text-xs leading-5 text-slate-400">{idea.structureContext || "暂无结构备注"}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{idea.invalidation?.reason || "暂无失效说明"}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "risk-no-trade" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-risk-no-trade"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-risk-no-trade"
+        >
+          <div className="grid gap-3 xl:grid-cols-[0.95fr_1.05fr]">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Risk / No-Trade</p>
+                  <h5 className="mt-1 text-base font-bold text-white">No-trade Zones</h5>
+                </div>
+                <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-100">
+                  {riskContext.fakeBreakoutRisk || "LOW"}
+                </span>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">
+                {riskContext.summary || "当前没有显著 no-trade 风险。"}
+              </p>
+              {noTradeZones.length === 0 ? (
+                <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                  当前没有明确的禁做区间，保留常规结构观察即可。
+                </p>
+              ) : (
+                <div className="mt-4 grid gap-3">
+                  {noTradeZones.map((zone, index) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.rangeLabel}-${index}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{zone.rangeLabel || "N/A"}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{zone.reason || "暂无说明"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Risk Summary</p>
+                  <h5 className="mt-1 text-base font-bold text-white">风险抑制视图</h5>
+                </div>
+                <span className="text-xs text-slate-500">{noTradeZones.length} zones</span>
+              </div>
+              <div className="mt-4 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+                <TradeMetric label="假突破风险" value={riskContext.fakeBreakoutRisk ? `${riskContext.fakeBreakoutRisk} RISK` : "LOW RISK"} />
+                <TradeMetric label="No-trade 区数量" value={`${noTradeZones.length}`} />
+                <TradeMetric label="保留信号" value={`${signalCompression.topSignalCount || 0}`} />
+                <TradeMetric label="被压缩候选" value={`${signalCompression.discardedCount || 0}`} />
+              </div>
+              <p className="mt-4 text-xs leading-6 text-slate-400">
+                这一页只负责告诉你哪里不该着急下判断。系统将高噪声、低响应和假突破风险明确隔离，避免污染主事件流。
+              </p>
+            </article>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -3059,17 +3129,6 @@ function formatPrice(value) {
   if (number >= 1000) return `$${Math.round(number).toLocaleString("en-US")}`;
   if (number >= 1) return `$${number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return `$${number.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
-}
-
-function formatDecisionRange(zone) {
-  if (!zone) return "N/A";
-  if (zone.label) return zone.label;
-  const low = Number(zone.lowPrice ?? zone.low_price ?? 0);
-  const high = Number(zone.highPrice ?? zone.high_price ?? 0);
-  if (!Number.isFinite(low) || low <= 0 || !Number.isFinite(high) || high <= 0) return "N/A";
-  const lowText = formatPrice(low).replace(/^\$/, "");
-  const highText = formatPrice(high).replace(/^\$/, "");
-  return `${lowText} - ${highText}`;
 }
 
 function formatPct(value) {

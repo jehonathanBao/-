@@ -747,7 +747,57 @@ function normalizeContractWhaleIntelligenceResponse(payload, symbol = "BTC", fal
       suppressedDuplicates: 0,
       noiseReductionPct: 0,
     },
+    signalCompression: normalizeSignalCompression(
+      data.signalCompression ?? data.signal_compression,
+    ),
+    tradeIdeas: Array.isArray(data.tradeIdeas ?? data.trade_ideas)
+      ? (data.tradeIdeas ?? data.trade_ideas).map(normalizeTradeIdea)
+      : [],
+    riskContext: normalizeRiskContext(data.riskContext ?? data.risk_context),
     error: fallbackError || data.error || null,
+  };
+}
+
+function normalizeSignalCompression(summary = {}) {
+  return {
+    qualityScore: Number(summary.qualityScore ?? summary.quality_score ?? 0),
+    topSignalCount: Number(summary.topSignalCount ?? summary.top_signal_count ?? 0),
+    discardedCount: Number(summary.discardedCount ?? summary.discarded_count ?? 0),
+    compressionReason: String(summary.compressionReason ?? summary.compression_reason ?? "compression pending"),
+  };
+}
+
+function normalizeTradeIdea(idea = {}) {
+  return {
+    signalId: idea.signalId || idea.signal_id || "",
+    rank: Number(idea.rank || 0),
+    setupType: idea.setupType || idea.setup_type || "结构观察",
+    directionBias: idea.directionBias || idea.direction_bias || "NEUTRAL_BIAS",
+    score: Number(idea.score || 0),
+    confidence: Number(idea.confidence || 0),
+    confidenceLabel: idea.confidenceLabel || idea.confidence_label || "LOW",
+    entryZone: {
+      lowPrice: Number(idea.entryZone?.lowPrice ?? idea.entryZone?.low_price ?? 0),
+      highPrice: Number(idea.entryZone?.highPrice ?? idea.entryZone?.high_price ?? 0),
+      label: idea.entryZone?.label || "",
+    },
+    invalidation: {
+      priceLevel: Number(idea.invalidation?.priceLevel ?? idea.invalidation?.price_level ?? 0),
+      reason: idea.invalidation?.reason || "暂无失效说明",
+    },
+    structureContext: idea.structureContext || idea.structure_context || "当前结构暂无补充说明。",
+    regimeContext: idea.regimeContext || idea.regime_context || "unclear",
+    windowSec: Number(idea.windowSec ?? idea.window_sec ?? 0),
+  };
+}
+
+function normalizeRiskContext(context = {}) {
+  return {
+    fakeBreakoutRisk: String(context.fakeBreakoutRisk ?? context.fake_breakout_risk ?? "LOW"),
+    summary: String(context.summary || "当前未发现显著 no-trade 结构风险。"),
+    noTradeZones: Array.isArray(context.noTradeZones ?? context.no_trade_zones)
+      ? (context.noTradeZones ?? context.no_trade_zones).map(normalizeNoTradeZone)
+      : [],
   };
 }
 

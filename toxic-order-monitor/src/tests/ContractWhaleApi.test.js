@@ -6,6 +6,7 @@ import {
   fetchContractRetentionStatus,
   fetchContractWhaleEvents,
   fetchContractWhaleHistory,
+  fetchContractWhaleIntelligenceTerminal,
   fetchContractWhaleLatencyDebug,
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
@@ -522,6 +523,98 @@ describe("contract whale api", () => {
       ageSec: 90_100,
       isStale: true,
       staleReason: "older_than_24h",
+    });
+  });
+
+  it("normalizes intelligence terminal signal compression and trade ideas", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        symbol: "BTC",
+        timestamp: 1_700_000_000_000,
+        marketRegime: {
+          regime: "TRENDING_UP",
+          confidence: 78,
+          reason: "trend aligned",
+        },
+        liquidityBehaviors: [],
+        rankedEvents: [],
+        opportunityMap: [],
+        noiseSuppression: {
+          rawCandidates: 6,
+          filteredEvents: 2,
+        },
+        signalCompression: {
+          qualityScore: 82,
+          topSignalCount: 2,
+          discardedCount: 4,
+          compressionReason: "cross-window dedup + quality gating",
+        },
+        tradeIdeas: [
+          {
+            signalId: "btc-idea-1",
+            rank: 1,
+            setupType: "Absorption continuation",
+            directionBias: "BULLISH_BIAS",
+            score: 87,
+            confidence: 84,
+            confidenceLabel: "HIGH",
+            entryZone: {
+              lowPrice: 60_400,
+              highPrice: 60_600,
+              label: "60400 - 60600",
+            },
+            invalidation: {
+              priceLevel: 60_020,
+              reason: "absorption structure lost",
+            },
+            structureContext: "absorption + sweep",
+            regimeContext: "TRENDING_UP",
+            windowSec: 15,
+          },
+        ],
+        riskContext: {
+          fakeBreakoutRisk: "HIGH",
+          summary: "fake breakout cluster active",
+          noTradeZones: [
+            {
+              reason: "chop regime",
+              rangeLabel: "60200 - 60600",
+              lowPrice: 60_200,
+              highPrice: 60_600,
+            },
+          ],
+        },
+      },
+    });
+
+    const payload = await fetchContractWhaleIntelligenceTerminal({ symbol: "BTC", range: "24h" });
+
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-whale/intelligence-terminal?symbol=BTC&range=24h&limit=50",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(payload.signalCompression).toMatchObject({
+      qualityScore: 82,
+      topSignalCount: 2,
+      discardedCount: 4,
+    });
+    expect(payload.tradeIdeas[0]).toMatchObject({
+      signalId: "btc-idea-1",
+      directionBias: "BULLISH_BIAS",
+      entryZone: {
+        label: "60400 - 60600",
+      },
+      invalidation: {
+        priceLevel: 60_020,
+      },
+    });
+    expect(payload.riskContext).toMatchObject({
+      fakeBreakoutRisk: "HIGH",
+      noTradeZones: [
+        expect.objectContaining({
+          reason: "chop regime",
+        }),
+      ],
     });
   });
 

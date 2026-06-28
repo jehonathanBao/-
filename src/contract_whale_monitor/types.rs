@@ -1270,6 +1270,59 @@ pub struct ContractWhaleLiquidityBehavior {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleSignalCompressionSummary {
+    #[serde(default)]
+    pub quality_score: u8,
+    #[serde(default)]
+    pub top_signal_count: usize,
+    #[serde(default)]
+    pub discarded_count: usize,
+    #[serde(default)]
+    pub compression_reason: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleTradeIdea {
+    #[serde(default)]
+    pub signal_id: String,
+    #[serde(default)]
+    pub rank: usize,
+    #[serde(default)]
+    pub setup_type: String,
+    #[serde(default)]
+    pub direction_bias: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub confidence: u8,
+    #[serde(default)]
+    pub confidence_label: String,
+    #[serde(default)]
+    pub entry_zone: ContractWhaleTradingEntryZone,
+    #[serde(default)]
+    pub invalidation: ContractWhaleTradingInvalidation,
+    #[serde(default)]
+    pub structure_context: String,
+    #[serde(default)]
+    pub regime_context: String,
+    #[serde(default)]
+    pub window_sec: u64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleRiskContext {
+    #[serde(default)]
+    pub no_trade_zones: Vec<ContractWhaleNoTradeZone>,
+    #[serde(default)]
+    pub fake_breakout_risk: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleRankedEvent {
     #[serde(default)]
     pub signal_id: String,
@@ -1329,6 +1382,12 @@ pub struct ContractWhaleIntelligenceResponse {
     pub opportunity_map: Vec<ContractWhaleOpportunityZone>,
     #[serde(default)]
     pub noise_suppression: ContractWhaleNoiseSuppressionSummary,
+    #[serde(default)]
+    pub signal_compression: ContractWhaleSignalCompressionSummary,
+    #[serde(default)]
+    pub trade_ideas: Vec<ContractWhaleTradeIdea>,
+    #[serde(default)]
+    pub risk_context: ContractWhaleRiskContext,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

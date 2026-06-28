@@ -882,6 +882,9 @@ pub async fn contract_whale_intelligence_terminal_route(
             "rankedEvents": [],
             "opportunityMap": [],
             "noiseSuppression": ContractWhaleNoiseSuppressionSummary::default(),
+            "signalCompression": {},
+            "tradeIdeas": [],
+            "riskContext": {},
         }),
     )))
 }

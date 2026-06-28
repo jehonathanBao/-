@@ -223,7 +223,7 @@ async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_tra
 }
 
 #[tokio::test]
-async fn contract_whale_intelligence_terminal_route_exposes_read_only_market_analysis() {
+async fn contract_whale_intelligence_terminal_route_exposes_signal_compression_trade_ideas_and_risk_context() {
     let state = seeded_contract_event_state();
     let app = router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -252,8 +252,15 @@ async fn contract_whale_intelligence_terminal_route_exposes_read_only_market_ana
     assert!(payload["rankedEvents"].is_array());
     assert!(payload["opportunityMap"].is_array());
     assert!(payload["noiseSuppression"].is_object());
+    assert!(payload["signalCompression"].is_object());
+    assert!(payload["tradeIdeas"].is_array());
+    assert!(payload["riskContext"].is_object());
+    if let Some(first_idea) = payload["tradeIdeas"].as_array().and_then(|items| items.first()) {
+        assert!(first_idea["directionBias"].as_str().is_some());
+        assert!(first_idea["entryZone"]["label"].as_str().is_some());
+        assert!(first_idea["invalidation"]["priceLevel"].is_number());
+    }
     assert!(payload.get("topSetups").is_none());
-    assert!(payload.get("noTradeZones").is_none());
 
     server.abort();
 }

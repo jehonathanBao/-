@@ -669,6 +669,57 @@ fn institutional_analysis_response_surfaces_regime_strength_and_opportunities() 
         .iter()
         .any(|item| item.zone_type == "absorption_zone" || item.zone_type == "breakout_pressure_zone"));
     assert_eq!(response.noise_suppression.filtered_events, 1);
+    assert_eq!(response.signal_compression.top_signal_count, response.trade_ideas.len());
+    assert!(response.trade_ideas.len() <= 3);
+    assert!(response.signal_compression.quality_score <= 100);
+    assert!(!response.risk_context.fake_breakout_risk.is_empty());
+}
+
+#[test]
+fn intelligence_response_includes_signal_compression_trade_ideas_and_risk_context() {
+    let _guard = contract_whale_test_guard();
+    let mut trend_buy = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::High);
+    trend_buy.signal_type = ContractWhaleSignalType::AggressiveBuy;
+    trend_buy.direction = ContractWhaleDirection::Buy;
+    trend_buy.total_volume_btc = 2_240.0;
+    trend_buy.total_notional_usd = 146_000_000.0;
+    trend_buy.net_volume_btc = 1_880.0;
+    trend_buy.price_move_pct = Some(0.24);
+    trend_buy.current_market_price_usd = Some(60_420.0);
+    trend_buy.order_price_usd = Some(60_390.0);
+    trend_buy.main_force_score = Some(88);
+    trend_buy.dominance = 0.71;
+    trend_buy.multi_exchange_confirmed = true;
+
+    let response = build_contract_whale_intelligence_response(
+        "BTC",
+        &[trend_buy],
+        &ContractWhaleMarketStructureLite {
+            status: "confirmed".to_string(),
+            regime_type: "main_force_long_build".to_string(),
+            main_force_score: 84,
+            confidence: 77,
+            ..Default::default()
+        },
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 1,
+            merged_events: 1,
+            lifecycle_events: 1,
+            filtered_events: 1,
+            tradeable_setups: 1,
+            suppressed_duplicates: 0,
+            noise_reduction_pct: 0,
+        },
+        1_700_000_090_000,
+    );
+
+    assert_eq!(
+        response.signal_compression.top_signal_count,
+        response.trade_ideas.len()
+    );
+    assert!(response.signal_compression.quality_score <= 100);
+    assert!(response.trade_ideas.len() <= 3);
+    assert!(response.risk_context.no_trade_zones.len() <= 3);
 }
 
 #[test]
