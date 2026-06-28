@@ -10,6 +10,7 @@ pub mod config;
 pub mod context;
 pub mod detector;
 pub mod discord;
+pub mod discord_gate;
 pub mod discord_notifier;
 pub mod event_lifecycle;
 pub mod event_quality;

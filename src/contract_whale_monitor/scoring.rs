@@ -187,39 +187,14 @@ pub fn discord_gate(
     primary_source_override: bool,
     symbol: &str,
 ) -> (bool, String) {
-    if data_quality < 70 {
-        return (false, "data_quality_display_only".to_string());
-    }
-    match severity {
-        ContractWhaleSeverity::S | ContractWhaleSeverity::Critical => {
-            (score >= 70, "critical_or_s_gate".to_string())
-        }
-        ContractWhaleSeverity::High if score >= 85 && multi_exchange_confirmed => {
-            (true, "high_score_multi_exchange".to_string())
-        }
-        ContractWhaleSeverity::High if primary_source_override => {
-            (true, "high_primary_source_extreme".to_string())
-        }
-        ContractWhaleSeverity::High if is_btc_contract_symbol(symbol) => {
-            (true, "btc_high_gate".to_string())
-        }
-        ContractWhaleSeverity::High => (false, "high_without_discord_confirmation".to_string()),
-        ContractWhaleSeverity::Medium if is_btc_contract_symbol(symbol) => {
-            (true, "btc_all_contract_signals_gate".to_string())
-        }
-        ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => {
-            (false, "medium_or_low_display_only".to_string())
-        }
-    }
-}
-
-fn is_btc_contract_symbol(symbol: &str) -> bool {
-    let normalized = symbol
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    matches!(normalized.as_str(), "BTC" | "BTCUSDT" | "BTCPERP")
+    super::discord_gate::discord_gate(
+        severity,
+        score,
+        multi_exchange_confirmed,
+        data_quality,
+        primary_source_override,
+        symbol,
+    )
 }
 
 fn price_impact_score(

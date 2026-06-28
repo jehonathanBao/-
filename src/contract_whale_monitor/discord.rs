@@ -1,4 +1,7 @@
-use super::types::{ContractWhaleSeverity, ContractWhaleSignal};
+use super::{
+    discord_gate::classify_contract_whale_signal_semantic,
+    types::{ContractWhaleSeverity, ContractWhaleSignal},
+};
 
 pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> serde_json::Value {
     serde_json::json!({
@@ -31,13 +34,13 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
 }
 
 pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool {
+    if !classify_contract_whale_signal_semantic(signal).allows_discord() {
+        return false;
+    }
     matches!(
         signal.severity,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
-    ) || (matches!(
-        signal.severity,
-        ContractWhaleSeverity::Medium | ContractWhaleSeverity::High
-    ) && is_btc_contract_symbol(&signal.symbol))
+    ) || (signal.severity == ContractWhaleSeverity::High && is_btc_contract_symbol(&signal.symbol))
         || (signal.severity == ContractWhaleSeverity::High
             && ((signal.score >= 85
                 && signal

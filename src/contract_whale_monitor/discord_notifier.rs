@@ -10,7 +10,8 @@ use url::Url;
 
 use crate::{
     contract_whale_monitor::{
-        discord::{is_btc_contract_symbol, should_push_contract_whale_discord},
+        discord::should_push_contract_whale_discord,
+        discord_gate::classify_contract_whale_signal_semantic,
         log_events,
         types::{
             ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
@@ -170,12 +171,13 @@ pub fn evaluate_contract_whale_discord_gate(
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
-    let btc_contract_override = matches!(
-        signal.severity,
-        ContractWhaleSeverity::Medium | ContractWhaleSeverity::High
-    ) && is_btc_contract_symbol(&signal.symbol);
+    let semantic_tier = classify_contract_whale_signal_semantic(signal);
+    if !semantic_tier.allows_discord() {
+        return gate(false, "observe_only");
+    }
+    let btc_contract_override = matches!(signal.severity, ContractWhaleSeverity::High)
+        && super::discord::is_btc_contract_symbol(&signal.symbol);
     let min_score = match signal.severity {
-        ContractWhaleSeverity::Medium if btc_contract_override => 0,
         ContractWhaleSeverity::High if btc_contract_override => 0,
         ContractWhaleSeverity::High if primary_source_override => 0,
         ContractWhaleSeverity::High => 85,
@@ -194,7 +196,10 @@ pub fn evaluate_contract_whale_discord_gate(
     if !signal.discord_eligible || !should_push_contract_whale_discord(signal) {
         return gate(false, "low_score");
     }
-    if let Some(reason) = cooldown_store.skip_reason(signal, settings.cooldown_sec, now_ms) {
+    let cooldown_sec = semantic_tier
+        .discord_cooldown_seconds()
+        .unwrap_or(settings.cooldown_sec);
+    if let Some(reason) = cooldown_store.skip_reason(signal, cooldown_sec, now_ms) {
         return gate(false, reason);
     }
     if settings.dry_run {

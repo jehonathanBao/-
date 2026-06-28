@@ -553,9 +553,9 @@ fn detector_keeps_medium_when_price_response_confirms_trend() {
 
     assert_eq!(signal.severity, ContractWhaleSeverity::Medium);
     assert_eq!(signal.dynamic_multiple, Some(4.2));
-    assert!(signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "btc_all_contract_signals_gate");
-    assert!(should_push_contract_whale_discord(&signal));
+    assert!(!signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "medium_observe_only");
+    assert!(!should_push_contract_whale_discord(&signal));
 }
 
 #[test]

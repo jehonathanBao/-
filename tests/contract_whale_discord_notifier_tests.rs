@@ -75,9 +75,8 @@ fn cwm_discord_cooldown_blocks_same_direction_without_upgrade() {
     cooldown.record_sent(&signal, now);
     let mut repeated = signal.clone();
     repeated.id = "contract-whale:BTC:15:1700000060000:buy-repeat".to_string();
-    repeated.ts = now + 10_000;
-    let second =
-        evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, now + 10_000);
+    repeated.ts = now + 9_000;
+    let second = evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, now + 9_000);
 
     assert!(!second.allowed);
     assert_eq!(second.reason, "cooldown");
@@ -175,20 +174,26 @@ fn cwm_discord_gate_allows_btc_high_without_multi_exchange_score_gate() {
 }
 
 #[test]
-fn cwm_discord_gate_allows_btc_medium_contract_signals() {
+fn cwm_discord_gate_keeps_btc_medium_contract_signals_observe_only() {
     let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
-    let mut signal = sample_single_exchange_high_signal();
+    let mut signal = sample_signal_variant(
+        ContractWhaleSeverity::Medium,
+        ContractWhaleSignalType::AggressiveBuy,
+        ContractWhaleDirection::Buy,
+        "medium observe only",
+        0.31,
+    );
     signal.id = "contract-whale-btc-medium-all-push".to_string();
     signal.severity = ContractWhaleSeverity::Medium;
     signal.score = 42;
     signal.data_quality = 70;
-    signal.discord_eligible = true;
-    signal.discord_reason = "btc_all_contract_signals_gate".to_string();
+    signal.discord_eligible = false;
+    signal.discord_reason = "medium_observe_only".to_string();
 
     let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
-    assert!(decision.allowed);
-    assert_eq!(decision.reason, "eligible");
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "observe_only");
 }
 
 #[test]
@@ -206,7 +211,7 @@ fn cwm_discord_gate_still_rejects_non_btc_medium_contract_signals() {
 
     let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
     assert!(!decision.allowed);
-    assert_eq!(decision.reason, "low_score");
+    assert_eq!(decision.reason, "observe_only");
 }
 
 #[test]
@@ -323,12 +328,55 @@ async fn cwm_discord_dry_run_and_cooldown_outcomes_have_clear_operator_copy() {
     cooldown.record_sent(&dry_run_signal, dry_run_signal.ts);
     let mut repeated = dry_run_signal.clone();
     repeated.id = "contract-whale:BTC:15:1700000020000:buy-repeat".to_string();
-    repeated.ts = dry_run_signal.ts + 10_000;
+    repeated.ts = dry_run_signal.ts + 9_000;
 
     let decision =
         evaluate_contract_whale_discord_gate(&settings, &repeated, &cooldown, repeated.ts);
     assert!(!decision.allowed);
     assert_eq!(decision.reason, "cooldown");
+}
+
+#[test]
+fn cwm_discord_rate_control_uses_semantic_tier_windows() {
+    let settings = live_settings_for_tests();
+
+    let alert_cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut alert = sample_single_exchange_high_signal();
+    alert.id = "contract-whale:BTC:15:1700000015000:alert-high".to_string();
+    alert.severity = ContractWhaleSeverity::High;
+    alert.score = 54;
+    alert.data_quality = 70;
+    alert.discord_eligible = true;
+    alert.discord_reason = "btc_high_gate".to_string();
+    alert_cooldown.record_sent(&alert, alert.ts);
+
+    let mut alert_repeat = alert.clone();
+    alert_repeat.id = "contract-whale:BTC:15:1700000025000:alert-high-repeat".to_string();
+    alert_repeat.ts = alert.ts + 10_000;
+    let alert_decision = evaluate_contract_whale_discord_gate(
+        &settings,
+        &alert_repeat,
+        &alert_cooldown,
+        alert_repeat.ts,
+    );
+    assert!(!alert_decision.allowed);
+    assert_eq!(alert_decision.reason, "cooldown");
+
+    let execution_cooldown = ContractWhaleDiscordCooldownStore::new();
+    let execution = sample_s_signal();
+    execution_cooldown.record_sent(&execution, execution.ts);
+
+    let mut execution_repeat = execution.clone();
+    execution_repeat.id = "contract-whale:BTC:15:1700000025000:execution-repeat".to_string();
+    execution_repeat.ts = execution.ts + 10_000;
+    let execution_decision = evaluate_contract_whale_discord_gate(
+        &settings,
+        &execution_repeat,
+        &execution_cooldown,
+        execution_repeat.ts,
+    );
+    assert!(execution_decision.allowed);
+    assert_eq!(execution_decision.reason, "eligible");
 }
 
 #[test]
@@ -365,12 +413,16 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
 
 fn sample_single_exchange_high_signal(
 ) -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal {
-    let now = 1_700_000_015_000;
-    let trades = vec![normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_600.0, false).unwrap()];
-    let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.12), Some(4.5), 80)
-        .expect("window stats");
-    detect_contract_whale_signal(&stats).expect("signal")
+    let mut signal = sample_s_signal();
+    signal.id = "contract-whale:BTC:15:1700000015000:single-exchange-high".to_string();
+    signal.severity = ContractWhaleSeverity::High;
+    signal.score = 80;
+    signal.data_quality = 69;
+    signal.discord_eligible = true;
+    signal.discord_reason = "high_without_discord_confirmation".to_string();
+    signal.multi_exchange_confirmed = false;
+    signal.exchanges.truncate(1);
+    signal
 }
 
 fn sample_signal_variant(
