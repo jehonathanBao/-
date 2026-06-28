@@ -11,6 +11,7 @@ use crate::{
         alert_types::AlertState,
     },
     api::{
+        contract_event_routes::FinalEventsV2Response,
         contract_whale_routes::{
             build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
             load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
@@ -99,10 +100,17 @@ struct AppStateInner {
     snapshot_service: SnapshotService,
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
+    final_events_v2_cache: Arc<RwLock<std::collections::BTreeMap<String, CachedFinalEventsV2Entry>>>,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
     binance_alt_contract_service: BinanceAltContractService,
+}
+
+#[derive(Debug, Clone)]
+struct CachedFinalEventsV2Entry {
+    cached_at_ms: i64,
+    response: FinalEventsV2Response,
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +344,9 @@ impl AppState {
                 snapshot_service,
                 contract_whale_store,
                 contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
+                    std::collections::BTreeMap::new(),
+                )),
+                final_events_v2_cache: Arc::new(RwLock::new(
                     std::collections::BTreeMap::new(),
                 )),
                 signal_history_service,
@@ -959,6 +970,29 @@ impl AppState {
 
     pub fn contract_whale_store(&self) -> Option<SqliteStore> {
         self.inner.contract_whale_store.clone()
+    }
+
+    pub fn cached_final_events_v2(
+        &self,
+        key: &str,
+    ) -> Option<(i64, FinalEventsV2Response)> {
+        self.inner
+            .final_events_v2_cache
+            .read()
+            .get(key)
+            .map(|entry| (entry.cached_at_ms, entry.response.clone()))
+    }
+
+    pub fn store_final_events_v2_cache(
+        &self,
+        key: String,
+        cached_at_ms: i64,
+        response: FinalEventsV2Response,
+    ) {
+        self.inner
+            .final_events_v2_cache
+            .write()
+            .insert(key, CachedFinalEventsV2Entry { cached_at_ms, response });
     }
 
     pub fn recent_toxic_events(

@@ -546,6 +546,7 @@ export default function ContractWhaleMonitor() {
         contractEvents={state.contractEvents}
         debugCounts={state.contractEventDebugCounts}
         rawFlowDebug={state.rawFlowDebug}
+        latencyDebug={state.latencyDebug}
         enabled={summary.enabled}
         latestItems={state.items}
         finalEvents={state.finalEvents}
@@ -851,6 +852,7 @@ function RawSignalDebugSection({
   contractEvents,
   debugCounts,
   rawFlowDebug,
+  latencyDebug,
   enabled,
   latestItems,
   finalEvents,
@@ -905,6 +907,16 @@ function RawSignalDebugSection({
   const layeredProjectionLagSec = Number(finalEventsProjectionLagSec ?? 0);
   const showHistorySyncWarning = layeredHistoryLagSec > 15;
   const showProjectionSyncWarning = layeredProjectionLagSec > 10;
+  const latencySummary = {
+    diagnosisLayer: latencyDebug?.diagnosis?.layer || "ok",
+    diagnosisReason: latencyDebug?.diagnosis?.reason || "within_target",
+    latestAgeSec: Number(latencyDebug?.latest?.ageSec ?? 0),
+    historyLagSec: Number(latencyDebug?.contractEvents?.lagSec ?? layeredHistoryAgeSec ?? 0),
+    finalLagSec: Number(latencyDebug?.finalEventsV2?.projectionLagSec ?? layeredProjectionLagSec ?? 0),
+    flowLagSec: Number(latencyDebug?.flow?.flowLagSec ?? 0),
+    historyCacheAgeSec: latencyDebug?.contractEvents?.cacheAgeSec,
+    finalCacheAgeSec: latencyDebug?.finalEventsV2?.cacheAgeSec,
+  };
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
@@ -922,6 +934,9 @@ function RawSignalDebugSection({
       <div className="space-y-4 border-t border-slate-800 p-3">
         <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
           <p>历史事件流不会被新的 latest 快照直接覆盖；事件离开 ACTIVE/CLOSED 视图，通常是状态切换、分页边界或筛选变化，不等于数据库删除。</p>
+          {latencyDebug && !latencyDebug.error ? (
+            <LatencyGuardPanel summary={latencySummary} />
+          ) : null}
           {(layeredLatestTs || layeredHistoryTs || layeredFinalTs) ? (
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
@@ -1077,6 +1092,27 @@ function RawSignalDebugSection({
         />
       </div>
     </section>
+  );
+}
+
+function LatencyGuardPanel({ summary }) {
+  return (
+    <div className="mt-2 rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/5 px-3 py-3 text-fuchsia-100">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="console-label text-fuchsia-200">LATENCY GUARD</p>
+          <p className="mt-1 text-xs text-fuchsia-100/90">
+            当前瓶颈层：{summary.diagnosisLayer} · {summary.diagnosisReason}
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <MiniInfoCard label="Latest" value={`latest ${formatLatencySeconds(summary.latestAgeSec)}`} detail="实时快照年龄" />
+          <MiniInfoCard label="History" value={`history ${formatLatencySeconds(summary.historyLagSec)}`} detail={summary.historyCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.historyCacheAgeSec)}` : "历史事件滞后"} />
+          <MiniInfoCard label="Final" value={`final ${formatLatencySeconds(summary.finalLagSec)}`} detail={summary.finalCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.finalCacheAgeSec)}` : "生命周期投影滞后"} />
+          <MiniInfoCard label="Flow" value={`flow ${formatLatencySeconds(summary.flowLagSec)}`} detail="原始流更新年龄" />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3668,6 +3704,12 @@ function formatLatency(value) {
   if (!Number.isFinite(ms) || ms < 0) return "N/A";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${Math.round(ms / 1000)}s`;
+}
+
+function formatLatencySeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "N/A";
+  return `${Math.round(seconds)} 秒`;
 }
 
 function statusTone(status) {

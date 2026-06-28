@@ -309,6 +309,54 @@ async fn final_events_v2_expose_projection_latency_metadata() {
 }
 
 #[tokio::test]
+async fn final_events_v2_reuses_recent_projection_within_cache_ttl() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let first = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("first final events response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_payload: serde_json::Value = first.json().await.expect("first final events json");
+    let first_generated_at = first_payload["generatedAt"]
+        .as_i64()
+        .expect("first generatedAt");
+
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let second = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("second final events response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_payload: serde_json::Value = second.json().await.expect("second final events json");
+    let second_generated_at = second_payload["generatedAt"]
+        .as_i64()
+        .expect("second generatedAt");
+
+    assert_eq!(second_generated_at, first_generated_at);
+    assert!(second_payload["cacheAgeSec"].as_i64().unwrap_or_default() >= 0);
+    assert_eq!(second_payload["cacheTtlSec"], 10);
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_whale_latency_debug_reports_layer_and_reason() {
     std::env::set_var("OPERATOR_TOKEN", "test-operator-token");
     let state = seeded_contract_event_state();

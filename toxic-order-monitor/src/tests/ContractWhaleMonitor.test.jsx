@@ -2136,6 +2136,55 @@ describe("ContractWhaleMonitor", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders a latency guard summary panel from latency debug diagnostics", async () => {
+    fetchContractWhaleLatencyDebug.mockResolvedValueOnce({
+      symbol: "BTC",
+      range: "24h",
+      serverTime: 1_700_000_060_500,
+      latest: {
+        count: 8,
+        maxTs: 1_700_000_050_000,
+        ageSec: 12,
+        staleCount: 0,
+      },
+      contractEvents: {
+        count: 6,
+        maxEventTs: 1_700_000_030_000,
+        lagSec: 30,
+        lagVsLatestSec: 20,
+        cacheAgeSec: 4,
+        cacheTtlSec: 5,
+      },
+      finalEventsV2: {
+        activeCount: 2,
+        closedCount: 4,
+        maxEventTs: 1_700_000_020_000,
+        projectionLagSec: 30,
+        cacheAgeSec: 6,
+        cacheTtlSec: 10,
+        generatedAt: 1_700_000_054_000,
+      },
+      flow: {
+        updatedAt: 1_700_000_058_000,
+        flowLagSec: 2,
+      },
+      diagnosis: {
+        layer: "final_events_v2",
+        reason: "projection_lagging_history",
+      },
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText(/LATENCY GUARD/i)).toBeInTheDocument();
+    expect(screen.getByText(/final_events_v2/i)).toBeInTheDocument();
+    expect(screen.getByText(/projection_lagging_history/i)).toBeInTheDocument();
+    expect(screen.getByText(/latest 12 秒/i)).toBeInTheDocument();
+    expect(screen.getByText(/history 30 秒/i)).toBeInTheDocument();
+    expect(screen.getByText(/final 30 秒/i)).toBeInTheDocument();
+  });
+
   it("shows contract event debug counts and explains latest versus history drift", async () => {
     fetchContractEventDebugCounts.mockResolvedValueOnce({
       symbol: "BTC",
