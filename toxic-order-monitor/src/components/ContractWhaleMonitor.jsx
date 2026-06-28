@@ -503,32 +503,7 @@ export default function ContractWhaleMonitor() {
           <StatusPill label="最近推送" value={summary.lastDiscordSentAt ? relativeAge(summary.lastDiscordSentAt) : "暂无"} tone="slate" />
         </div>
       </div>
-
-      <ContractWhaleTrendBar trend={summary.trend60s} symbol={filters.symbol} />
-
-      <p className="mt-3 rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2 text-xs leading-5 text-slate-400">
-        合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
-      </p>
-
-      <MarketStructureLitePanel summary={summary} />
-      <InstitutionalAnalysisTerminalPanel intelligence={state.intelligenceTerminal} />
-
-      <PlatformCapabilitySection
-        exchanges={summary.exchanges || {}}
-        platforms={platformCapabilities}
-        summary={summary}
-      />
-
-      {state.error ? (
-        <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
-          主力合约监控数据暂时不可用，已保留上一次结果。
-        </p>
-      ) : null}
-      {showCoinbaseSpotOnlyNotice ? (
-        <p className="mt-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-          Coinbase 当前仅启用现货，未启用合约；本页只统计 perp 合约成交，因此不会返回 Coinbase 合约信号。
-        </p>
-      ) : null}
+      <EventFirstJumpNavigation />
 
       <ContractWhaleFilters
         filters={filters}
@@ -541,8 +516,43 @@ export default function ContractWhaleMonitor() {
       <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
         已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；详情里可查看当前价格、信号价格和偏离比例。
       </p>
+      {state.error ? (
+        <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
+          主力合约监控数据暂时不可用，已保留上一次结果。
+        </p>
+      ) : null}
 
-      <RawSignalDebugSection
+      <HistoricalEventStreamPanel
+        contractEvents={state.contractEvents}
+        debugCounts={state.contractEventDebugCounts}
+        rawFlowDebug={state.rawFlowDebug}
+        enabled={summary.enabled}
+        loading={state.loading}
+        onLoadMoreContractEvents={loadMoreContractEvents}
+        onOpenSignal={setSelectedSignalId}
+        eventsSyncLag={eventsSyncLag}
+        latestSignalTs={latestSignalTs}
+        contractEventsLastEventTs={state.contractEventsLastEventTs}
+        latestMaxTs={state.latestMaxTs}
+        contractEventsMaxEventTs={state.contractEventsMaxEventTs}
+        contractEventsLatestLagSec={state.contractEventsLatestLagSec}
+        contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
+        contractEventsHasMore={state.contractEventsHasMore}
+        symbol={filters.symbol}
+      />
+
+      <section className="mt-4" id="contract-whale-market">
+        <InstitutionalAnalysisTerminalPanel intelligence={state.intelligenceTerminal} />
+      </section>
+
+      <LifecycleEventSections
+        finalEvents={state.finalEvents}
+        finalEventsHasMore={state.finalEventsHasMore}
+        onLoadMoreFinalEvents={loadMoreFinalEvents}
+        onOpenSignal={setSelectedSignalId}
+      />
+
+      <ContractWhaleSystemStatusPanel
         contractEvents={state.contractEvents}
         debugCounts={state.contractEventDebugCounts}
         rawFlowDebug={state.rawFlowDebug}
@@ -555,7 +565,6 @@ export default function ContractWhaleMonitor() {
         hiddenContractEventsExpanded={state.hiddenContractEventsExpanded}
         hiddenContractEventsLoading={state.hiddenContractEventsLoading}
         loading={state.loading}
-        onLoadMoreContractEvents={loadMoreContractEvents}
         onLoadMoreFinalEvents={loadMoreFinalEvents}
         onOpenSignal={setSelectedSignalId}
         onToggleHiddenContractEvents={toggleHiddenContractEvents}
@@ -569,8 +578,10 @@ export default function ContractWhaleMonitor() {
         contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
         finalEventsMaxEventTs={state.finalEventsMaxEventTs}
         finalEventsProjectionLagSec={state.finalEventsProjectionLagSec}
-        contractEventsHasMore={state.contractEventsHasMore}
         symbol={filters.symbol}
+        summary={summary}
+        platformCapabilities={platformCapabilities}
+        showCoinbaseSpotOnlyNotice={showCoinbaseSpotOnlyNotice}
       />
 
       <WhaleTrajectoryDashboard
@@ -848,25 +859,40 @@ function mergeUniqueById(previousItems, nextItems) {
   return Array.from(map.values());
 }
 
-function RawSignalDebugSection({
+function EventFirstJumpNavigation() {
+  const items = [
+    { href: "#contract-whale-events", label: "Events" },
+    { href: "#contract-whale-market", label: "Market" },
+    { href: "#contract-whale-lifecycle", label: "Active" },
+    { href: "#contract-whale-status", label: "Status" },
+  ];
+
+  return (
+    <nav
+      aria-label="Contract whale section navigation"
+      className="mt-4 flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-3"
+    >
+      {items.map((item) => (
+        <a
+          className="rounded-full border border-cyan-500/25 bg-cyan-500/5 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:border-cyan-400/50 hover:bg-cyan-500/10"
+          href={item.href}
+          key={item.href}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+function deriveEventFeedDiagnostics({
   contractEvents,
   debugCounts,
   rawFlowDebug,
   latencyDebug,
-  enabled,
   latestItems,
   finalEvents,
-  finalEventsHasMore,
-  hiddenContractEvents,
-  hiddenContractEventsExpanded,
-  hiddenContractEventsLoading,
-  loading,
-  onLoadMoreContractEvents,
-  onLoadMoreFinalEvents,
-  onOpenSignal,
-  onToggleHiddenContractEvents,
   retentionStatus,
-  contractEventsHasMore,
   eventsSyncLag,
   latestSignalTs,
   contractEventsLastEventTs,
@@ -876,12 +902,7 @@ function RawSignalDebugSection({
   contractEventsHistoryLagSec,
   finalEventsMaxEventTs,
   finalEventsProjectionLagSec,
-  symbol,
 }) {
-  const historicalVolumeLabel = "窗口总流量 BTC";
-  const lifecycleVolumeLabel = "生命周期累计流量 BTC";
-  const volumeTooltip =
-    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
   const activeItems = finalEvents.active || [];
   const closedItems = finalEvents.closed || [];
   const visibleCount = Number(debugCounts?.visibility?.visibleCount ?? contractEvents.length ?? 0);
@@ -917,8 +938,81 @@ function RawSignalDebugSection({
     historyCacheAgeSec: latencyDebug?.contractEvents?.cacheAgeSec,
     finalCacheAgeSec: latencyDebug?.finalEventsV2?.cacheAgeSec,
   };
+  return {
+    activeItems,
+    closedItems,
+    visibleCount,
+    hiddenCount,
+    backendReturnedCount,
+    latestCount,
+    latestStaleCount,
+    finalActiveCount,
+    finalClosedCount,
+    rawDbCount,
+    hiddenReasons,
+    dominantHiddenReason,
+    showLatestHistoryDriftHint,
+    showStaleLatestOnlyWarning,
+    showRawFlowDiagnosis,
+    layeredLatestTs,
+    layeredHistoryTs,
+    layeredHistoryLagSec,
+    layeredHistoryAgeSec,
+    layeredFinalTs,
+    layeredProjectionLagSec,
+    showHistorySyncWarning,
+    showProjectionSyncWarning,
+    latencySummary,
+    retentionStatus,
+    eventsSyncLag,
+  };
+}
+
+function HistoricalEventStreamPanel({
+  contractEvents,
+  debugCounts,
+  rawFlowDebug,
+  enabled,
+  loading,
+  onLoadMoreContractEvents,
+  onOpenSignal,
+  eventsSyncLag,
+  latestSignalTs,
+  contractEventsLastEventTs,
+  latestMaxTs,
+  contractEventsMaxEventTs,
+  contractEventsLatestLagSec,
+  contractEventsHistoryLagSec,
+  contractEventsHasMore,
+  symbol,
+}) {
+  const historicalVolumeLabel = "窗口总流量 BTC";
+  const volumeTooltip =
+    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
+  const diagnostics = deriveEventFeedDiagnostics({
+    contractEvents,
+    debugCounts,
+    rawFlowDebug,
+    latestItems: [],
+    finalEvents: { active: [], closed: [] },
+    retentionStatus: null,
+    eventsSyncLag,
+    latestSignalTs,
+    contractEventsLastEventTs,
+    latestMaxTs,
+    contractEventsMaxEventTs,
+    contractEventsLatestLagSec,
+    contractEventsHistoryLagSec,
+    finalEventsMaxEventTs: null,
+    finalEventsProjectionLagSec: null,
+  });
+
   return (
-    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35">
+    <section
+      className="mt-4 min-h-[50vh] rounded-2xl border border-cyan-500/20 bg-slate-950/35"
+      data-testid="historical-events-primary"
+      id="contract-whale-events"
+    >
       <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="console-label text-cyan-300">Contract Event Feed</p>
@@ -932,97 +1026,29 @@ function RawSignalDebugSection({
         </span>
       </div>
       <div className="space-y-4 border-t border-slate-800 p-3">
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
-          <p>历史事件流不会被新的 latest 快照直接覆盖；事件离开 ACTIVE/CLOSED 视图，通常是状态切换、分页边界或筛选变化，不等于数据库删除。</p>
-          {latencyDebug && !latencyDebug.error ? (
-            <LatencyGuardPanel summary={latencySummary} />
-          ) : null}
-          {(layeredLatestTs || layeredHistoryTs || layeredFinalTs) ? (
-            <div className="mt-2 grid gap-2 md:grid-cols-3">
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
-                <p className="console-label">实时快照</p>
-                <p className="mt-1 text-xs text-slate-100">{formatDateTime(layeredLatestTs)}</p>
-              </div>
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
-                <p className="console-label">历史事件流</p>
-                <p className="mt-1 text-xs text-slate-100">
-                  {formatDateTime(layeredHistoryTs)}，落后 latest {layeredHistoryLagSec} 秒
-                </p>
-                <p className="mt-1 text-[11px] text-slate-400">历史最新事件距今 {layeredHistoryAgeSec} 秒</p>
-              </div>
-              <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
-                <p className="console-label">生命周期视图</p>
-                <p className="mt-1 text-xs text-slate-100">
-                  {formatDateTime(layeredFinalTs)}，落后历史 {layeredProjectionLagSec} 秒
-                </p>
-              </div>
-            </div>
-          ) : null}
+        <div className="rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-3 py-3 text-xs leading-5 text-cyan-100">
+          <p>先看事件流，再用下方分析面板解释市场状态；latest 只服务顶部实时状态，不会直接覆盖这里的历史事件。</p>
           {debugCounts && !debugCounts.error ? (
-            <div className="mt-2 space-y-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-cyan-100">
-              <p>
-                24h BTC 历史事件：后端返回 {backendReturnedCount} 条，可见 {visibleCount} 条，隐藏 {hiddenCount} 条；latest 快照 {latestCount} 条。
-              </p>
-              <p className="text-[11px] text-cyan-200/90">
-                DB 原始 {rawDbCount} 条 · final-events active {finalActiveCount} 条 / closed {finalClosedCount} 条。
-                {dominantHiddenReason ? ` 隐藏主因：${dominantHiddenReason}。` : ""}
-              </p>
-              {showLatestHistoryDriftHint ? (
-                <p className="text-[11px] text-cyan-200/90">
-                  latest 是实时快照，history 是持久化历史事件流；两者不是同一数据源，latest 里的信号可能尚未持久化、被过滤或被合并。
-                </p>
-              ) : null}
-              {showStaleLatestOnlyWarning ? (
-                <p className="text-[11px] text-amber-200/90">
-                  {symbol} latest 为旧快照，最近 24h 没有新的 {symbol} 主力历史信号。
-                </p>
-              ) : null}
-              {showRawFlowDiagnosis ? (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
-                  <p>上游诊断：{rawFlowDebug.diagnosis.primaryReason}</p>
-                  {Array.isArray(rawFlowDebug.diagnosis.details) && rawFlowDebug.diagnosis.details.length > 0 ? (
-                    <p className="mt-1 text-amber-200/90">{rawFlowDebug.diagnosis.details[0]}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              {showHistorySyncWarning ? (
-                <p className="text-[11px] text-amber-200/90">
-                  历史事件流同步中：落后 latest {layeredHistoryLagSec} 秒，已自动触发刷新。
-                </p>
-              ) : null}
-              {showProjectionSyncWarning ? (
-                <p className="text-[11px] text-amber-200/90">
-                  生命周期视图同步中：落后历史事件流 {layeredProjectionLagSec} 秒，不代表数据丢失。
-                </p>
-              ) : null}
-              {hiddenCount > 0 ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10"
-                    onClick={onToggleHiddenContractEvents}
-                    type="button"
-                  >
-                    {hiddenContractEventsExpanded ? "收起隐藏事件" : "查看隐藏事件"}
-                  </button>
-                  <span className="text-[11px] text-cyan-200/80">
-                    价格偏离&gt;5% {Number(hiddenReasons.priceDeviationGt5pct ?? 0)} 条 · 坏质量 {Number(hiddenReasons.badQuality ?? 0)} 条
-                  </span>
-                </div>
-              ) : null}
-            </div>
+            <p className="mt-1 text-[11px] text-cyan-200/90">
+              历史可见 {diagnostics.visibleCount} 条 / 后端返回 {diagnostics.backendReturnedCount} 条。
+              {diagnostics.showLatestHistoryDriftHint ? " latest 与 history 非同一数据源，存在正常时间差。" : ""}
+            </p>
+          ) : null}
+          {diagnostics.showStaleLatestOnlyWarning ? (
+            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+              {symbol} latest 为旧快照，最近 24h 没有新的 {symbol} 主力历史信号。
+            </p>
+          ) : null}
+          {diagnostics.showRawFlowDiagnosis ? (
+            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+              上游诊断：{rawFlowDebug.diagnosis.primaryReason}
+            </p>
           ) : null}
           {eventsSyncLag ? (
             <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
               数据延迟：latest 已更新到 {formatDateTime(latestSignalTs)}，历史事件流当前只同步到 {formatDateTime(contractEventsLastEventTs)}。
             </p>
           ) : null}
-          {retentionStatus ? (
-            <p className="mt-2 text-cyan-100">
-              retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
-            </p>
-          ) : (
-            <p className="mt-2 text-slate-500">retention: 延迟加载中，先展示实时事件与最新快照。</p>
-          )}
         </div>
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
@@ -1039,7 +1065,7 @@ function RawSignalDebugSection({
             <p className="border-b border-slate-800 px-3 py-2 text-[11px] leading-5 text-slate-500" title={volumeTooltip}>
               口径：{historicalVolumeLabel}。{volumeTooltip}
             </p>
-            <div className="overflow-x-auto">
+            <div className="max-h-[58vh] overflow-auto">
               <RawSignalDebugTable
                 items={contractEvents}
                 onOpenSignal={onOpenSignal}
@@ -1061,36 +1087,225 @@ function RawSignalDebugSection({
             ) : null}
           </div>
         )}
-        {hiddenContractEventsExpanded ? (
-          <HiddenContractEventsPanel
-            items={hiddenContractEvents}
-            loading={hiddenContractEventsLoading}
-          />
-        ) : null}
-
-        <EventLifecycleFeedGroup
-          emptyText="暂无活跃合约事件"
-          hasMore={finalEventsHasMore}
-          items={activeItems}
-          onLoadMore={onLoadMoreFinalEvents}
-          onOpenSignal={onOpenSignal}
-          testId="raw-contract-whale-signals-active"
-          title="ACTIVE EVENTS (updated)"
-          volumeLabel={lifecycleVolumeLabel}
-          volumeTooltip={volumeTooltip}
-        />
-        <EventLifecycleFeedGroup
-          emptyText="暂无已结束合约事件"
-          hasMore={finalEventsHasMore}
-          items={closedItems}
-          onLoadMore={onLoadMoreFinalEvents}
-          onOpenSignal={onOpenSignal}
-          testId="raw-contract-whale-signals-closed"
-          title="CLOSED EVENTS (finalized)"
-          volumeLabel={lifecycleVolumeLabel}
-          volumeTooltip={volumeTooltip}
-        />
       </div>
+    </section>
+  );
+}
+
+function LifecycleEventSections({
+  finalEvents,
+  finalEventsHasMore,
+  onLoadMoreFinalEvents,
+  onOpenSignal,
+}) {
+  const lifecycleVolumeLabel = "生命周期累计流量 BTC";
+  const volumeTooltip =
+    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
+
+  return (
+    <section className="mt-4 space-y-4" id="contract-whale-lifecycle">
+      <div className="rounded-xl border border-slate-800 bg-slate-950/35 px-4 py-3">
+        <p className="console-label text-cyan-300">Lifecycle Event Views</p>
+        <h4 className="mt-1 text-sm font-bold text-white">生命周期事件视图</h4>
+        <p className="mt-1 text-xs leading-5 text-slate-400">
+          ACTIVE / CLOSED 用来复盘同一事件在生命周期里的状态迁移，放在历史事件流之后查看更顺手。
+        </p>
+      </div>
+      <EventLifecycleFeedGroup
+        emptyText="暂无活跃合约事件"
+        hasMore={finalEventsHasMore}
+        items={finalEvents.active || []}
+        onLoadMore={onLoadMoreFinalEvents}
+        onOpenSignal={onOpenSignal}
+        testId="raw-contract-whale-signals-active"
+        title="ACTIVE EVENTS (updated)"
+        volumeLabel={lifecycleVolumeLabel}
+        volumeTooltip={volumeTooltip}
+      />
+      <EventLifecycleFeedGroup
+        emptyText="暂无已结束合约事件"
+        hasMore={finalEventsHasMore}
+        items={finalEvents.closed || []}
+        onLoadMore={onLoadMoreFinalEvents}
+        onOpenSignal={onOpenSignal}
+        testId="raw-contract-whale-signals-closed"
+        title="CLOSED EVENTS (finalized)"
+        volumeLabel={lifecycleVolumeLabel}
+        volumeTooltip={volumeTooltip}
+      />
+    </section>
+  );
+}
+
+function ContractWhaleSystemStatusPanel({
+  contractEvents,
+  debugCounts,
+  rawFlowDebug,
+  latencyDebug,
+  enabled,
+  latestItems,
+  finalEvents,
+  hiddenContractEvents,
+  hiddenContractEventsExpanded,
+  hiddenContractEventsLoading,
+  onOpenSignal,
+  onToggleHiddenContractEvents,
+  retentionStatus,
+  eventsSyncLag,
+  latestSignalTs,
+  contractEventsLastEventTs,
+  latestMaxTs,
+  contractEventsMaxEventTs,
+  contractEventsLatestLagSec,
+  contractEventsHistoryLagSec,
+  finalEventsMaxEventTs,
+  finalEventsProjectionLagSec,
+  symbol,
+  summary,
+  platformCapabilities,
+  showCoinbaseSpotOnlyNotice,
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const diagnostics = deriveEventFeedDiagnostics({
+    contractEvents,
+    debugCounts,
+    rawFlowDebug,
+    latencyDebug,
+    latestItems,
+    finalEvents,
+    retentionStatus,
+    eventsSyncLag,
+    latestSignalTs,
+    contractEventsLastEventTs,
+    latestMaxTs,
+    contractEventsMaxEventTs,
+    contractEventsLatestLagSec,
+    contractEventsHistoryLagSec,
+    finalEventsMaxEventTs,
+    finalEventsProjectionLagSec,
+  });
+
+  return (
+    <section className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/35" id="contract-whale-status">
+      <button
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+        onClick={() => setExpanded((previous) => !previous)}
+        type="button"
+      >
+        <div>
+          <p className="console-label text-fuchsia-200">System Status / Latency / Retention</p>
+          <h4 className="mt-1 text-sm font-bold text-white">系统状态与诊断</h4>
+        </div>
+        <span className="rounded-full border border-slate-700 px-3 py-1 text-xs font-semibold text-slate-300">
+          {expanded ? "收起" : "展开"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="space-y-4 border-t border-slate-800 p-3">
+          <ContractWhaleTrendBar trend={summary.trend60s} symbol={symbol} />
+
+          <p className="rounded-lg border border-slate-800/80 bg-slate-950/35 px-3 py-2 text-xs leading-5 text-slate-400">
+            合约数据质量 {formatScore(summary.contractDataQuality)} · 现货数据质量 {formatScore(summary.spotDataQuality)} · 总体 {formatScore(summary.overallDataQuality)} · {summary.thresholdProfileReason}
+          </p>
+
+          <MarketStructureLitePanel summary={summary} />
+
+          <PlatformCapabilitySection
+            exchanges={summary.exchanges || {}}
+            platforms={platformCapabilities}
+            summary={summary}
+          />
+
+          {showCoinbaseSpotOnlyNotice ? (
+            <p className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+              Coinbase 当前仅启用现货，未启用合约；本页只统计 perp 合约成交，因此不会返回 Coinbase 合约信号。
+            </p>
+          ) : null}
+
+          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 text-xs leading-5 text-slate-400">
+            <p>这里保留延迟、防抖和保留策略诊断，不再抢占首屏交易事件区域。</p>
+            {latencyDebug && !latencyDebug.error ? (
+              <LatencyGuardPanel summary={diagnostics.latencySummary} />
+            ) : null}
+            {(diagnostics.layeredLatestTs || diagnostics.layeredHistoryTs || diagnostics.layeredFinalTs) ? (
+              <div className="mt-2 grid gap-2 md:grid-cols-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                  <p className="console-label">实时快照</p>
+                  <p className="mt-1 text-xs text-slate-100">{formatDateTime(diagnostics.layeredLatestTs)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                  <p className="console-label">历史事件流</p>
+                  <p className="mt-1 text-xs text-slate-100">
+                    {formatDateTime(diagnostics.layeredHistoryTs)}，落后 latest {diagnostics.layeredHistoryLagSec} 秒
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">历史最新事件距今 {diagnostics.layeredHistoryAgeSec} 秒</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
+                  <p className="console-label">生命周期视图</p>
+                  <p className="mt-1 text-xs text-slate-100">
+                    {formatDateTime(diagnostics.layeredFinalTs)}，落后历史 {diagnostics.layeredProjectionLagSec} 秒
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            {debugCounts && !debugCounts.error ? (
+              <div className="mt-2 space-y-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-cyan-100">
+                <p>
+                  24h {symbol} 历史事件：后端返回 {diagnostics.backendReturnedCount} 条，可见 {diagnostics.visibleCount} 条，隐藏 {diagnostics.hiddenCount} 条；latest 快照 {diagnostics.latestCount} 条。
+                </p>
+                <p className="text-[11px] text-cyan-200/90">
+                  DB 原始 {diagnostics.rawDbCount} 条 · final-events active {diagnostics.finalActiveCount} 条 / closed {diagnostics.finalClosedCount} 条。
+                  {diagnostics.dominantHiddenReason ? ` 隐藏主因：${diagnostics.dominantHiddenReason}。` : ""}
+                </p>
+                {diagnostics.showLatestHistoryDriftHint ? (
+                  <p className="text-[11px] text-cyan-200/90">
+                    latest 是实时快照，history 是持久化历史事件流；两者不是同一数据源，latest 里的信号可能尚未持久化、被过滤或被合并。
+                  </p>
+                ) : null}
+                {diagnostics.showHistorySyncWarning ? (
+                  <p className="text-[11px] text-amber-200/90">
+                    历史事件流同步中：落后 latest {diagnostics.layeredHistoryLagSec} 秒，已自动触发刷新。
+                  </p>
+                ) : null}
+                {diagnostics.showProjectionSyncWarning ? (
+                  <p className="text-[11px] text-amber-200/90">
+                    生命周期视图同步中：落后历史事件流 {diagnostics.layeredProjectionLagSec} 秒，不代表数据丢失。
+                  </p>
+                ) : null}
+                {diagnostics.hiddenCount > 0 ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      className="rounded-lg border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/10"
+                      onClick={onToggleHiddenContractEvents}
+                      type="button"
+                    >
+                      {hiddenContractEventsExpanded ? "收起隐藏事件" : "查看隐藏事件"}
+                    </button>
+                    <span className="text-[11px] text-cyan-200/80">
+                      价格偏离&gt;5% {Number(diagnostics.hiddenReasons.priceDeviationGt5pct ?? 0)} 条 · 坏质量 {Number(diagnostics.hiddenReasons.badQuality ?? 0)} 条
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {retentionStatus ? (
+              <p className="mt-2 text-cyan-100">
+                retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
+              </p>
+            ) : (
+              <p className="mt-2 text-slate-500">retention: 延迟加载中，先展示实时事件与最新快照。</p>
+            )}
+          </div>
+
+          {hiddenContractEventsExpanded ? (
+            <HiddenContractEventsPanel
+              items={hiddenContractEvents}
+              loading={hiddenContractEventsLoading}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

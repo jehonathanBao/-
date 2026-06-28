@@ -1273,6 +1273,30 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
   });
 
+  it("promotes historical events ahead of analysis and lifecycle sections", async () => {
+    render(<ContractWhaleMonitor />);
+
+    const historical = await screen.findByText("HISTORICAL EVENTS (24h stream)");
+    const analysis = screen.getByText("Institutional Analysis Terminal");
+    const active = screen.getByText("ACTIVE EVENTS (updated)");
+    const historicalPanel = screen.getByTestId("historical-events-primary");
+
+    expect(historical.compareDocumentPosition(analysis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(analysis.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(historicalPanel).toHaveClass("min-h-[50vh]");
+  });
+
+  it("renders jump navigation links for event-first sections", async () => {
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("HISTORICAL EVENTS (24h stream)");
+
+    expect(screen.getByRole("link", { name: "Events" })).toHaveAttribute("href", "#contract-whale-events");
+    expect(screen.getByRole("link", { name: "Market" })).toHaveAttribute("href", "#contract-whale-market");
+    expect(screen.getByRole("link", { name: "Active" })).toHaveAttribute("href", "#contract-whale-lifecycle");
+    expect(screen.getByRole("link", { name: "Status" })).toHaveAttribute("href", "#contract-whale-status");
+  });
+
   it("warns when BTC latest only contains stale snapshots and 24h history has no new signals", async () => {
     fetchContractWhaleLatest.mockResolvedValueOnce({
       summary: {
