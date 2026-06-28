@@ -59,6 +59,35 @@ impl AltContractSeverity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AltContractSemanticLayer {
+    #[default]
+    Interpretation,
+    Exposure,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractSemanticView {
+    #[serde(default)]
+    pub layer: AltContractSemanticLayer,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub intensity_label: String,
+    #[serde(default)]
+    pub exposure_allowed: bool,
+    #[serde(default)]
+    pub exposure_reason: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default = "default_true")]
+    pub severity_descriptive_only: bool,
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -794,6 +823,8 @@ pub struct AltContractSignal {
     pub discord_alert_kind: String,
     #[serde(default)]
     pub discord_min_notional_usd: f64,
+    #[serde(default)]
+    pub semantic: AltContractSemanticView,
     pub final_result: String,
     pub read_only: bool,
     pub analysis_only: bool,
@@ -948,4 +979,8 @@ fn default_discord_alert_kind() -> String {
 
 fn default_market_tier() -> AltContractMarketTier {
     AltContractMarketTier::Alt
+}
+
+fn default_true() -> bool {
+    true
 }

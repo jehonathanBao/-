@@ -11,6 +11,7 @@ use super::{
         funding_crowding_label, funding_crowding_penalty, score_alt_contract_signal,
         AltContractScoreResult,
     },
+    semantic::{apply_semantic_boundary, evaluate_exposure_gate},
     smle::classify_smart_money_lifecycle,
     smp::predict_smart_money_next_stage,
     types::{
@@ -253,11 +254,14 @@ pub fn detect_alt_contract_signal_with_context(
         discord_reason: "not_evaluated".to_string(),
         discord_alert_kind: "none".to_string(),
         discord_min_notional_usd: 0.0,
+        semantic: Default::default(),
         final_result: final_result_text(signal_type, main_force_confidence, context),
         read_only: true,
         analysis_only: true,
         execution_enabled: false,
     };
+    let exposure_decision = evaluate_exposure_gate(&signal, warmup);
+    apply_semantic_boundary(&mut signal, exposure_decision);
     if tier_e_discord_guard(&signal, config) {
         signal.discord_eligible = false;
         signal.discord_would_send = false;
@@ -271,6 +275,9 @@ pub fn detect_alt_contract_signal_with_context(
             .get(&signal.tier)
             .map(|tier| tier.min_notional_usd)
             .unwrap_or_default();
+        signal.semantic.exposure_allowed = false;
+        signal.semantic.exposure_reason = "low_liquidity_tier_guard".to_string();
+        signal.semantic.layer = super::types::AltContractSemanticLayer::Interpretation;
     } else if tier_d_discord_guard(&signal, config) {
         signal.discord_eligible = false;
         signal.discord_would_send = false;
@@ -284,6 +291,17 @@ pub fn detect_alt_contract_signal_with_context(
             .get(&signal.tier)
             .map(|tier| tier.min_notional_usd)
             .unwrap_or_default();
+        signal.semantic.exposure_allowed = false;
+        signal.semantic.exposure_reason = "tier_d_guard".to_string();
+        signal.semantic.layer = super::types::AltContractSemanticLayer::Interpretation;
+    } else if !signal.semantic.exposure_allowed {
+        signal.discord_eligible = false;
+        signal.discord_would_send = false;
+        signal.discord_sent = false;
+        signal.discord_sent_at = None;
+        signal.discord_reason = signal.semantic.exposure_reason.clone();
+        signal.discord_alert_kind = "none".to_string();
+        signal.discord_min_notional_usd = 0.0;
     } else {
         let gate = evaluate_alt_contract_discord_gate(&signal, &config.discord, warmup);
         signal.discord_eligible = gate.eligible;
@@ -922,10 +940,16 @@ fn final_result_text(
 ) -> String {
     match signal_type {
         AltContractSignalType::MainForceLongBuild => {
-            format!("Binance 山寨永续主动买入、OI 上升与价格响应同向，疑似合约主力建多；主力置信度 {:.0}/100。", main_force_confidence)
+            format!(
+                "Binance 山寨永续主动买入、OI 上升与价格响应同向，当前更适合作为累积压力解释；结构置信度 {:.0}/100。",
+                main_force_confidence
+            )
         }
         AltContractSignalType::MainForceShortBuild => {
-            format!("Binance 山寨永续主动卖出、OI 上升与价格响应同向，疑似合约主力建空；主力置信度 {:.0}/100。", main_force_confidence)
+            format!(
+                "Binance 山寨永续主动卖出、OI 上升与价格响应同向，当前更适合作为分发压力解释；结构置信度 {:.0}/100。",
+                main_force_confidence
+            )
         }
         AltContractSignalType::AbnormalPump => {
             if context
@@ -933,10 +957,10 @@ fn final_result_text(
                 .or(context.oi_change_5m_base)
                 .is_none()
             {
-                "山寨永续主动买入和成交额异常放大，但 OI 尚未确认，先标记为合约异常冲击。"
+                "山寨永续主动买入和成交额异常放大，但 OI 尚未确认，先标记为上行失衡观察。"
                     .to_string()
             } else {
-                "山寨永续主动买入和成交额异常放大，建仓证据不足，先标记为异常拉升候选。".to_string()
+                "山寨永续主动买入和成交额异常放大，但证据更适合作为上行失衡观察。".to_string()
             }
         }
         AltContractSignalType::AbnormalDump => {
@@ -945,23 +969,23 @@ fn final_result_text(
                 .or(context.oi_change_5m_base)
                 .is_none()
             {
-                "山寨永续主动卖出和成交额异常放大，但 OI 尚未确认，先标记为合约异常冲击。"
+                "山寨永续主动卖出和成交额异常放大，但 OI 尚未确认，先标记为下行失衡观察。"
                     .to_string()
             } else {
-                "山寨永续主动卖出和成交额异常放大，建仓证据不足，先标记为异常下跌候选。".to_string()
+                "山寨永续主动卖出和成交额异常放大，但证据更适合作为下行失衡观察。".to_string()
             }
         }
         AltContractSignalType::DownsideAbsorption => {
-            "主动卖出放大但价格跌不动，疑似下方吸收。".to_string()
+            "主动卖出放大但价格跌不动，更适合作为下方吸收解释。".to_string()
         }
         AltContractSignalType::UpsideResistance => {
-            "主动买入放大但价格涨不动，疑似上方压制。".to_string()
+            "主动买入放大但价格涨不动，更适合作为上方压制解释。".to_string()
         }
         AltContractSignalType::LiquidationCascade => {
-            "成交与强平快照同时放大，优先标记为清算瀑布，不直接确认主力建仓。".to_string()
+            "成交与强平快照同时放大，优先标记为清算事件，不直接确认主力建仓。".to_string()
         }
         AltContractSignalType::UnclearContractAnomaly => {
-            "山寨永续成交异常但确认项不足，暂作为合约异动待确认。".to_string()
+            "山寨永续成交异常但确认项不足，暂作为合约异动观察。".to_string()
         }
     }
 }

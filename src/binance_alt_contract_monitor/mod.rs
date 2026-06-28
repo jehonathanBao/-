@@ -19,6 +19,7 @@ pub mod mcss;
 pub mod regime;
 pub mod scc;
 pub mod scoring;
+pub mod semantic;
 pub mod service;
 pub mod smaf;
 pub mod smle;

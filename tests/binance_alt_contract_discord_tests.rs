@@ -141,6 +141,23 @@ fn abnormal_impulse_payload_does_not_claim_main_force_build() {
 }
 
 #[test]
+fn main_force_payload_uses_semantic_copy_instead_of_trade_hint() {
+    let config = config();
+    let signal = main_force_signal(AltContractSymbolTier::C);
+
+    let gate = gate(&signal, &config, 70);
+    let mut exposed = signal.clone();
+    exposed.discord_alert_kind = gate.alert_kind;
+    exposed.discord_reason = gate.reason;
+    let payload = build_alt_contract_discord_payload(&exposed).to_string();
+
+    assert!(gate.would_send);
+    assert!(payload.contains("累积压力观察"));
+    assert!(!payload.contains("疑似主力建多"));
+    assert!(!payload.contains("自动交易"));
+}
+
+#[test]
 fn cooldown_blocks_duplicate_signal() {
     let config = config();
     let signal = main_force_signal(AltContractSymbolTier::C);

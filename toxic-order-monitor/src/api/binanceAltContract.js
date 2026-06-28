@@ -190,6 +190,7 @@ export function normalizeAltContractSignal(item) {
     discordReason: item.discordReason || "not_sent",
     discordAlertKind: item.discordAlertKind || "none",
     discordMinNotionalUsd: numberOrNull(item.discordMinNotionalUsd) || 0,
+    semantic: normalizeSemanticBoundary(item.semantic),
     finalResult: item.finalResult || "Binance alt contract anomaly candidate",
   };
 }
@@ -666,6 +667,20 @@ function normalizeAltImpactScore(value) {
     referenceVolume24hUsd: numberOrNull(source.referenceVolume24hUsd),
     referenceSource: source.referenceSource || "unavailable",
     interpretation: source.interpretation || "暂无相对成交冲击解释",
+  };
+}
+
+function normalizeSemanticBoundary(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    layer: source.layer || "interpretation",
+    label: source.label || "contract_anomaly",
+    intensityLabel: source.intensityLabel || "watch_intensity_observation",
+    exposureAllowed: Boolean(source.exposureAllowed),
+    exposureReason: source.exposureReason || "semantic_interpretation_only",
+    title: source.title || "合约异动观察",
+    summary: source.summary || "只读解释，不构成执行指令。",
+    severityDescriptiveOnly: source.severityDescriptiveOnly !== false,
   };
 }
 

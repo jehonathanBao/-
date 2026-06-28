@@ -48,8 +48,7 @@ struct AltContractDiscordCooldownKey {
 
 #[derive(Debug, Clone)]
 struct AltContractDiscordCooldownEntry {
-    severity: AltContractSeverity,
-    build_score: u8,
+    exposure_score: u8,
     sent_at_ms: i64,
 }
 
@@ -66,8 +65,7 @@ impl AltContractDiscordCooldownStore {
         state.by_key.insert(
             cooldown_key(signal),
             AltContractDiscordCooldownEntry {
-                severity: signal.severity,
-                build_score: signal.build_score,
+                exposure_score: exposure_score(signal),
                 sent_at_ms,
             },
         );
@@ -86,11 +84,8 @@ impl AltContractDiscordCooldownStore {
         let entry = state.by_key.get(&cooldown_key(signal))?;
         let cooldown_ms = cooldown_sec.saturating_mul(1000);
         let within_cooldown = now_ms.saturating_sub(entry.sent_at_ms) < cooldown_ms;
-        let build_score_upgrade = signal.build_score >= entry.build_score.saturating_add(10);
-        if within_cooldown
-            && signal.severity.rank() <= entry.severity.rank()
-            && !build_score_upgrade
-        {
+        let score_upgrade = exposure_score(signal) >= entry.exposure_score.saturating_add(8);
+        if within_cooldown && !score_upgrade {
             return Some("cooldown");
         }
         None
@@ -107,7 +102,7 @@ impl AltContractDiscordCooldownStore {
         if global_hourly_cap == 0 || state.sent_events.len() < global_hourly_cap {
             return false;
         }
-        !matches!(signal.severity, AltContractSeverity::S) && signal.build_score < 90
+        exposure_score(signal) < 95
     }
 }
 
@@ -356,17 +351,6 @@ fn discord_decision(
     config: &BinanceAltDiscordConfig,
     tier_config: &BinanceAltDiscordTierConfig,
 ) -> DiscordDecision {
-    if matches!(
-        signal.severity,
-        AltContractSeverity::Medium | AltContractSeverity::Calm
-    ) {
-        return decision(
-            false,
-            "medium_or_low",
-            "display_only",
-            tier_config.min_notional_usd,
-        );
-    }
     if tier_config.require_non_liquidation && signal.liquidation_suspected {
         return decision(
             false,
@@ -374,9 +358,6 @@ fn discord_decision(
             "none",
             tier_config.min_notional_usd,
         );
-    }
-    if signal.severity == AltContractSeverity::S && !tier_config.s_enabled {
-        return decision(false, "tier_s_disabled", "none", tier_config.s_notional_usd);
     }
     if let Some(decision) = main_force_decision(signal, config, tier_config) {
         return decision;
@@ -601,7 +582,7 @@ fn direction_label(direction: AltContractDirection) -> &'static str {
 
 fn alert_prefix(signal: &AltContractSignal) -> &'static str {
     match signal.discord_alert_kind.as_str() {
-        "main_force_build" => "🚨",
+        "main_force_build" => "📘",
         "liquidation_shock" | "extreme_impulse" => "⚠️",
         _ => "⚠️",
     }
@@ -611,33 +592,55 @@ fn discord_copy(signal: &AltContractSignal) -> (&'static str, String) {
     match signal.discord_alert_kind.as_str() {
         "main_force_build" => match signal.signal_type {
             AltContractSignalType::MainForceLongBuild => (
-                "Binance 山寨合约疑似主力建多",
-                "主动买入异常放大，OI 同向上升，非清算驱动，疑似新多资金进场。".to_string(),
+                "Binance 山寨合约累积压力观察",
+                "主动买入、OI 与价格响应共同强化，当前更适合作为累积压力解释，不构成执行指令。"
+                    .to_string(),
             ),
             AltContractSignalType::MainForceShortBuild => (
-                "Binance 山寨合约疑似主力建空",
-                "主动卖出异常放大，OI 同向上升，非清算驱动，疑似新空资金进场。".to_string(),
+                "Binance 山寨合约分发压力观察",
+                "主动卖出、OI 与价格响应共同强化，当前更适合作为分发压力解释，不构成执行指令。"
+                    .to_string(),
             ),
             _ => (
-                "Binance 山寨合约疑似主力建仓",
-                "主动流、OI 与证据链满足主力建仓 gate。".to_string(),
+                "Binance 山寨合约结构压力观察",
+                "主动流、OI 与证据链已满足外部展示条件，但仍保持只读解释，不构成执行指令。"
+                    .to_string(),
             ),
         },
         "liquidation_shock" => (
             "Binance 山寨合约清算冲击",
-            "该异常主要由强平 / OI 下降推动，暂不判定为主力建仓。".to_string(),
+            "该异常主要由强平 / OI 下降推动，应优先解释为清算事件，不构成执行指令。".to_string(),
         ),
         "market_wide_summary" => (
             "Binance 山寨合约集体异动",
-            "山寨市场整体共振，单币主力建仓判断需结合相对强度。".to_string(),
+            "山寨市场整体共振，当前只提供相对强度解释，不构成执行指令。".to_string(),
         ),
         "extreme_impulse" => (
             "Binance 山寨合约极端异常冲击",
-            "合约主动流异常冲击明显，但建仓证据不足，暂不判定为主力建仓。".to_string(),
+            "合约主动流异常冲击明显，但更适合作为极端异常观察，不构成执行指令。".to_string(),
         ),
         _ => (
             "Binance 山寨合约异动",
-            "Candidate only，只读提醒，不代表自动交易或定性结论。".to_string(),
+            "Candidate only，只读提醒，不代表执行指令或定性结论。".to_string(),
         ),
     }
+}
+
+fn exposure_score(signal: &AltContractSignal) -> u8 {
+    let confidence = signal
+        .signal_confidence
+        .confidence_score
+        .round()
+        .clamp(0.0, 100.0) as u8;
+    let severity_score = match signal.severity {
+        AltContractSeverity::S => 100,
+        AltContractSeverity::Critical => 90,
+        AltContractSeverity::High => 75,
+        AltContractSeverity::Medium => 55,
+        AltContractSeverity::Calm => 0,
+    };
+    confidence
+        .max(signal.build_score)
+        .max(signal.abnormal_score)
+        .max(severity_score)
 }

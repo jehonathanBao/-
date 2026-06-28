@@ -62,7 +62,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText(/相对冲击展示：AIS ≥ 70/)).toBeInTheDocument();
     expect(screen.getByText("在线")).toBeInTheDocument();
     expect(screen.getByText("Ultra Core")).toBeInTheDocument();
-    expect(screen.getAllByText("主力建多").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("累积压力观察").length).toBeGreaterThan(0);
     expect(screen.getByText("$175.50")).toBeInTheDocument();
     expect(screen.getAllByText("88/100").length).toBeGreaterThan(0);
     expect(screen.getAllByText("疑似机构级别流入").length).toBeGreaterThan(0);
@@ -158,11 +158,14 @@ describe("BinanceAltContractMonitor", () => {
     await user.click(screen.getByTestId("alt-contract-row-bacm-sol-s"));
 
     expect(screen.getByText("Alt Contract Review")).toBeInTheDocument();
-    expect(screen.getByText("SOL · 主力建多")).toBeInTheDocument();
+    expect(screen.getByText("SOL · 累积压力观察")).toBeInTheDocument();
     expect(screen.getAllByText("$175.50").length).toBeGreaterThan(0);
     expect(screen.getByText("Discord dry-run")).toBeInTheDocument();
     expect(screen.getAllByText("dry-run would_send").length).toBeGreaterThan(0);
-    expect(screen.getByText("主力置信度")).toBeInTheDocument();
+    expect(screen.getByText("语义层")).toBeInTheDocument();
+    expect(screen.getByText("语义标签")).toBeInTheDocument();
+    expect(screen.getByText("观测强度")).toBeInTheDocument();
+    expect(screen.getByText("结构置信度")).toBeInTheDocument();
     expect(screen.getByText("证据数量")).toBeInTheDocument();
     expect(screen.getByText("Window Confirmations")).toBeInTheDocument();
     expect(screen.getByText("Market Tier")).toBeInTheDocument();
@@ -202,7 +205,7 @@ describe("BinanceAltContractMonitor", () => {
     expect(screen.getByText("预测不一致")).toBeInTheDocument();
     expect(screen.getByText("Active Source Snapshot")).toBeInTheDocument();
     expect(screen.getByText("binance · perp · primary · active")).toBeInTheDocument();
-    expect(screen.getByText("山寨合约主动买入爆发，OI 同步上升，疑似主力建多。")).toBeInTheDocument();
+    expect(screen.getByText(/主动买入、OI 与价格响应呈现同向强化/)).toBeInTheDocument();
     expect(screen.getByText("Abnormal Score")).toBeInTheDocument();
     expect(screen.getByText("Build Score")).toBeInTheDocument();
     expect(screen.getAllByText("OI").length).toBeGreaterThan(0);
@@ -731,6 +734,16 @@ function altSignal() {
     discordWouldSend: true,
     discordSent: false,
     discordReason: "dry_run",
+    semantic: {
+      layer: "exposure",
+      label: "accumulation_pressure",
+      intensityLabel: "high_intensity_observation",
+      exposureAllowed: true,
+      exposureReason: "semantic_exposure_ready",
+      title: "累积压力观察",
+      summary: "主动买入、OI 与价格响应呈现同向强化，当前更适合作为累积压力解释；下一阶段暂观察 Distribution（76% 置信）且保持只读解释，不构成执行指令。",
+      severityDescriptiveOnly: true,
+    },
     finalResult: "山寨合约主动买入爆发，OI 同步上升，疑似主力建多。",
   };
 }

@@ -240,7 +240,12 @@ export default function BinanceAltContractMonitor() {
                       <span className="mt-1 text-[11px] text-slate-500">{formatConfidence(item.smartMoneyPrediction?.probability)}</span>
                     </span>
                   </Cell>
-                  <Cell>{signalTypeLabel(item.signalType)}</Cell>
+                  <Cell>
+                    <span className="flex flex-col leading-tight">
+                      <span className="font-semibold text-slate-100">{item.semantic?.title || signalTypeLabel(item.signalType)}</span>
+                      <span className="mt-1 text-[11px] text-slate-500">{semanticLayerLabel(item.semantic?.layer)}</span>
+                    </span>
+                  </Cell>
                   <Cell><span className={`rounded-full px-2 py-1 font-bold ${severityBadgeClass(item.severity)}`}>{severityLabel(item.severity)}</span></Cell>
                   <Cell>{item.windowSec}s</Cell>
                   <Cell>{item.abnormalScore}/100</Cell>
@@ -755,14 +760,17 @@ function AltSignalDetail({ signal, summary, onClose }) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Alt Contract Review</p>
-            <h3 className="mt-2 text-xl font-bold text-white">{signal.symbol} · {signalTypeLabel(signal.signalType)}</h3>
+            <h3 className="mt-2 text-xl font-bold text-white">{signal.symbol} · {signal.semantic?.title || signalTypeLabel(signal.signalType)}</h3>
           </div>
           <button className="rounded-lg border border-slate-600 px-3 py-1 text-sm text-slate-200 outline-none transition hover:border-cyan-400 hover:text-cyan-100 focus-visible:ring-2 focus-visible:ring-cyan-500/35" onClick={onClose} type="button">关闭</button>
         </div>
         <div className="mt-5 grid gap-3 text-sm md:grid-cols-3">
-          <Detail label="异常评分" value={`${signal.abnormalScore}/100`} />
-          <Detail label="建仓评分" value={`${signal.buildScore}/100`} />
-          <Detail label="主力置信度" value={`${Math.round(Number(signal.mainForceConfidence || 0))}/100`} />
+          <Detail label="语义层" value={semanticLayerLabel(signal.semantic?.layer)} />
+          <Detail label="语义标签" value={signal.semantic?.label || "contract_anomaly"} />
+          <Detail label="观测强度" value={semanticIntensityLabel(signal.semantic?.intensityLabel)} />
+          <Detail label="内部异常评分" value={`${signal.abnormalScore}/100`} />
+          <Detail label="内部结构评分" value={`${signal.buildScore}/100`} />
+          <Detail label="结构置信度" value={`${Math.round(Number(signal.mainForceConfidence || 0))}/100`} />
           <Detail label="证据数量" value={`${signal.evidenceCount || 0} 项`} />
           <Detail label="后续验证" value={postSignalStatusLabel(signal.postSignalStatus)} />
           <Detail label="Signal VWAP" value={formatPrice(signal.signalVwap)} />
@@ -816,11 +824,12 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="Funding 拥挤" value={fundingCrowdingLabel(signal.fundingCrowding)} />
           <Detail label="市场共振" value={marketWideText(signal)} />
           <Detail label="清算上下文" value={liquidationContextText(signal)} />
+          <Detail label="对外展示层" value={signal.semantic?.exposureAllowed ? "通过受控展示" : "仅解释层"} />
           <Detail label="Discord Gate 类型" value={discordAlertKindLabel(signal.discordAlertKind)} />
           <Detail label="Discord 名义额门槛" value={formatUsd(signal.discordMinNotionalUsd)} />
-          <Detail label="Discord 跳过原因" value={discordReasonLabel(signal.discordReason)} />
+          <Detail label="Discord 跳过原因" value={discordReasonLabel(signal.semantic?.exposureReason || signal.discordReason)} />
           <Detail label="Discord dry-run" value={discordStatus(signal)} />
-          <Detail label="最终判断" value={signal.finalResult} wide />
+          <Detail label="语义解释" value={signal.semantic?.summary || signal.finalResult} wide />
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           <AltImpactCard altImpactScore={signal.altImpactScore} />
@@ -860,9 +869,9 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <SGradeConditions conditions={signal.sGradeConditions || []} />
         </div>
         <div className="mt-3 grid gap-3 md:grid-cols-3">
-          <ExplanationCard title="异常判断" text={signal.abnormalExplanation} />
-          <ExplanationCard title="建仓判断" text={signal.buildExplanation} />
-          <ExplanationCard title="清算判断" text={signal.liquidationExplanation} />
+          <ExplanationCard title="异常解释" text={signal.abnormalExplanation} />
+          <ExplanationCard title="结构解释" text={signal.buildExplanation} />
+          <ExplanationCard title="清算解释" text={signal.liquidationExplanation} />
         </div>
         <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
           <ExplanationMetric label="Abnormal Score" value={`${signal.abnormalScore}/100`} />
@@ -1801,23 +1810,39 @@ function lifecycleStateLabel(value) {
 
 function signalTypeLabel(value) {
   return {
-    main_force_long_build: "主力建多",
-    mainforcelongbuild: "主力建多",
-    main_force_short_build: "主力建空",
-    mainforceshortbuild: "主力建空",
-    abnormal_pump: "异常拉升",
-    abnormalpump: "异常拉升",
-    abnormal_dump: "异常下跌",
-    abnormaldump: "异常下跌",
-    downside_absorption: "下方吸收",
-    downsideabsorption: "下方吸收",
-    upside_resistance: "上方压制",
-    upsideresistance: "上方压制",
-    liquidation_cascade: "清算瀑布",
-    liquidationcascade: "清算瀑布",
-    unclear_contract_anomaly: "合约异动待确认",
-    unclearcontractanomaly: "合约异动待确认",
+    main_force_long_build: "累积压力观察",
+    mainforcelongbuild: "累积压力观察",
+    main_force_short_build: "分发压力观察",
+    mainforceshortbuild: "分发压力观察",
+    abnormal_pump: "上行失衡观察",
+    abnormalpump: "上行失衡观察",
+    abnormal_dump: "下行失衡观察",
+    abnormaldump: "下行失衡观察",
+    downside_absorption: "下方吸收观察",
+    downsideabsorption: "下方吸收观察",
+    upside_resistance: "上方压制观察",
+    upsideresistance: "上方压制观察",
+    liquidation_cascade: "清算事件观察",
+    liquidationcascade: "清算事件观察",
+    unclear_contract_anomaly: "合约异动观察",
+    unclearcontractanomaly: "合约异动观察",
   }[String(value || "").toLowerCase()] || "山寨合约异动";
+}
+
+function semanticLayerLabel(value) {
+  return {
+    interpretation: "解释层",
+    exposure: "受控展示层",
+  }[String(value || "interpretation").toLowerCase()] || "解释层";
+}
+
+function semanticIntensityLabel(value) {
+  return {
+    low_intensity_observation: "低强度观察",
+    watch_intensity_observation: "观察级强度",
+    elevated_intensity_observation: "增强观察",
+    high_intensity_observation: "高强度观察",
+  }[String(value || "").toLowerCase()] || value || "观察级强度";
 }
 
 function directionLabel(value) {
@@ -1870,7 +1895,7 @@ function discordAlertKindLabel(value) {
 function discordReasonLabel(value) {
   return {
     dry_run_would_send: "dry-run would_send",
-    main_force_build: "主力建仓 gate 通过",
+    main_force_build: "结构压力 gate 通过",
     extreme_impulse: "极端异常 gate 通过",
     liquidation_shock: "清算冲击 gate 通过",
     low_score: "评分或证据不足",
@@ -1889,6 +1914,13 @@ function discordReasonLabel(value) {
     liquidation_evidence_low: "清算证据不足",
     liquidation_alerts_disabled: "清算提醒关闭",
     market_wide_not_top: "集体异动非 Top 强度",
+    semantic_interpretation_only: "仅解释层，不进入外部提醒",
+    semantic_low_confidence: "语义置信度不足",
+    semantic_no_price_follow_through: "缺少价格跟随确认",
+    semantic_single_metric_spike: "单指标脉冲，不进入外部提醒",
+    semantic_chop_regime: "震荡语境，仅解释层展示",
+    semantic_exposure_ready: "已通过语义展示过滤",
+    semantic_warmup: "语义预热中",
     global_hourly_cap: "每小时限流",
     cooldown: "冷却中",
     duplicate: "重复信号",

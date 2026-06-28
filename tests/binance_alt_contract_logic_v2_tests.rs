@@ -9,8 +9,9 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::BinanceAltContractService,
     types::{
         AltContractContext, AltContractDirection, AltContractExchange,
-        AltContractExchangeContribution, AltContractSeverity, AltContractSignalType,
-        AltContractSymbolTier, AltContractTrade, AltContractTradeSide, AltContractWindowStats,
+        AltContractExchangeContribution, AltContractSemanticLayer, AltContractSeverity,
+        AltContractSignalType, AltContractSymbolTier, AltContractTrade, AltContractTradeSide,
+        AltContractWindowStats,
     },
 };
 
@@ -85,6 +86,8 @@ fn true_long_build_requires_evidence_chain() {
         .iter()
         .any(|tag| tag == "multi_window_confirmed"));
     assert_eq!(signal.oi_quality, "fresh");
+    assert_eq!(signal.semantic.layer, AltContractSemanticLayer::Exposure);
+    assert!(signal.semantic.exposure_allowed);
 }
 
 #[test]
@@ -382,6 +385,50 @@ fn tier_e_spike_without_oi_confirmation_is_display_only_not_main_force() {
     assert_eq!(signal.discord_reason, "low_liquidity_tier_guard");
     assert!(!signal.discord_would_send);
     assert_eq!(signal.oi_quality, "missing");
+    assert_eq!(
+        signal.semantic.layer,
+        AltContractSemanticLayer::Interpretation
+    );
+    assert!(!signal.semantic.exposure_allowed);
+}
+
+#[test]
+fn single_window_signal_stays_in_interpretation_layer() {
+    let config = config();
+    let stats = stats(
+        "ALT",
+        AltContractDirection::Buy,
+        26_000_000.0,
+        0.69,
+        0.18,
+        6.5,
+        AltContractSymbolTier::B,
+    );
+    let context = AltContractContext {
+        oi_change_1m_base: Some(40_000.0),
+        oi_change_pct: Some(0.6),
+        oi_updated_at: Some(stats.ts - 10_000),
+        funding_rate: Some(0.0),
+        persistence_windows: 1,
+        ..AltContractContext::default()
+    };
+
+    let signal = detect_alt_contract_signal_with_context(
+        &stats,
+        &context,
+        &config,
+        vec![window_confirmation_for(&stats, &config)],
+        MarketImpulseContext::default(),
+    )
+    .expect("single-window signal");
+
+    assert_eq!(
+        signal.semantic.layer,
+        AltContractSemanticLayer::Interpretation
+    );
+    assert!(!signal.semantic.exposure_allowed);
+    assert_eq!(signal.discord_reason, "semantic_interpretation_only");
+    assert!(!signal.discord_would_send);
 }
 
 #[test]

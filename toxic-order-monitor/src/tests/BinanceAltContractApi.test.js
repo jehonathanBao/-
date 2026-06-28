@@ -531,6 +531,35 @@ describe("binance alt contract api", () => {
     expect(signal.token).toBeUndefined();
   });
 
+  it("normalizes semantic boundary fields with safe defaults", () => {
+    const signal = normalizeAltContractSignal({
+      id: "semantic-signal",
+      symbol: "ALT",
+      productId: "ALTUSDT",
+      semantic: {
+        layer: "interpretation",
+        label: "accumulation_pressure",
+        intensityLabel: "high_intensity_observation",
+        exposureAllowed: false,
+        exposureReason: "semantic_interpretation_only",
+        title: "累积压力观察",
+        summary: "只读解释，不构成执行指令。",
+        severityDescriptiveOnly: true,
+      },
+    });
+
+    expect(signal.semantic).toMatchObject({
+      layer: "interpretation",
+      label: "accumulation_pressure",
+      intensityLabel: "high_intensity_observation",
+      exposureAllowed: false,
+      exposureReason: "semantic_interpretation_only",
+      title: "累积压力观察",
+      summary: "只读解释，不构成执行指令。",
+      severityDescriptiveOnly: true,
+    });
+  });
+
   it("filters new display signals by AIS and keeps legacy threshold fallback", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
