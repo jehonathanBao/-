@@ -44,6 +44,7 @@ export default function ContractWhaleMonitor() {
     contractEventsLatestLagSec: null,
     contractEventsCacheAgeSec: null,
     contractEventsCacheTtlSec: null,
+    contractEventsTimeline: null,
     contractEventDebugCounts: null,
     rawFlowDebug: null,
     latencyDebug: null,
@@ -57,6 +58,7 @@ export default function ContractWhaleMonitor() {
     finalEventsProjectionLagSec: null,
     finalEventsCacheAgeSec: null,
     finalEventsCacheTtlSec: null,
+    finalEventsTimeline: null,
     intelligenceTerminal: null,
     events: [],
     hiddenContractEvents: [],
@@ -68,6 +70,7 @@ export default function ContractWhaleMonitor() {
     latestMaxTs: null,
     latestMaxAgeSec: null,
     latestStaleCount: null,
+    latestTimeline: null,
     meta: null,
     error: null,
   });
@@ -125,6 +128,7 @@ export default function ContractWhaleMonitor() {
           latestMaxTs: payload.error ? previous.latestMaxTs : payload.maxTs,
           latestMaxAgeSec: payload.error ? previous.latestMaxAgeSec : payload.maxAgeSec,
           latestStaleCount: payload.error ? previous.latestStaleCount : payload.staleCount,
+          latestTimeline: payload.error ? previous.latestTimeline : payload.timeline,
           meta: payload.error ? previous.meta : (payload.meta || previous.meta),
           error: payload.error || null,
         };
@@ -155,6 +159,7 @@ export default function ContractWhaleMonitor() {
           contractEventsLatestLagSec: payload.error ? previous.contractEventsLatestLagSec : payload.latestLagSec,
           contractEventsCacheAgeSec: payload.error ? previous.contractEventsCacheAgeSec : payload.cacheAgeSec,
           contractEventsCacheTtlSec: payload.error ? previous.contractEventsCacheTtlSec : payload.cacheTtlSec,
+          contractEventsTimeline: payload.error ? previous.contractEventsTimeline : payload.timeline,
         };
       });
       if (shouldRefreshFinalEvents) {
@@ -213,6 +218,7 @@ export default function ContractWhaleMonitor() {
         finalEventsProjectionLagSec: payload.error ? previous.finalEventsProjectionLagSec : payload.projectionLagSec,
         finalEventsCacheAgeSec: payload.error ? previous.finalEventsCacheAgeSec : payload.cacheAgeSec,
         finalEventsCacheTtlSec: payload.error ? previous.finalEventsCacheTtlSec : payload.cacheTtlSec,
+        finalEventsTimeline: payload.error ? previous.finalEventsTimeline : payload.timeline,
       }));
     };
 
@@ -594,13 +600,16 @@ export default function ContractWhaleMonitor() {
         retentionStatus={state.retentionStatus}
         eventsSyncLag={eventsSyncLag}
         latestSignalTs={latestSignalTs}
+        latestTimeline={state.latestTimeline}
         contractEventsLastEventTs={state.contractEventsLastEventTs}
         latestMaxTs={state.latestMaxTs}
         contractEventsMaxEventTs={state.contractEventsMaxEventTs}
         contractEventsLatestLagSec={state.contractEventsLatestLagSec}
         contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
+        contractEventsTimeline={state.contractEventsTimeline}
         finalEventsMaxEventTs={state.finalEventsMaxEventTs}
         finalEventsProjectionLagSec={state.finalEventsProjectionLagSec}
+        finalEventsTimeline={state.finalEventsTimeline}
         symbol={filters.symbol}
         summary={summary}
         platformCapabilities={platformCapabilities}
@@ -916,7 +925,9 @@ function deriveEventFeedDiagnostics({
   rawFlowDebug,
   latencyDebug,
   latestItems,
+  latestTimeline,
   finalEvents,
+  finalEventsTimeline,
   retentionStatus,
   eventsSyncLag,
   latestSignalTs,
@@ -925,6 +936,7 @@ function deriveEventFeedDiagnostics({
   contractEventsMaxEventTs,
   contractEventsLatestLagSec,
   contractEventsHistoryLagSec,
+  contractEventsTimeline,
   finalEventsMaxEventTs,
   finalEventsProjectionLagSec,
 }) {
@@ -951,15 +963,24 @@ function deriveEventFeedDiagnostics({
   const layeredHistoryAgeSec = Number(contractEventsHistoryLagSec ?? 0);
   const layeredFinalTs = Number(finalEventsMaxEventTs ?? 0) || null;
   const layeredProjectionLagSec = Number(finalEventsProjectionLagSec ?? 0);
+  const canonicalTimeline =
+    latencyDebug?.timeline || contractEventsTimeline || finalEventsTimeline || latestTimeline || null;
+  const canonicalViews = canonicalTimeline?.views || {};
   const showHistorySyncWarning = layeredHistoryLagSec > 15;
   const showProjectionSyncWarning = layeredProjectionLagSec > 10;
   const latencySummary = {
     diagnosisLayer: latencyDebug?.diagnosis?.layer || "ok",
     diagnosisReason: latencyDebug?.diagnosis?.reason || "within_target",
-    latestAgeSec: Number(latencyDebug?.latest?.ageSec ?? 0),
-    historyLagSec: Number(latencyDebug?.contractEvents?.lagSec ?? layeredHistoryAgeSec ?? 0),
-    finalLagSec: Number(latencyDebug?.finalEventsV2?.projectionLagSec ?? layeredProjectionLagSec ?? 0),
-    flowLagSec: Number(latencyDebug?.flow?.flowLagSec ?? 0),
+    canonicalSource: canonicalTimeline?.source || "none",
+    marketTimeTs: Number(canonicalTimeline?.eventTs ?? 0) || null,
+    processedTs: Number(canonicalTimeline?.processedTs ?? 0) || null,
+    persistedTs: Number(canonicalTimeline?.persistedTs ?? 0) || null,
+    servedTs: Number(canonicalTimeline?.servedTs ?? latencyDebug?.serverTime ?? 0) || null,
+    timelineLagSec: Number(canonicalTimeline?.timelineLagSec ?? 0),
+    latestDriftSec: Number(canonicalViews?.latest?.driftVsCanonicalSec ?? 0),
+    historyDriftSec: Number(canonicalViews?.history?.driftVsCanonicalSec ?? layeredHistoryLagSec ?? 0),
+    finalDriftSec: Number(canonicalViews?.finalEventsV2?.driftVsCanonicalSec ?? layeredProjectionLagSec ?? 0),
+    flowDriftSec: Number(canonicalViews?.flow?.driftVsCanonicalSec ?? 0),
     historyCacheAgeSec: latencyDebug?.contractEvents?.cacheAgeSec,
     finalCacheAgeSec: latencyDebug?.finalEventsV2?.cacheAgeSec,
   };
@@ -1019,7 +1040,9 @@ function HistoricalEventStreamPanel({
     debugCounts,
     rawFlowDebug,
     latestItems: [],
+    latestTimeline: null,
     finalEvents: { active: [], closed: [] },
+    finalEventsTimeline: null,
     retentionStatus: null,
     eventsSyncLag,
     latestSignalTs,
@@ -1028,6 +1051,7 @@ function HistoricalEventStreamPanel({
     contractEventsMaxEventTs,
     contractEventsLatestLagSec,
     contractEventsHistoryLagSec,
+    contractEventsTimeline: null,
     finalEventsMaxEventTs: null,
     finalEventsProjectionLagSec: null,
   });
@@ -1056,7 +1080,7 @@ function HistoricalEventStreamPanel({
           {debugCounts && !debugCounts.error ? (
             <p className="mt-1 text-[11px] text-cyan-200/90">
               历史可见 {diagnostics.visibleCount} 条 / 后端返回 {diagnostics.backendReturnedCount} 条。
-              {diagnostics.showLatestHistoryDriftHint ? " latest 与 history 非同一数据源，存在正常时间差。" : ""}
+              {diagnostics.showLatestHistoryDriftHint ? " 当前页面已改为 canonical timeline，对比时请以 Market Time 为准。" : ""}
             </p>
           ) : null}
           {diagnostics.showStaleLatestOnlyWarning ? (
@@ -1178,13 +1202,16 @@ function ContractWhaleSystemStatusPanel({
   retentionStatus,
   eventsSyncLag,
   latestSignalTs,
+  latestTimeline,
   contractEventsLastEventTs,
   latestMaxTs,
   contractEventsMaxEventTs,
   contractEventsLatestLagSec,
   contractEventsHistoryLagSec,
+  contractEventsTimeline,
   finalEventsMaxEventTs,
   finalEventsProjectionLagSec,
+  finalEventsTimeline,
   symbol,
   summary,
   platformCapabilities,
@@ -1197,7 +1224,9 @@ function ContractWhaleSystemStatusPanel({
     rawFlowDebug,
     latencyDebug,
     latestItems,
+    latestTimeline,
     finalEvents,
+    finalEventsTimeline,
     retentionStatus,
     eventsSyncLag,
     latestSignalTs,
@@ -1206,6 +1235,7 @@ function ContractWhaleSystemStatusPanel({
     contractEventsMaxEventTs,
     contractEventsLatestLagSec,
     contractEventsHistoryLagSec,
+    contractEventsTimeline,
     finalEventsMaxEventTs,
     finalEventsProjectionLagSec,
   });
@@ -1705,14 +1735,40 @@ function LatencyGuardPanel({ summary }) {
         <div>
           <p className="console-label text-fuchsia-200">LATENCY GUARD</p>
           <p className="mt-1 text-xs text-fuchsia-100/90">
-            当前瓶颈层：{summary.diagnosisLayer} · {summary.diagnosisReason}
+            当前 canonical timeline：{summary.canonicalSource} · 瓶颈层：{summary.diagnosisLayer} · {summary.diagnosisReason}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          <MiniInfoCard label="Latest" value={`latest ${formatLatencySeconds(summary.latestAgeSec)}`} detail="实时快照年龄" />
-          <MiniInfoCard label="History" value={`history ${formatLatencySeconds(summary.historyLagSec)}`} detail={summary.historyCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.historyCacheAgeSec)}` : "历史事件滞后"} />
-          <MiniInfoCard label="Final" value={`final ${formatLatencySeconds(summary.finalLagSec)}`} detail={summary.finalCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.finalCacheAgeSec)}` : "生命周期投影滞后"} />
-          <MiniInfoCard label="Flow" value={`flow ${formatLatencySeconds(summary.flowLagSec)}`} detail="原始流更新年龄" />
+          <MiniInfoCard
+            label="Market Time"
+            value={summary.marketTimeTs ? formatDateTime(summary.marketTimeTs) : "N/A"}
+            detail="canonical event_ts"
+          />
+          <MiniInfoCard
+            label="System Lag"
+            value={`lag ${formatLatencySeconds(summary.timelineLagSec)}`}
+            detail={summary.persistedTs ? `persisted ${formatDateTime(summary.persistedTs)}` : "served_ts - event_ts"}
+          />
+          <MiniInfoCard
+            label="Latest Drift"
+            value={`latest ${formatLatencySeconds(summary.latestDriftSec)}`}
+            detail="vs canonical"
+          />
+          <MiniInfoCard
+            label="History Drift"
+            value={`history ${formatLatencySeconds(summary.historyDriftSec)}`}
+            detail={summary.historyCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.historyCacheAgeSec)}` : "vs canonical"}
+          />
+          <MiniInfoCard
+            label="Final Drift"
+            value={`final ${formatLatencySeconds(summary.finalDriftSec)}`}
+            detail={summary.finalCacheAgeSec != null ? `cache ${formatLatencySeconds(summary.finalCacheAgeSec)}` : "vs canonical"}
+          />
+          <MiniInfoCard
+            label="Flow Drift"
+            value={`flow ${formatLatencySeconds(summary.flowDriftSec)}`}
+            detail="vs canonical"
+          />
         </div>
       </div>
     </div>

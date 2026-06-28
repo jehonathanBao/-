@@ -6,11 +6,12 @@ use axum::{middleware, routing::get, Router};
 use crate::{
     api::{
         active_trade_toxicity_routes, altcoin_routes, binance_alt_contract_routes,
-        btc_structure_routes, calibration_routes, contract_event_routes, contract_whale_routes,
-        dev_alert_routes, discord_notification_routes, durable_archive_dryrun_routes,
-        durable_archive_write_audit_routes, durable_archive_write_routes, final_event_routes,
-        fusion_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
-        main_force_event_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
+        btc_structure_routes, calibration_routes, contract_event_routes, contract_timeline_routes,
+        contract_whale_routes, dev_alert_routes, discord_notification_routes,
+        durable_archive_dryrun_routes, durable_archive_write_audit_routes,
+        durable_archive_write_routes, final_event_routes, fusion_routes,
+        liquidation_cascade_routes, liquidation_toxicity_routes, main_force_event_routes,
+        manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
         manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
         manual_evidence_freshness_routes, manual_governance_index_routes,
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
@@ -69,6 +70,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/contract-whale/latest",
             get(contract_whale_routes::contract_whale_latest_route),
+        )
+        .route(
+            "/api/contract-whale/timeline",
+            get(contract_timeline_routes::contract_whale_timeline_route),
         )
         .route(
             "/api/contract-whale/trading-decisions",

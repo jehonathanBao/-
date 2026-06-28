@@ -2165,6 +2165,22 @@ describe("ContractWhaleMonitor", () => {
       symbol: "BTC",
       range: "24h",
       serverTime: 1_700_000_060_500,
+      timeline: {
+        symbol: "BTC",
+        range: "24h",
+        source: "contract_whale_signals",
+        eventTs: 1_700_000_030_000,
+        processedTs: 1_700_000_054_000,
+        persistedTs: 1_700_000_052_000,
+        servedTs: 1_700_000_060_500,
+        timelineLagSec: 30,
+        views: {
+          latest: { count: 8, maxEventTs: 1_700_000_050_000, driftVsCanonicalSec: 20 },
+          history: { count: 6, maxEventTs: 1_700_000_030_000, driftVsCanonicalSec: 0 },
+          finalEventsV2: { count: 6, maxEventTs: 1_700_000_020_000, driftVsCanonicalSec: 10 },
+          flow: { updatedAt: 1_700_000_058_000, driftVsCanonicalSec: 28 },
+        },
+      },
       latest: {
         count: 8,
         maxTs: 1_700_000_050_000,
@@ -2204,9 +2220,11 @@ describe("ContractWhaleMonitor", () => {
     expect(await screen.findByText(/LATENCY GUARD/i)).toBeInTheDocument();
     expect(screen.getByText(/final_events_v2/i)).toBeInTheDocument();
     expect(screen.getByText(/projection_lagging_history/i)).toBeInTheDocument();
-    expect(screen.getByText(/latest 12 秒/i)).toBeInTheDocument();
-    expect(screen.getByText(/history 30 秒/i)).toBeInTheDocument();
-    expect(screen.getByText(/final 30 秒/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Market Time/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/^System Lag$/i)).toBeInTheDocument();
+    expect(screen.getByText(/lag 30 秒/i)).toBeInTheDocument();
+    expect(screen.getByText(/latest 20 秒/i)).toBeInTheDocument();
+    expect(screen.getByText(/history 0 秒/i)).toBeInTheDocument();
   });
 
   it("shows contract event debug counts and explains latest versus history drift", async () => {

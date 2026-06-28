@@ -100,6 +100,55 @@ async fn contract_events_expose_latency_metadata_fields() {
     assert!(payload["latestLagSec"].as_i64().is_some());
     assert!(payload["cacheAgeSec"].as_i64().is_some());
     assert!(payload["cacheTtlSec"].as_i64().is_some());
+    assert!(payload["timeline"].is_object());
+    assert_eq!(payload["timeline"]["source"], "contract_whale_signals");
+    assert_eq!(payload["timeline"]["eventTs"], payload["maxEventTs"]);
+    assert!(payload["timeline"]["timelineLagSec"].as_i64().is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_timeline_route_reports_single_canonical_event_clock() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-whale/timeline?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("timeline response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("timeline json");
+    assert_eq!(payload["symbol"], "BTC");
+    assert_eq!(payload["range"], "24h");
+    assert_eq!(payload["source"], "contract_whale_signals");
+    assert!(payload["eventTs"].as_i64().is_some());
+    assert!(payload["processedTs"].as_i64().is_some());
+    assert!(payload["servedTs"].as_i64().is_some());
+    assert!(payload["timelineLagSec"].as_i64().is_some());
+    assert_eq!(
+        payload["views"]["history"]["maxEventTs"],
+        payload["eventTs"]
+    );
+    assert_eq!(
+        payload["views"]["finalEventsV2"]["maxEventTs"],
+        payload["eventTs"]
+    );
+    assert!(payload["views"]["latest"]["driftVsCanonicalSec"]
+        .as_i64()
+        .is_some());
 
     server.abort();
 }
@@ -174,6 +223,8 @@ async fn contract_whale_latest_exposes_staleness_summary_metadata() {
     assert!(payload["maxTs"].as_i64().is_some());
     assert!(payload["maxAgeSec"].as_i64().is_some());
     assert!(payload["staleCount"].as_u64().is_some());
+    assert!(payload["timeline"].is_object());
+    assert!(payload["timeline"]["timelineLagSec"].as_i64().is_some());
 
     server.abort();
 }
@@ -304,6 +355,9 @@ async fn final_events_v2_expose_projection_latency_metadata() {
     assert!(payload["cacheAgeSec"].as_i64().is_some());
     assert!(payload["cacheTtlSec"].as_i64().is_some());
     assert!(payload["projectionLagSec"].as_i64().is_some());
+    assert!(payload["timeline"].is_object());
+    assert_eq!(payload["timeline"]["source"], "contract_whale_signals");
+    assert_eq!(payload["timeline"]["eventTs"], payload["maxEventTs"]);
 
     server.abort();
 }
@@ -352,6 +406,53 @@ async fn final_events_v2_reuses_recent_projection_within_cache_ttl() {
     assert_eq!(second_generated_at, first_generated_at);
     assert!(second_payload["cacheAgeSec"].as_i64().unwrap_or_default() >= 0);
     assert_eq!(second_payload["cacheTtlSec"], 10);
+    assert!(second_payload["timeline"].is_object());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_and_final_events_v2_share_same_timeline_event_ts() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let contract_events = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+    let final_events = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("final events response");
+
+    assert_eq!(contract_events.status(), StatusCode::OK);
+    assert_eq!(final_events.status(), StatusCode::OK);
+    let contract_events_payload: serde_json::Value =
+        contract_events.json().await.expect("contract events json");
+    let final_events_payload: serde_json::Value =
+        final_events.json().await.expect("final events json");
+    assert_eq!(
+        contract_events_payload["timeline"]["eventTs"],
+        final_events_payload["timeline"]["eventTs"]
+    );
+    assert_eq!(
+        contract_events_payload["timeline"]["source"],
+        final_events_payload["timeline"]["source"]
+    );
 
     server.abort();
 }

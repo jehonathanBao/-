@@ -291,6 +291,7 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxTs: numberOrNull(response.data?.maxTs ?? response.data?.max_ts),
       maxAgeSec: numberOrNull(response.data?.maxAgeSec ?? response.data?.max_age_sec),
       staleCount: numberOrNull(response.data?.staleCount ?? response.data?.stale_count),
+      timeline: normalizeCanonicalTimeline(response.data?.timeline),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
@@ -302,9 +303,27 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxTs: null,
       maxAgeSec: null,
       staleCount: null,
+      timeline: null,
       meta: null,
       error: "latest_unavailable",
     };
+  }
+}
+
+export async function fetchContractWhaleTimeline(filters = {}) {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const query = buildContractWhaleQuery({
+      symbol: filters.symbol || "BTC",
+      range: filters.range ?? "24h",
+      limit: filters.limit ?? 100,
+    });
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/timeline?${query}`, {
+      timeoutMs: 4_000,
+    });
+    return normalizeCanonicalTimelineResponse(response.data, filters);
+  } catch {
+    return normalizeCanonicalTimelineResponse(null, filters, "timeline_unavailable");
   }
 }
 
@@ -422,6 +441,7 @@ export async function fetchContractEvents(filters = {}) {
       latestLagSec: numberOrNull(response.data?.latestLagSec ?? response.data?.latest_lag_sec),
       cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
       cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
+      timeline: normalizeCanonicalTimeline(response.data?.timeline),
       error: null,
     };
   } catch {
@@ -439,6 +459,7 @@ export async function fetchContractEvents(filters = {}) {
       latestLagSec: null,
       cacheAgeSec: null,
       cacheTtlSec: null,
+      timeline: null,
       error: "contract_events_unavailable",
     };
   }
@@ -577,6 +598,7 @@ export async function fetchFinalEventsV2(filters = {}) {
       cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
       cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       projectionLagSec: numberOrNull(response.data?.projectionLagSec ?? response.data?.projection_lag_sec),
+      timeline: normalizeCanonicalTimeline(response.data?.timeline),
       error: null,
     };
   } catch {
@@ -594,6 +616,7 @@ export async function fetchFinalEventsV2(filters = {}) {
       cacheAgeSec: null,
       cacheTtlSec: null,
       projectionLagSec: null,
+      timeline: null,
       error: "final_events_v2_unavailable",
     };
   }
@@ -613,6 +636,7 @@ export async function fetchContractWhaleLatencyDebug(filters = {}) {
       symbol: String(response.data?.symbol || filters.symbol || "BTC"),
       range: String(response.data?.range || filters.range || "24h"),
       serverTime: numberOrNull(response.data?.serverTime ?? response.data?.server_time),
+      timeline: normalizeCanonicalTimelineResponse(response.data?.timeline, filters),
       latest: response.data?.latest || null,
       contractEvents: response.data?.contractEvents ?? response.data?.contract_events ?? null,
       finalEventsV2: response.data?.finalEventsV2 ?? response.data?.final_events_v2 ?? null,
@@ -625,6 +649,7 @@ export async function fetchContractWhaleLatencyDebug(filters = {}) {
       symbol: String(filters.symbol || "BTC"),
       range: String(filters.range || "24h"),
       serverTime: null,
+      timeline: normalizeCanonicalTimelineResponse(null, filters),
       latest: null,
       contractEvents: null,
       finalEventsV2: null,
@@ -1823,6 +1848,59 @@ function normalizeResponseMeta(meta) {
     marketType: meta.marketType ? String(meta.marketType).toLowerCase() : null,
     exchangeStatus: meta.exchangeStatus ? String(meta.exchangeStatus).toLowerCase() : null,
     reason: meta.reason ? String(meta.reason).toLowerCase() : null,
+  };
+}
+
+function normalizeCanonicalTimeline(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  return {
+    source: meta.source ? String(meta.source) : "none",
+    eventTs: numberOrNull(meta.eventTs ?? meta.event_ts),
+    processedTs: numberOrNull(meta.processedTs ?? meta.processed_ts),
+    persistedTs: numberOrNull(meta.persistedTs ?? meta.persisted_ts),
+    servedTs: numberOrNull(meta.servedTs ?? meta.served_ts),
+    timelineLagSec: numberOrNull(meta.timelineLagSec ?? meta.timeline_lag_sec) ?? 0,
+  };
+}
+
+function normalizeCanonicalTimelineView(view) {
+  const source = view && typeof view === "object" ? view : {};
+  return {
+    count: numberOrNull(source.count) ?? 0,
+    maxEventTs: numberOrNull(source.maxEventTs ?? source.max_event_ts),
+    driftVsCanonicalSec: numberOrNull(source.driftVsCanonicalSec ?? source.drift_vs_canonical_sec) ?? 0,
+    cacheAgeSec: numberOrNull(source.cacheAgeSec ?? source.cache_age_sec),
+    cacheTtlSec: numberOrNull(source.cacheTtlSec ?? source.cache_ttl_sec),
+    generatedAt: numberOrNull(source.generatedAt ?? source.generated_at),
+  };
+}
+
+function normalizeCanonicalTimelineFlowView(view) {
+  const source = view && typeof view === "object" ? view : {};
+  return {
+    updatedAt: numberOrNull(source.updatedAt ?? source.updated_at),
+    driftVsCanonicalSec: numberOrNull(source.driftVsCanonicalSec ?? source.drift_vs_canonical_sec) ?? 0,
+  };
+}
+
+function normalizeCanonicalTimelineResponse(payload, filters = {}, fallbackError = null) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  return {
+    symbol: String(source.symbol || filters.symbol || "BTC"),
+    range: String(source.range || filters.range || "24h"),
+    source: source.source ? String(source.source) : "none",
+    eventTs: numberOrNull(source.eventTs ?? source.event_ts),
+    processedTs: numberOrNull(source.processedTs ?? source.processed_ts),
+    persistedTs: numberOrNull(source.persistedTs ?? source.persisted_ts),
+    servedTs: numberOrNull(source.servedTs ?? source.served_ts),
+    timelineLagSec: numberOrNull(source.timelineLagSec ?? source.timeline_lag_sec) ?? 0,
+    views: {
+      latest: normalizeCanonicalTimelineView(source.views?.latest),
+      history: normalizeCanonicalTimelineView(source.views?.history),
+      finalEventsV2: normalizeCanonicalTimelineView(source.views?.finalEventsV2 ?? source.views?.final_events_v2),
+      flow: normalizeCanonicalTimelineFlowView(source.views?.flow),
+    },
+    error: fallbackError || source.error || null,
   };
 }
 

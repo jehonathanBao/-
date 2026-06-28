@@ -11,6 +11,10 @@ use serde::Deserialize;
 
 use crate::{
     api::contract_event_routes::{contract_event_page_for_query, final_events_v2_for_query},
+    api::contract_timeline_routes::{
+        build_contract_whale_timeline_response, canonical_timeline_meta_for_signal_range,
+        ContractWhaleTimelineResponse,
+    },
     app::AppState,
     config::AppConfig,
     contract_whale_monitor::{
@@ -172,6 +176,7 @@ struct ContractWhaleLatencyDebugResponse {
     symbol: String,
     range: String,
     server_time: i64,
+    timeline: ContractWhaleTimelineResponse,
     latest: ContractWhaleLatencyLatestDebug,
     contract_events: ContractWhaleLatencyLayerDebug,
     final_events_v2: ContractWhaleLatencyProjectionDebug,
@@ -442,6 +447,8 @@ pub async fn contract_whale_latest_route(
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
         return Ok(Json(with_latest_stale_annotations(
+            &state,
+            &symbol,
             response,
             stale_after_ts,
             range.as_deref(),
@@ -460,6 +467,8 @@ pub async fn contract_whale_latest_route(
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
         return Ok(Json(with_latest_stale_annotations(
+            &state,
+            &symbol,
             response,
             stale_after_ts,
             range.as_deref(),
@@ -478,6 +487,8 @@ pub async fn contract_whale_latest_route(
     );
     enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
     Ok(Json(with_latest_stale_annotations(
+        &state,
+        &symbol,
         response,
         stale_after_ts,
         range.as_deref(),
@@ -1537,6 +1548,7 @@ pub async fn contract_whale_latency_debug_route(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     let stale_after_ts = parse_range_start_ms(Some(&range))?;
     let now = now_ms();
+    let timeline = build_contract_whale_timeline_response(&state, &symbol, &range, 100)?;
 
     let latest_rows = state
         .contract_whale_store()
@@ -1593,6 +1605,7 @@ pub async fn contract_whale_latency_debug_route(
             symbol: symbol.clone(),
             range: range.clone(),
             server_time: now,
+            timeline,
             latest: ContractWhaleLatencyLatestDebug {
                 count: latest_debug.latest_count,
                 max_ts: latest_max_ts,
@@ -2532,6 +2545,8 @@ fn diagnose_contract_whale_latency(
 }
 
 fn with_latest_stale_annotations(
+    state: &AppState,
+    symbol: &str,
     response: ContractWhaleLatestResponse,
     stale_after_ts: Option<i64>,
     range_label: Option<&str>,
@@ -2588,6 +2603,14 @@ fn with_latest_stale_annotations(
         .unwrap_or(serde_json::Value::Null);
     value["maxAgeSec"] = serde_json::json!(latest_debug.max_age_sec);
     value["staleCount"] = serde_json::json!(latest_debug.stale_count);
+    let timeline = canonical_timeline_meta_for_signal_range(
+        state,
+        symbol,
+        range_label.unwrap_or("24h"),
+        now,
+        max_ts,
+    );
+    value["timeline"] = serde_json::to_value(timeline).unwrap_or(serde_json::Value::Null);
     value
 }
 
@@ -4498,7 +4521,7 @@ pub fn parse_history_query(
     })
 }
 
-fn parse_symbol_for_latest(
+pub(crate) fn parse_symbol_for_latest(
     symbol: Option<&str>,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     Ok(parse_symbol_filter(symbol)?.unwrap_or_else(|| "BTC".to_string()))

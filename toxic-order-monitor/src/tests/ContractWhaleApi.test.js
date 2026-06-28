@@ -993,12 +993,20 @@ describe("contract whale api", () => {
         ],
         nextCursor: "100",
         hasMore: true,
-        limit: 100,
-        range: "24h",
-        serverTime: 1_700_000_100_000,
-        lastEventTs: 1_700_000_000_000,
+      limit: 100,
+      range: "24h",
+      serverTime: 1_700_000_100_000,
+      lastEventTs: 1_700_000_000_000,
+      timeline: {
+        source: "contract_whale_signals",
+        eventTs: 1_700_000_050_000,
+        persistedTs: 1_700_000_060_000,
+        processedTs: 1_700_000_060_000,
+        servedTs: 1_700_000_100_000,
+        timelineLagSec: 50,
       },
-    });
+    },
+  });
 
     const payload = await fetchContractEvents({ symbol: "BTC", range: "24h", limit: 100 });
 
@@ -1028,6 +1036,11 @@ describe("contract whale api", () => {
       range: "24h",
       serverTime: 1_700_000_100_000,
       lastEventTs: 1_700_000_000_000,
+      timeline: expect.objectContaining({
+        source: "contract_whale_signals",
+        eventTs: 1_700_000_050_000,
+        timelineLagSec: 50,
+      }),
     });
   });
 
@@ -1157,6 +1170,14 @@ describe("contract whale api", () => {
         range: "24h",
         serverTime: 1_700_000_200_000,
         lastEventTs: 1_700_000_010_000,
+        timeline: {
+          source: "contract_whale_signals",
+          eventTs: 1_700_000_010_000,
+          processedTs: 1_700_000_200_000,
+          persistedTs: 1_700_000_010_000,
+          servedTs: 1_700_000_200_000,
+          timelineLagSec: 190,
+        },
       },
     });
 
@@ -1175,6 +1196,10 @@ describe("contract whale api", () => {
       range: "24h",
       serverTime: 1_700_000_200_000,
       lastEventTs: 1_700_000_010_000,
+      timeline: expect.objectContaining({
+        source: "contract_whale_signals",
+        eventTs: 1_700_000_010_000,
+      }),
     });
   });
 
@@ -1187,6 +1212,14 @@ describe("contract whale api", () => {
         maxTs: 1_700_000_290_000,
         maxAgeSec: 10,
         staleCount: 2,
+        timeline: {
+          source: "contract_whale_signals",
+          eventTs: 1_700_000_280_000,
+          processedTs: 1_700_000_290_000,
+          persistedTs: 1_700_000_285_000,
+          servedTs: 1_700_000_300_000,
+          timelineLagSec: 20,
+        },
       },
     });
 
@@ -1197,6 +1230,11 @@ describe("contract whale api", () => {
       maxTs: 1_700_000_290_000,
       maxAgeSec: 10,
       staleCount: 2,
+      timeline: expect.objectContaining({
+        source: "contract_whale_signals",
+        eventTs: 1_700_000_280_000,
+        timelineLagSec: 20,
+      }),
     });
   });
 
@@ -1206,6 +1244,22 @@ describe("contract whale api", () => {
         symbol: "BTC",
         range: "1h",
         serverTime: 1_700_000_300_000,
+        timeline: {
+          symbol: "BTC",
+          range: "1h",
+          source: "contract_whale_signals",
+          eventTs: 1_700_000_298_000,
+          processedTs: 1_700_000_299_500,
+          persistedTs: 1_700_000_299_000,
+          servedTs: 1_700_000_300_000,
+          timelineLagSec: 2,
+          views: {
+            latest: { count: 2, maxEventTs: 1_700_000_299_000, driftVsCanonicalSec: 1 },
+            history: { count: 2, maxEventTs: 1_700_000_298_000, driftVsCanonicalSec: 0 },
+            finalEventsV2: { count: 1, maxEventTs: 1_700_000_296_000, driftVsCanonicalSec: 2 },
+            flow: { updatedAt: 1_700_000_299_500, driftVsCanonicalSec: 1 },
+          },
+        },
         latest: { count: 2, maxTs: 1_700_000_299_000, ageSec: 1, staleCount: 0 },
         contractEvents: { count: 2, maxEventTs: 1_700_000_298_000, lagVsLatestSec: 1 },
         finalEventsV2: { activeCount: 1, closedCount: 0, projectionLagSec: 2 },
@@ -1224,6 +1278,13 @@ describe("contract whale api", () => {
       symbol: "BTC",
       range: "1h",
       serverTime: 1_700_000_300_000,
+      timeline: expect.objectContaining({
+        source: "contract_whale_signals",
+        timelineLagSec: 2,
+        views: expect.objectContaining({
+          latest: expect.objectContaining({ driftVsCanonicalSec: 1 }),
+        }),
+      }),
       latest: expect.objectContaining({ ageSec: 1 }),
       contractEvents: expect.objectContaining({ lagVsLatestSec: 1 }),
       finalEventsV2: expect.objectContaining({ projectionLagSec: 2 }),

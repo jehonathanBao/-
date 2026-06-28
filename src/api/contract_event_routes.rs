@@ -8,6 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    api::contract_timeline_routes::{build_canonical_timeline_meta, CanonicalTimelineMeta},
     api::contract_whale_routes::{
         build_contract_whale_items_response, decorate_price_deviation_signals,
         encode_contract_history_cursor, parse_history_query, ContractWhaleQuery,
@@ -87,6 +88,7 @@ pub struct ContractEventPage {
     pub latest_lag_sec: i64,
     pub cache_age_sec: i64,
     pub cache_ttl_sec: i64,
+    pub timeline: CanonicalTimelineMeta,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +107,7 @@ pub struct FinalEventsV2Response {
     pub cache_age_sec: i64,
     pub cache_ttl_sec: i64,
     pub projection_lag_sec: i64,
+    pub timeline: CanonicalTimelineMeta,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -380,6 +383,13 @@ pub(crate) fn contract_event_page_for_query(
         latest_lag_sec,
         cache_age_sec,
         cache_ttl_sec: 5,
+        timeline: build_canonical_timeline_meta(
+            "contract_whale_signals",
+            max_event_ts,
+            max_persisted_at,
+            max_persisted_at.or(max_event_ts),
+            now,
+        ),
     })
 }
 
@@ -396,10 +406,7 @@ pub(crate) fn final_events_v2_for_query(
     let history_query = parse_history_query(&query)?;
     let now = now_ms();
     if let Some((cached_at_ms, mut response)) = state.cached_final_events_v2(&cache_key) {
-        let cache_age_sec = now
-            .saturating_sub(cached_at_ms)
-            .max(0)
-            .saturating_div(1000);
+        let cache_age_sec = now.saturating_sub(cached_at_ms).max(0).saturating_div(1000);
         if cache_age_sec <= FINAL_EVENTS_V2_CACHE_TTL_SEC {
             response.server_time = now;
             response.cache_age_sec = cache_age_sec;
@@ -408,6 +415,13 @@ pub(crate) fn final_events_v2_for_query(
                 .max_event_ts
                 .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
                 .unwrap_or(0);
+            response.timeline = build_canonical_timeline_meta(
+                "contract_whale_signals",
+                response.max_event_ts,
+                response.timeline.persisted_ts.or(response.max_event_ts),
+                Some(response.generated_at),
+                now,
+            );
             return Ok(response);
         }
     }
@@ -462,6 +476,13 @@ pub(crate) fn final_events_v2_for_query(
         projection_lag_sec: max_event_ts
             .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
             .unwrap_or(0),
+        timeline: build_canonical_timeline_meta(
+            "contract_whale_signals",
+            max_event_ts,
+            max_event_ts,
+            Some(now),
+            now,
+        ),
     };
     state.store_final_events_v2_cache(cache_key, now, response.clone());
     Ok(response)
