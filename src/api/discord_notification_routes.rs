@@ -1650,9 +1650,7 @@ fn market_structure_trigger(
     if market_structure_extreme_score(signal) >= gate.min_extreme_score {
         return Some(MarketStructureTrigger::ExtremeImpact);
     }
-    if market_structure_impact_level_score(signal)
-        .is_some_and(|score| score >= gate.min_extreme_score)
-    {
+    if market_structure_impact_level_score(signal).is_some() {
         return Some(MarketStructureTrigger::ImpactLevel);
     }
     None
@@ -1697,6 +1695,7 @@ fn market_structure_impact_level(signal: &DiscordNotificationRequest) -> Option<
     match level.as_str() {
         "S" => Some("S"),
         "A" => Some("A"),
+        "B" => Some("B"),
         _ => None,
     }
 }
@@ -1705,6 +1704,7 @@ fn market_structure_impact_level_score(signal: &DiscordNotificationRequest) -> O
     match market_structure_impact_level(signal)? {
         "S" => Some(95),
         "A" => Some(85),
+        "B" => Some(80),
         _ => None,
     }
 }

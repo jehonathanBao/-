@@ -401,6 +401,28 @@ fn market_structure_impact_level_a_enters_discord_gate_without_extreme_score() {
 }
 
 #[test]
+fn market_structure_impact_level_b_enters_discord_gate_without_extreme_score() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    set_market_structure_env();
+
+    let mut request = high_request();
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("B".to_string());
+    request.main_force_score = Some(54);
+    request.market_structure_confidence = Some(52.0);
+    request.market_structure_data_quality = Some(76.0);
+    request.extreme_impact_score = Some(64);
+    request.impact_level = Some("B".to_string());
+
+    let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "passed");
+    assert_eq!(decision.score, 80);
+
+    clear_alert_env();
+}
+
+#[test]
 fn market_structure_discord_payload_uses_main_force_wording() {
     let mut request = high_request();
     request.alert_family = Some("market_structure".to_string());
