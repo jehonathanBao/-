@@ -10,12 +10,12 @@ pub struct MarketBiasSnapshot {
 pub fn derive_market_bias(setups: &[ContractWhaleTradingSetup]) -> MarketBiasSnapshot {
     let long_score: u32 = setups
         .iter()
-        .filter(|setup| setup.direction == "LONG")
+        .filter(|setup| setup.direction_bias == "BULLISH_BIAS")
         .map(|setup| u32::from(setup.score))
         .sum();
     let short_score: u32 = setups
         .iter()
-        .filter(|setup| setup.direction == "SHORT")
+        .filter(|setup| setup.direction_bias == "BEARISH_BIAS")
         .map(|setup| u32::from(setup.score))
         .sum();
     let total = long_score + short_score;

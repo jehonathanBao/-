@@ -17,6 +17,10 @@ use crate::contract_whale_monitor::{
         ContractWhaleTradingEntryZone, ContractWhaleTradingInvalidation,
     },
 };
+use crate::semantic::{
+    contract::{SemanticRiskState, SemanticType},
+    decision_sanitizer::{direction_bias_from_trading_direction, sanitize_decision_copy},
+};
 
 pub fn build_trade_ideas(
     items: &[ContractWhaleSignal],
@@ -46,11 +50,7 @@ pub fn build_trade_ideas(
             continue;
         }
         let direction = classify_direction(signal, score);
-        let direction_bias = match direction {
-            TradingDirection::Long => "BULLISH_BIAS",
-            TradingDirection::Short => "BEARISH_BIAS",
-            TradingDirection::NoTrade => "NEUTRAL_BIAS",
-        };
+        let direction_bias = direction_bias_from_trading_direction(direction);
         if direction == TradingDirection::NoTrade {
             continue;
         }
@@ -61,6 +61,8 @@ pub fn build_trade_ideas(
         }
         let confidence = recalibrated_confidence(signal, score, liquidity_behavior);
         let candidate = ContractWhaleTradeIdea {
+            semantic_type: SemanticType::DecisionSupport,
+            risk_state: SemanticRiskState::Low,
             signal_id: signal.id.clone(),
             rank: 0,
             setup_type: setup_family.to_string(),
@@ -68,9 +70,9 @@ pub fn build_trade_ideas(
             score,
             confidence,
             confidence_label: confidence_label(confidence).to_string(),
-            entry_zone: build_entry_zone(signal),
-            invalidation: build_invalidation(signal, direction),
-            structure_context: ranked_event.rationale.clone(),
+            pressure_zone: build_entry_zone(signal),
+            risk_boundary: build_invalidation(signal, direction),
+            structure_context: sanitize_decision_copy(&ranked_event.rationale),
             regime_context: regime_context.clone(),
             window_sec: signal.window_sec,
         };
@@ -165,12 +167,12 @@ fn build_invalidation(
     };
     let reason = match direction {
         TradingDirection::Long => "跌破主力吸收参考位，说明当前结构支持减弱。",
-        TradingDirection::Short => "重新站回压制参考位上方，说明当前压制结构失效。",
+        TradingDirection::Short => "重新站回压制参考位上方，说明当前压制结构减弱。",
         TradingDirection::NoTrade => "当前仅作观察，不构成结构失效线。",
     };
     ContractWhaleTradingInvalidation {
         price_level,
-        reason: reason.to_string(),
+        reason: sanitize_decision_copy(reason),
     }
 }
 

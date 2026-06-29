@@ -1,14 +1,12 @@
-use crate::contract_whale_monitor::types::{
-    ContractWhalePriceResponseType, ContractWhaleSignal,
-};
+use crate::contract_whale_monitor::types::{ContractWhalePriceResponseType, ContractWhaleSignal};
 
 pub fn score_signal(signal: &ContractWhaleSignal) -> u8 {
-    let volume_strength =
-        (f64::from(signal.main_force_score.unwrap_or(signal.score)) / 100.0 * 25.0).clamp(0.0, 25.0);
+    let volume_strength = (f64::from(signal.main_force_score.unwrap_or(signal.score)) / 100.0
+        * 25.0)
+        .clamp(0.0, 25.0);
     let price_response = price_response_points(signal.price_response_type, signal.price_move_pct);
     let dominance = (signal.dominance.clamp(0.0, 1.0) * 20.0).clamp(0.0, 20.0);
-    let persistence =
-        ((signal.event_lifecycle.update_count.max(1) as f64) * 5.0).clamp(5.0, 15.0);
+    let persistence = ((signal.event_lifecycle.update_count.max(1) as f64) * 5.0).clamp(5.0, 15.0);
     let consistency = if signal.multi_exchange_confirmed && !signal.merged_from.is_empty() {
         15.0
     } else if signal.multi_exchange_confirmed || !signal.merged_from.is_empty() {

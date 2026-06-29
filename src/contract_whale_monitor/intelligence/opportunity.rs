@@ -54,9 +54,7 @@ pub fn derive_opportunity_map(
                     strength_score: score_signal_strength(signal),
                     description: format!(
                         "{} · {} · {}",
-                        regime.regime,
-                        event.event_type,
-                        event.rationale
+                        regime.regime, event.event_type, event.rationale
                     ),
                 },
             );

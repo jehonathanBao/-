@@ -746,6 +746,7 @@ fn decorate_item_with_tof(item: &mut serde_json::Value, cwm_signal: Option<&Cont
         data_quality: Some(advanced_data_quality),
         reason: Some(summary),
         impact: None,
+        impact_level: None,
         time: None,
         price_range: None,
         add_qty: None,

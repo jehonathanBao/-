@@ -10,6 +10,11 @@ use crate::contract_whale_monitor::types::{
     ContractWhaleTradingDecisionResponse, ContractWhaleTradingEntryZone,
     ContractWhaleTradingInvalidation, ContractWhaleTradingSetup,
 };
+use crate::semantic::{
+    contract::{SemanticRiskState, SemanticType},
+    decision_sanitizer::{direction_bias_from_trading_direction, sanitize_decision_copy},
+    enforcement::risk_state_from_context,
+};
 
 use self::{
     bias::derive_market_bias,
@@ -20,6 +25,9 @@ use self::{
     },
     noise_filter::{evaluate_tradeability, to_no_trade_zone},
     scoring::{confidence_label, score_signal},
+};
+use crate::contract_whale_monitor::intelligence::{
+    liquidity::derive_liquidity_behaviors, risk::build_risk_context,
 };
 
 pub fn build_trading_decision_response(
@@ -64,17 +72,19 @@ pub fn build_trading_decision_response(
 
         let confidence = recalibrated_confidence(signal, score, liquidity_behavior);
         top_setups.push(ContractWhaleTradingSetup {
+            semantic_type: SemanticType::DecisionSupport,
+            risk_state: SemanticRiskState::Low,
             signal_id: signal.id.clone(),
             rank: 0,
-            direction: direction.as_str().to_string(),
+            direction_bias: direction_bias_from_trading_direction(direction).to_string(),
             setup_type: setup_type_label(signal.signal_type).to_string(),
             score,
             confidence,
             confidence_label: confidence_label(confidence).to_string(),
             regime_context: regime_context_label(market_structure_lite),
             window_sec: signal.window_sec,
-            entry_zone: build_entry_zone(signal),
-            invalidation: build_invalidation(signal, direction),
+            pressure_zone: build_entry_zone(signal),
+            risk_boundary: build_invalidation(signal, direction),
             reasons: build_reasons(signal),
         });
     }
@@ -100,10 +110,10 @@ pub fn build_trading_decision_response(
                 };
                 should_prune_similar_setup(
                     kept_signal,
-                    &kept.direction,
+                    &kept.direction_bias,
                     kept.score,
                     candidate_signal,
-                    &setup.direction,
+                    &setup.direction_bias,
                     setup.score,
                 )
             });
@@ -120,8 +130,22 @@ pub fn build_trading_decision_response(
         setup.rank = index + 1;
     }
 
+    let risk_context = build_risk_context(items, &derive_liquidity_behaviors(items));
+    let risk_state = risk_state_from_context(&risk_context);
+    for setup in &mut top_setups {
+        setup.risk_state = risk_state;
+    }
+    if risk_state.suppresses_decision_support() {
+        top_setups.clear();
+    }
+    for zone in risk_context.no_trade_zones {
+        push_unique_no_trade_zone(&mut no_trade_zones, zone);
+    }
+
     let bias = derive_market_bias(&top_setups);
     ContractWhaleTradingDecisionResponse {
+        semantic_type: SemanticType::DecisionSupport,
+        risk_state,
         symbol: symbol.to_string(),
         timestamp,
         market_bias: bias.market_bias,
@@ -170,13 +194,13 @@ fn build_invalidation(
         TradingDirection::NoTrade => round2(anchor),
     };
     let reason = match direction {
-        TradingDirection::Long => "跌破主力吸收参考位，说明顺势跟随失效。",
-        TradingDirection::Short => "重新站回压制参考位上方，说明顺势做空失效。",
-        TradingDirection::NoTrade => "当前仅作观察，不构成交易失效线。",
+        TradingDirection::Long => "跌破主力吸收参考位，说明顺势跟随结构减弱。",
+        TradingDirection::Short => "重新站回压制参考位上方，说明压制结构减弱。",
+        TradingDirection::NoTrade => "当前仅作观察，不构成结构风险边界。",
     };
     ContractWhaleTradingInvalidation {
         price_level,
-        reason: reason.to_string(),
+        reason: sanitize_decision_copy(reason),
     }
 }
 
@@ -197,9 +221,12 @@ fn build_reasons(signal: &ContractWhaleSignal) -> Vec<String> {
         }
     }
     if reasons.is_empty() {
-        reasons.push("结构分数满足交易观察阈值".to_string());
+        reasons.push("结构分数满足决策辅助观察阈值".to_string());
     }
     reasons
+        .into_iter()
+        .map(|reason| sanitize_decision_copy(&reason))
+        .collect()
 }
 
 fn regime_context_label(market_structure_lite: &ContractWhaleMarketStructureLite) -> String {

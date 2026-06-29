@@ -186,23 +186,25 @@ vi.mock("../api/contractWhale.js", () => ({
       },
       topSetups: [
         {
+          semanticType: "decision_support",
+          riskState: "low",
           signalId: "contract-whale-row",
           rank: 1,
-          direction: "LONG",
+          directionBias: "BULLISH_BIAS",
           setupType: "主力拉盘",
           score: 87,
           confidence: 79,
           confidenceLabel: "HIGH",
           regimeContext: "main_force_long_build",
           windowSec: 15,
-          entryZone: {
+          pressureZone: {
             lowPrice: 69810,
             highPrice: 69950,
             label: "69,810 - 69,950",
           },
-          invalidation: {
+          riskBoundary: {
             priceLevel: 69640,
-            reason: "跌破主力吸收参考位，说明顺势跟随失效。",
+            reason: "跌破主力吸收参考位，说明顺势跟随结构减弱。",
           },
           reasons: ["多窗口主买一致", "价格顺势跟随", "双交易所确认"],
         },
@@ -307,6 +309,8 @@ vi.mock("../api/contractWhale.js", () => ({
       },
       tradeIdeas: [
         {
+          semanticType: "decision_support",
+          riskState: "low",
           signalId: "contract-whale-row",
           rank: 1,
           setupType: "Absorption continuation",
@@ -314,12 +318,12 @@ vi.mock("../api/contractWhale.js", () => ({
           score: 87,
           confidence: 84,
           confidenceLabel: "HIGH",
-          entryZone: {
+          pressureZone: {
             lowPrice: 69810,
             highPrice: 69950,
             label: "69,810 - 69,950",
           },
-          invalidation: {
+          riskBoundary: {
             priceLevel: 69640,
             reason: "跌破主力吸收参考位，说明当前结构支持减弱。",
           },
@@ -1278,7 +1282,7 @@ describe("ContractWhaleMonitor", () => {
 
     const historical = await screen.findByText("HISTORICAL EVENTS (24h stream)");
     const structure = screen.getByText("Market Structure");
-    const setups = screen.getByText("Trade Setups");
+    const setups = screen.getByText("Structure Setups");
     const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
 
@@ -1486,7 +1490,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
     expect(screen.getByText("Market Structure")).toBeInTheDocument();
     expect(screen.getByText("Liquidity Map")).toBeInTheDocument();
-    expect(screen.getByText("Trade Setups")).toBeInTheDocument();
+    expect(screen.getByText("Structure Setups")).toBeInTheDocument();
     expect(screen.getByText("Risk Context")).toBeInTheDocument();
     expect(screen.getByText("Market Regime")).toBeInTheDocument();
     expect(screen.getAllByText("Liquidity Behavior").length).toBeGreaterThan(0);
@@ -1502,7 +1506,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("69,980 - 70,040").length).toBeGreaterThan(0);
     expect(screen.queryByText("Entry Zone")).not.toBeInTheDocument();
     expect(screen.queryByText("Invalidation")).not.toBeInTheDocument();
-    expect(screen.getByText("Top Setups")).toBeInTheDocument();
+    expect(screen.getByText("Top Structures")).toBeInTheDocument();
     expect(screen.getByText("当前 Regime")).toBeInTheDocument();
     expect(screen.getByText("Desk Mode")).toBeInTheDocument();
     expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
@@ -1950,12 +1954,12 @@ describe("ContractWhaleMonitor", () => {
     );
   });
 
-  it("renders dedicated trade setups and risk context panels without execution wording", async () => {
+  it("renders dedicated structure setups and risk context panels without execution wording", async () => {
     render(<ContractWhaleMonitor />);
 
-    expect(await screen.findByText("Trade Setups")).toBeInTheDocument();
-    expect(screen.getByText("交易机会")).toBeInTheDocument();
-    expect(screen.getByText("LONG BIAS")).toBeInTheDocument();
+    expect(await screen.findByText("Structure Setups")).toBeInTheDocument();
+    expect(screen.getByText("结构机会")).toBeInTheDocument();
+    expect(screen.getByText("Bullish bias")).toBeInTheDocument();
     expect(screen.getByText("HIGH CONF")).toBeInTheDocument();
     expect(screen.getByText(/跌破主力吸收参考位/)).toBeInTheDocument();
     expect(screen.queryByText("立即做多")).not.toBeInTheDocument();

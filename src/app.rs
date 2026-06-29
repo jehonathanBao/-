@@ -100,7 +100,8 @@ struct AppStateInner {
     snapshot_service: SnapshotService,
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
-    final_events_v2_cache: Arc<RwLock<std::collections::BTreeMap<String, CachedFinalEventsV2Entry>>>,
+    final_events_v2_cache:
+        Arc<RwLock<std::collections::BTreeMap<String, CachedFinalEventsV2Entry>>>,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
@@ -346,9 +347,7 @@ impl AppState {
                 contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
                     std::collections::BTreeMap::new(),
                 )),
-                final_events_v2_cache: Arc::new(RwLock::new(
-                    std::collections::BTreeMap::new(),
-                )),
+                final_events_v2_cache: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
                 signal_history_service,
                 whale_flow_candidate_history_service,
                 spot_whale_service,
@@ -972,10 +971,7 @@ impl AppState {
         self.inner.contract_whale_store.clone()
     }
 
-    pub fn cached_final_events_v2(
-        &self,
-        key: &str,
-    ) -> Option<(i64, FinalEventsV2Response)> {
+    pub fn cached_final_events_v2(&self, key: &str) -> Option<(i64, FinalEventsV2Response)> {
         self.inner
             .final_events_v2_cache
             .read()
@@ -989,10 +985,13 @@ impl AppState {
         cached_at_ms: i64,
         response: FinalEventsV2Response,
     ) {
-        self.inner
-            .final_events_v2_cache
-            .write()
-            .insert(key, CachedFinalEventsV2Entry { cached_at_ms, response });
+        self.inner.final_events_v2_cache.write().insert(
+            key,
+            CachedFinalEventsV2Entry {
+                cached_at_ms,
+                response,
+            },
+        );
     }
 
     pub fn recent_toxic_events(
@@ -1211,6 +1210,7 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         data_quality: Some(signal.data_quality),
         reason: Some(signal.final_result.clone()),
         impact: None,
+        impact_level: None,
         time: Some(signal.created_at.clone()),
         price_range: signal.trigger_price_usd.map(format_trigger_price_range),
         add_qty: None,

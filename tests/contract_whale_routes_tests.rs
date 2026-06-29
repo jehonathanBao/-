@@ -560,13 +560,13 @@ fn trading_decision_response_ranks_tradeable_setup_and_emits_no_trade_zone_for_c
     assert_eq!(decision.market_bias, "BULLISH");
     assert!(decision.bias_confidence >= 70);
     assert_eq!(decision.top_setups.len(), 1);
-    assert_eq!(decision.top_setups[0].direction, "LONG");
+    assert_eq!(decision.top_setups[0].direction_bias, "BULLISH_BIAS");
     assert!(decision.top_setups[0].score >= 70);
-    assert!(!decision.top_setups[0].entry_zone.label.is_empty());
-    assert!(decision.top_setups[0].invalidation.price_level > 0.0);
+    assert!(!decision.top_setups[0].pressure_zone.label.is_empty());
+    assert!(decision.top_setups[0].risk_boundary.price_level > 0.0);
     assert!(!decision.top_setups[0].reasons.is_empty());
     assert_eq!(decision.noise_suppression.tradeable_setups, 1);
-    assert_eq!(decision.no_trade_zones.len(), 1);
+    assert!(!decision.no_trade_zones.is_empty());
     assert!(!decision.no_trade_zones[0].reason.is_empty());
 }
 
@@ -726,6 +726,136 @@ fn intelligence_response_includes_signal_compression_trade_ideas_and_risk_contex
     assert!(response.signal_compression.quality_score <= 100);
     assert!(response.trade_ideas.len() <= 3);
     assert!(response.risk_context.no_trade_zones.len() <= 3);
+}
+
+#[test]
+fn intelligence_response_uses_semantic_safe_decision_contract() {
+    let _guard = contract_whale_test_guard();
+    let mut trend_buy = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::High);
+    trend_buy.id = "contract-whale:BTC:15:semantic-safe-trend".to_string();
+    trend_buy.signal_type = ContractWhaleSignalType::AggressiveBuy;
+    trend_buy.direction = ContractWhaleDirection::Buy;
+    trend_buy.total_volume_btc = 2_640.0;
+    trend_buy.total_notional_usd = 168_000_000.0;
+    trend_buy.net_volume_btc = 1_920.0;
+    trend_buy.price_move_pct = Some(0.28);
+    trend_buy.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+    trend_buy.current_market_price_usd = Some(60_420.0);
+    trend_buy.order_price_usd = Some(60_390.0);
+    trend_buy.main_force_score = Some(90);
+    trend_buy.dominance = 0.73;
+    trend_buy.multi_exchange_confirmed = true;
+    trend_buy.event_lifecycle.update_count = 3;
+    trend_buy.event_quality.quality_score = 0.88;
+    trend_buy.merged_from = vec!["contract-whale:BTC:5:semantic-safe-trend".to_string()];
+
+    let response = build_contract_whale_intelligence_response(
+        "BTC",
+        &[trend_buy],
+        &ContractWhaleMarketStructureLite {
+            status: "confirmed".to_string(),
+            regime_type: "main_force_long_build".to_string(),
+            main_force_score: 84,
+            confidence: 77,
+            ..Default::default()
+        },
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 1,
+            merged_events: 1,
+            lifecycle_events: 1,
+            filtered_events: 1,
+            tradeable_setups: 1,
+            suppressed_duplicates: 0,
+            noise_reduction_pct: 0,
+        },
+        1_700_000_090_000,
+    );
+
+    let payload = serde_json::to_value(&response).expect("semantic response json");
+    let first_idea = payload["tradeIdeas"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("decision-support idea");
+
+    assert_eq!(first_idea["semanticType"], "decision_support");
+    assert_eq!(first_idea["riskState"], "low");
+    assert_eq!(first_idea["directionBias"], "BULLISH_BIAS");
+    assert!(first_idea.get("pressureZone").is_some());
+    assert!(first_idea.get("riskBoundary").is_some());
+    assert!(first_idea.get("entryZone").is_none());
+    assert!(first_idea.get("invalidation").is_none());
+    assert_ne!(first_idea["directionBias"], "LONG");
+    assert_ne!(first_idea["directionBias"], "SHORT");
+    assert_eq!(payload["riskContext"]["semanticType"], "risk_override");
+    assert_eq!(payload["riskContext"]["riskState"], "low");
+    assert_eq!(payload["rankedEvents"][0]["semanticType"], "analysis");
+}
+
+#[test]
+fn intelligence_response_high_risk_overrides_decision_support_outputs() {
+    let _guard = contract_whale_test_guard();
+    let mut clean_trend = persisted_signal(1_700_000_010_000, ContractWhaleSeverity::High);
+    clean_trend.id = "contract-whale:BTC:15:clean-trend".to_string();
+    clean_trend.signal_type = ContractWhaleSignalType::AggressiveBuy;
+    clean_trend.direction = ContractWhaleDirection::Buy;
+    clean_trend.total_volume_btc = 3_600.0;
+    clean_trend.total_notional_usd = 222_000_000.0;
+    clean_trend.net_volume_btc = 2_700.0;
+    clean_trend.price_move_pct = Some(0.32);
+    clean_trend.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+    clean_trend.current_market_price_usd = Some(60_220.0);
+    clean_trend.order_price_usd = Some(60_190.0);
+    clean_trend.main_force_score = Some(90);
+    clean_trend.dominance = 0.75;
+    clean_trend.multi_exchange_confirmed = true;
+    clean_trend.event_lifecycle.update_count = 4;
+    clean_trend.event_quality.quality_score = 0.90;
+    clean_trend.merged_from = vec!["contract-whale:BTC:5:clean-trend".to_string()];
+
+    let mut fake_breakout = persisted_signal(1_700_000_015_000, ContractWhaleSeverity::Critical);
+    fake_breakout.id = "contract-whale:BTC:15:high-risk-fakeout".to_string();
+    fake_breakout.signal_type = ContractWhaleSignalType::UpsideSuppression;
+    fake_breakout.direction = ContractWhaleDirection::Suppression;
+    fake_breakout.total_volume_btc = 7_200.0;
+    fake_breakout.total_notional_usd = 446_000_000.0;
+    fake_breakout.net_volume_btc = -4_900.0;
+    fake_breakout.price_move_pct = Some(-0.22);
+    fake_breakout.price_response_type = ContractWhalePriceResponseType::UpsideResistance;
+    fake_breakout.current_market_price_usd = Some(60_420.0);
+    fake_breakout.order_price_usd = Some(60_390.0);
+    fake_breakout.main_force_score = Some(94);
+    fake_breakout.dominance = 0.82;
+    fake_breakout.multi_exchange_confirmed = true;
+    fake_breakout.event_lifecycle.update_count = 5;
+    fake_breakout.event_quality.quality_score = 0.93;
+    fake_breakout.merged_from = vec!["contract-whale:BTC:5:high-risk-fakeout".to_string()];
+
+    let response = build_contract_whale_intelligence_response(
+        "BTC",
+        &[clean_trend, fake_breakout],
+        &ContractWhaleMarketStructureLite {
+            status: "confirmed".to_string(),
+            regime_type: "main_force_short_build".to_string(),
+            main_force_score: 88,
+            confidence: 82,
+            ..Default::default()
+        },
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 1,
+            merged_events: 1,
+            lifecycle_events: 1,
+            filtered_events: 1,
+            tradeable_setups: 1,
+            suppressed_duplicates: 0,
+            noise_reduction_pct: 0,
+        },
+        1_700_000_090_000,
+    );
+
+    assert_eq!(response.risk_context.fake_breakout_risk, "HIGH");
+    assert!(response.trade_ideas.is_empty());
+    assert_eq!(response.signal_compression.top_signal_count, 0);
+    assert!(response.risk_context.summary.contains("风险抑制"));
 }
 
 #[test]

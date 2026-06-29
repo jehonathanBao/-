@@ -50,10 +50,7 @@ pub fn setup_type_label(signal_type: ContractWhaleSignalType) -> &'static str {
     }
 }
 
-fn price_supports_direction(
-    response_type: ContractWhalePriceResponseType,
-    is_long: bool,
-) -> bool {
+fn price_supports_direction(response_type: ContractWhalePriceResponseType, is_long: bool) -> bool {
     match response_type {
         ContractWhalePriceResponseType::TrendFollowUp => is_long,
         ContractWhalePriceResponseType::TrendFollowDown => !is_long,

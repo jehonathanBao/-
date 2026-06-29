@@ -10,6 +10,7 @@ use super::{
 use crate::contract_whale_monitor::trading::fine_tune::{
     adjusted_trade_score, fine_tune_reject_reason, should_prune_similar_setup,
 };
+use crate::semantic::contract::SemanticType;
 
 pub fn rank_market_events(
     items: &[ContractWhaleSignal],
@@ -38,6 +39,7 @@ pub fn rank_market_events(
             }
 
             Some(ContractWhaleRankedEvent {
+                semantic_type: SemanticType::Analysis,
                 signal_id: signal.id.clone(),
                 rank: 0,
                 event_type: event_type_label(signal.signal_type).to_string(),

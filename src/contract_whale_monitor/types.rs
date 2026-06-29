@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::semantic::contract::{SemanticRiskState, SemanticType};
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -1177,11 +1179,15 @@ pub struct ContractWhaleTradingInvalidation {
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleTradingSetup {
     #[serde(default)]
+    pub semantic_type: SemanticType,
+    #[serde(default)]
+    pub risk_state: SemanticRiskState,
+    #[serde(default)]
     pub signal_id: String,
     #[serde(default)]
     pub rank: usize,
     #[serde(default)]
-    pub direction: String,
+    pub direction_bias: String,
     #[serde(default)]
     pub setup_type: String,
     #[serde(default)]
@@ -1195,9 +1201,9 @@ pub struct ContractWhaleTradingSetup {
     #[serde(default)]
     pub window_sec: u64,
     #[serde(default)]
-    pub entry_zone: ContractWhaleTradingEntryZone,
+    pub pressure_zone: ContractWhaleTradingEntryZone,
     #[serde(default)]
-    pub invalidation: ContractWhaleTradingInvalidation,
+    pub risk_boundary: ContractWhaleTradingInvalidation,
     #[serde(default)]
     pub reasons: Vec<String>,
 }
@@ -1218,6 +1224,10 @@ pub struct ContractWhaleNoTradeZone {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleTradingDecisionResponse {
+    #[serde(default)]
+    pub semantic_type: SemanticType,
+    #[serde(default)]
+    pub risk_state: SemanticRiskState,
     #[serde(default)]
     pub symbol: String,
     #[serde(default)]
@@ -1240,6 +1250,8 @@ pub struct ContractWhaleTradingDecisionResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleRegimeSnapshot {
     #[serde(default)]
+    pub semantic_type: SemanticType,
+    #[serde(default)]
     pub regime: String,
     #[serde(default)]
     pub confidence: u8,
@@ -1250,6 +1262,8 @@ pub struct ContractWhaleRegimeSnapshot {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleLiquidityBehavior {
+    #[serde(default)]
+    pub semantic_type: SemanticType,
     #[serde(default)]
     pub behavior: String,
     #[serde(default)]
@@ -1285,6 +1299,10 @@ pub struct ContractWhaleSignalCompressionSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleTradeIdea {
     #[serde(default)]
+    pub semantic_type: SemanticType,
+    #[serde(default)]
+    pub risk_state: SemanticRiskState,
+    #[serde(default)]
     pub signal_id: String,
     #[serde(default)]
     pub rank: usize,
@@ -1299,9 +1317,9 @@ pub struct ContractWhaleTradeIdea {
     #[serde(default)]
     pub confidence_label: String,
     #[serde(default)]
-    pub entry_zone: ContractWhaleTradingEntryZone,
+    pub pressure_zone: ContractWhaleTradingEntryZone,
     #[serde(default)]
-    pub invalidation: ContractWhaleTradingInvalidation,
+    pub risk_boundary: ContractWhaleTradingInvalidation,
     #[serde(default)]
     pub structure_context: String,
     #[serde(default)]
@@ -1314,6 +1332,10 @@ pub struct ContractWhaleTradeIdea {
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleRiskContext {
     #[serde(default)]
+    pub semantic_type: SemanticType,
+    #[serde(default)]
+    pub risk_state: SemanticRiskState,
+    #[serde(default)]
     pub no_trade_zones: Vec<ContractWhaleNoTradeZone>,
     #[serde(default)]
     pub fake_breakout_risk: String,
@@ -1324,6 +1346,8 @@ pub struct ContractWhaleRiskContext {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleRankedEvent {
+    #[serde(default)]
+    pub semantic_type: SemanticType,
     #[serde(default)]
     pub signal_id: String,
     #[serde(default)]

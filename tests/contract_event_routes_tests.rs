@@ -263,10 +263,11 @@ async fn contract_whale_trading_decisions_route_exposes_ranked_setups_and_no_tra
         .as_array()
         .and_then(|items| items.first())
     {
-        assert!(first_setup["direction"].as_str().is_some());
+        assert_eq!(first_setup["semanticType"], "decision_support");
+        assert!(first_setup["directionBias"].as_str().is_some());
         assert!(first_setup["score"].as_u64().is_some());
-        assert!(first_setup["entryZone"]["label"].as_str().is_some());
-        assert!(first_setup["invalidation"]["priceLevel"].is_number());
+        assert!(first_setup["pressureZone"]["label"].as_str().is_some());
+        assert!(first_setup["riskBoundary"]["priceLevel"].is_number());
         assert!(first_setup["reasons"].is_array());
     } else {
         let first_zone = payload["noTradeZones"]
@@ -317,10 +318,12 @@ async fn contract_whale_intelligence_terminal_route_exposes_signal_compression_t
         .as_array()
         .and_then(|items| items.first())
     {
+        assert_eq!(first_idea["semanticType"], "decision_support");
         assert!(first_idea["directionBias"].as_str().is_some());
-        assert!(first_idea["entryZone"]["label"].as_str().is_some());
-        assert!(first_idea["invalidation"]["priceLevel"].is_number());
+        assert!(first_idea["pressureZone"]["label"].as_str().is_some());
+        assert!(first_idea["riskBoundary"]["priceLevel"].is_number());
     }
+    assert_eq!(payload["riskContext"]["semanticType"], "risk_override");
     assert!(payload.get("topSetups").is_none());
 
     server.abort();

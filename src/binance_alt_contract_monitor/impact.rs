@@ -53,6 +53,16 @@ pub fn impact_discord_ready(score: &AltContractImpactScore) -> bool {
     score.final_score >= score.discord_threshold.max(ALT_IMPACT_DISCORD_THRESHOLD)
 }
 
+pub fn impact_discord_level(score: &AltContractImpactScore) -> Option<&'static str> {
+    if impact_s_ready(score) {
+        Some("S")
+    } else if impact_discord_ready(score) {
+        Some("A")
+    } else {
+        None
+    }
+}
+
 pub fn impact_s_ready(score: &AltContractImpactScore) -> bool {
     score.final_score >= score.s_threshold.max(ALT_IMPACT_S_THRESHOLD)
 }

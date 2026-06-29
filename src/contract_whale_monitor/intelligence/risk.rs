@@ -5,6 +5,7 @@ use crate::contract_whale_monitor::{
         ContractWhaleSignal,
     },
 };
+use crate::semantic::contract::{SemanticRiskState, SemanticType};
 
 pub fn build_risk_context(
     items: &[ContractWhaleSignal],
@@ -38,6 +39,14 @@ pub fn build_risk_context(
     }
     .to_string();
 
+    let risk_state = if fake_breakout_risk == "HIGH" {
+        SemanticRiskState::High
+    } else if !no_trade_zones.is_empty() {
+        SemanticRiskState::Guarded
+    } else {
+        SemanticRiskState::Low
+    };
+
     let summary = if fake_breakout_risk == "HIGH" {
         "当前存在较强假突破风险，交易参考需要让位于风险抑制。".to_string()
     } else if !no_trade_zones.is_empty() {
@@ -47,13 +56,18 @@ pub fn build_risk_context(
     };
 
     ContractWhaleRiskContext {
+        semantic_type: SemanticType::RiskOverride,
+        risk_state,
         no_trade_zones,
         fake_breakout_risk,
         summary,
     }
 }
 
-fn push_unique_zone(zones: &mut Vec<ContractWhaleNoTradeZone>, candidate: ContractWhaleNoTradeZone) {
+fn push_unique_zone(
+    zones: &mut Vec<ContractWhaleNoTradeZone>,
+    candidate: ContractWhaleNoTradeZone,
+) {
     if zones.iter().any(|zone| {
         zone.reason == candidate.reason
             && (zone.low_price - candidate.low_price).abs() < 0.01

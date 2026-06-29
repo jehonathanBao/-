@@ -4,6 +4,7 @@ use crate::contract_whale_monitor::types::{
     ContractWhaleLiquidityBehavior, ContractWhalePriceResponseType, ContractWhaleSignal,
     ContractWhaleSignalType,
 };
+use crate::semantic::contract::SemanticType;
 
 use super::strength::score_signal_strength;
 
@@ -18,6 +19,7 @@ pub fn derive_liquidity_behaviors(
         let confidence = behavior_confidence(signal, strength_score);
         let (low_price, high_price, range_label) = signal_range(signal);
         let candidate = ContractWhaleLiquidityBehavior {
+            semantic_type: SemanticType::Analysis,
             behavior: behavior.to_string(),
             label: label.to_string(),
             strength_score,
@@ -51,7 +53,9 @@ pub fn behavior_for_signal(signal: &ContractWhaleSignal) -> &'static str {
     classify_liquidity_behavior(signal).0
 }
 
-fn classify_liquidity_behavior(signal: &ContractWhaleSignal) -> (&'static str, &'static str, &'static str) {
+fn classify_liquidity_behavior(
+    signal: &ContractWhaleSignal,
+) -> (&'static str, &'static str, &'static str) {
     if signal.liquidation_suspected || signal.liquidation_ratio.unwrap_or_default() >= 0.10 {
         return (
             "liquidity_sweep",
@@ -66,23 +70,35 @@ fn classify_liquidity_behavior(signal: &ContractWhaleSignal) -> (&'static str, &
             "Absorption",
             "卖压释放后价格没有继续下破，说明承接资金在稳定吸收流动性。",
         ),
-        (ContractWhaleSignalType::UpsideSuppression, ContractWhalePriceResponseType::NoClearResponse)
-        | (ContractWhaleSignalType::UpsideSuppression, ContractWhalePriceResponseType::UpsideResistance) => (
+        (
+            ContractWhaleSignalType::UpsideSuppression,
+            ContractWhalePriceResponseType::NoClearResponse,
+        )
+        | (
+            ContractWhaleSignalType::UpsideSuppression,
+            ContractWhalePriceResponseType::UpsideResistance,
+        ) => (
             "fake_breakout",
             "Fake Breakout",
             "冲高阶段出现压制且价格跟随不足，更像假突破风险而非持续上攻。",
         ),
-        (ContractWhaleSignalType::AggressiveBuy, ContractWhalePriceResponseType::TrendFollowUp) => (
-            "breakout_pressure",
-            "Breakout Pressure",
-            "主动买盘带来价格顺势抬升，说明上方突破压力正在累积。",
-        ),
-        (ContractWhaleSignalType::AggressiveSell, ContractWhalePriceResponseType::TrendFollowDown) => (
+        (ContractWhaleSignalType::AggressiveBuy, ContractWhalePriceResponseType::TrendFollowUp) => {
+            (
+                "breakout_pressure",
+                "Breakout Pressure",
+                "主动买盘带来价格顺势抬升，说明上方突破压力正在累积。",
+            )
+        }
+        (
+            ContractWhaleSignalType::AggressiveSell,
+            ContractWhalePriceResponseType::TrendFollowDown,
+        ) => (
             "distribution",
             "Distribution",
             "卖盘主导且价格顺势走弱，更像高位分发而不是单纯震荡。",
         ),
-        (ContractWhaleSignalType::AggressiveBuy, _) | (ContractWhaleSignalType::AggressiveSell, _) => (
+        (ContractWhaleSignalType::AggressiveBuy, _)
+        | (ContractWhaleSignalType::AggressiveSell, _) => (
             "order_block_behavior",
             "Order Block",
             "成交量放大但响应一般，先按订单块博弈区处理，等待结构确认。",
@@ -98,9 +114,13 @@ fn classify_liquidity_behavior(signal: &ContractWhaleSignal) -> (&'static str, &
 fn behavior_confidence(signal: &ContractWhaleSignal, strength_score: u8) -> u8 {
     (f64::from(strength_score) * 0.55
         + signal.event_quality.quality_score * 25.0
-        + if signal.multi_exchange_confirmed { 10.0 } else { 0.0 })
-        .round()
-        .clamp(0.0, 100.0) as u8
+        + if signal.multi_exchange_confirmed {
+            10.0
+        } else {
+            0.0
+        })
+    .round()
+    .clamp(0.0, 100.0) as u8
 }
 
 fn signal_range(signal: &ContractWhaleSignal) -> (f64, f64, String) {

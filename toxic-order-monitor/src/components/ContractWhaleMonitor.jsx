@@ -1592,14 +1592,14 @@ function TradeSetupsDeskPanel({ intelligence, onSelectSignal, selectedSignalId, 
     <section className="rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4" id="contract-whale-setups">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Trade Setups</p>
-          <h4 className="mt-1 text-base font-bold text-white">交易机会</h4>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Structure Setups</p>
+          <h4 className="mt-1 text-base font-bold text-white">结构机会</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            只展示 Top 3 结构机会，和事件流分区显示；点击卡片会回到对应事件来源，而不是直接给自动下单指令。
+            只展示 Top 3 结构机会，和事件流分区显示；点击卡片会回到对应事件来源。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3">
-          <TradeSummaryPill label="Top Setups" tone="emerald" value={`${ideas.length}`} />
+          <TradeSummaryPill label="Top Structures" tone="emerald" value={`${ideas.length}`} />
           <TradeSummaryPill label="当前 Regime" tone="cyan" value={regime} />
           <TradeSummaryPill label="Desk Mode" tone={dimForRegime ? "yellow" : "cyan"} value={dimForRegime ? "Dimmed" : "Active"} />
         </div>
@@ -1607,7 +1607,7 @@ function TradeSetupsDeskPanel({ intelligence, onSelectSignal, selectedSignalId, 
 
       {dimForRegime ? (
         <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-          当前处于 {regime}，Trade Setups 已自动降亮处理，优先把它当结构参考而不是强执行线索。
+          当前处于 {regime}，结构机会已自动降亮处理，优先把它当结构参考。
         </p>
       ) : null}
 
@@ -1648,12 +1648,12 @@ function TradeSetupsDeskPanel({ intelligence, onSelectSignal, selectedSignalId, 
                   <TradeMetric label="Reason" value={idea.reasonTag} />
                   <TradeMetric label="Window" value={`${idea.windowSec}s`} />
                 </div>
-                {idea.entryZoneLabel ? (
-                  <p className="mt-3 text-xs text-cyan-200">参考区 {idea.entryZoneLabel}</p>
+                {idea.pressureZoneLabel ? (
+                  <p className="mt-3 text-xs text-cyan-200">压力区 {idea.pressureZoneLabel}</p>
                 ) : null}
                 <p className="mt-3 text-sm leading-6 text-slate-300">{idea.reason}</p>
-                {idea.invalidationReason ? (
-                  <p className="mt-2 text-xs leading-5 text-slate-400">失效参考位：{idea.invalidationReason}</p>
+                {idea.riskBoundaryReason ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-400">风险边界：{idea.riskBoundaryReason}</p>
                 ) : null}
                 <p className="mt-2 text-xs text-slate-500">点击后将回溯到来源 event，并高亮对应信号。</p>
               </button>
@@ -2076,24 +2076,24 @@ function TradeOpportunitiesPanel({ summary }) {
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Trade Opportunities</p>
-          <h4 className="mt-1 text-sm font-bold text-white">交易机会排序</h4>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Structure Opportunities</p>
+          <h4 className="mt-1 text-sm font-bold text-white">结构机会排序</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            先把重复窗口与生命周期噪声压平，再给出当前最值得盯的主力合约 setup。
+            先把重复窗口与生命周期噪声压平，再给出当前最值得盯的主力合约结构。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
           <TradeSummaryPill label="原始候选" value={`${suppression.rawCandidates || 0}`} />
           <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
           <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} />
-          <TradeSummaryPill label="可交易" value={`${suppression.tradeableSetups || 0}`} tone="emerald" />
+          <TradeSummaryPill label="结构候选" value={`${suppression.tradeableSetups || 0}`} tone="emerald" />
           <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="cyan" />
         </div>
       </div>
 
       {opportunities.length === 0 ? (
         <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
-          当前没有通过排序门槛的交易机会，系统保留结构观察但不建议直接出手。
+          当前没有通过排序门槛的结构机会，系统保留结构观察。
         </p>
       ) : (
         <div className="mt-4 grid gap-3 xl:grid-cols-3">
@@ -2113,7 +2113,7 @@ function TradeOpportunitiesPanel({ summary }) {
                 </span>
               </div>
               <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
-                <TradeMetric label="交易评分" value={`${opportunity.tradeScore}/100`} />
+                <TradeMetric label="结构评分" value={`${opportunity.tradeScore}/100`} />
                 <TradeMetric label="置信度" value={`${opportunity.confidence}%`} />
                 <TradeMetric label="方向偏置" value={directionLabel(opportunity.directionBias)} />
                 <TradeMetric label="事件窗口" value={`${opportunity.windowSec}s`} />
@@ -2148,7 +2148,7 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
   const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones : [];
   const tabs = [
     { id: "market-intelligence", label: "Market Intelligence" },
-    { id: "trade-ideas", label: "Trade Ideas" },
+    { id: "trade-ideas", label: "Structure Ideas" },
     { id: "risk-no-trade", label: "Risk / No-Trade" },
   ];
 
@@ -2159,7 +2159,7 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
           <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Institutional Analysis Terminal</p>
           <h4 className="mt-1 text-sm font-bold text-white">半机构级分析终端</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            不输出买卖建议、entry/exit 或止损，只展示市场状态、流动性行为、强度排序和结构机会。
+            只展示市场状态、流动性行为、强度排序和结构机会，决策层保持只读语义。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
@@ -2373,13 +2373,13 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
                     <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
                       <TradeMetric label="方向偏置" value={idea.directionBias} />
                       <TradeMetric label="强度评分" value={`${idea.score}/100`} />
-                      <TradeMetric label="参考区" value={idea.entryZone?.label || "N/A"} />
-                      <TradeMetric label="失效参考位" value={formatPrice(idea.invalidation?.priceLevel)} />
+                      <TradeMetric label="压力区" value={idea.pressureZone?.label || "N/A"} />
+                      <TradeMetric label="风险边界" value={formatPrice(idea.riskBoundary?.priceLevel)} />
                       <TradeMetric label="Regime" value={idea.regimeContext || "N/A"} />
                       <TradeMetric label="事件窗口" value={`${idea.windowSec || 0}s`} />
                     </div>
                     <p className="mt-3 text-xs leading-5 text-slate-400">{idea.structureContext || "暂无结构备注"}</p>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">{idea.invalidation?.reason || "暂无失效说明"}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{idea.riskBoundary?.reason || "暂无风险边界说明"}</p>
                   </article>
                 ))}
               </div>
@@ -2798,7 +2798,7 @@ function MarketDriverPanel({ signal }) {
   const driver = signal.marketDriver || {};
   const rows = [
     ["Whale Intent", driver.whaleIntentPct, "主动鲸鱼资金"],
-    ["Liquidity Force", driver.liquidityForcingPct, "流动性真空 / 止损"],
+    ["Liquidity Force", driver.liquidityForcingPct, "流动性真空 / 风险单"],
     ["Derivatives", driver.derivativesPressurePct, "清算 / OI / Funding"],
     ["Reflexivity", driver.reflexivityPct, "趋势反馈放大"],
   ];
@@ -3496,8 +3496,8 @@ function tradeSummaryPillClass(tone) {
 
 function tradeActionClass(action) {
   const value = String(action || "").toUpperCase();
-  if (value === "LONG") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
-  if (value === "SHORT") return "border border-red-500/40 bg-red-500/15 text-red-200";
+  if (value.includes("BULL") || value === "LONG") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (value.includes("BEAR") || value === "SHORT") return "border border-red-500/40 bg-red-500/15 text-red-200";
   return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
 }
 
@@ -3516,8 +3516,8 @@ function deriveDeskTradeIdeas(intelligence, summary) {
       reasonTag: regimeTypeLabel(idea.regimeContext),
       windowSec: Number(idea.windowSec || 0),
       reason: idea.structureContext || idea.reason || "暂无结构备注",
-      entryZoneLabel: idea.entryZone?.label || null,
-      invalidationReason: idea.invalidation?.reason || null,
+      pressureZoneLabel: idea.pressureZone?.label || null,
+      riskBoundaryReason: idea.riskBoundary?.reason || null,
     }));
   }
 
@@ -3534,15 +3534,15 @@ function deriveDeskTradeIdeas(intelligence, summary) {
     reasonTag: regimeTypeLabel(idea.regimeContext),
     windowSec: Number(idea.windowSec || 0),
     reason: idea.rationale || "暂无结构备注",
-    entryZoneLabel: idea.entryZone?.label || null,
-    invalidationReason: idea.invalidation?.reason || null,
+    pressureZoneLabel: idea.pressureZone?.label || idea.entryZone?.label || null,
+    riskBoundaryReason: idea.riskBoundary?.reason || idea.invalidation?.reason || null,
   }));
 }
 
 function humanizeDeskDirection(value) {
   const normalized = String(value || "").toUpperCase();
-  if (normalized.includes("BULL") || normalized.includes("BUY") || normalized.includes("LONG")) return "LONG BIAS";
-  if (normalized.includes("BEAR") || normalized.includes("SELL") || normalized.includes("SHORT")) return "SHORT BIAS";
+  if (normalized.includes("BULL") || normalized.includes("BUY") || normalized.includes("LONG")) return "Bullish bias";
+  if (normalized.includes("BEAR") || normalized.includes("SELL") || normalized.includes("SHORT")) return "Bearish bias";
   if (normalized.includes("ABSORPTION")) return "ABSORPTION";
   if (normalized.includes("SUPPRESSION")) return "SUPPRESSION";
   return normalized || "NEUTRAL";
@@ -4315,8 +4315,8 @@ function liquidationZoneSideLabel(value) {
 
 function liquidationForceReasonLabel(value) {
   const labels = {
-    "downside stop-loss and long liquidation cluster": "下方止损与多头强平区",
-    "upside stop-loss and short liquidation cluster": "上方止损与空头强平区",
+    "downside stop-loss and long liquidation cluster": "下方风险单与多头强平区",
+    "upside stop-loss and short liquidation cluster": "上方风险单与空头强平区",
   };
   return labels[value] || value || "清算代理区";
 }

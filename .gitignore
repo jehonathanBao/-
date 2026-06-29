@@ -36,3 +36,14 @@ build/
 Thumbs.db
 
 Cargo.lock.bak
+.trellis/.developer
+.trellis/.runtime/
+.trellis/.current-task
+.trellis/.ralph-state.json
+.trellis/blobs/
+.trellis/ops.json
+.trellis/tasks/archive/
+.trellis/tasks/**/*.jsonl
+.trellis/workspace/*/journal-*.md
+.trellis/workspace/*/.agents/
+.codex/

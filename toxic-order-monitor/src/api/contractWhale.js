@@ -688,6 +688,8 @@ function normalizeTradingDecisionResponse(payload, symbol = "BTC", fallbackError
   const data = payload && typeof payload === "object" ? payload : {};
   return {
     symbol: String(data.symbol || symbol),
+    semanticType: data.semanticType || data.semantic_type || "decision_support",
+    riskState: data.riskState || data.risk_state || "low",
     timestamp: numberOrNull(data.timestamp),
     marketBias: String(data.marketBias || data.market_bias || "NEUTRAL"),
     biasConfidence: numberOrNull(data.biasConfidence ?? data.bias_confidence) ?? 0,
@@ -712,24 +714,28 @@ function normalizeTradingDecisionResponse(payload, symbol = "BTC", fallbackError
 }
 
 function normalizeTradingSetup(setup = {}) {
+  const pressureZone = setup.pressureZone ?? setup.pressure_zone ?? setup.entryZone ?? setup.entry_zone ?? {};
+  const riskBoundary = setup.riskBoundary ?? setup.risk_boundary ?? setup.invalidation ?? {};
   return {
+    semanticType: setup.semanticType || setup.semantic_type || "decision_support",
+    riskState: setup.riskState || setup.risk_state || "low",
     signalId: setup.signalId || setup.signal_id || "",
     rank: Number(setup.rank || 0),
-    direction: setup.direction || "NO_TRADE",
+    directionBias: setup.directionBias || setup.direction_bias || setup.direction || "NEUTRAL_BIAS",
     setupType: setup.setupType || setup.setup_type || "结构观察",
     score: Number(setup.score || 0),
     confidence: Number(setup.confidence || 0),
     confidenceLabel: setup.confidenceLabel || setup.confidence_label || "LOW",
     regimeContext: setup.regimeContext || setup.regime_context || "unclear",
     windowSec: Number(setup.windowSec ?? setup.window_sec ?? 0),
-    entryZone: {
-      lowPrice: Number(setup.entryZone?.lowPrice ?? setup.entryZone?.low_price ?? 0),
-      highPrice: Number(setup.entryZone?.highPrice ?? setup.entryZone?.high_price ?? 0),
-      label: setup.entryZone?.label || "",
+    pressureZone: {
+      lowPrice: Number(pressureZone.lowPrice ?? pressureZone.low_price ?? 0),
+      highPrice: Number(pressureZone.highPrice ?? pressureZone.high_price ?? 0),
+      label: pressureZone.label || "",
     },
-    invalidation: {
-      priceLevel: Number(setup.invalidation?.priceLevel ?? setup.invalidation?.price_level ?? 0),
-      reason: setup.invalidation?.reason || "暂无失效说明",
+    riskBoundary: {
+      priceLevel: Number(riskBoundary.priceLevel ?? riskBoundary.price_level ?? 0),
+      reason: riskBoundary.reason || "暂无风险边界说明",
     },
     reasons: Array.isArray(setup.reasons) ? setup.reasons : [],
   };
@@ -748,6 +754,7 @@ function normalizeContractWhaleIntelligenceResponse(payload, symbol = "BTC", fal
   const data = payload && typeof payload === "object" ? payload : {};
   return {
     symbol: String(data.symbol || symbol),
+    semanticType: data.semanticType || data.semantic_type || "analysis",
     timestamp: numberOrNull(data.timestamp),
     marketRegime: {
       regime: String(data.marketRegime?.regime ?? data.market_regime?.regime ?? "RANGING"),
@@ -793,7 +800,11 @@ function normalizeSignalCompression(summary = {}) {
 }
 
 function normalizeTradeIdea(idea = {}) {
+  const pressureZone = idea.pressureZone ?? idea.pressure_zone ?? idea.entryZone ?? idea.entry_zone ?? {};
+  const riskBoundary = idea.riskBoundary ?? idea.risk_boundary ?? idea.invalidation ?? {};
   return {
+    semanticType: idea.semanticType || idea.semantic_type || "decision_support",
+    riskState: idea.riskState || idea.risk_state || "low",
     signalId: idea.signalId || idea.signal_id || "",
     rank: Number(idea.rank || 0),
     setupType: idea.setupType || idea.setup_type || "结构观察",
@@ -801,14 +812,14 @@ function normalizeTradeIdea(idea = {}) {
     score: Number(idea.score || 0),
     confidence: Number(idea.confidence || 0),
     confidenceLabel: idea.confidenceLabel || idea.confidence_label || "LOW",
-    entryZone: {
-      lowPrice: Number(idea.entryZone?.lowPrice ?? idea.entryZone?.low_price ?? 0),
-      highPrice: Number(idea.entryZone?.highPrice ?? idea.entryZone?.high_price ?? 0),
-      label: idea.entryZone?.label || "",
+    pressureZone: {
+      lowPrice: Number(pressureZone.lowPrice ?? pressureZone.low_price ?? 0),
+      highPrice: Number(pressureZone.highPrice ?? pressureZone.high_price ?? 0),
+      label: pressureZone.label || "",
     },
-    invalidation: {
-      priceLevel: Number(idea.invalidation?.priceLevel ?? idea.invalidation?.price_level ?? 0),
-      reason: idea.invalidation?.reason || "暂无失效说明",
+    riskBoundary: {
+      priceLevel: Number(riskBoundary.priceLevel ?? riskBoundary.price_level ?? 0),
+      reason: riskBoundary.reason || "暂无风险边界说明",
     },
     structureContext: idea.structureContext || idea.structure_context || "当前结构暂无补充说明。",
     regimeContext: idea.regimeContext || idea.regime_context || "unclear",
@@ -818,6 +829,8 @@ function normalizeTradeIdea(idea = {}) {
 
 function normalizeRiskContext(context = {}) {
   return {
+    semanticType: context.semanticType || context.semantic_type || "risk_override",
+    riskState: context.riskState || context.risk_state || "low",
     fakeBreakoutRisk: String(context.fakeBreakoutRisk ?? context.fake_breakout_risk ?? "LOW"),
     summary: String(context.summary || "当前未发现显著 no-trade 结构风险。"),
     noTradeZones: Array.isArray(context.noTradeZones ?? context.no_trade_zones)

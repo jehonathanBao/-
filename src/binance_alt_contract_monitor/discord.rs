@@ -9,7 +9,10 @@ use crate::normalizers::trade::now_ms;
 
 use super::{
     config::{BinanceAltDiscordConfig, BinanceAltDiscordTierConfig},
-    impact::{impact_discord_ready, is_legacy_impact_score, ALT_IMPACT_DISCORD_THRESHOLD},
+    impact::{
+        impact_discord_level, impact_discord_ready, is_legacy_impact_score,
+        ALT_IMPACT_DISCORD_THRESHOLD,
+    },
     types::{AltContractDirection, AltContractSeverity, AltContractSignal, AltContractSignalType},
 };
 
@@ -360,13 +363,34 @@ fn discord_decision(
         );
     }
     if let Some(decision) = main_force_decision(signal, config, tier_config) {
+        if decision.allowed {
+            return decision;
+        }
+        if let Some(relative_impact) = relative_impact_decision(signal, config, tier_config) {
+            return relative_impact;
+        }
         return decision;
     }
     if let Some(decision) = liquidation_decision(signal, config, tier_config) {
+        if decision.allowed {
+            return decision;
+        }
+        if let Some(relative_impact) = relative_impact_decision(signal, config, tier_config) {
+            return relative_impact;
+        }
         return decision;
     }
     if let Some(decision) = extreme_impulse_decision(signal, config, tier_config) {
+        if decision.allowed {
+            return decision;
+        }
+        if let Some(relative_impact) = relative_impact_decision(signal, config, tier_config) {
+            return relative_impact;
+        }
         return decision;
+    }
+    if let Some(relative_impact) = relative_impact_decision(signal, config, tier_config) {
+        return relative_impact;
     }
     decision(false, "low_score", "none", tier_config.min_notional_usd)
 }
@@ -506,6 +530,26 @@ fn liquidation_decision(
     ))
 }
 
+fn relative_impact_decision(
+    signal: &AltContractSignal,
+    config: &BinanceAltDiscordConfig,
+    tier_config: &BinanceAltDiscordTierConfig,
+) -> Option<DiscordDecision> {
+    let impact_level = impact_discord_level(&signal.alt_impact_score)?;
+    let min_notional = tier_config
+        .critical_notional_usd
+        .max(config.min_display_notional_usd);
+    Some(decision(
+        true,
+        match impact_level {
+            "S" => "relative_impact_s",
+            _ => "relative_impact_a",
+        },
+        "relative_impact",
+        min_notional,
+    ))
+}
+
 fn decision(
     allowed: bool,
     reason: &'static str,
@@ -618,6 +662,11 @@ fn discord_copy(signal: &AltContractSignal) -> (&'static str, String) {
         "extreme_impulse" => (
             "Binance 山寨合约极端异常冲击",
             "合约主动流异常冲击明显，但更适合作为极端异常观察，不构成执行指令。".to_string(),
+        ),
+        "relative_impact" => (
+            "Binance 山寨合约相对冲击观察",
+            "AIS 已达到 A/S 级相对成交冲击，进入 Discord 观察层；只读提醒，不构成执行指令。"
+                .to_string(),
         ),
         _ => (
             "Binance 山寨合约异动",

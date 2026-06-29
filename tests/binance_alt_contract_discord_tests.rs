@@ -76,6 +76,24 @@ fn tier_a_800k_low_relative_impact_is_below_discord_threshold() {
 }
 
 #[test]
+fn relative_impact_a_can_push_without_main_force_confirmation() {
+    let config = config();
+    let mut signal = main_force_signal(AltContractSymbolTier::A);
+    signal.total_notional_usd = 800_000.0;
+    signal.build_score = 45;
+    signal.main_force_confidence = 40.0;
+    signal.evidence_count = 1;
+    signal.alt_impact_score = impact_score(85.0);
+
+    let gate = gate(&signal, &config, 33);
+
+    assert!(gate.eligible);
+    assert!(gate.would_send);
+    assert_eq!(gate.reason, "dry_run_would_send");
+    assert_eq!(gate.alert_kind, "relative_impact");
+}
+
+#[test]
 fn tier_d_abnormal_without_build_confirmation_does_not_push() {
     let config = config();
     let mut signal = extreme_signal(AltContractSymbolTier::B);

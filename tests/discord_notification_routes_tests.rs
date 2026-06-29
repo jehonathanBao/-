@@ -379,6 +379,28 @@ fn market_structure_extreme_gate_passes_without_main_force_confirmation() {
 }
 
 #[test]
+fn market_structure_impact_level_a_enters_discord_gate_without_extreme_score() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    set_market_structure_env();
+
+    let mut request = high_request();
+    request.alert_family = Some("market_structure".to_string());
+    request.level = Some("A".to_string());
+    request.main_force_score = Some(54);
+    request.market_structure_confidence = Some(52.0);
+    request.market_structure_data_quality = Some(76.0);
+    request.extreme_impact_score = Some(64);
+    request.impact_level = Some("A".to_string());
+
+    let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, "passed");
+    assert_eq!(decision.score, 85);
+
+    clear_alert_env();
+}
+
+#[test]
 fn market_structure_discord_payload_uses_main_force_wording() {
     let mut request = high_request();
     request.alert_family = Some("market_structure".to_string());
@@ -454,6 +476,7 @@ fn high_request() -> DiscordNotificationRequest {
         data_quality: Some(88.0),
         reason: Some("Manual smoke test High/Critical candidate Discord path".to_string()),
         impact: None,
+        impact_level: None,
         time: Some("2026-06-05T21:51:00.000Z".to_string()),
         price_range: None,
         add_qty: Some(1000.0),

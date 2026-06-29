@@ -482,6 +482,7 @@ fn discord_request() -> DiscordNotificationRequest {
         data_quality: Some(88.0),
         reason: Some("safe final result only".to_string()),
         impact: Some("rawPayload evidence markout webhook token".to_string()),
+        impact_level: None,
         time: None,
         price_range: None,
         add_qty: None,

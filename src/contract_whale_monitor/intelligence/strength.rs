@@ -6,20 +6,21 @@ pub fn score_signal_strength(signal: &ContractWhaleSignal) -> u8 {
     let volume_strength = ((signal.total_volume_btc / 5_000.0) * 25.0).clamp(0.0, 25.0);
     let price_strength = match signal.price_response_type {
         ContractWhalePriceResponseType::TrendFollowUp
-        | ContractWhalePriceResponseType::TrendFollowDown => 18.0
-            + (signal.price_move_pct.unwrap_or_default().abs() / 0.60 * 7.0).clamp(0.0, 7.0),
+        | ContractWhalePriceResponseType::TrendFollowDown => {
+            18.0 + (signal.price_move_pct.unwrap_or_default().abs() / 0.60 * 7.0).clamp(0.0, 7.0)
+        }
         ContractWhalePriceResponseType::DownsideAbsorption
-        | ContractWhalePriceResponseType::UpsideResistance => 14.0
-            + (signal.price_move_pct.unwrap_or_default().abs() / 0.25 * 6.0).clamp(0.0, 6.0),
+        | ContractWhalePriceResponseType::UpsideResistance => {
+            14.0 + (signal.price_move_pct.unwrap_or_default().abs() / 0.25 * 6.0).clamp(0.0, 6.0)
+        }
         ContractWhalePriceResponseType::NoClearResponse => {
             (signal.price_move_pct.unwrap_or_default().abs() / 0.20 * 10.0).clamp(0.0, 10.0)
         }
     }
     .clamp(0.0, 25.0);
     let dominance_strength = (signal.dominance.abs() * 20.0).clamp(0.0, 20.0);
-    let persistence_strength = ((signal.event_lifecycle.update_count as f64).min(5.0) / 5.0
-        * 15.0)
-        .clamp(0.0, 15.0);
+    let persistence_strength =
+        ((signal.event_lifecycle.update_count as f64).min(5.0) / 5.0 * 15.0).clamp(0.0, 15.0);
     let consistency_strength = consistency_points(signal).clamp(0.0, 15.0);
 
     (volume_strength

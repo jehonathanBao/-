@@ -19,6 +19,9 @@ use self::{
     risk::build_risk_context,
     signal_compression::{build_signal_compression_summary, build_trade_ideas},
 };
+use crate::semantic::{
+    enforcement::risk_state_from_context, risk_override::suppress_decision_support_when_risk_high,
+};
 
 pub fn build_intelligence_response(
     symbol: &str,
@@ -32,9 +35,14 @@ pub fn build_intelligence_response(
     let ranked_events = rank_market_events(items, &market_regime, &liquidity_behaviors);
     let opportunity_map =
         derive_opportunity_map(items, &market_regime, &liquidity_behaviors, &ranked_events);
-    let trade_ideas = build_trade_ideas(items, &ranked_events, market_structure_lite);
-    let signal_compression = build_signal_compression_summary(ranked_events.len(), &trade_ideas);
     let risk_context = build_risk_context(items, &liquidity_behaviors);
+    let risk_state = risk_state_from_context(&risk_context);
+    let mut trade_ideas = build_trade_ideas(items, &ranked_events, market_structure_lite);
+    for idea in &mut trade_ideas {
+        idea.risk_state = risk_state;
+    }
+    suppress_decision_support_when_risk_high(&mut trade_ideas, &risk_context);
+    let signal_compression = build_signal_compression_summary(ranked_events.len(), &trade_ideas);
 
     ContractWhaleIntelligenceResponse {
         symbol: symbol.to_string(),

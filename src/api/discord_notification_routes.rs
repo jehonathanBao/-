@@ -33,6 +33,7 @@ pub struct DiscordNotificationRequest {
     pub data_quality: Option<f64>,
     pub reason: Option<String>,
     pub impact: Option<String>,
+    pub impact_level: Option<String>,
     pub time: Option<String>,
     pub price_range: Option<String>,
     pub add_qty: Option<f64>,
@@ -1113,7 +1114,7 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
     let direction = market_structure_direction_from_bias(structure_bias);
     let extreme_template = matches!(
         market_structure_trigger(signal, &AlertGate::from_env("MARKET_STRUCTURE")),
-        Some(MarketStructureTrigger::ExtremeImpact)
+        Some(MarketStructureTrigger::ExtremeImpact | MarketStructureTrigger::ImpactLevel)
     ) && (main_force_score
         < AlertGate::from_env("MARKET_STRUCTURE").min_score
         || signal.main_force_confirmed == Some(false));
@@ -1154,6 +1155,13 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
         DiscordEmbedField {
             name: "极端冲击".to_string(),
             value: format!("{extreme_impact_score}/100"),
+            inline: true,
+        },
+        DiscordEmbedField {
+            name: "冲击等级".to_string(),
+            value: market_structure_impact_level(signal)
+                .unwrap_or("N/A")
+                .to_string(),
             inline: true,
         },
         DiscordEmbedField {
@@ -1580,6 +1588,9 @@ fn evaluate_market_structure_gate(
     let score = match trigger {
         Some(MarketStructureTrigger::MainForce) => market_structure_main_force_score(signal),
         Some(MarketStructureTrigger::ExtremeImpact) => market_structure_extreme_score(signal),
+        Some(MarketStructureTrigger::ImpactLevel) => {
+            market_structure_impact_level_score(signal).unwrap_or(0)
+        }
         None => {
             market_structure_main_force_score(signal).max(market_structure_extreme_score(signal))
         }
@@ -1620,6 +1631,7 @@ fn evaluate_market_structure_gate(
 enum MarketStructureTrigger {
     MainForce,
     ExtremeImpact,
+    ImpactLevel,
 }
 
 fn market_structure_trigger(
@@ -1637,6 +1649,11 @@ fn market_structure_trigger(
     }
     if market_structure_extreme_score(signal) >= gate.min_extreme_score {
         return Some(MarketStructureTrigger::ExtremeImpact);
+    }
+    if market_structure_impact_level_score(signal)
+        .is_some_and(|score| score >= gate.min_extreme_score)
+    {
+        return Some(MarketStructureTrigger::ImpactLevel);
     }
     None
 }
@@ -1667,6 +1684,29 @@ fn market_structure_main_force_score(signal: &DiscordNotificationRequest) -> u8 
 
 fn market_structure_extreme_score(signal: &DiscordNotificationRequest) -> u8 {
     signal.extreme_impact_score.unwrap_or(0)
+}
+
+fn market_structure_impact_level(signal: &DiscordNotificationRequest) -> Option<&'static str> {
+    let level = signal
+        .impact_level
+        .as_deref()
+        .or(signal.level.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_uppercase();
+    match level.as_str() {
+        "S" => Some("S"),
+        "A" => Some("A"),
+        _ => None,
+    }
+}
+
+fn market_structure_impact_level_score(signal: &DiscordNotificationRequest) -> Option<u8> {
+    match market_structure_impact_level(signal)? {
+        "S" => Some(95),
+        "A" => Some(85),
+        _ => None,
+    }
 }
 
 fn market_structure_confidence(signal: &DiscordNotificationRequest) -> f64 {
@@ -2078,6 +2118,7 @@ mod tests {
             data_quality,
             reason: None,
             impact: None,
+            impact_level: None,
             time: None,
             price_range: None,
             add_qty: None,

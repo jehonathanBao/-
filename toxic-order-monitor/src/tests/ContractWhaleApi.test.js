@@ -554,16 +554,18 @@ describe("contract whale api", () => {
             signalId: "btc-idea-1",
             rank: 1,
             setupType: "Absorption continuation",
+            semanticType: "decision_support",
+            riskState: "low",
             directionBias: "BULLISH_BIAS",
             score: 87,
             confidence: 84,
             confidenceLabel: "HIGH",
-            entryZone: {
+            pressureZone: {
               lowPrice: 60_400,
               highPrice: 60_600,
               label: "60400 - 60600",
             },
-            invalidation: {
+            riskBoundary: {
               priceLevel: 60_020,
               reason: "absorption structure lost",
             },
@@ -573,6 +575,8 @@ describe("contract whale api", () => {
           },
         ],
         riskContext: {
+          semanticType: "risk_override",
+          riskState: "high",
           fakeBreakoutRisk: "HIGH",
           summary: "fake breakout cluster active",
           noTradeZones: [
@@ -600,15 +604,21 @@ describe("contract whale api", () => {
     });
     expect(payload.tradeIdeas[0]).toMatchObject({
       signalId: "btc-idea-1",
+      semanticType: "decision_support",
+      riskState: "low",
       directionBias: "BULLISH_BIAS",
-      entryZone: {
+      pressureZone: {
         label: "60400 - 60600",
       },
-      invalidation: {
+      riskBoundary: {
         priceLevel: 60_020,
       },
     });
+    expect(payload.tradeIdeas[0].entryZone).toBeUndefined();
+    expect(payload.tradeIdeas[0].invalidation).toBeUndefined();
     expect(payload.riskContext).toMatchObject({
+      semanticType: "risk_override",
+      riskState: "high",
       fakeBreakoutRisk: "HIGH",
       noTradeZones: [
         expect.objectContaining({

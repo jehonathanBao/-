@@ -451,6 +451,7 @@ fn redact_signal_item(
         data_quality: Some(final_data_quality),
         reason: Some(item.fusion.summary.clone()),
         impact: None,
+        impact_level: None,
         time: None,
         price_range: None,
         add_qty: None,
