@@ -165,8 +165,8 @@ docker exec toxic-frontend ls -la /usr/share/nginx/html/
 # 检查是否有 index.html
 docker exec toxic-frontend cat /usr/share/nginx/html/index.html
 
-# 检查宿主机 dist 是否存在
-ls -la toxic-order-monitor/dist/index.html
+# 检查前端容器内静态文件
+docker exec toxic-frontend ls -la /usr/share/nginx/html/index.html
 
 # 如果文件不存在，重新构建
 docker-compose build --no-cache frontend
@@ -187,7 +187,7 @@ ss -tlnp | grep 5173
 
 # 检查 docker-compose.yml 中的端口映射
 # 容器仍只绑定宿主机本地: "127.0.0.1:5174:5173"
-# 公网5173由宿主机 nginx 直接提供 SPA shell，不再依赖 5174 上游
+# 公网5173由宿主机 nginx 统一接入，再反代到 127.0.0.1:5174 的前端容器
 
 # 重新启动
 docker-compose down
@@ -242,6 +242,9 @@ curl -v http://localhost:5173/dashboard
 
 # 检查HTTP状态码
 curl -o /dev/null -s -w "%{http_code}\n" http://localhost:5173/dashboard
+
+# 直接检查前端上游
+curl -v http://127.0.0.1:5174/dashboard
 ```
 
 ### 步骤5: 检查网络和防火墙

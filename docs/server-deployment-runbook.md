@@ -25,11 +25,11 @@ This deployment keeps the Rust monitor process independent from the React/Vite f
 ## Services
 
 - `backend`: Rust monitor and API server.
-- `frontend`: static SPA server behind host nginx.
+- `frontend`: nginx-served SPA container behind host nginx.
 
 The backend listens on `0.0.0.0:3000` inside Compose and is exposed only on host loopback port `127.0.0.1:8000`.
 
-The frontend listens on `5173` inside the container and is still published on host loopback as `127.0.0.1:5174` for local container inspection, but the public `:80` and `:5173` entrypoints are served by host nginx directly from the checked-out `toxic-order-monitor/dist` build output. Host nginx only proxies `/api` and `/ws` to the backend.
+The frontend listens on `5173` inside the container and is published on host loopback as `127.0.0.1:5174`. Host nginx owns the public `:80` and `:5173` entrypoints and reverse proxies browser SPA requests to `http://127.0.0.1:5174`, while `/api` and `/ws` continue to proxy to the backend on `http://127.0.0.1:8000`.
 
 Open:
 
@@ -104,7 +104,7 @@ Real production replay files are ignored by git.
 
 ## Frontend Runtime
 
-The frontend container still serves the built SPA through nginx for internal health supervision and local loopback testing, but the public ingress does not depend on it. Host nginx serves the SPA shell and assets directly from `toxic-order-monitor/dist`, so browser refreshes never depend on the frontend container being up at that exact millisecond.
+The frontend container serves the built SPA through nginx for both internal health supervision and the public browser shell. Host nginx is the only public ingress, but it now proxies the SPA to `127.0.0.1:5174` instead of reading a second host-side `dist` tree. This keeps browser refreshes, route handling, and asset versions on the same deployment path as the rebuilt frontend container.
 
 ## WebSocket Boundary
 

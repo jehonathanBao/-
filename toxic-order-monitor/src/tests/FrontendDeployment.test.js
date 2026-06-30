@@ -50,19 +50,19 @@ describe("frontend production deployment", () => {
     expect(compose).toContain("http://127.0.0.1:5173/");
   });
 
-  it("ships a host nginx site template that serves SPA assets directly and only proxies API/ws", () => {
+  it("ships a host nginx site template that reverse proxies the SPA to the frontend upstream", () => {
     const ingressTemplatePath = path.join(repoRoot, "deploy", "nginx-site.toxic-order-monitor.conf");
     expect(fs.existsSync(ingressTemplatePath)).toBe(true);
     const ingressTemplate = fs.readFileSync(ingressTemplatePath, "utf8");
-    expect(ingressTemplate).toContain("root /opt/toxic-order-monitor-rs/toxic-order-monitor/dist;");
-    expect(ingressTemplate).toContain("location /assets/");
-    expect(ingressTemplate).toContain("try_files $uri $uri/ /index.html;");
     expect(ingressTemplate).toContain("listen 80;");
     expect(ingressTemplate).toContain("listen 5173;");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:8000");
     expect(ingressTemplate).toContain("location /api/");
     expect(ingressTemplate).toContain("location /ws/");
-    expect(ingressTemplate).not.toContain("proxy_pass http://127.0.0.1:5174");
+    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
+    expect(ingressTemplate).not.toContain("root /opt/toxic-order-monitor-rs/toxic-order-monitor/dist;");
+    expect(ingressTemplate).not.toContain("location /assets/");
+    expect(ingressTemplate).not.toContain("try_files $uri $uri/ /index.html;");
     expect(ingressTemplate).not.toContain("location = /dashboard");
   });
 

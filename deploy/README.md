@@ -105,7 +105,7 @@ cd C:\path\to\有毒订单监控-rs
 A: 先运行 `quick-fix.sh` 重新构建和部署，再执行 `scripts/check_frontend_prod.sh` 检查 `/contract-whale`、`/dashboard` 和 `/api/*`。
 
 ### Q: 容器启动了但无法访问？
-A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。现在公网入口由宿主 nginx 直接提供 SPA shell，因此即使前端容器短暂重启，`/contract-whale` 也不应再返回 502。
+A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。现在公网入口由宿主 nginx 统一接入，但前端页面本身会反代到 `127.0.0.1:5174` 的 `toxic-frontend` 容器，所以要同时确认 nginx 和前端容器都健康。
 
 ### Q: 提示 OPERATOR_TOKEN 未设置？
 A: 编辑 `.env` 文件，设置一个安全的令牌值。
