@@ -1,7 +1,9 @@
 use super::{
+    LOG_PREFIX, LOG_TARGET,
+    classification::classify_contract_whale_signal_v2,
     config::{
-        contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
-        ThresholdProfileResolution,
+        ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig, ThresholdProfileResolution,
+        contract_whale_runtime_config,
     },
     log_events,
     scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
@@ -14,10 +16,9 @@ use super::{
         ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleThresholds,
         ContractWhaleWindowStats,
     },
-    LOG_PREFIX, LOG_TARGET,
 };
 use crate::normalization::market_impact::{
-    normalize_market_impact_from_metrics, MarketImpactNormalization,
+    MarketImpactNormalization, normalize_market_impact_from_metrics,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -152,6 +153,13 @@ pub fn inspect_contract_whale_signal_with_config(
         price_response_type,
         &liquidation_force,
     );
+    let classification_v2 = classify_contract_whale_signal_v2(
+        &scoring_stats,
+        signal_type,
+        price_response_type,
+        multi_exchange_confirmed,
+        config,
+    );
 
     let active_sources = active_source_snapshot(&scoring_stats, config, &resolution);
     let base_asset = contract_base_asset(&stats.symbol);
@@ -192,6 +200,7 @@ pub fn inspect_contract_whale_signal_with_config(
         price_move_15s_pct: price_move_for_window(&scoring_stats, 15),
         price_move_30s_pct: price_move_for_window(&scoring_stats, 30),
         price_response_type,
+        classification_v2,
         main_exchange: scoring_stats.main_exchange.clone(),
         market_type: ContractWhaleMarketType::Perp,
         source_role: signal_source_role(&scoring_stats, config),

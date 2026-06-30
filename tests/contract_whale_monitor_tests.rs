@@ -1,8 +1,9 @@
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     aggregator::{
-        aggregate_1s_buckets, rolling_window_stats, rolling_window_stats_with_config,
-        RollingWindowStatsOptions,
+        RollingWindowStatsOptions, aggregate_1s_buckets, rolling_window_stats,
+        rolling_window_stats_with_config,
     },
+    classification::classify_contract_whale_signal_v2,
     collector_binance::handle_force_order_message,
     collector_okx::handle_liquidation_order_message,
     config::ContractWhaleRuntimeConfig,
@@ -17,9 +18,10 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     },
     scoring::score_contract_whale_signal_with_config,
     types::{
-        ContractExchange, ContractLiquidationSide, ContractTradeSide, ContractWhaleDirection,
-        ContractWhaleLiquidationContext, ContractWhaleMarketContext,
-        ContractWhalePriceResponseType, ContractWhaleSeverity, ContractWhaleSignalType,
+        ContractExchange, ContractLiquidationSide, ContractTradeSide,
+        ContractWhaleActiveFlowDirection, ContractWhaleDirection, ContractWhaleLiquidationContext,
+        ContractWhaleMarketContext, ContractWhaleOiContextTag, ContractWhalePriceResponseType,
+        ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleStructureInterpretation,
     },
 };
 
@@ -347,6 +349,284 @@ fn detector_exposes_score_breakdown_and_price_response_type() {
         signal.score,
         signal.score_breakdown.final_score.round().clamp(0.0, 100.0) as u8
     );
+}
+
+#[test]
+fn classification_v2_keeps_net_sell_without_follow_through_as_active_sell_pressure() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_000.0, true).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, -300.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, false).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(-0.08), Some(5.5), 86)
+        .expect("window stats");
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveSell);
+    assert_eq!(signal.classification_v2.display_signal_type, "主动卖压");
+    assert_eq!(
+        signal.classification_v2.flow_direction,
+        ContractWhaleActiveFlowDirection::SellDominant
+    );
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::ActiveSellPressure
+    );
+    assert!(!signal.classification_v2.is_strong_main_force_intent);
+    assert_eq!(
+        signal.classification_v2.oi_context,
+        ContractWhaleOiContextTag::OiUnavailable
+    );
+}
+
+#[test]
+fn classification_v2_only_marks_main_force_dump_when_price_follows_and_flow_confirms() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_800.0, true).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, -420.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, false).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(-0.32), Some(8.2), 92)
+        .expect("window stats");
+    stats.percentile_level = Some(99.5);
+    stats.market_context.oi_available = true;
+    stats.market_context.oi_change_pct = Some(0.28);
+
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveSell);
+    assert_eq!(signal.classification_v2.display_signal_type, "主力砸盘");
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::MainForceDumpDown
+    );
+    assert!(signal.classification_v2.is_strong_main_force_intent);
+    assert!(signal.classification_v2.intent_confidence >= 75);
+    assert_eq!(
+        signal.classification_v2.oi_context,
+        ContractWhaleOiContextTag::NewShortBuild
+    );
+    assert!(
+        signal
+            .classification_v2
+            .classification_reasons
+            .iter()
+            .any(|reason| reason.contains("price_follow_through"))
+    );
+}
+
+#[test]
+fn classification_v2_marks_main_force_lift_only_when_buy_flow_follows_price() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_800.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 420.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.32), Some(8.2), 92)
+        .expect("window stats");
+    stats.percentile_level = Some(99.5);
+    stats.market_context.oi_available = true;
+    stats.market_context.oi_change_pct = Some(0.28);
+
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
+    assert_eq!(signal.classification_v2.display_signal_type, "主力拉盘");
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::MainForcePushUp
+    );
+    assert!(signal.classification_v2.is_strong_main_force_intent);
+    assert_eq!(
+        signal.classification_v2.oi_context,
+        ContractWhaleOiContextTag::NewLongBuild
+    );
+}
+
+#[test]
+fn classification_v2_keeps_buy_flow_without_follow_through_as_active_buy_pressure() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_000.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 300.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.08), Some(5.5), 86)
+        .expect("window stats");
+    let signal = detect_contract_whale_signal(&stats).expect("signal");
+
+    assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
+    assert_eq!(signal.classification_v2.display_signal_type, "主动买压");
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::ActiveBuyPressure
+    );
+    assert!(!signal.classification_v2.is_strong_main_force_intent);
+}
+
+#[test]
+fn classification_v2_marks_suppression_and_absorption_only_with_strong_low_efficiency_flow() {
+    let now = 1_700_000_015_000;
+    let buy_trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_500.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 450.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, true).unwrap(),
+    ];
+    let sell_trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_500.0, true).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, -450.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, false).unwrap(),
+    ];
+    let buy_stats = rolling_window_stats(
+        &aggregate_1s_buckets(&buy_trades),
+        "BTC",
+        15,
+        now,
+        Some(0.03),
+        Some(5.4),
+        86,
+    )
+    .expect("buy stats");
+    let sell_stats = rolling_window_stats(
+        &aggregate_1s_buckets(&sell_trades),
+        "BTC",
+        15,
+        now,
+        Some(-0.03),
+        Some(5.4),
+        86,
+    )
+    .expect("sell stats");
+
+    let buy_signal = detect_contract_whale_signal(&buy_stats).expect("suppression signal");
+    let sell_signal = detect_contract_whale_signal(&sell_stats).expect("absorption signal");
+
+    assert_eq!(buy_signal.classification_v2.display_signal_type, "上方压制");
+    assert_eq!(
+        buy_signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::UpsideSuppression
+    );
+    assert_eq!(
+        sell_signal.classification_v2.display_signal_type,
+        "下方吸收"
+    );
+    assert_eq!(
+        sell_signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::DownsideAbsorption
+    );
+}
+
+#[test]
+fn classification_v2_marks_low_dominance_as_unclear_contract_flow() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 700.0, false).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.20), Some(6.0), 90)
+        .expect("window stats");
+    stats.dominance = 0.50;
+
+    let classification = classify_contract_whale_signal_v2(
+        &stats,
+        ContractWhaleSignalType::AggressiveBuy,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        true,
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(classification.display_signal_type, "不明确合约流");
+    assert_eq!(
+        classification.structure_interpretation,
+        ContractWhaleStructureInterpretation::UnclearDirectionalFlow
+    );
+    assert_eq!(
+        classification.flow_direction,
+        ContractWhaleActiveFlowDirection::Balanced
+    );
+}
+
+#[test]
+fn classification_v2_maps_all_oi_context_tags_without_promoting_oi_to_main_type() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_800.0, false).unwrap(),
+        normalize_bitfinex_trade(now - 1_000, 70_000.0, 420.0).unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 120.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut buy_stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.32), Some(8.2), 92)
+        .expect("buy stats");
+    buy_stats.market_context.oi_available = true;
+
+    let mut sell_stats = buy_stats.clone();
+    sell_stats.net_volume_btc = -sell_stats.net_volume_btc.abs();
+    sell_stats.price_move_pct = Some(-0.32);
+
+    let config = ContractWhaleRuntimeConfig::default();
+    let cases = [
+        (
+            &buy_stats,
+            ContractWhaleSignalType::AggressiveBuy,
+            Some(0.28),
+            ContractWhaleOiContextTag::NewLongBuild,
+        ),
+        (
+            &sell_stats,
+            ContractWhaleSignalType::AggressiveSell,
+            Some(0.28),
+            ContractWhaleOiContextTag::NewShortBuild,
+        ),
+        (
+            &buy_stats,
+            ContractWhaleSignalType::AggressiveBuy,
+            Some(-0.28),
+            ContractWhaleOiContextTag::ShortCovering,
+        ),
+        (
+            &sell_stats,
+            ContractWhaleSignalType::AggressiveSell,
+            Some(-0.28),
+            ContractWhaleOiContextTag::LongUnwind,
+        ),
+        (
+            &buy_stats,
+            ContractWhaleSignalType::AggressiveBuy,
+            Some(0.01),
+            ContractWhaleOiContextTag::OiNotConfirmed,
+        ),
+        (
+            &buy_stats,
+            ContractWhaleSignalType::AggressiveBuy,
+            None,
+            ContractWhaleOiContextTag::OiUnavailable,
+        ),
+    ];
+
+    for (stats, signal_type, oi_change_pct, expected) in cases {
+        let mut stats = stats.clone();
+        stats.market_context.oi_change_pct = oi_change_pct;
+        if oi_change_pct.is_none() {
+            stats.market_context.oi_available = false;
+        }
+        let classification = classify_contract_whale_signal_v2(
+            &stats,
+            signal_type,
+            ContractWhalePriceResponseType::NoClearResponse,
+            true,
+            &config,
+        );
+        assert_eq!(classification.oi_context, expected);
+        assert_ne!(classification.display_signal_type, "OI 建仓");
+    }
 }
 
 #[test]

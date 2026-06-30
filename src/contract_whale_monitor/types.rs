@@ -486,6 +486,110 @@ pub enum ContractWhalePriceResponseType {
     NoClearResponse,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractWhaleActiveFlowDirection {
+    BuyDominant,
+    SellDominant,
+    Balanced,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractWhaleStructureInterpretation {
+    MainForcePushUp,
+    MainForceDumpDown,
+    ActiveBuyPressure,
+    ActiveSellPressure,
+    DownsideAbsorption,
+    UpsideSuppression,
+    #[default]
+    UnclearDirectionalFlow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractWhaleOiContextTag {
+    NewLongBuild,
+    NewShortBuild,
+    ShortCovering,
+    LongUnwind,
+    OiNotConfirmed,
+    #[default]
+    OiUnavailable,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleDynamicPriceThresholds {
+    #[serde(default)]
+    pub no_follow_pct: f64,
+    #[serde(default)]
+    pub follow_pct: f64,
+    #[serde(default)]
+    pub strong_follow_pct: f64,
+    #[serde(default)]
+    pub volatility_source: String,
+}
+
+impl Default for ContractWhaleDynamicPriceThresholds {
+    fn default() -> Self {
+        Self {
+            no_follow_pct: 0.05,
+            follow_pct: 0.12,
+            strong_follow_pct: 0.20,
+            volatility_source: "fallback".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleClassificationV2 {
+    #[serde(default)]
+    pub display_signal_type: String,
+    #[serde(default)]
+    pub structure_interpretation: ContractWhaleStructureInterpretation,
+    #[serde(default)]
+    pub flow_direction: ContractWhaleActiveFlowDirection,
+    #[serde(default)]
+    pub price_response_type_v2: ContractWhalePriceResponseType,
+    #[serde(default)]
+    pub oi_context: ContractWhaleOiContextTag,
+    #[serde(default)]
+    pub intent_confidence: u8,
+    #[serde(default)]
+    pub is_strong_main_force_intent: bool,
+    #[serde(default)]
+    pub classification_version: String,
+    #[serde(default)]
+    pub classification_reasons: Vec<String>,
+    #[serde(default)]
+    pub dynamic_thresholds: ContractWhaleDynamicPriceThresholds,
+    #[serde(default)]
+    pub price_efficiency: f64,
+}
+
+impl Default for ContractWhaleClassificationV2 {
+    fn default() -> Self {
+        Self {
+            display_signal_type: String::new(),
+            structure_interpretation: ContractWhaleStructureInterpretation::UnclearDirectionalFlow,
+            flow_direction: ContractWhaleActiveFlowDirection::Unknown,
+            price_response_type_v2: ContractWhalePriceResponseType::NoClearResponse,
+            oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            intent_confidence: 0,
+            is_strong_main_force_intent: false,
+            classification_version: String::new(),
+            classification_reasons: Vec::new(),
+            dynamic_thresholds: ContractWhaleDynamicPriceThresholds::default(),
+            price_efficiency: 0.0,
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -946,6 +1050,8 @@ pub struct ContractWhaleSignal {
     pub price_move_30s_pct: Option<f64>,
     #[serde(default)]
     pub price_response_type: ContractWhalePriceResponseType,
+    #[serde(default, flatten)]
+    pub classification_v2: ContractWhaleClassificationV2,
     pub main_exchange: Option<String>,
     #[serde(default)]
     pub market_type: ContractWhaleMarketType,

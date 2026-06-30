@@ -7,8 +7,8 @@ use btc_toxic_flow_monitor_rs::{
     },
     runtime::{
         cwm_risk_fusion::{
-            build_cwm_risk_contribution, build_split_risk_systems, decayed_toxic_score,
-            SplitRiskSystemsInput,
+            SplitRiskSystemsInput, build_cwm_risk_contribution, build_split_risk_systems,
+            decayed_toxic_score,
         },
         tof_metrics::{TofDirection, TofMetrics},
     },
@@ -45,10 +45,12 @@ fn split_risk_systems_keep_toxic_score_independent_from_cwm() {
     assert_eq!(systems.short_term_toxic.half_life_sec, 45);
     assert_eq!(systems.short_term_toxic.max_ttl_sec, 300);
     assert_eq!(systems.short_term_toxic.decayed_score, 84.0);
-    assert!(systems
-        .short_term_toxic
-        .decay_formula
-        .contains("exp(-elapsedSec / halfLifeSec)"));
+    assert!(
+        systems
+            .short_term_toxic
+            .decay_formula
+            .contains("exp(-elapsedSec / halfLifeSec)")
+    );
     assert_eq!(systems.short_term_toxic.reasons.len(), 7);
     assert_eq!(
         systems.short_term_toxic.reasons[0].reason_type,
@@ -67,14 +69,18 @@ fn split_risk_systems_keep_toxic_score_independent_from_cwm() {
         ]
     );
     assert!(systems.short_term_toxic.formula.contains("AggressiveSweep"));
-    assert!(systems
-        .short_term_toxic
-        .discord_gate
-        .contains("toxicScore>=85"));
-    assert!(systems
-        .short_term_toxic
-        .discord_gate
-        .contains("confidence>=70"));
+    assert!(
+        systems
+            .short_term_toxic
+            .discord_gate
+            .contains("toxicScore>=85")
+    );
+    assert!(
+        systems
+            .short_term_toxic
+            .discord_gate
+            .contains("confidence>=70")
+    );
     assert_eq!(systems.main_force_structure.main_force_score, 83);
     assert!(systems.main_force_structure.main_force_confirmed);
     assert_eq!(
@@ -156,14 +162,18 @@ fn split_risk_systems_keep_toxic_score_independent_from_cwm() {
             "4h".to_string()
         ]
     );
-    assert!(systems
-        .main_force_structure
-        .formula
-        .contains("MarketStructureScore"));
-    assert!(systems
-        .main_force_structure
-        .formula
-        .contains("min(spotScore, contractScore)"));
+    assert!(
+        systems
+            .main_force_structure
+            .formula
+            .contains("MarketStructureScore")
+    );
+    assert!(
+        systems
+            .main_force_structure
+            .formula
+            .contains("min(spotScore, contractScore)")
+    );
 }
 
 #[test]
@@ -262,9 +272,11 @@ fn cwm_contribution_missing_signal_keeps_independent_gate_visible() {
     assert_eq!(contribution.score, None);
     assert_eq!(contribution.weighted_contribution, 0.0);
     assert!(contribution.discord_gate_independent);
-    assert!(contribution
-        .summary
-        .contains("main-force structure uses spot/perp context only"));
+    assert!(
+        contribution
+            .summary
+            .contains("main-force structure uses spot/perp context only")
+    );
 }
 
 #[test]
@@ -308,14 +320,12 @@ fn market_structure_marks_liquidation_cascade_without_treating_it_as_main_force_
         systems.main_force_structure.main_force_score <= 64,
         "liquidation-driven extremes should raise extremeImpactScore and actively cap mainForceScore"
     );
-    assert!(systems
-        .main_force_structure
-        .reasons
-        .iter()
-        .any(|reason| reason.reason_type == "LiquidationContext"
+    assert!(systems.main_force_structure.reasons.iter().any(|reason| {
+        reason.reason_type == "LiquidationContext"
             && reason
                 .description
-                .contains("not automatically main-force builds")));
+                .contains("not automatically main-force builds")
+    }));
 }
 
 #[test]
@@ -403,14 +413,12 @@ fn market_structure_marks_short_squeeze_as_extreme_impact_without_main_force_con
     assert!(systems.main_force_structure.extreme_impact_confirmed);
     assert!(!systems.main_force_structure.main_force_confirmed);
     assert!(systems.main_force_structure.extreme_impact_score >= 95);
-    assert!(systems
-        .main_force_structure
-        .reasons
-        .iter()
-        .any(|reason| reason.reason_type == "LiquidationContext"
+    assert!(systems.main_force_structure.reasons.iter().any(|reason| {
+        reason.reason_type == "LiquidationContext"
             && reason
                 .description
-                .contains("not automatically main-force builds")));
+                .contains("not automatically main-force builds")
+    }));
 }
 
 #[test]
@@ -673,6 +681,7 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         price_move_15s_pct: Some(0.31),
         price_move_30s_pct: None,
         price_response_type: ContractWhalePriceResponseType::TrendFollowUp,
+        classification_v2: Default::default(),
         main_exchange: Some("binance".to_string()),
         market_type: ContractWhaleMarketType::Perp,
         source_role: ContractWhaleSourceRole::Primary,
@@ -682,6 +691,12 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         dynamic_baseline_btc: Some(512.0),
         dynamic_threshold_level: "critical".to_string(),
         percentile_level: Some(99.9),
+        impact_level: None,
+        signal_level: None,
+        signal_label: None,
+        normalized_strength: None,
+        impact_score: None,
+        impact_z_score: None,
         multi_exchange_confirmed: true,
         liquidation_suspected: false,
         liquidation_long_btc: 0.0,

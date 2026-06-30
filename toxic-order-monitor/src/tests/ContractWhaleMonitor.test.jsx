@@ -1293,6 +1293,69 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
   });
 
+  it("shows contract classification v2 semantics in the event type column", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-v2-classification",
+          eventId: "cwm-event:BTC:aggressive_sell:v2",
+          sourceSignalId: "contract-whale-v2-classification",
+          ts: 1_700_000_020_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_sell",
+          displaySignalType: "主动卖压",
+          flowDirection: "sell_dominant",
+          priceResponseTypeV2: "no_clear_response",
+          oiContext: "oi_not_confirmed",
+          classificationReasons: ["sell_dominant", "price_follow_through_not_confirmed"],
+          direction: "sell",
+          severity: "medium",
+          score: 62,
+          totalVolumeBtc: 377,
+          netVolumeBtc: -82,
+          totalNotionalUsd: 22_000_000,
+          dominance: 0.61,
+          triggerPriceUsd: 59_500,
+          orderPriceUsd: 59_500,
+          currentMarketPriceUsd: 59_500,
+          priceDeviationPct: 0.1,
+          priceDeviationFiltered: false,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:v2",
+            status: "active",
+            startTime: 1_700_000_020_000,
+            lastUpdateTime: 1_700_000_020_000,
+            volumeAccumulated: 377,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.81,
+            mergeSimilarityScore: 0.86,
+            valid: true,
+            falseEventFlags: [],
+          },
+          status: "active",
+          source: "contract_whale_signals",
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText("主动卖压")).toBeInTheDocument();
+    expect(screen.getByText("主动流：主动卖占优 · 价格：价格响应不明确 · OI：OI 未确认")).toBeInTheDocument();
+    expect(screen.getAllByTitle(/主力拉盘\/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示/).length).toBeGreaterThan(0);
+  });
+
   it("hides sub-$10M contract events and linked setups from the default desk view", async () => {
     fetchContractEvents.mockResolvedValueOnce({
       items: [

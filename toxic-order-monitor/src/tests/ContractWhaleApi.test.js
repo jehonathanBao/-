@@ -1390,6 +1390,43 @@ describe("contract whale api", () => {
     expect(signal.token).toBeUndefined();
   });
 
+  it("normalizes compatible v2 classification fields while keeping legacy signal type", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "classification-v2-signal",
+      symbol: "BTC",
+      signalType: "aggressive_sell",
+      displaySignalType: "主动卖压",
+      structureInterpretation: "active_sell_pressure",
+      flowDirection: "sell_dominant",
+      priceResponseTypeV2: "no_clear_response",
+      oiContext: "oi_unavailable",
+      intentConfidence: 42,
+      isStrongMainForceIntent: false,
+      classificationVersion: "contract_whale_v2_compat",
+      classificationReasons: ["active_pressure_without_full_intent_confirmation"],
+      dynamicThresholds: {
+        noFollowPct: 0.05,
+        followPct: 0.12,
+        strongFollowPct: 0.2,
+        volatilitySource: "fallback",
+      },
+      priceEfficiency: 0.0615,
+    });
+
+    expect(signal.signalType).toBe("aggressive_sell");
+    expect(signal.displaySignalType).toBe("主动卖压");
+    expect(signal.structureInterpretation).toBe("active_sell_pressure");
+    expect(signal.flowDirection).toBe("sell_dominant");
+    expect(signal.priceResponseTypeV2).toBe("no_clear_response");
+    expect(signal.oiContext).toBe("oi_unavailable");
+    expect(signal.intentConfidence).toBe(42);
+    expect(signal.isStrongMainForceIntent).toBe(false);
+    expect(signal.classificationVersion).toBe("contract_whale_v2_compat");
+    expect(signal.classificationReasons).toEqual(["active_pressure_without_full_intent_confirmation"]);
+    expect(signal.dynamicThresholds.followPct).toBe(0.12);
+    expect(signal.priceEfficiency).toBe(0.0615);
+  });
+
   it("maps volume display semantics without changing the underlying math", () => {
     const signal = normalizeContractWhaleSignal({
       id: "volume-semantics-signal",

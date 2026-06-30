@@ -4,11 +4,11 @@ use std::{
 };
 
 use super::{
+    LOG_PREFIX, LOG_TARGET,
     types::{
         ContractExchange, ContractWhaleExchangeStatus, ContractWhaleMarketType,
         ContractWhaleSourceRole, ContractWhaleThresholds,
     },
-    LOG_PREFIX, LOG_TARGET,
 };
 
 const DEFAULT_VOLUME_STRENGTH_WEIGHT: f64 = 35.0;
@@ -36,6 +36,7 @@ static GLOBAL_CONFIG: OnceLock<RwLock<ContractWhaleRuntimeConfig>> = OnceLock::n
 pub struct ContractWhaleRuntimeConfig {
     pub exchanges: ContractWhaleExchangeConfig,
     pub scoring: ContractWhaleScoringConfig,
+    pub classification: ContractWhaleClassificationConfig,
     pub toxic_order: ContractWhaleToxicOrderConfig,
     pub discord: ContractWhaleDiscordGateConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
@@ -487,6 +488,7 @@ impl Default for ContractWhaleRuntimeConfig {
         Self {
             exchanges: ContractWhaleExchangeConfig::default(),
             scoring: ContractWhaleScoringConfig::default(),
+            classification: ContractWhaleClassificationConfig::default(),
             toxic_order: ContractWhaleToxicOrderConfig::default(),
             discord: ContractWhaleDiscordGateConfig::default(),
             symbols,
@@ -920,6 +922,47 @@ impl Default for ContractWhaleScoringConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct ContractWhaleClassificationConfig {
+    pub enabled: bool,
+    pub flow_direction_dominance_min: f64,
+    pub strong_intent_dominance_min: f64,
+    pub absorption_dominance_min: f64,
+    pub no_follow_pct: f64,
+    pub follow_pct: f64,
+    pub strong_follow_pct: f64,
+    pub follow_same_direction_min_pct: f64,
+    pub absorption_min_notional_usd: f64,
+    pub low_price_efficiency_max: f64,
+    pub min_data_quality_for_strong_intent: u8,
+    pub min_data_quality_for_absorption: u8,
+    pub require_multi_exchange_for_strong_intent: bool,
+    pub require_multi_exchange_for_absorption: bool,
+    pub oi_context_change_pct: f64,
+}
+
+impl Default for ContractWhaleClassificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            flow_direction_dominance_min: 0.55,
+            strong_intent_dominance_min: 0.60,
+            absorption_dominance_min: 0.65,
+            no_follow_pct: 0.05,
+            follow_pct: 0.12,
+            strong_follow_pct: 0.20,
+            follow_same_direction_min_pct: 0.20,
+            absorption_min_notional_usd: 10_000_000.0,
+            low_price_efficiency_max: 0.25,
+            min_data_quality_for_strong_intent: 70,
+            min_data_quality_for_absorption: 70,
+            require_multi_exchange_for_strong_intent: true,
+            require_multi_exchange_for_absorption: true,
+            oi_context_change_pct: 0.20,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ContractWhaleScoringPenalties {
     pub single_exchange_only: f64,
     pub liquidation_suspected: f64,
@@ -1093,6 +1136,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
     ContractWhaleRuntimeConfig {
         exchanges: load_exchange_config(settings),
         scoring: load_scoring_config(settings),
+        classification: load_classification_config(settings),
         toxic_order: load_toxic_order_config(settings),
         discord: load_discord_gate_config(settings),
         data_quality: load_data_quality_config(settings),
@@ -1353,6 +1397,90 @@ fn load_scoring_config(settings: &::config::Config) -> ContractWhaleScoringConfi
                 defaults.penalties.price_jump_anomaly,
             ),
         },
+    }
+}
+
+fn load_classification_config(settings: &::config::Config) -> ContractWhaleClassificationConfig {
+    let defaults = ContractWhaleClassificationConfig::default();
+    ContractWhaleClassificationConfig {
+        enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_CLASSIFICATION_V2_ENABLED",
+            "contract_whale_monitor.classification.enabled",
+            defaults.enabled,
+        ),
+        flow_direction_dominance_min: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.flow_direction_dominance_min",
+            defaults.flow_direction_dominance_min,
+        ),
+        strong_intent_dominance_min: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.strong_intent_dominance_min",
+            defaults.strong_intent_dominance_min,
+        ),
+        absorption_dominance_min: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.absorption_dominance_min",
+            defaults.absorption_dominance_min,
+        ),
+        no_follow_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.no_follow_pct",
+            defaults.no_follow_pct,
+        ),
+        follow_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.follow_pct",
+            defaults.follow_pct,
+        ),
+        strong_follow_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.strong_follow_pct",
+            defaults.strong_follow_pct,
+        ),
+        follow_same_direction_min_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.follow_same_direction_min_pct",
+            defaults.follow_same_direction_min_pct,
+        ),
+        absorption_min_notional_usd: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.absorption_min_notional_usd",
+            defaults.absorption_min_notional_usd,
+        ),
+        low_price_efficiency_max: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.low_price_efficiency_max",
+            defaults.low_price_efficiency_max,
+        ),
+        min_data_quality_for_strong_intent: u8_setting(
+            settings,
+            "contract_whale_monitor.classification.min_data_quality_for_strong_intent",
+            defaults.min_data_quality_for_strong_intent,
+        ),
+        min_data_quality_for_absorption: u8_setting(
+            settings,
+            "contract_whale_monitor.classification.min_data_quality_for_absorption",
+            defaults.min_data_quality_for_absorption,
+        ),
+        require_multi_exchange_for_strong_intent: bool_setting(
+            settings,
+            "CONTRACT_WHALE_CLASSIFICATION_REQUIRE_MULTI_EXCHANGE_STRONG",
+            "contract_whale_monitor.classification.require_multi_exchange_for_strong_intent",
+            defaults.require_multi_exchange_for_strong_intent,
+        ),
+        require_multi_exchange_for_absorption: bool_setting(
+            settings,
+            "CONTRACT_WHALE_CLASSIFICATION_REQUIRE_MULTI_EXCHANGE_ABSORPTION",
+            "contract_whale_monitor.classification.require_multi_exchange_for_absorption",
+            defaults.require_multi_exchange_for_absorption,
+        ),
+        oi_context_change_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.oi_context_change_pct",
+            defaults.oi_context_change_pct,
+        ),
     }
 }
 

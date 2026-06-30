@@ -807,7 +807,7 @@ function TrajectoryFocusPanel({ onOpenSignal, whale }) {
               onClick={() => onOpenSignal(signal.id)}
               type="button"
             >
-              <p className="font-semibold text-slate-100">{formatTime(signal.ts)} · {signalTypeLabel(signal.signalType)}</p>
+              <p className="font-semibold text-slate-100">{formatTime(signal.ts)} · {signalDisplayType(signal)}</p>
               <p className="mt-1 text-slate-400">
                 {formatBaseVolume(signal.totalVolumeBtc, signal.symbol)} · {netDirection(signal.netVolumeBtc, signal.symbol)}
               </p>
@@ -1835,7 +1835,7 @@ function HiddenContractEventsPanel({ items, loading }) {
                 <HeaderCell>时间</HeaderCell>
                 <HeaderCell>价格</HeaderCell>
                 <HeaderCell>偏离比例</HeaderCell>
-                <HeaderCell>类型</HeaderCell>
+                <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
                 <HeaderCell>等级</HeaderCell>
                 <HeaderCell>说明</HeaderCell>
               </tr>
@@ -1850,7 +1850,9 @@ function HiddenContractEventsPanel({ items, loading }) {
                   </Cell>
                   <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
                   <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
-                  <Cell>{signalTypeLabel(item.signalType)}</Cell>
+                  <Cell>
+                    <SignalTypeSummary item={item} />
+                  </Cell>
                   <Cell>{severityLabel(item.severity)}</Cell>
                   <Cell>{item.hiddenDetail || "后端标记为隐藏事件"}</Cell>
                 </tr>
@@ -1912,7 +1914,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
         <tr>
           <HeaderCell>时间</HeaderCell>
           <HeaderCell>币种 / 价格</HeaderCell>
-          <HeaderCell>类型</HeaderCell>
+          <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
           <HeaderCell>等级</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
@@ -1962,12 +1964,7 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
               <SymbolWithPrice item={item} />
             </Cell>
             <Cell>
-              <span className="inline-flex items-center gap-1">
-                <span className={signalTypeIconClass(item.signalType)} aria-hidden="true">
-                  {signalTypeIcon(item.signalType)}
-                </span>
-                {signalTypeLabel(item.signalType)}
-              </span>
+              <SignalTypeSummary item={item} />
             </Cell>
             <Cell>
               <span className="block whitespace-nowrap">
@@ -2538,9 +2535,15 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
           <DetailGrid
             rows={[
               ["Symbol", signal.symbol],
-              ["类型", signalTypeLabel(signal.signalType)],
+              ["类型", signalDisplayType(signal)],
               ["方向", directionLabel(signal.direction)],
               ["价格响应", priceResponseLabel(signal.priceResponseType)],
+              ["v2 流向", flowDirectionLabel(signal.flowDirection)],
+              ["OI 语境", oiContextLabel(signal.oiContext)],
+              ["意图置信", `${signal.intentConfidence || 0}/100`],
+              ["强主力意图", yesNoLabel(signal.isStrongMainForceIntent)],
+              ["分类版本", signal.classificationVersion || "legacy"],
+              ["分类原因", signal.classificationReasons?.length ? signal.classificationReasons.join(" · ") : "N/A"],
               ["等级", severityLabel(signal.severity)],
               ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
               ["事件状态", eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"],
@@ -3221,6 +3224,25 @@ function SymbolWithPrice({ item }) {
   );
 }
 
+const CONTRACT_CLASSIFICATION_TOOLTIP =
+  "主力拉盘/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示。否则显示主动买压/主动卖压；吸收/压制要求主动方向占优，同时价格不跟随或出现有效回收/回落。";
+
+function SignalTypeSummary({ item }) {
+  return (
+    <span className="flex min-w-[128px] flex-col leading-tight" title={signalClassificationTooltip(item)}>
+      <span className="inline-flex items-center gap-1">
+        <span className={signalTypeIconClass(item.signalType)} aria-hidden="true">
+          {signalTypeIcon(item.signalType)}
+        </span>
+        <span>{signalDisplayType(item)}</span>
+      </span>
+      <span className="mt-1 whitespace-normal text-[10px] leading-4 text-slate-500">
+        {signalClassificationMeta(item)}
+      </span>
+    </span>
+  );
+}
+
 function signalTypeLabel(type) {
   const labels = {
     aggressive_buy: "主力拉盘",
@@ -3229,6 +3251,52 @@ function signalTypeLabel(type) {
     upside_suppression: "上方压制",
   };
   return labels[type] || type || "未知";
+}
+
+function signalDisplayType(signal) {
+  if (signal && typeof signal === "object") {
+    const display = String(signal.displaySignalType || "").trim();
+    if (display) return display;
+    return signalTypeLabel(signal.signalType);
+  }
+  return signalTypeLabel(signal);
+}
+
+function signalClassificationMeta(signal) {
+  const flow = signal?.flowDirection ? flowDirectionLabel(signal.flowDirection) : "—";
+  const priceType = signal?.priceResponseTypeV2 || signal?.priceResponseType;
+  const price = priceType ? priceResponseLabel(priceType) : "—";
+  const oi = signal?.oiContext ? oiContextLabel(signal.oiContext) : "—";
+  return `主动流：${flow} · 价格：${price} · OI：${oi}`;
+}
+
+function signalClassificationTooltip(signal) {
+  const reasons = Array.isArray(signal?.classificationReasons) && signal.classificationReasons.length
+    ? `\n分类原因：${signal.classificationReasons.join(" · ")}`
+    : "";
+  return `${CONTRACT_CLASSIFICATION_TOOLTIP}\n${signalClassificationMeta(signal)}${reasons}`;
+}
+
+function flowDirectionLabel(value) {
+  const labels = {
+    buy_dominant: "主动买占优",
+    sell_dominant: "主动卖占优",
+    balanced: "多空均衡",
+    unknown: "未知",
+  };
+  return labels[String(value || "unknown").toLowerCase()] || value || "未知";
+}
+
+function oiContextLabel(value) {
+  const labels = {
+    new_long_build: "新增多头建仓",
+    new_short_build: "新增空头建仓",
+    short_covering: "空头回补",
+    long_unwind: "多头减仓",
+    oi_not_confirmed: "OI 未确认",
+    oi_unavailable: "OI 不可用",
+  };
+  return labels[String(value || "oi_unavailable").toLowerCase()] || value || "OI 不可用";
 }
 
 function priceResponseLabel(type) {
@@ -3848,7 +3916,7 @@ function deriveTrajectoryPhases(signals, actions, regimePath) {
   const source = (signals || []).slice(-4);
   if (source.length > 0) {
     return source.map((signal) => ({
-      detail: `${signalTypeLabel(signal.signalType)} · ${netDirection(signal.netVolumeBtc, signal.symbol)} · ${formatUsd(signal.totalNotionalUsd)}`,
+      detail: `${signalDisplayType(signal)} · ${netDirection(signal.netVolumeBtc, signal.symbol)} · ${formatUsd(signal.totalNotionalUsd)}`,
       intensity: clampRatio(Math.max(Number(signal.dominance || 0), Number(signal?.cluster?.intensity || 0))),
       ts: signal.ts,
       type: signal.signalType || "unknown",

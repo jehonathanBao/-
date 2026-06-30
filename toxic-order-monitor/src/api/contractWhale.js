@@ -1345,6 +1345,18 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     quantityUnit: item.quantityUnit || item.baseAsset || item.symbol || fallbackSymbol || "BTC",
     windowSec: numberOrNull(item.windowSec) || 0,
     signalType: item.signalType || "unknown",
+    displaySignalType: item.displaySignalType || item.display_signal_type || "",
+    structureInterpretation: item.structureInterpretation || item.structure_interpretation || "unknown",
+    flowDirection: item.flowDirection || item.flow_direction || "unknown",
+    priceResponseTypeV2:
+      item.priceResponseTypeV2 || item.price_response_type_v2 || item.priceResponseType || "no_clear_response",
+    oiContext: item.oiContext || item.oi_context || "oi_unavailable",
+    intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
+    isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
+    classificationVersion: item.classificationVersion || item.classification_version || "",
+    classificationReasons: normalizeStringArray(item.classificationReasons ?? item.classification_reasons),
+    dynamicThresholds: normalizeContractWhaleDynamicThresholds(item.dynamicThresholds ?? item.dynamic_thresholds),
+    priceEfficiency: numberOrNull(item.priceEfficiency ?? item.price_efficiency),
     direction: item.direction || "neutral",
     severity: item.severity || "medium",
     score: numberOrNull(item.score) || 0,
@@ -1921,6 +1933,16 @@ function normalizeCanonicalTimelineResponse(payload, filters = {}, fallbackError
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item || "").toLowerCase()).filter(Boolean);
+}
+
+function normalizeContractWhaleDynamicThresholds(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    noFollowPct: numberOrNull(source.noFollowPct ?? source.no_follow_pct) ?? 0.05,
+    followPct: numberOrNull(source.followPct ?? source.follow_pct) ?? 0.12,
+    strongFollowPct: numberOrNull(source.strongFollowPct ?? source.strong_follow_pct) ?? 0.2,
+    volatilitySource: source.volatilitySource || source.volatility_source || "fallback",
+  };
 }
 
 function normalizeRawStringArray(value) {
