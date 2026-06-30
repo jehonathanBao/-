@@ -197,6 +197,74 @@ fn cwm_discord_gate_keeps_btc_medium_contract_signals_observe_only() {
 }
 
 #[test]
+fn cwm_discord_gate_allows_medium_b_a_s_impact_levels() {
+    let settings = live_settings_for_tests();
+
+    for level in ["B", "A", "S"] {
+        let cooldown = ContractWhaleDiscordCooldownStore::new();
+        let signal = sample_medium_impact_signal(level, 80);
+        let decision =
+            evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+
+        assert!(decision.allowed, "impact level {level} should be allowed");
+        assert_eq!(decision.reason, "eligible");
+    }
+}
+
+#[test]
+fn cwm_discord_gate_keeps_medium_c_impact_observe_only() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let signal = sample_medium_impact_signal("C", 80);
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "observe_only");
+}
+
+#[test]
+fn cwm_discord_gate_blocks_medium_impact_when_quality_or_warmup_blocks() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let low_quality = sample_medium_impact_signal("B", 60);
+
+    let low_quality_decision =
+        evaluate_contract_whale_discord_gate(&settings, &low_quality, &cooldown, low_quality.ts);
+
+    assert!(!low_quality_decision.allowed);
+    assert_eq!(low_quality_decision.reason, "data_quality_low");
+
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut warmup = sample_medium_impact_signal("B", 80);
+    warmup.discord_eligible = false;
+    warmup.discord_reason = "warmup_collect_only".to_string();
+
+    let warmup_decision =
+        evaluate_contract_whale_discord_gate(&settings, &warmup, &cooldown, warmup.ts);
+
+    assert!(!warmup_decision.allowed);
+    assert_eq!(warmup_decision.reason, "warmup_collect_only");
+}
+
+#[test]
+fn cwm_discord_gate_dedupes_medium_impact_level_signals() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let signal = sample_medium_impact_signal("B", 80);
+
+    let first = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(first.allowed);
+
+    cooldown.record_sent(&signal, signal.ts);
+    let duplicate =
+        evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts + 1_000);
+
+    assert!(!duplicate.allowed);
+    assert_eq!(duplicate.reason, "duplicate");
+}
+
+#[test]
 fn cwm_discord_gate_still_rejects_non_btc_medium_contract_signals() {
     let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
@@ -452,6 +520,70 @@ fn sample_signal_variant(
         signal.net_volume_btc = -signal.net_volume_btc.abs();
         signal.net_volume = signal.net_volume_btc;
     }
+    signal
+}
+
+fn sample_medium_impact_signal(
+    impact_level: &str,
+    data_quality: u8,
+) -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal {
+    let mut signal = sample_signal_variant(
+        ContractWhaleSeverity::Medium,
+        ContractWhaleSignalType::AggressiveBuy,
+        ContractWhaleDirection::Buy,
+        "medium impact level signal",
+        0.31,
+    );
+    signal.id = format!("contract-whale:BTC:15:{}:impact-{impact_level}", signal.ts);
+    signal.score = 70;
+    signal.data_quality = data_quality;
+    signal.discord_eligible = impact_level != "C" && data_quality >= 70;
+    signal.discord_reason = if signal.discord_eligible {
+        "impact_level_gate".to_string()
+    } else {
+        "medium_observe_only".to_string()
+    };
+    signal.discord_would_send = signal.discord_eligible;
+    signal.impact_level = Some(impact_level.to_string());
+    signal.signal_level = Some(
+        match impact_level {
+            "S" => "S",
+            "A" => "L3",
+            "B" => "L2",
+            _ => "L1",
+        }
+        .to_string(),
+    );
+    signal.signal_label = Some(
+        match impact_level {
+            "S" => "SHOCK IMPACT EVENT",
+            "A" => "HIGH IMPACT EVENT",
+            "B" => "MEDIUM IMPACT EVENT",
+            _ => "LOW IMPACT EVENT",
+        }
+        .to_string(),
+    );
+    signal.normalized_strength = Some(
+        match impact_level {
+            "S" => "EXTREME",
+            "A" => "HIGH",
+            "B" => "MEDIUM",
+            _ => "LOW",
+        }
+        .to_string(),
+    );
+    signal.impact_score = Some(match impact_level {
+        "S" => 6.0,
+        "A" => 3.5,
+        "B" => 2.0,
+        _ => 1.0,
+    });
+    signal.impact_z_score = Some(match impact_level {
+        "S" => 4.0,
+        "A" => 2.8,
+        "B" => 1.8,
+        _ => 0.5,
+    });
     signal
 }
 

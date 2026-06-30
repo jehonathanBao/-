@@ -112,6 +112,40 @@ impl MarketImpactNormalization {
     }
 }
 
+pub fn normalize_market_impact_from_metrics(
+    raw_volume: f64,
+    impact_score: Option<f64>,
+    z_score: Option<f64>,
+    percentile: Option<f64>,
+) -> MarketImpactNormalization {
+    let score = impact_score
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0);
+    let z = z_score.filter(|value| value.is_finite()).unwrap_or(score);
+    let percentile = percentile
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let z_score_normalized = (z.max(0.0) / 3.0).clamp(0.0, 1.0);
+    let percentile_normalized = (percentile / 100.0).clamp(0.0, 1.0);
+    let normalized_score =
+        (0.4 * score + 0.3 * z_score_normalized + 0.3 * percentile_normalized).clamp(0.0, 1.0);
+    let impact_level = classify_impact_level(percentile, z, score);
+    let signal_level = map_impact_to_signal_level(impact_level);
+
+    MarketImpactNormalization {
+        raw_volume: raw_volume.max(0.0),
+        impact_score: score,
+        z_score: z,
+        percentile,
+        normalized_score,
+        normalized_strength: classify_normalized_strength(normalized_score).to_string(),
+        impact_level: impact_level.to_string(),
+        signal_level: signal_level.to_string(),
+        signal_label: impact_signal_label(impact_level).to_string(),
+    }
+}
+
 fn classify_impact_level(percentile: f64, z_score: f64, impact_score: f64) -> &'static str {
     if percentile > 97.0 && z_score > 3.5 && impact_score > 5.0 {
         "S"

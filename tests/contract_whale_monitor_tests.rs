@@ -559,6 +559,27 @@ fn detector_keeps_medium_when_price_response_confirms_trend() {
 }
 
 #[test]
+fn detector_populates_market_impact_fields() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 900.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 80_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(4.2), 85)
+        .expect("window stats");
+    stats.percentile_level = Some(90.0);
+    let signal = detect_contract_whale_signal(&stats).expect("medium signal");
+
+    assert_eq!(signal.impact_level.as_deref(), Some("A"));
+    assert_eq!(signal.signal_level.as_deref(), Some("L3"));
+    assert_eq!(signal.signal_label.as_deref(), Some("HIGH IMPACT EVENT"));
+    assert_eq!(signal.normalized_strength.as_deref(), Some("EXTREME"));
+    assert_eq!(signal.impact_score, Some(4.2));
+    assert_eq!(signal.impact_z_score, Some(4.2));
+}
+
+#[test]
 fn detector_uses_percentile_level_to_suppress_active_market_noise() {
     let now = 1_700_000_015_000;
     let trades = vec![

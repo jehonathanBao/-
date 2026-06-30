@@ -1046,7 +1046,7 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
   const impactScore =
     numberOrNull(item?.impactScore ?? item?.impact_score) ??
     numberOrNull(impactScoreFallback);
-  const zScore = numberOrNull(item?.zScore ?? item?.z_score);
+  const zScore = numberOrNull(item?.zScore ?? item?.z_score ?? item?.impactZScore ?? item?.impact_z_score);
   const percentile =
     numberOrNull(item?.percentile ?? item?.percentile_level) ??
     numberOrNull(percentileFallback);

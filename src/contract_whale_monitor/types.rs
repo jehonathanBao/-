@@ -962,6 +962,18 @@ pub struct ContractWhaleSignal {
     #[serde(default)]
     pub percentile_level: Option<f64>,
     #[serde(default)]
+    pub impact_level: Option<String>,
+    #[serde(default)]
+    pub signal_level: Option<String>,
+    #[serde(default)]
+    pub signal_label: Option<String>,
+    #[serde(default)]
+    pub normalized_strength: Option<String>,
+    #[serde(default)]
+    pub impact_score: Option<f64>,
+    #[serde(default)]
+    pub impact_z_score: Option<f64>,
+    #[serde(default)]
     pub multi_exchange_confirmed: bool,
     #[serde(default)]
     pub liquidation_suspected: bool,

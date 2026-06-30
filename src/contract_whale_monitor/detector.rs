@@ -16,6 +16,9 @@ use super::{
     },
     LOG_PREFIX, LOG_TARGET,
 };
+use crate::normalization::market_impact::{
+    normalize_market_impact_from_metrics, MarketImpactNormalization,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,6 +127,7 @@ pub fn inspect_contract_whale_signal_with_config(
     let primary_source_override =
         primary_source_extreme_discord_candidate(&scoring_stats, signal_type, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
+    let impact = market_impact_normalization(&scoring_stats);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         severity,
         score,
@@ -131,6 +135,8 @@ pub fn inspect_contract_whale_signal_with_config(
         scoring_stats.data_quality,
         primary_source_override,
         &scoring_stats.symbol,
+        Some(impact.impact_level.as_str()),
+        config,
     );
     if warmup_collect_only {
         discord_eligible = false;
@@ -199,6 +205,12 @@ pub fn inspect_contract_whale_signal_with_config(
             .map(|value| round(value, 3)),
         dynamic_threshold_level: scoring_stats.dynamic_threshold_level.clone(),
         percentile_level: scoring_stats.percentile_level.map(|value| round(value, 1)),
+        impact_level: Some(impact.impact_level),
+        signal_level: Some(impact.signal_level),
+        signal_label: Some(impact.signal_label),
+        normalized_strength: Some(impact.normalized_strength),
+        impact_score: Some(round(impact.impact_score, 3)),
+        impact_z_score: Some(round(impact.z_score, 3)),
         multi_exchange_confirmed,
         liquidation_suspected,
         liquidation_long_btc: round(scoring_stats.liquidation_context.long_liq_btc, 3),
@@ -279,6 +291,19 @@ pub fn inspect_contract_whale_signal_with_config(
         signal: Some(signal),
         reject_reason: None,
     }
+}
+
+fn market_impact_normalization(stats: &ContractWhaleWindowStats) -> MarketImpactNormalization {
+    let impact_score = stats.dynamic_multiple.or_else(|| {
+        let baseline = stats.dynamic_baseline_btc?;
+        (baseline > f64::EPSILON).then(|| stats.total_volume_btc / baseline)
+    });
+    normalize_market_impact_from_metrics(
+        stats.total_volume_btc,
+        impact_score,
+        impact_score,
+        stats.percentile_level,
+    )
 }
 
 fn rejected(reason: ContractWhaleDetectorRejectReason) -> ContractWhaleDetectionDecision {

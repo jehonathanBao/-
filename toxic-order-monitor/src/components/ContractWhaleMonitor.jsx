@@ -2597,6 +2597,9 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
           <DetailSection title="Discord Gate">
             <DetailGrid
               rows={[
+                ["信号等级", severityLabel(signal.severity)],
+                ["市场冲击", discordImpactLabel(signal)],
+                ["推送原因", discordReasonLabel(signal)],
                 ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
                 ["Would Send", signal.discordWouldSend ? "dry-run 会推送" : "不会推送"],
                 ["Discord Sent", signal.discordSent ? "已推送" : "未推送"],
@@ -4045,7 +4048,13 @@ function impactNormalizationBadge(item) {
 
 function resolveImpactDisplay(item) {
   const impactScore = numberOrNull(item?.impactScore ?? item?.finalEvent?.impactScore ?? item?.dynamicMultiple);
-  const zScore = numberOrNull(item?.zScore ?? item?.finalEvent?.zScore);
+  const zScore = numberOrNull(
+    item?.zScore ??
+      item?.impactZScore ??
+      item?.impact_z_score ??
+      item?.finalEvent?.zScore ??
+      item?.finalEvent?.impactZScore,
+  );
   const percentile = numberOrNull(
     item?.percentile ??
       item?.finalEvent?.percentile ??
@@ -4325,6 +4334,30 @@ function discordStatus(item) {
   if (item.discordSent) return "已推";
   if (item.discordEligible) return "待推";
   return "未推";
+}
+
+function discordImpactLabel(item) {
+  const impact = resolveImpactDisplay(item);
+  return `${impact.impactLevel} / ${impact.signalLevel}`;
+}
+
+function discordReasonLabel(item) {
+  const reason = item?.discordSent ? "sent" : item?.discordReason;
+  if (reason === "impact_level_gate") {
+    return `市场冲击 ${resolveImpactDisplay(item).impactLevel}`;
+  }
+  if (reason === "critical_or_s_gate") return "Critical / S gate";
+  if (reason === "btc_high_gate") return "BTC High gate";
+  if (reason === "high_score_multi_exchange") return "高分多平台确认";
+  if (reason === "high_primary_source_extreme") return "主交易所极端冲击";
+  if (reason === "data_quality_low" || reason === "data_quality_display_only") return "数据质量不足";
+  if (reason === "warmup_collect_only") return "Warmup collect only";
+  if (reason === "display_only" || reason === "medium_observe_only" || reason === "observe_only") {
+    return "观察层不推送";
+  }
+  if (reason === "dry_run") return "dry-run 会推送";
+  if (reason === "sent") return "已推送";
+  return reason || "N/A";
 }
 
 function liquidationStatus(item) {

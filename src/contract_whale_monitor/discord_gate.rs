@@ -1,11 +1,16 @@
 use crate::signal_semantics::SignalSemanticTier;
 
 use super::{
+    config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
     discord::is_btc_contract_symbol,
     types::{ContractWhaleSeverity, ContractWhaleSignal},
 };
 
 pub fn classify_contract_whale_signal_semantic(signal: &ContractWhaleSignal) -> SignalSemanticTier {
+    let config = contract_whale_runtime_config();
+    if impact_level_discord_eligible(signal, &config) {
+        return SignalSemanticTier::Alert;
+    }
     semantic_tier_for_contract_whale_severity(signal.severity)
 }
 
@@ -26,8 +31,16 @@ pub fn discord_gate(
     data_quality: u8,
     primary_source_override: bool,
     symbol: &str,
+    impact_level: Option<&str>,
+    config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
     if !semantic_tier_for_contract_whale_severity(severity).allows_discord() {
+        if config
+            .discord
+            .allows_impact_level(impact_level, data_quality)
+        {
+            return (true, "impact_level_gate".to_string());
+        }
         return (false, observe_reason(severity).to_string());
     }
     if data_quality < 70 {
@@ -51,6 +64,18 @@ pub fn discord_gate(
             (false, observe_reason(severity).to_string())
         }
     }
+}
+
+pub fn impact_level_discord_eligible(
+    signal: &ContractWhaleSignal,
+    config: &ContractWhaleRuntimeConfig,
+) -> bool {
+    if signal.discord_reason == "warmup_collect_only" {
+        return false;
+    }
+    config
+        .discord
+        .allows_impact_level(signal.impact_level.as_deref(), signal.data_quality)
 }
 
 pub fn observe_reason(severity: ContractWhaleSeverity) -> &'static str {

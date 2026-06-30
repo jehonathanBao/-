@@ -1439,6 +1439,40 @@ describe("contract whale api", () => {
     expect(signal.normalizedStrength).toBe("EXTREME");
   });
 
+  it("preserves backend impact-level gate fields separately from severity", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "medium-impact-gate-signal",
+      symbol: "BTC",
+      severity: "medium",
+      score: 61,
+      dataQuality: 88,
+      dynamicMultiple: 1.2,
+      dynamicThresholdLevel: "normal",
+      percentileLevel: 50,
+      impactLevel: "B",
+      signalLevel: "L2",
+      signalLabel: "MEDIUM IMPACT EVENT",
+      normalizedStrength: "MEDIUM",
+      impactScore: 2.1,
+      impactZScore: 1.9,
+      discordEligible: true,
+      discordWouldSend: true,
+      discordSent: false,
+      discordReason: "impact_level_gate",
+    });
+
+    expect(signal.severity).toBe("medium");
+    expect(signal.impactLevel).toBe("B");
+    expect(signal.signalLevel).toBe("L2");
+    expect(signal.signalLabel).toBe("MEDIUM IMPACT EVENT");
+    expect(signal.normalizedStrength).toBe("MEDIUM");
+    expect(signal.impactScore).toBe(2.1);
+    expect(signal.zScore).toBe(1.9);
+    expect(signal.discordReason).toBe("impact_level_gate");
+    expect(signal.discordEligible).toBe(true);
+    expect(signal.discordWouldSend).toBe(true);
+  });
+
   it("normalizes signal cluster and persistence metadata", () => {
     const signal = normalizeContractWhaleSignal({
       id: "clustered-signal",

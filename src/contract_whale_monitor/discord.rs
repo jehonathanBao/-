@@ -1,5 +1,6 @@
 use super::{
-    discord_gate::classify_contract_whale_signal_semantic,
+    config::contract_whale_runtime_config,
+    discord_gate::{classify_contract_whale_signal_semantic, impact_level_discord_eligible},
     types::{ContractWhaleSeverity, ContractWhaleSignal},
 };
 
@@ -50,6 +51,7 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
                     .count()
                     >= 2)
                 || signal.discord_reason == "high_primary_source_extreme"))
+        || impact_level_discord_eligible(signal, &contract_whale_runtime_config())
 }
 
 pub fn is_btc_contract_symbol(symbol: &str) -> bool {

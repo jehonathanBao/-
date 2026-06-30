@@ -37,6 +37,7 @@ pub struct ContractWhaleRuntimeConfig {
     pub exchanges: ContractWhaleExchangeConfig,
     pub scoring: ContractWhaleScoringConfig,
     pub toxic_order: ContractWhaleToxicOrderConfig,
+    pub discord: ContractWhaleDiscordGateConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
     pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
@@ -487,6 +488,7 @@ impl Default for ContractWhaleRuntimeConfig {
             exchanges: ContractWhaleExchangeConfig::default(),
             scoring: ContractWhaleScoringConfig::default(),
             toxic_order: ContractWhaleToxicOrderConfig::default(),
+            discord: ContractWhaleDiscordGateConfig::default(),
             symbols,
             threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
@@ -1025,6 +1027,37 @@ pub struct ContractWhaleDataQualityConfig {
     pub ct_val_missing_penalty: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractWhaleDiscordGateConfig {
+    pub impact_level_push_enabled: bool,
+    pub push_impact_levels: Vec<String>,
+    pub impact_level_min_data_quality: u8,
+}
+
+impl ContractWhaleDiscordGateConfig {
+    pub fn allows_impact_level(&self, impact_level: Option<&str>, data_quality: u8) -> bool {
+        if !self.impact_level_push_enabled || data_quality < self.impact_level_min_data_quality {
+            return false;
+        }
+        let Some(level) = impact_level else {
+            return false;
+        };
+        self.push_impact_levels
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(level.trim()))
+    }
+}
+
+impl Default for ContractWhaleDiscordGateConfig {
+    fn default() -> Self {
+        Self {
+            impact_level_push_enabled: true,
+            push_impact_levels: vec!["B".to_string(), "A".to_string(), "S".to_string()],
+            impact_level_min_data_quality: 70,
+        }
+    }
+}
+
 impl Default for ContractWhaleDataQualityConfig {
     fn default() -> Self {
         Self {
@@ -1061,6 +1094,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
         exchanges: load_exchange_config(settings),
         scoring: load_scoring_config(settings),
         toxic_order: load_toxic_order_config(settings),
+        discord: load_discord_gate_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
         threshold_profiles: load_threshold_profiles(settings),
@@ -1382,6 +1416,31 @@ fn load_data_quality_config(settings: &::config::Config) -> ContractWhaleDataQua
             settings,
             "contract_whale_monitor.data_quality.ct_val_missing_penalty",
             defaults.ct_val_missing_penalty,
+        ),
+    }
+}
+
+fn load_discord_gate_config(settings: &::config::Config) -> ContractWhaleDiscordGateConfig {
+    let defaults = ContractWhaleDiscordGateConfig::default();
+    ContractWhaleDiscordGateConfig {
+        impact_level_push_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_IMPACT_LEVEL_PUSH_ENABLED",
+            "contract_whale_monitor.discord.impact_level_push_enabled",
+            defaults.impact_level_push_enabled,
+        ),
+        push_impact_levels: string_array_setting(
+            settings,
+            "contract_whale_monitor.discord.push_impact_levels",
+            defaults.push_impact_levels,
+        )
+        .into_iter()
+        .map(|level| level.to_ascii_uppercase())
+        .collect(),
+        impact_level_min_data_quality: u8_setting(
+            settings,
+            "contract_whale_monitor.discord.impact_level_min_data_quality",
+            defaults.impact_level_min_data_quality,
         ),
     }
 }

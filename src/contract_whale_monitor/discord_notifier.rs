@@ -171,10 +171,8 @@ pub fn evaluate_contract_whale_discord_gate(
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
-    let semantic_tier = classify_contract_whale_signal_semantic(signal);
-    if !semantic_tier.allows_discord() {
-        return gate(false, "observe_only");
-    }
+    let config = super::config::contract_whale_runtime_config();
+    let impact_level_override = super::discord_gate::impact_level_discord_eligible(signal, &config);
     let btc_contract_override = matches!(signal.severity, ContractWhaleSeverity::High)
         && super::discord::is_btc_contract_symbol(&signal.symbol);
     let min_score = match signal.severity {
@@ -182,6 +180,7 @@ pub fn evaluate_contract_whale_discord_gate(
         ContractWhaleSeverity::High if primary_source_override => 0,
         ContractWhaleSeverity::High => 85,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S => 70,
+        ContractWhaleSeverity::Medium if impact_level_override => 0,
         ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => 101,
     };
     if !settings.enabled {
@@ -189,6 +188,13 @@ pub fn evaluate_contract_whale_discord_gate(
     }
     if signal.data_quality < 70 {
         return gate(false, "data_quality_low");
+    }
+    if signal.discord_reason == "warmup_collect_only" {
+        return gate(false, "warmup_collect_only");
+    }
+    let semantic_tier = classify_contract_whale_signal_semantic(signal);
+    if !semantic_tier.allows_discord() {
+        return gate(false, "observe_only");
     }
     if signal.score < min_score {
         return gate(false, "low_score");
@@ -241,6 +247,9 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
                 {"name": "Symbol", "value": signal.symbol.clone(), "inline": true},
                 {"name": "Event Type", "value": "contract_whale_flow", "inline": true},
                 {"name": "Detector Type", "value": signal_type, "inline": true},
+                {"name": "Signal Severity", "value": severity, "inline": true},
+                {"name": "Market Impact", "value": market_impact_label(signal), "inline": true},
+                {"name": "Push Reason", "value": push_reason_label(signal), "inline": true},
                 {"name": "Direction", "value": direction, "inline": true},
                 {"name": "Window", "value": format!("{}s", signal.window_sec), "inline": true},
                 {"name": "Risk Score", "value": format!("{}/100", signal.score), "inline": true},
@@ -284,6 +293,32 @@ fn format_price(price: f64) -> String {
         format!("${price:.2}")
     } else {
         format!("${price:.4}")
+    }
+}
+
+fn market_impact_label(signal: &ContractWhaleSignal) -> String {
+    match (
+        signal.impact_level.as_deref(),
+        signal.signal_level.as_deref(),
+    ) {
+        (Some(impact), Some(level)) => format!("{impact} / {level}"),
+        (Some(impact), None) => impact.to_string(),
+        _ => "n/a".to_string(),
+    }
+}
+
+fn push_reason_label(signal: &ContractWhaleSignal) -> String {
+    match signal.discord_reason.as_str() {
+        "impact_level_gate" => signal
+            .impact_level
+            .as_deref()
+            .map(|level| format!("impact level gate ({level})"))
+            .unwrap_or_else(|| "impact level gate".to_string()),
+        "critical_or_s_gate" => "severity gate".to_string(),
+        "btc_high_gate" => "BTC high severity gate".to_string(),
+        "high_score_multi_exchange" => "high score multi-exchange gate".to_string(),
+        "high_primary_source_extreme" => "primary source extreme gate".to_string(),
+        other => other.to_string(),
     }
 }
 

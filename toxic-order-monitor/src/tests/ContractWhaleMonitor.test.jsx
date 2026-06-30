@@ -2758,6 +2758,115 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByRole("dialog", { name: "主力合约信号详情" })).not.toBeInTheDocument();
   });
 
+  it("shows impact-level discord gate semantics for medium B events", async () => {
+    const mediumBImpactSignal = {
+      id: "medium-b-impact-row",
+      sourceSignalId: "medium-b-impact-row",
+      eventId: "cwm-event:BTC:aggressive_sell:1700000010000",
+      ts: 1_700_000_010_000,
+      symbol: "BTC",
+      baseAsset: "BTC",
+      quantityUnit: "BTC",
+      windowSec: 60,
+      signalType: "aggressive_sell",
+      direction: "sell",
+      severity: "medium",
+      score: 61,
+      mainForceScore: 61,
+      spotScore: 42,
+      contractScore: 61,
+      totalVolumeBtc: 556,
+      netVolumeBtc: -420,
+      totalNotionalUsd: 33_000_000,
+      dominance: 0.755,
+      triggerPriceUsd: 59_386,
+      orderPriceUsd: 59_386,
+      currentMarketPriceUsd: 59_386,
+      priceDeviationPct: 0,
+      priceDeviationFiltered: false,
+      priceMovePct: -0.08,
+      mainExchange: "binance",
+      dynamicMultiple: 1.87,
+      percentileLevel: 86,
+      impactLevel: "B",
+      signalLevel: "L2",
+      signalLabel: "MEDIUM IMPACT EVENT",
+      normalizedStrength: "MEDIUM",
+      impactScore: 1.87,
+      impactZScore: 1.98,
+      dataQuality: 88,
+      discordEligible: true,
+      discordSent: false,
+      discordReason: "impact_level_gate",
+      discordWouldSend: true,
+      exchanges: [
+        {
+          exchange: "binance",
+          buyVolumeBtc: 68,
+          sellVolumeBtc: 488,
+          totalVolumeBtc: 556,
+          buyShare: 0.122,
+          sellShare: 0.878,
+          netVolumeBtc: -420,
+          dominance: 0.755,
+          netContributionShare: 1,
+        },
+      ],
+      eventLifecycle: {
+        eventId: "cwm-event:BTC:aggressive_sell:1700000010000",
+        status: "active",
+        startTime: 1_700_000_010_000,
+        lastUpdateTime: 1_700_000_010_000,
+        volumeAccumulated: 556,
+        updateCount: 1,
+      },
+      eventQuality: {
+        qualityScore: 0.88,
+        mergeSimilarityScore: 0.76,
+        valid: true,
+        falseEventFlags: [],
+      },
+      finalResult: "B 级市场冲击触发合约主力提醒",
+    };
+
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: {
+        status: "strong",
+        healthStatus: "healthy",
+        direction: "sell",
+        latestDirection: "sell",
+        latestSeverity: "medium",
+        signalCount: 1,
+        readOnly: true,
+        enabled: true,
+        dryRun: true,
+        exchanges: {},
+      },
+      items: [mediumBImpactSignal],
+      error: null,
+    });
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [mediumBImpactSignal],
+      error: null,
+    });
+
+    const user = userEvent.setup();
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("主力合约监控");
+    await user.click(screen.getByRole("button", { name: /查看主力合约信号详情 medium-b-impact-row/ }));
+
+    expect(screen.getByRole("dialog", { name: "主力合约信号详情" })).toBeInTheDocument();
+    expect(screen.getByText("Discord Gate")).toBeInTheDocument();
+    expect(screen.getByText("信号等级")).toBeInTheDocument();
+    expect(screen.getAllByText("Medium").length).toBeGreaterThan(0);
+    expect(screen.getByText("市场冲击")).toBeInTheDocument();
+    expect(screen.getByText("B / L2")).toBeInTheDocument();
+    expect(screen.getByText("推送原因")).toBeInTheDocument();
+    expect(screen.getByText("市场冲击 B")).toBeInTheDocument();
+    expect(screen.getByText("dry-run 会推送")).toBeInTheDocument();
+  });
+
   it("keeps the panel visible and shows a light error when polling fails", async () => {
     fetchContractWhaleLatest.mockResolvedValueOnce({
       summary: {

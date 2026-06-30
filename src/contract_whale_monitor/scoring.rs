@@ -186,6 +186,8 @@ pub fn discord_gate(
     data_quality: u8,
     primary_source_override: bool,
     symbol: &str,
+    impact_level: Option<&str>,
+    config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
     super::discord_gate::discord_gate(
         severity,
@@ -194,6 +196,8 @@ pub fn discord_gate(
         data_quality,
         primary_source_override,
         symbol,
+        impact_level,
+        config,
     )
 }
 
