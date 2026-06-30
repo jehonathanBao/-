@@ -71,6 +71,40 @@ async fn contract_events_include_hidden_exposes_visibility_metadata() {
 }
 
 #[tokio::test]
+async fn contract_events_can_filter_low_notional_without_deleting_hidden_metadata() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true&min_notional_usd=10000000"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let items = payload["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|item| item["notionalUsd"].as_f64().unwrap_or_default() >= 10_000_000.0));
+    assert!(items.iter().any(|item| item["hiddenReason"] == "price_deviation_gt_5pct"));
+    assert!(!items
+        .iter()
+        .any(|item| item["notionalUsd"].as_f64().unwrap_or_default() < 10_000_000.0));
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_events_expose_latency_metadata_fields() {
     let state = seeded_contract_event_state();
     let app = router(state);

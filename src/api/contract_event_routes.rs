@@ -495,7 +495,7 @@ fn final_events_v2_cache_key(
     requested_limit: usize,
 ) -> String {
     format!(
-        "symbol={:?}|severity={:?}|signal_type={:?}|direction={:?}|discord_sent={:?}|window_sec={:?}|exchange={:?}|net_direction={:?}|cursor={:?}|from={:?}|to={:?}|offset={:?}|status={}|range={}|limit={}",
+        "symbol={:?}|severity={:?}|signal_type={:?}|direction={:?}|discord_sent={:?}|window_sec={:?}|exchange={:?}|net_direction={:?}|min_notional_usd={:?}|cursor={:?}|from={:?}|to={:?}|offset={:?}|status={}|range={}|limit={}",
         query.symbol,
         query.severity,
         query.signal_type,
@@ -504,6 +504,7 @@ fn final_events_v2_cache_key(
         query.window_sec,
         query.exchange,
         query.net_direction,
+        query.min_notional_usd,
         query.cursor,
         query.from,
         query.to,

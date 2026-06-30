@@ -418,6 +418,7 @@ export async function fetchContractEvents(filters = {}) {
       includeHidden: undefined,
       range: filters.range ?? "24h",
       limit: filters.limit ?? 100,
+      min_notional_usd: filters.min_notional_usd ?? 10_000_000,
     });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events?${query}`, {
       timeoutMs: 6_000,

@@ -1293,6 +1293,191 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
   });
 
+  it("hides sub-$10M contract events and linked setups from the default desk view", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-low-notional",
+          eventId: "cwm-event:BTC:aggressive_buy:low-notional",
+          sourceSignalId: "contract-whale-low-notional",
+          ts: 1_700_000_000_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 71,
+          totalVolumeBtc: 95,
+          netVolumeBtc: 55,
+          totalNotionalUsd: 6_000_000,
+          dominance: 0.58,
+          priceDeviationPct: 0.2,
+          priceDeviationFiltered: false,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_buy:low-notional",
+            status: "active",
+            startTime: 1_700_000_000_000,
+            lastUpdateTime: 1_700_000_000_000,
+            volumeAccumulated: 95,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.77,
+            mergeSimilarityScore: 0.83,
+            valid: true,
+            falseEventFlags: [],
+          },
+          status: "active",
+          source: "contract_whale_signals",
+        },
+        {
+          id: "contract-event-high-notional",
+          eventId: "cwm-event:BTC:aggressive_sell:high-notional",
+          sourceSignalId: "contract-whale-high-notional",
+          ts: 1_700_000_010_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 15,
+          signalType: "aggressive_sell",
+          direction: "sell",
+          severity: "high",
+          score: 86,
+          totalVolumeBtc: 180,
+          netVolumeBtc: -110,
+          totalNotionalUsd: 11_000_000,
+          dominance: 0.61,
+          priceDeviationPct: 0.3,
+          priceDeviationFiltered: false,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:high-notional",
+            status: "active",
+            startTime: 1_700_000_010_000,
+            lastUpdateTime: 1_700_000_010_000,
+            volumeAccumulated: 180,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.85,
+            mergeSimilarityScore: 0.88,
+            valid: true,
+            falseEventFlags: [],
+          },
+          status: "active",
+          source: "contract_whale_signals",
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
+    fetchContractWhaleIntelligenceTerminal.mockResolvedValueOnce({
+      symbol: "BTC",
+      timestamp: 1_700_000_020_000,
+      marketRegime: {
+        regime: "RANGING",
+        confidence: 78,
+        reason: "成交量活跃但价格延续性一般，结构更接近区间整理。",
+      },
+      liquidityBehaviors: [],
+      opportunityMap: [],
+      rankedEvents: [
+        {
+          signalId: "contract-whale-low-notional",
+          rank: 1,
+          eventType: "Low Notional Rank",
+          directionBias: "BUY",
+          strengthScore: 71,
+          strengthLabel: "MEDIUM",
+          regimeAlignment: "supportive",
+          liquidityBehavior: "absorption",
+          windowSec: 15,
+          rationale: "this should stay hidden",
+        },
+        {
+          signalId: "contract-whale-high-notional",
+          rank: 2,
+          eventType: "High Notional Rank",
+          directionBias: "SELL",
+          strengthScore: 86,
+          strengthLabel: "HIGH",
+          regimeAlignment: "aligned",
+          liquidityBehavior: "breakout_pressure",
+          windowSec: 15,
+          rationale: "this should stay visible",
+        },
+      ],
+      noiseSuppression: {
+        rawCandidates: 2,
+        mergedEvents: 2,
+        lifecycleEvents: 2,
+        filteredEvents: 2,
+        tradeableSetups: 2,
+        suppressedDuplicates: 0,
+        noiseReductionPct: 0,
+      },
+      signalCompression: {
+        qualityScore: 80,
+        topSignalCount: 2,
+        discardedCount: 0,
+        compressionReason: "test fixture",
+      },
+      tradeIdeas: [
+        {
+          signalId: "contract-whale-low-notional",
+          rank: 1,
+          setupType: "Low Notional Setup",
+          directionBias: "BULLISH_BIAS",
+          score: 71,
+          confidence: 66,
+          confidenceLabel: "MEDIUM",
+          regimeContext: "RANGING",
+          pressureZone: { label: "69,800 - 69,900" },
+          riskBoundary: { reason: "hidden low notional" },
+          structureContext: "low notional setup should not render",
+          windowSec: 15,
+        },
+        {
+          signalId: "contract-whale-high-notional",
+          rank: 2,
+          setupType: "High Notional Setup",
+          directionBias: "BEARISH_BIAS",
+          score: 86,
+          confidence: 79,
+          confidenceLabel: "HIGH",
+          regimeContext: "TRENDING_DOWN",
+          pressureZone: { label: "69,700 - 69,760" },
+          riskBoundary: { reason: "visible high notional" },
+          structureContext: "high notional setup should render",
+          windowSec: 15,
+        },
+      ],
+      riskContext: {
+        fakeBreakoutRisk: "LOW",
+        summary: "test fixture",
+        noTradeZones: [],
+      },
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("HISTORICAL EVENTS (24h stream)");
+
+    expect(screen.getAllByText(/当前过滤：名义金额 ≥ \$10M/).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("contract-whale-row-cwm-event:BTC:aggressive_buy:low-notional")).not.toBeInTheDocument();
+    expect(screen.getByTestId("contract-whale-row-cwm-event:BTC:aggressive_sell:high-notional")).toBeInTheDocument();
+    expect(screen.queryByText("Low Notional Setup")).not.toBeInTheDocument();
+    expect(screen.getByText("High Notional Setup")).toBeInTheDocument();
+    expect(screen.queryByText("Low Notional Rank")).not.toBeInTheDocument();
+    expect(screen.getByText("High Notional Rank")).toBeInTheDocument();
+  });
+
   it("renders jump navigation links for the pro desk sections", async () => {
     render(<ContractWhaleMonitor />);
 

@@ -79,6 +79,7 @@ pub struct ContractWhaleQuery {
     pub from: Option<String>,
     pub to: Option<String>,
     pub offset: Option<String>,
+    pub min_notional_usd: Option<String>,
     pub include_hidden: Option<String>,
     pub hide_stale: Option<String>,
 }
@@ -4512,6 +4513,10 @@ pub fn parse_history_query(
         window_sec: parse_window_sec_filter(query.window_sec.as_deref())?,
         exchange: parse_exchange_filter(query.exchange.as_deref())?,
         min_abs_net_volume_btc: parse_net_direction_filter(query.net_direction.as_deref())?,
+        min_notional_usd: parse_optional_nonnegative_f64(
+            query.min_notional_usd.as_deref(),
+            "min_notional_usd",
+        )?,
         from_ts,
         to_ts,
         cursor_ts: parsed_cursor.as_ref().and_then(cursor_ts),
@@ -4776,6 +4781,22 @@ fn parse_optional_i64(
         .parse::<i64>()
         .map(Some)
         .map_err(|_| bad_request(&format!("{field}_invalid")))
+}
+
+fn parse_optional_nonnegative_f64(
+    value: Option<&str>,
+    field: &str,
+) -> Result<Option<f64>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|_| bad_request(&format!("{field}_invalid")))?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(bad_request(&format!("{field}_invalid")));
+    }
+    Ok(Some(parsed))
 }
 
 fn bad_request(reason: &str) -> (StatusCode, Json<serde_json::Value>) {

@@ -1021,7 +1021,7 @@ describe("contract whale api", () => {
     const payload = await fetchContractEvents({ symbol: "BTC", range: "24h", limit: 100 });
 
     expect(axios.get).toHaveBeenCalledWith(
-      "/api/contract-events?symbol=BTC&range=24h&limit=100",
+      "/api/contract-events?symbol=BTC&range=24h&limit=100&min_notional_usd=10000000",
       expect.objectContaining({ signal: expect.any(Object) }),
     );
     expect(payload).toMatchObject({

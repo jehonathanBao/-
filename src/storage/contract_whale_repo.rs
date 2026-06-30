@@ -22,6 +22,7 @@ pub struct ContractWhaleSignalQuery {
     pub window_sec: Option<u64>,
     pub exchange: Option<String>,
     pub min_abs_net_volume_btc: Option<f64>,
+    pub min_notional_usd: Option<f64>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
     pub cursor_ts: Option<i64>,
@@ -639,6 +640,7 @@ impl ContractWhaleRepo for SqliteStore {
             && query.window_sec.is_none()
             && query.exchange.is_none()
             && query.min_abs_net_volume_btc.is_none()
+            && query.min_notional_usd.is_none()
             && query.from_ts.is_none()
             && query.to_ts.is_none()
             && query.cursor_ts.is_none()
@@ -680,6 +682,9 @@ impl ContractWhaleRepo for SqliteStore {
         let min_abs_net_volume_btc = query
             .min_abs_net_volume_btc
             .filter(|value| value.is_finite() && *value > 0.0);
+        let min_notional_usd = query
+            .min_notional_usd
+            .filter(|value| value.is_finite() && *value > 0.0);
         let cursor_signal_id = query.cursor_signal_id.as_deref().map(str::to_string);
         let exchange_like = query
             .exchange
@@ -702,13 +707,14 @@ impl ContractWhaleRepo for SqliteStore {
                   AND (?8 IS NULL OR window_sec = ?8)
                   AND (?9 IS NULL OR exchanges_json LIKE ?9)
                   AND (?10 IS NULL OR ABS(net_volume_btc) >= ?10)
+                  AND (?11 IS NULL OR total_notional_usd >= ?11)
                   AND (
-                        ?11 IS NULL
-                        OR ts < ?11
-                        OR (ts = ?11 AND signal_id < ?12)
+                        ?12 IS NULL
+                        OR ts < ?12
+                        OR (ts = ?12 AND signal_id < ?13)
                   )
                 ORDER BY ts DESC, signal_id DESC
-                LIMIT ?13 OFFSET ?14
+                LIMIT ?14 OFFSET ?15
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -723,6 +729,7 @@ impl ContractWhaleRepo for SqliteStore {
                     window_sec,
                     exchange_like.as_deref(),
                     min_abs_net_volume_btc,
+                    min_notional_usd,
                     query.cursor_ts,
                     cursor_signal_id.as_deref(),
                     query.limit as i64,

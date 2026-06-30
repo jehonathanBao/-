@@ -18,6 +18,8 @@ const LATEST_REFRESH_MS = 3_000;
 const CONTRACT_EVENTS_REFRESH_MS = 5_000;
 const FINAL_EVENTS_REFRESH_MS = 10_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
+const MIN_VISIBLE_NOTIONAL_USD = 10_000_000;
+const MIN_VISIBLE_NOTIONAL_LABEL = "$10M";
 const DEFAULT_FILTERS = {
   symbol: "BTC",
   severity: "all",
@@ -400,6 +402,16 @@ export default function ContractWhaleMonitor() {
   const platformCapabilities = summary.platforms || {};
   const lifecycleItems = [...state.finalEvents.active, ...state.finalEvents.closed];
   const detailItems = dedupeSignalsById([...state.items, ...state.contractEvents, ...lifecycleItems]);
+  const visibleContractEvents = state.contractEvents.filter(passesContractWhaleVisibleNotionalFilter);
+  const hiddenLowNotionalCount = Math.max(0, state.contractEvents.length - visibleContractEvents.length);
+  const shouldApplyNotionalDisplayFilter = state.contractEvents.length > 0;
+  const visibleSignalIds = buildVisibleSignalIdSet(visibleContractEvents);
+  const displayIntelligence = shouldApplyNotionalDisplayFilter
+    ? filterIntelligenceByVisibleSignals(state.intelligenceTerminal, visibleSignalIds)
+    : state.intelligenceTerminal;
+  const displaySummary = shouldApplyNotionalDisplayFilter
+    ? filterSummaryTradeOpportunitiesByVisibleSignals(summary, visibleSignalIds)
+    : summary;
   const latestSignalTs = Math.max(
     0,
     ...state.items.map((item) => Number(item?.ts) || 0),
@@ -520,7 +532,7 @@ export default function ContractWhaleMonitor() {
         }}
       />
       <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
-        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；详情里可查看当前价格、信号价格和偏离比例。
+        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；当前过滤：名义金额 ≥ {MIN_VISIBLE_NOTIONAL_LABEL}。低于阈值的事件仍保留在原始数据里。
       </p>
       {state.error ? (
         <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
@@ -530,7 +542,7 @@ export default function ContractWhaleMonitor() {
 
       <ProDeskOverviewBar
         contractEventsLastEventTs={state.contractEventsLastEventTs}
-        intelligence={state.intelligenceTerminal}
+        intelligence={displayIntelligence}
         latestSignalTs={latestSignalTs}
         summary={summary}
       />
@@ -538,6 +550,8 @@ export default function ContractWhaleMonitor() {
       <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)] xl:items-start">
         <HistoricalEventStreamPanel
           contractEvents={state.contractEvents}
+          visibleContractEvents={visibleContractEvents}
+          hiddenLowNotionalCount={hiddenLowNotionalCount}
           debugCounts={state.contractEventDebugCounts}
           rawFlowDebug={state.rawFlowDebug}
           enabled={summary.enabled}
@@ -555,19 +569,19 @@ export default function ContractWhaleMonitor() {
           symbol={filters.symbol}
         />
 
-        <MarketStructureDeskPanel intelligence={state.intelligenceTerminal} summary={summary} />
+        <MarketStructureDeskPanel intelligence={displayIntelligence} summary={summary} />
       </section>
 
       <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(280px,0.85fr)_minmax(0,1.15fr)] xl:items-start">
-        <LiquidityMapDeskPanel intelligence={state.intelligenceTerminal} />
+        <LiquidityMapDeskPanel intelligence={displayIntelligence} />
         <TradeSetupsDeskPanel
-          intelligence={state.intelligenceTerminal}
+          intelligence={displayIntelligence}
           onSelectSignal={(signalId) => {
             setSelectedSignalId(signalId);
             document.getElementById("contract-whale-events")?.scrollIntoView({ behavior: "smooth", block: "start" });
           }}
           selectedSignalId={selectedSignalId}
-          summary={summary}
+          summary={displaySummary}
         />
       </section>
 
@@ -1016,6 +1030,8 @@ function deriveEventFeedDiagnostics({
 
 function HistoricalEventStreamPanel({
   contractEvents,
+  visibleContractEvents,
+  hiddenLowNotionalCount,
   debugCounts,
   rawFlowDebug,
   enabled,
@@ -1077,6 +1093,10 @@ function HistoricalEventStreamPanel({
       <div className="space-y-4 border-t border-slate-800 p-3">
         <div className="rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-3 py-3 text-xs leading-5 text-cyan-100">
           <p>先看事件流，再用下方分析面板解释市场状态；latest 只服务顶部实时状态，不会直接覆盖这里的历史事件。</p>
+          <p className="mt-1 text-[11px] text-cyan-200/90">
+            当前过滤：名义金额 ≥ {MIN_VISIBLE_NOTIONAL_LABEL}。
+            {hiddenLowNotionalCount > 0 ? ` 本页额外隐藏 ${hiddenLowNotionalCount} 条低名义金额事件。` : " 低于阈值的事件不会进入默认事件流。"}
+          </p>
           {debugCounts && !debugCounts.error ? (
             <p className="mt-1 text-[11px] text-cyan-200/90">
               历史可见 {diagnostics.visibleCount} 条 / 后端返回 {diagnostics.backendReturnedCount} 条。
@@ -1103,12 +1123,16 @@ function HistoricalEventStreamPanel({
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
         ) : contractEvents.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
+        ) : visibleContractEvents.length === 0 ? (
+          <p className="px-4 py-5 text-sm text-slate-400">
+            当前历史事件已接入，但都低于 {MIN_VISIBLE_NOTIONAL_LABEL} 展示阈值。
+          </p>
         ) : (
           <div className="rounded-xl border border-slate-800 bg-slate-950/40">
             <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
               <p className="text-xs font-bold tracking-[0.18em] text-cyan-200">HISTORICAL EVENTS (24h stream)</p>
               <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
-                已加载 {contractEvents.length} 条
+                已显示 {visibleContractEvents.length} 条
               </span>
             </div>
             <p className="border-b border-slate-800 px-3 py-2 text-[11px] leading-5 text-slate-500" title={volumeTooltip}>
@@ -1116,7 +1140,7 @@ function HistoricalEventStreamPanel({
             </p>
             <div className="max-h-[58vh] overflow-auto">
               <RawSignalDebugTable
-                items={contractEvents}
+                items={visibleContractEvents}
                 onOpenSignal={onOpenSignal}
                 testId="raw-contract-whale-signals"
                 volumeLabel={historicalVolumeLabel}
@@ -3537,6 +3561,57 @@ function deriveDeskTradeIdeas(intelligence, summary) {
     pressureZoneLabel: idea.pressureZone?.label || idea.entryZone?.label || null,
     riskBoundaryReason: idea.riskBoundary?.reason || idea.invalidation?.reason || null,
   }));
+}
+
+function passesContractWhaleVisibleNotionalFilter(item) {
+  return resolveContractWhaleNotionalUsd(item) >= MIN_VISIBLE_NOTIONAL_USD;
+}
+
+function resolveContractWhaleNotionalUsd(item) {
+  const rawValue =
+    item?.totalNotionalUsd ??
+    item?.notionalUsd ??
+    item?.notional_usd ??
+    item?.windowNotionalUsd ??
+    item?.window_notional_usd ??
+    item?.usdNotional ??
+    item?.usd_notional ??
+    0;
+  const normalized = Number(rawValue);
+  return Number.isFinite(normalized) ? normalized : 0;
+}
+
+function buildVisibleSignalIdSet(items) {
+  const ids = new Set();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    [signalDetailTargetId(item), item?.sourceSignalId, item?.eventId, item?.finalEventId, item?.id]
+      .filter(Boolean)
+      .forEach((value) => ids.add(String(value)));
+  });
+  return ids;
+}
+
+function filterIntelligenceByVisibleSignals(intelligence, visibleSignalIds) {
+  if (!intelligence || typeof intelligence !== "object") return intelligence;
+  return {
+    ...intelligence,
+    rankedEvents: filterItemsByVisibleSignalId(intelligence.rankedEvents, visibleSignalIds),
+    tradeIdeas: filterItemsByVisibleSignalId(intelligence.tradeIdeas, visibleSignalIds),
+  };
+}
+
+function filterSummaryTradeOpportunitiesByVisibleSignals(summary, visibleSignalIds) {
+  if (!summary || typeof summary !== "object") return summary;
+  return {
+    ...summary,
+    tradeOpportunities: filterItemsByVisibleSignalId(summary.tradeOpportunities, visibleSignalIds),
+  };
+}
+
+function filterItemsByVisibleSignalId(items, visibleSignalIds) {
+  if (!Array.isArray(items)) return [];
+  if (!(visibleSignalIds instanceof Set) || visibleSignalIds.size === 0) return [];
+  return items.filter((item) => visibleSignalIds.has(String(item?.signalId || "")));
 }
 
 function humanizeDeskDirection(value) {
