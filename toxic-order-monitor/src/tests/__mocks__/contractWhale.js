@@ -78,6 +78,60 @@ export const fetchContractEvents = vi.fn(() =>
   }),
 );
 
+export const fetchContractEventDebugCounts = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      symbol: "BTC",
+      range: "24h",
+      totalRows: 0,
+      returnedItems: 0,
+      visibleCount: 0,
+      hiddenCount: 0,
+      hiddenReasons: {},
+    },
+    error: null,
+  }),
+);
+
+export const fetchContractWhaleRawFlowDebug = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      symbol: "BTC",
+      range: "24h",
+      diagnosis: {
+        layer: "test",
+        reason: "mock",
+      },
+    },
+    error: null,
+  }),
+);
+
+export const fetchContractWhaleLatencyDebug = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      symbol: "BTC",
+      range: "24h",
+      guard: {
+        status: "fresh",
+      },
+    },
+    error: null,
+  }),
+);
+
+export const fetchContractWhaleIntelligenceTerminal = vi.fn(() =>
+  Promise.resolve({
+    data: {
+      marketRegime: null,
+      liquidityBehaviors: [],
+      rankedEvents: [],
+      opportunityMap: [],
+    },
+    error: null,
+  }),
+);
+
 export const fetchFinalEvents = vi.fn(() =>
   Promise.resolve({
     items: [],

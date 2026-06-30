@@ -293,21 +293,36 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
   });
 
-  it("opens the BTC giant trade monitor from the sidebar route", async () => {
-    renderDashboard("/contract-whale");
+  it("opens the BTC contract monitor from the dedicated sidebar route", async () => {
+    renderDashboard("/contract-whale/btc");
 
     expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
-    expect(screen.getByRole("link", { name: "BTC/ETH 合约监控" })).toHaveAttribute("href", "/contract-whale");
+    expect(screen.getByRole("link", { name: "BTC 合约监控" })).toHaveAttribute("href", "/contract-whale/btc");
+    expect(screen.getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("href", "/contract-whale/eth");
+    expect(screen.queryByRole("link", { name: "BTC/ETH 合约监控" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
-    expect(screen.getByRole("link", { name: "BTC/ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor");
+    expect(screen.getByRole("link", { name: "BTC 现货监控" })).toHaveAttribute("href", "/spot-monitor/btc");
+    expect(screen.getByRole("link", { name: "ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor/eth");
+    expect(screen.queryByRole("link", { name: "BTC/ETH 现货监控" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
-    expect(await screen.findByText("BTC / ETH 合约监控")).toBeInTheDocument();
+    expect((await screen.findAllByText("BTC 合约监控")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("BTC CONTRACT WHALE FLOW").length).toBeGreaterThan(0);
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();
     expect(screen.getAllByText("主力合约监控未启用").length).toBeGreaterThan(0);
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the ETH contract monitor as an isolated mainstream route", async () => {
+    renderDashboard("/contract-whale/eth");
+
+    expect((await screen.findAllByText("ETH 合约监控")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ETH CONTRACT WHALE FLOW").length).toBeGreaterThan(0);
+    expect(screen.getByText("币种：ETH（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
   });
 
   it("opens the standalone liquidation cascade predictor route", async () => {
@@ -348,17 +363,30 @@ describe("Dashboard interactions", () => {
     expect(screen.getByText("3 / 50")).toBeInTheDocument();
   });
 
-  it("keeps dashboard and spot monitor route aliases working", async () => {
+  it("keeps dashboard and BTC spot monitor route working", async () => {
     renderDashboard("/dashboard");
 
     expect(await screen.findByText("High / Critical Risk Candidates")).toBeInTheDocument();
     cleanup();
     resetSignalsStore();
 
-    renderDashboard("/spot-monitor");
+    renderDashboard("/spot-monitor/btc");
 
-    expect((await screen.findAllByText("BTC / ETH 现货监控")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("BTC 现货监控")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("BTC SPOT WHALE FLOW").length).toBeGreaterThan(0);
+    expect(screen.getByText("币种：BTC（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
+  });
+
+  it("opens the ETH spot monitor as an isolated mainstream route", async () => {
+    renderDashboard("/spot-monitor/eth");
+
+    expect((await screen.findAllByText("ETH 现货监控")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ETH SPOT WHALE FLOW").length).toBeGreaterThan(0);
+    expect(screen.getByText("币种：ETH（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
   });
 
   it("places S level candidates in the sidebar signals view", async () => {

@@ -31,6 +31,7 @@ const DISCORD_PUSH_CONFIRM =
 export default function Dashboard() {
   const location = useLocation();
   const viewMode = viewModeFromPath(location.pathname);
+  const mainstreamSymbol = mainstreamSymbolFromPath(location.pathname);
   const isContractWhaleView = viewMode === "contract-whale";
   const isLiquidationCascadeView = viewMode === "liquidation-cascade";
   const isSpotWhaleView = viewMode === "spot-whale";
@@ -282,11 +283,11 @@ export default function Dashboard() {
       <main className="w-full min-w-0 flex-1 p-4 lg:p-6">
         <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
         {isContractWhaleView ? (
-          <ContractWhalePage />
+          <ContractWhalePage symbol={mainstreamSymbol} />
         ) : isLiquidationCascadeView ? (
           <LiquidationCascadePage />
         ) : isSpotWhaleView ? (
-          <SpotWhalePage />
+          <SpotWhalePage symbol={mainstreamSymbol} />
         ) : isAltcoinManipulationView ? (
           <AltcoinManipulationPage />
         ) : isAltContractView ? (
@@ -412,22 +413,23 @@ function discordFailureHint(reason, error = null) {
   return text.replace(/https:\/\/discord\.com\/api\/webhooks\/[^\s]+/gi, "[redacted-discord-webhook]");
 }
 
-function ContractWhalePage() {
+function ContractWhalePage({ symbol }) {
+  const asset = normalizeMainstreamSymbol(symbol);
   return (
     <>
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BTC / ETH Contract Whale Flow</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 合约监控</h2>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">{asset} CONTRACT WHALE FLOW</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">{asset} 合约监控</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            聚合已启用交易所的 BTC 与 ETH 永续主动成交流，识别主力拉盘、砸盘、吸收和压制信号。
+            聚合已启用交易所的 {asset} 永续合约主动成交流，识别主动买压、主动卖压、吸收和压制信号。
           </p>
         </div>
         <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
           只读提醒 · 不下单 · CWM Discord gate 独立
         </div>
       </div>
-      <ContractWhaleMonitor />
+      <ContractWhaleMonitor lockedSymbol={asset} />
     </>
   );
 }
@@ -472,22 +474,23 @@ function AltcoinManipulationPage() {
   );
 }
 
-function SpotWhalePage() {
+function SpotWhalePage({ symbol }) {
+  const asset = normalizeMainstreamSymbol(symbol);
   return (
     <>
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BTC / ETH Spot Whale Flow</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">BTC / ETH 现货监控</h2>
+          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">{asset} SPOT WHALE FLOW</p>
+          <h2 className="mt-2 text-2xl font-bold text-white">{asset} 现货监控</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            聚合 Binance 与 Coinbase 现货主动成交流，识别主动买入、主动卖出、下方吸收、上方压制和跨所错位。
+            聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，识别 {asset} 主动买入、主动卖出、下方吸收、上方压制和跨所错位。
           </p>
         </div>
         <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
           只读提醒 · 不下单 · Spot Discord gate 独立
         </div>
       </div>
-      <SpotWhaleMonitor />
+      <SpotWhaleMonitor lockedSymbol={asset} />
     </>
   );
 }
@@ -597,7 +600,7 @@ function signalTime(signal) {
 
 function filterLabel(activeRiskFilter, viewMode) {
   if (viewMode === "contract-whale") {
-    return "BTC/ETH 合约监控";
+    return "主流币合约监控";
   }
   if (viewMode === "liquidation-cascade") {
     return "强平瀑布预测";
@@ -606,7 +609,7 @@ function filterLabel(activeRiskFilter, viewMode) {
     return "妖币控盘监控";
   }
   if (viewMode === "spot-whale") {
-    return "BTC/ETH 现货监控";
+    return "主流币现货监控";
   }
   if (viewMode === "alt-contract-monitor") {
     return "山寨合约异常";
@@ -633,17 +636,27 @@ function filterLabel(activeRiskFilter, viewMode) {
 }
 
 function viewModeFromPath(pathname) {
-  if (pathname === "/contract-whale") return "contract-whale";
+  if (pathname === "/contract-whale" || pathname.startsWith("/contract-whale/")) return "contract-whale";
   if (pathname === "/liquidation-cascade") return "liquidation-cascade";
   if (pathname === "/altcoin-manipulation") return "altcoin-manipulation";
   if (pathname === "/alt-contract-monitor") return "alt-contract-monitor";
   if (pathname === "/new-token-watch") return "new-token-watch";
-  if (pathname === "/spot-whale" || pathname === "/spot-monitor") return "spot-whale";
+  if (pathname === "/spot-whale" || pathname === "/spot-monitor" || pathname.startsWith("/spot-monitor/")) return "spot-whale";
   if (pathname === "/usage-guide") return "usage-guide";
   if (pathname === "/signals") return "signals";
   if (pathname === "/history") return "history";
   if (pathname === "/rules") return "rules";
   return "dashboard";
+}
+
+function mainstreamSymbolFromPath(pathname) {
+  const match = String(pathname || "").match(/\/(?:contract-whale|spot-monitor)\/([^/]+)/i);
+  return normalizeMainstreamSymbol(match?.[1]);
+}
+
+function normalizeMainstreamSymbol(symbol) {
+  const normalized = String(symbol || "BTC").trim().toUpperCase();
+  return normalized === "ETH" ? "ETH" : "BTC";
 }
 
 function MediumRiskSection({

@@ -7,26 +7,52 @@ import {
 
 const SUMMARY_REFRESH_MS = 5_000;
 const LATEST_REFRESH_MS = 10_000;
+const HISTORY_PAGE_SIZE = 50;
 const DEFAULT_FILTERS = {
   symbol: "BTC",
   severity: "all",
   signal_type: "all",
   discord_sent: "all",
   net_direction: "all",
+  permanent_only: false,
+  from_ts: "",
+  to_ts: "",
 };
 
-export default function SpotWhaleMonitor() {
-  const [state, setState] = useState({ loading: true, summary: null, items: [], error: null });
+export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
+  const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
+  const [state, setState] = useState({
+    loading: true,
+    summary: null,
+    items: [],
+    error: null,
+    limit: HISTORY_PAGE_SIZE,
+    offset: 0,
+    total: 0,
+    hasMore: false,
+  });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [viewMode, setViewMode] = useState("latest");
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, symbol: assetSymbol }));
+  const [pageIndex, setPageIndex] = useState(0);
+
+  useEffect(() => {
+    setSelectedSignalId(null);
+    setPageIndex(0);
+    setFilters((previous) => (
+      previous.symbol === assetSymbol ? previous : { ...previous, symbol: assetSymbol }
+    ));
+  }, [assetSymbol]);
 
   useEffect(() => {
     let cancelled = false;
     let summaryTimer = null;
     let latestTimer = null;
+    const symbol = filters.symbol;
+    const isHistoryMode = viewMode === "history";
 
     const refreshSummary = () => {
-      fetchSpotWhaleSummary(filters.symbol).then((payload) => {
+      fetchSpotWhaleSummary(symbol).then((payload) => {
         if (cancelled) return;
         setState((previous) => ({
           ...previous,
@@ -37,16 +63,28 @@ export default function SpotWhaleMonitor() {
       });
     };
 
-    const refreshLatest = () => {
-      const request = shouldUseHistory(filters)
-        ? fetchSpotWhaleHistory({ ...filters, limit: 50 })
-        : fetchSpotWhaleLatest(50, filters.symbol);
+    const refreshItems = () => {
+      const request = isHistoryMode
+        ? fetchSpotWhaleHistory({
+            ...filters,
+            limit: HISTORY_PAGE_SIZE,
+            offset: pageIndex * HISTORY_PAGE_SIZE,
+            from_ts: toQueryTimestamp(filters.from_ts),
+            to_ts: toQueryTimestamp(filters.to_ts),
+            permanent_only: filters.permanent_only || undefined,
+          })
+        : fetchSpotWhaleLatest(HISTORY_PAGE_SIZE, symbol);
       request.then((payload) => {
         if (cancelled) return;
         setState((previous) => ({
+          ...previous,
           loading: false,
           summary: payload.error ? previous.summary : payload.summary,
           items: payload.error ? previous.items : payload.items,
+          limit: payload.error ? previous.limit : payload.limit,
+          offset: payload.error ? previous.offset : payload.offset,
+          total: payload.error ? previous.total : payload.total,
+          hasMore: payload.error ? previous.hasMore : payload.hasMore,
           error: payload.error || null,
         }));
       });
@@ -59,19 +97,21 @@ export default function SpotWhaleMonitor() {
       latestTimer = null;
       if (document.visibilityState === "hidden") return;
       summaryTimer = window.setInterval(refreshSummary, SUMMARY_REFRESH_MS);
-      latestTimer = window.setInterval(refreshLatest, LATEST_REFRESH_MS);
+      if (!isHistoryMode) {
+        latestTimer = window.setInterval(refreshItems, LATEST_REFRESH_MS);
+      }
     };
 
     const handleVisibilityChange = () => {
       configurePolling();
       if (document.visibilityState !== "hidden") {
         refreshSummary();
-        refreshLatest();
+        refreshItems();
       }
     };
 
     refreshSummary();
-    refreshLatest();
+    refreshItems();
     configurePolling();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
@@ -81,28 +121,55 @@ export default function SpotWhaleMonitor() {
       if (latestTimer) window.clearInterval(latestTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [filters]);
+  }, [filters, pageIndex, viewMode]);
 
   useEffect(() => {
-    if (selectedSignalId && !state.items.some((item) => item.id === selectedSignalId)) {
+    const scopedItems = filterSpotItemsBySymbol(state.items, filters.symbol);
+    if (selectedSignalId && !scopedItems.some((item) => item.id === selectedSignalId)) {
       setSelectedSignalId(null);
     }
-  }, [selectedSignalId, state.items]);
+  }, [filters.symbol, selectedSignalId, state.items]);
 
   const summary = state.summary || fallbackSummary(filters.symbol);
-  const selectedSignal = state.items.find((item) => item.id === selectedSignalId) || null;
   const exchanges = summary.exchanges || {};
-  const visibleItems = filterByNetDirection(state.items, filters.net_direction);
+  const visibleItems = filterSpotItemsBySymbol(state.items, filters.symbol);
+  const selectedSignal = visibleItems.find((item) => item.id === selectedSignalId) || null;
+  const totalPages = Math.max(1, Math.ceil((state.total || 0) / HISTORY_PAGE_SIZE));
+  const currentPage = pageIndex + 1;
 
   return (
     <section className="mb-5 rounded-2xl border border-slate-700/60 bg-slate-900/80 p-5 shadow-glow">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Spot Whale Flow</p>
-          <h3 className="mt-2 text-lg font-bold text-white">BTC / ETH 现货监控</h3>
+          <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">{assetSymbol} SPOT WHALE FLOW</p>
+          <h3 className="mt-2 text-lg font-bold text-white">{assetSymbol} 现货监控</h3>
           <p className="mt-1 text-sm text-slate-400">
-            聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，Critical / S 才进入 Discord gate。
+            聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，识别 {assetSymbol} 主动买入、主动卖出、下方吸收、上方压制和跨所错位。
           </p>
+          <div className="mt-4 inline-flex rounded-xl border border-slate-700 bg-slate-950/70 p-1 text-sm">
+            <button
+              className={`rounded-lg px-3 py-1.5 ${viewMode === "latest" ? "bg-cyan-500/20 text-cyan-100" : "text-slate-300"}`}
+              onClick={() => {
+                setSelectedSignalId(null);
+                setPageIndex(0);
+                setViewMode("latest");
+              }}
+              type="button"
+            >
+              实时流
+            </button>
+            <button
+              className={`rounded-lg px-3 py-1.5 ${viewMode === "history" ? "bg-cyan-500/20 text-cyan-100" : "text-slate-300"}`}
+              onClick={() => {
+                setSelectedSignalId(null);
+                setPageIndex(0);
+                setViewMode("history");
+              }}
+              type="button"
+            >
+              历史查询
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3 xl:grid-cols-6">
           <StatusPill label="当前状态" value={statusLabel(summary.status)} tone={statusTone(summary.status)} />
@@ -130,9 +197,15 @@ export default function SpotWhaleMonitor() {
 
       <SpotWhaleFilters
         filters={filters}
+        pageIndex={pageIndex}
+        total={state.total}
+        totalPages={totalPages}
+        viewMode={viewMode}
+        onPageChange={setPageIndex}
         onChange={(nextFilters) => {
           setSelectedSignalId(null);
-          setFilters(nextFilters);
+          setPageIndex(0);
+          setFilters({ ...nextFilters, symbol: assetSymbol });
         }}
       />
 
@@ -145,7 +218,7 @@ export default function SpotWhaleMonitor() {
           <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-5 text-sm text-slate-400">
             {summary.enabled
               ? filters.net_direction === "all"
-                ? "暂无 BTC/ETH 现货异动"
+                ? `暂无 ${assetSymbol} 现货异动`
                 : "暂无匹配净方向阈值的现货异动"
               : "现货监控未启用"}
           </p>
@@ -229,77 +302,149 @@ export default function SpotWhaleMonitor() {
   );
 }
 
-function SpotWhaleFilters({ filters, onChange }) {
+function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, totalPages, viewMode }) {
+  if (viewMode === "latest") {
+    return (
+      <div className="mt-5 flex flex-col gap-3 rounded-xl border border-slate-700/60 bg-slate-950/50 p-4 text-xs md:flex-row md:items-end md:justify-between">
+        <LockedAssetField symbol={filters.symbol} />
+        <p className="text-slate-500">实时模式默认显示最新 50 条并自动刷新。</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="mt-5 grid gap-3 text-xs md:grid-cols-5">
-      <label className="space-y-1">
-        <span className="text-slate-500">币种</span>
-        <select
-          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          onChange={(event) => onChange({ ...filters, symbol: event.target.value })}
-          value={filters.symbol}
-        >
-          <option value="BTC">BTC</option>
-          <option value="ETH">ETH</option>
-        </select>
-      </label>
-      <label className="space-y-1">
-        <span className="text-slate-500">等级</span>
-        <select
-          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          onChange={(event) => onChange({ ...filters, severity: event.target.value })}
-          value={filters.severity}
-        >
-          <option value="all">全部</option>
-          <option value="s">S</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-        </select>
-      </label>
-      <label className="space-y-1">
-        <span className="text-slate-500">类型</span>
-        <select
-          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          onChange={(event) => onChange({ ...filters, signal_type: event.target.value })}
-          value={filters.signal_type}
-        >
-          <option value="all">全部</option>
-          <option value="spotaggressivebuy">主动买入</option>
-          <option value="spotaggressivesell">主动卖出</option>
-          <option value="spotdownsideabsorption">下方吸收</option>
-          <option value="spotupsidesuppression">上方压制</option>
-          <option value="spotexchangedislocation">跨所错位</option>
-        </select>
-      </label>
-      <label className="space-y-1">
-        <span className="text-slate-500">Discord</span>
-        <select
-          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          onChange={(event) => onChange({ ...filters, discord_sent: event.target.value })}
-          value={filters.discord_sent}
-        >
-          <option value="all">全部</option>
-          <option value="true">已推送</option>
-          <option value="false">未推送</option>
-        </select>
-      </label>
-      <label className="space-y-1">
-        <span className="text-slate-500">净方向</span>
-        <select
-          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-          onChange={(event) => onChange({ ...filters, net_direction: event.target.value })}
-          value={filters.net_direction}
-        >
-          <option value="all">全部</option>
-          <option value="abs50">大于 50（正负）</option>
-          <option value="abs100">大于 100（正负）</option>
-          <option value="abs200">大于 200（正负）</option>
-          <option value="abs500">大于 500（正负）</option>
-        </select>
-      </label>
+    <div className="mt-5 space-y-4 rounded-xl border border-slate-700/60 bg-slate-950/50 p-4 text-xs">
+      <div className="grid gap-3 md:grid-cols-4 xl:grid-cols-5">
+        <LockedAssetField symbol={filters.symbol} />
+        <label className="space-y-1">
+          <span className="text-slate-500">等级</span>
+          <select
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, severity: event.target.value })}
+            value={filters.severity}
+          >
+            <option value="all">全部</option>
+            <option value="s">S</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+          </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-500">类型</span>
+          <select
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, signal_type: event.target.value })}
+            value={filters.signal_type}
+          >
+            <option value="all">全部</option>
+            <option value="spotaggressivebuy">主动买入</option>
+            <option value="spotaggressivesell">主动卖出</option>
+            <option value="spotdownsideabsorption">下方吸收</option>
+            <option value="spotupsidesuppression">上方压制</option>
+            <option value="spotexchangedislocation">跨所错位</option>
+          </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-500">Discord</span>
+          <select
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, discord_sent: event.target.value })}
+            value={filters.discord_sent}
+          >
+            <option value="all">全部</option>
+            <option value="true">已推送</option>
+            <option value="false">未推送</option>
+          </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-500">净方向</span>
+          <select
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, net_direction: event.target.value })}
+            value={filters.net_direction}
+          >
+            <option value="all">全部</option>
+            <option value="abs50">大于 50（正负）</option>
+            <option value="abs100">大于 100（正负）</option>
+            <option value="abs200">大于 200（正负）</option>
+            <option value="abs500">大于 500（正负）</option>
+          </select>
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-500">开始时间</span>
+          <input
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, from_ts: event.target.value })}
+            type="datetime-local"
+            value={filters.from_ts}
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="text-slate-500">结束时间</span>
+          <input
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            onChange={(event) => onChange({ ...filters, to_ts: event.target.value })}
+            type="datetime-local"
+            value={filters.to_ts}
+          />
+        </label>
+        <label className="flex items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-slate-100">
+          <input
+            aria-label="只看永久信号"
+            checked={Boolean(filters.permanent_only)}
+            onChange={(event) => onChange({ ...filters, permanent_only: event.target.checked })}
+            type="checkbox"
+          />
+          <span>只看永久信号</span>
+        </label>
+      </div>
+
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="text-slate-400">
+          共 {total} 条 · 第 {pageIndex + 1} / {totalPages} 页
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-200 disabled:opacity-40"
+            disabled={pageIndex === 0}
+            onClick={() => onPageChange(Math.max(0, pageIndex - 1))}
+            type="button"
+          >
+            上一页
+          </button>
+          <button
+            className="rounded-lg border border-cyan-500/40 px-3 py-1.5 text-cyan-100 disabled:opacity-40"
+            disabled={pageIndex + 1 >= totalPages}
+            onClick={() => onPageChange(pageIndex + 1)}
+            type="button"
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </div>
   );
+}
+
+function LockedAssetField({ symbol }) {
+  const asset = normalizeMainstreamSymbol(symbol);
+  return (
+    <div className="space-y-1">
+      <span className="text-slate-500">币种</span>
+      <div className="w-full rounded-xl border border-cyan-500/25 bg-cyan-500/5 px-3 py-2 font-semibold text-cyan-100 md:min-w-[140px]">
+        币种：{asset}（当前页面固定）
+      </div>
+    </div>
+  );
+}
+
+function filterSpotItemsBySymbol(items, symbol) {
+  const asset = normalizeMainstreamSymbol(symbol);
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const sourceSymbol = item?.symbol || item?.quantityUnit || item?.baseAsset || item?.asset || asset;
+    return normalizeMainstreamSymbol(sourceSymbol) === asset;
+  });
 }
 
 function SymbolWithPrice({ item }) {
@@ -375,6 +520,7 @@ function SpotSignalDetail({ signal, onClose }) {
           <Detail label="Trigger Price" value={formatPrice(signalTriggerPrice(signal))} />
           <Detail label="Coinbase Premium" value={formatSignedPct(signal.coinbasePremiumPct)} />
           <Detail label="Discord Alert Status" value={discordStatus(signal)} />
+          <Detail label="Retention" value={signal.isPermanent ? "永久保留" : "普通保留"} />
           <Detail label="Core Reason" value={signal.finalResult} wide />
         </div>
         <div className="mt-5 rounded-xl border border-slate-700 bg-slate-900/70 p-4">
@@ -473,6 +619,12 @@ function fallbackSummary(symbol) {
     trend60s: {},
     exchanges: {},
   };
+}
+
+function toQueryTimestamp(value) {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function statusLabel(value) {
@@ -575,7 +727,13 @@ function discordStatus(item) {
 
 function formatTime(ts) {
   if (!ts) return "n/a";
-  return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false });
+  const date = new Date(ts);
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("-") + ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatBase(value, symbol) {
@@ -585,6 +743,14 @@ function formatBase(value, symbol) {
 function formatSignedBase(value, symbol) {
   const number = Number(value || 0);
   return `${number >= 0 ? "+" : ""}${number.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${symbol}`;
+}
+
+function normalizeMainstreamSymbol(symbol = "BTC") {
+  const base = String(symbol || "BTC")
+    .trim()
+    .toUpperCase()
+    .replace(/[-_/]?(USDT|USD|PERP|SWAP)$/i, "");
+  return base === "ETH" ? "ETH" : "BTC";
 }
 
 function formatUsd(value) {

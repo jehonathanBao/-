@@ -2,8 +2,10 @@ import { NavLink, useLocation } from "react-router-dom";
 
 const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"] },
-  { label: "BTC/ETH 合约监控", path: "/contract-whale" },
-  { label: "BTC/ETH 现货监控", path: "/spot-monitor", aliases: ["/spot-whale"] },
+  { label: "BTC 合约监控", path: "/contract-whale/btc", aliases: ["/contract-whale"] },
+  { label: "ETH 合约监控", path: "/contract-whale/eth" },
+  { label: "BTC 现货监控", path: "/spot-monitor/btc", aliases: ["/spot-monitor", "/spot-whale"] },
+  { label: "ETH 现货监控", path: "/spot-monitor/eth" },
   { label: "妖币控盘监控", path: "/altcoin-manipulation" },
   { label: "新币合约监控", path: "/new-token-watch" },
   { label: "山寨合约异常", path: "/alt-contract-monitor" },

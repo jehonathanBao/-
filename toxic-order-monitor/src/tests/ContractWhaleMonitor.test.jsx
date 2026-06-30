@@ -1248,7 +1248,7 @@ describe("ContractWhaleMonitor", () => {
     fetchContractEventDebugCounts.mockReturnValueOnce(new Promise(() => {}));
     fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
 
-    render(<ContractWhaleMonitor />);
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
 
     expect(screen.getByTestId("platform-status-chip-binance")).toHaveTextContent("等待数据");
     expect(screen.getByTestId("platform-status-chip-bitfinex")).toHaveTextContent("等待数据");
@@ -1980,7 +1980,7 @@ describe("ContractWhaleMonitor", () => {
       error: null,
     });
 
-    render(<ContractWhaleMonitor />);
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
 
     expect(await screen.findByText("16,869 ETH")).toBeInTheDocument();
     expect(screen.getByText("净买入 614 ETH")).toBeInTheDocument();
@@ -1988,185 +1988,149 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("净买入 614 BTC")).not.toBeInTheDocument();
   });
 
-  it("uses the selected symbol as the trend unit when ETH summary omits trend symbol", async () => {
-    const user = userEvent.setup();
-    fetchContractWhaleLatest
-      .mockResolvedValueOnce({
-        summary: {
-          status: "calm",
-          healthStatus: "healthy",
-          latestDirection: "neutral",
-          latestSeverity: "calm",
-          signalCount: 0,
-          readOnly: true,
-          enabled: true,
-          dryRun: true,
-          contractDataQuality: 90,
-          spotDataQuality: 80,
-          overallDataQuality: 85,
-          discordDryRunStats: {},
-          marketStructureLite: {},
-          trend60s: {
-            symbol: "BTC",
-            buyVolumeBtc: 0,
-            sellVolumeBtc: 0,
-            totalVolumeBtc: 0,
-            netVolumeBtc: 0,
-            dominance: 0,
-            buyRatio: 0,
-            sellRatio: 0,
-          },
-          exchanges: {},
-          platforms: {},
+  it("uses the locked ETH symbol as the trend unit when ETH summary omits trend symbol", async () => {
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: {
+        status: "active",
+        healthStatus: "healthy",
+        latestDirection: "buy",
+        latestSeverity: "medium",
+        signalCount: 1,
+        readOnly: true,
+        enabled: true,
+        dryRun: true,
+        contractDataQuality: 78,
+        spotDataQuality: 60,
+        overallDataQuality: 71,
+        discordDryRunStats: {},
+        marketStructureLite: {},
+        trend60s: {
+          buyVolumeBtc: 688,
+          sellVolumeBtc: 73,
+          totalVolumeBtc: 761,
+          netVolumeBtc: 614,
+          dominance: 0.807,
+          buyRatio: 0.904,
+          sellRatio: 0.096,
         },
-        items: [],
-        error: null,
-      })
-      .mockResolvedValueOnce({
-        summary: {
+        exchanges: {},
+        platforms: {},
+      },
+      items: [
+        {
+          id: "eth-selected-contract-whale-row",
+          ts: 1_700_000_100_000,
+          symbol: "ETH",
+          windowSec: 60,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 34,
+          mainForceScore: 34,
+          spotScore: 27,
+          contractScore: 21,
+          totalVolumeBtc: 16869,
+          netVolumeBtc: 610,
+          totalNotionalUsd: 28_000_000,
+          dominance: 0.036,
+          triggerPriceUsd: 1675,
+          priceDeviationPct: 0.04,
+          priceMovePct: 0.03,
+          mainExchange: "binance",
+          exchanges: [],
+          finalResult: "ETH 主动买入放大",
+        },
+      ],
+      error: null,
+    });
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          eventId: "contract-event:eth:selected:1",
+          sourceSignalId: "eth-selected-contract-whale-row",
+          ts: 1_700_000_100_000,
+          symbol: "ETH",
+          price: 1675,
           status: "active",
-          healthStatus: "healthy",
-          latestDirection: "buy",
-          latestSeverity: "medium",
-          signalCount: 1,
-          readOnly: true,
-          enabled: true,
-          dryRun: true,
-          contractDataQuality: 78,
-          spotDataQuality: 60,
-          overallDataQuality: 71,
-          discordDryRunStats: {},
-          marketStructureLite: {},
-          trend60s: {
-            buyVolumeBtc: 688,
-            sellVolumeBtc: 73,
-            totalVolumeBtc: 761,
-            netVolumeBtc: 614,
-            dominance: 0.807,
-            buyRatio: 0.904,
-            sellRatio: 0.096,
-          },
-          exchanges: {},
-          platforms: {},
+          windowSec: 60,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          mainForceScore: 34,
+          volumeBtc: 16869,
+          netVolumeBtc: 610,
+          notionalUsd: 28_000_000,
+          netDirection: "net_buy",
+          exchangeSpotCount: 0,
+          exchangeContractCount: 1,
+          source: "contract_whale_signals",
+          isRetentionProtected: false,
+          retentionReason: null,
         },
-        items: [
-          {
-            id: "eth-selected-contract-whale-row",
-            ts: 1_700_000_100_000,
-            symbol: "ETH",
-            windowSec: 60,
-            signalType: "aggressive_buy",
-            direction: "buy",
-            severity: "medium",
-            score: 34,
-            mainForceScore: 34,
-            spotScore: 27,
-            contractScore: 21,
-            totalVolumeBtc: 16869,
-            netVolumeBtc: 610,
-            totalNotionalUsd: 28_000_000,
-            dominance: 0.036,
-            triggerPriceUsd: 1675,
-            priceDeviationPct: 0.04,
-            priceMovePct: 0.03,
-            mainExchange: "binance",
-            exchanges: [],
-            finalResult: "ETH 主动买入放大",
-          },
-        ],
-        error: null,
-      });
-    fetchContractEvents
-      .mockResolvedValueOnce({ items: [], nextCursor: null, hasMore: false, limit: 100, range: "24h", error: null })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            eventId: "contract-event:eth:selected:1",
-            sourceSignalId: "eth-selected-contract-whale-row",
-            ts: 1_700_000_100_000,
-            symbol: "ETH",
-            price: 1675,
-            status: "active",
-            windowSec: 60,
-            signalType: "aggressive_buy",
-            direction: "buy",
-            severity: "medium",
-            mainForceScore: 34,
-            volumeBtc: 16869,
-            netVolumeBtc: 610,
-            notionalUsd: 28_000_000,
-            netDirection: "net_buy",
-            exchangeSpotCount: 0,
-            exchangeContractCount: 1,
-            source: "contract_whale_signals",
-            isRetentionProtected: false,
-            retentionReason: null,
-          },
-        ],
-        nextCursor: null,
-        hasMore: false,
-        limit: 100,
-        range: "24h",
-        error: null,
-      });
-    fetchFinalEventsV2
-      .mockResolvedValueOnce({ active: [], closed: [], nextCursor: null, hasMore: false, limit: 100, range: "24h", error: null })
-      .mockResolvedValueOnce({
-        active: [],
-        closed: [
-          {
-            id: "cwm-event:ETH:aggressive_buy:1700000100000",
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
+    fetchFinalEventsV2.mockResolvedValueOnce({
+      active: [],
+      closed: [
+        {
+          id: "cwm-event:ETH:aggressive_buy:1700000100000",
+          eventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+          finalEventId: "cwm-event:ETH:aggressive_buy:1700000100000",
+          sourceSignalId: "eth-selected-contract-whale-row",
+          ts: 1_700_000_100_000,
+          symbol: "ETH",
+          baseAsset: "ETH",
+          quantityUnit: "ETH",
+          windowSec: 60,
+          signalType: "aggressive_buy",
+          direction: "buy",
+          severity: "medium",
+          score: 34,
+          mainForceScore: 34,
+          spotScore: 27,
+          contractScore: 21,
+          totalVolumeBtc: 16869,
+          netVolumeBtc: 610,
+          totalNotionalUsd: 28_000_000,
+          dominance: 0.036,
+          triggerPriceUsd: 1675,
+          priceDeviationPct: 0.04,
+          priceMovePct: 0.03,
+          mainExchange: "binance",
+          eventLifecycle: {
             eventId: "cwm-event:ETH:aggressive_buy:1700000100000",
-            finalEventId: "cwm-event:ETH:aggressive_buy:1700000100000",
-            sourceSignalId: "eth-selected-contract-whale-row",
-            ts: 1_700_000_100_000,
-            symbol: "ETH",
-            baseAsset: "ETH",
-            quantityUnit: "ETH",
-            windowSec: 60,
-            signalType: "aggressive_buy",
-            direction: "buy",
-            severity: "medium",
-            score: 34,
-            mainForceScore: 34,
-            spotScore: 27,
-            contractScore: 21,
-            totalVolumeBtc: 16869,
-            netVolumeBtc: 610,
-            totalNotionalUsd: 28_000_000,
-            dominance: 0.036,
-            triggerPriceUsd: 1675,
-            priceDeviationPct: 0.04,
-            priceMovePct: 0.03,
-            mainExchange: "binance",
-            eventLifecycle: {
-              eventId: "cwm-event:ETH:aggressive_buy:1700000100000",
-              status: "active",
-              startTime: 1_700_000_100_000,
-              lastUpdateTime: 1_700_000_100_000,
-              volumeAccumulated: 16869,
-              updateCount: 1,
-            },
-            eventQuality: {
-              qualityScore: 0.71,
-              mergeSimilarityScore: 1,
-              valid: true,
-              falseEventFlags: [],
-            },
+            status: "active",
+            startTime: 1_700_000_100_000,
+            lastUpdateTime: 1_700_000_100_000,
+            volumeAccumulated: 16869,
+            updateCount: 1,
           },
-        ],
-        nextCursor: null,
-        hasMore: false,
-        limit: 100,
-        range: "24h",
-        error: null,
-      });
+          eventQuality: {
+            qualityScore: 0.71,
+            mergeSimilarityScore: 1,
+            valid: true,
+            falseEventFlags: [],
+          },
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
 
-    render(<ContractWhaleMonitor />);
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
 
     await screen.findByText("主力合约监控");
-    await user.selectOptions(screen.getByLabelText("币种"), "ETH");
-
+    expect(screen.getByText("币种：ETH（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
     await waitFor(() => expect(fetchContractWhaleLatest).toHaveBeenLastCalledWith(50, "ETH"));
     expect(await screen.findByText("总量 761 ETH · dominance 80.7%")).toBeInTheDocument();
     expect(screen.getByText("净买入 614 ETH")).toBeInTheDocument();
@@ -2975,13 +2939,13 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps latest requests scoped to ETH after symbol switch", async () => {
-    const user = userEvent.setup();
-
-    render(<ContractWhaleMonitor />);
+  it("keeps latest requests scoped to locked ETH", async () => {
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
 
     await screen.findByText("主力合约监控");
-    await user.selectOptions(screen.getByLabelText("币种"), "ETH");
+    expect(screen.getByText("币种：ETH（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
 
     await waitFor(() => expect(fetchContractWhaleLatest).toHaveBeenLastCalledWith(50, "ETH"));
   });

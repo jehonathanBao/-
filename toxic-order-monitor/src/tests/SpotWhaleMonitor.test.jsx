@@ -71,12 +71,19 @@ vi.mock("../api/spotWhale.js", () => ({
             { exchange: "bitfinex", buyVolumeBase: 40, sellVolumeBase: 0, dominance: 1 },
           ],
           finalResult: "Binance / Coinbase / Bitfinex 现货主动买入同步放大",
+          isPermanent: true,
         },
       ],
+      limit,
+      offset: 0,
+      total: 1,
+      hasMore: false,
       error: null,
     }),
   ),
-  fetchSpotWhaleHistory: vi.fn(() => Promise.resolve({ summary: {}, items: [], error: null })),
+  fetchSpotWhaleHistory: vi.fn(() =>
+    Promise.resolve({ summary: {}, items: [], limit: 50, offset: 0, total: 0, hasMore: false, error: null }),
+  ),
 }));
 
 describe("SpotWhaleMonitor", () => {
@@ -85,15 +92,20 @@ describe("SpotWhaleMonitor", () => {
     vi.clearAllMocks();
   });
 
-  it("renders BTC/ETH spot monitor with exchange health and signals", async () => {
-    render(<SpotWhaleMonitor />);
+  it("renders a locked BTC spot monitor with exchange health and signals", async () => {
+    render(<SpotWhaleMonitor lockedSymbol="BTC" />);
 
-    expect(await screen.findByText("BTC / ETH 现货监控")).toBeInTheDocument();
+    expect(await screen.findByText("BTC 现货监控")).toBeInTheDocument();
+    expect(screen.getByText("BTC SPOT WHALE FLOW")).toBeInTheDocument();
+    expect(screen.getByText("币种：BTC（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
     expect(screen.getAllByText("Binance").length).toBeGreaterThan(0);
     expect(screen.getByText("Coinbase")).toBeInTheDocument();
     expect(screen.getByText("Bitfinex")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "实时流" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "历史查询" })).toBeInTheDocument();
     expect(await screen.findByText("现货主动买入")).toBeInTheDocument();
-    expect(screen.getByLabelText("净方向")).toBeInTheDocument();
     expect(
       screen.getAllByText((_, element) => {
         const text = element?.textContent || "";
@@ -102,6 +114,7 @@ describe("SpotWhaleMonitor", () => {
     ).toBeGreaterThan(0);
     expect(screen.getAllByText("$75,610").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("符合 gate")).toBeInTheDocument();
+    expect(screen.getByText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/)).toBeInTheDocument();
   });
 
   it("filters visible spot signals by absolute net direction threshold", async () => {
@@ -110,39 +123,54 @@ describe("SpotWhaleMonitor", () => {
 
     expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toBeInTheDocument();
 
-    fetchSpotWhaleHistory.mockResolvedValueOnce({
-      summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
-      items: [
-        {
-          id: "spot-whale-negative-BTC",
-          ts: 1_700_000_000_001,
-          symbol: "BTC",
-          windowSec: 15,
-          signalType: "spot_aggressive_sell",
-          direction: "sell",
-          severity: "critical",
-          score: 86,
-          totalVolumeBase: 680,
-          netVolumeBase: -520,
-          totalNotionalUsd: 44_000_000,
-          dominance: 0.76,
-          priceMovePct: -0.18,
-          coinbasePremiumPct: -0.02,
-          mainExchange: "coinbase",
-          dataQuality: 90,
-          discordEligible: true,
-          discordSent: false,
-          discordReason: "critical_or_s_gate",
-          exchanges: [],
-          finalResult: "现货主动卖出同步放大",
-        },
-      ],
-      error: null,
-    });
+    fetchSpotWhaleHistory
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [],
+        limit: 50,
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [
+          {
+            id: "spot-whale-negative-BTC",
+            ts: 1_700_000_000_001,
+            symbol: "BTC",
+            windowSec: 15,
+            signalType: "spot_aggressive_sell",
+            direction: "sell",
+            severity: "critical",
+            score: 86,
+            totalVolumeBase: 680,
+            netVolumeBase: -520,
+            totalNotionalUsd: 44_000_000,
+            dominance: 0.76,
+            priceMovePct: -0.18,
+            coinbasePremiumPct: -0.02,
+            mainExchange: "coinbase",
+            dataQuality: 90,
+            discordEligible: true,
+            discordSent: false,
+            discordReason: "critical_or_s_gate",
+            exchanges: [],
+            finalResult: "现货主动卖出同步放大",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        total: 1,
+        hasMore: false,
+        error: null,
+      });
 
+    await user.click(screen.getByRole("button", { name: "历史查询" }));
     await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
     expect(fetchSpotWhaleHistory).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 50, net_direction: "abs500", symbol: "BTC" }),
+      expect.objectContaining({ limit: 50, offset: 0, net_direction: "abs500", symbol: "BTC" }),
     );
     expect(await screen.findByTestId("spot-whale-row-spot-whale-negative-BTC")).toBeInTheDocument();
     expect(screen.getByText("-520 BTC")).toBeInTheDocument();
@@ -150,55 +178,70 @@ describe("SpotWhaleMonitor", () => {
 
   it("supports abs50 and abs100 net-direction options in the spot filter", async () => {
     const user = userEvent.setup();
+    fetchSpotWhaleHistory
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [],
+        limit: 50,
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [
+          {
+            id: "spot-whale-negative-100-BTC",
+            ts: 1_700_000_000_002,
+            symbol: "BTC",
+            windowSec: 15,
+            signalType: "spot_aggressive_sell",
+            direction: "sell",
+            severity: "medium",
+            score: 80,
+            totalVolumeBase: 150,
+            netVolumeBase: -100,
+            totalNotionalUsd: 6_000_000,
+            dominance: 0.67,
+            priceMovePct: -0.05,
+            coinbasePremiumPct: 0,
+            mainExchange: "binance",
+            dataQuality: 88,
+            discordEligible: false,
+            discordSent: false,
+            exchanges: [],
+            finalResult: "spot sell pressure",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        total: 1,
+        hasMore: false,
+        error: null,
+      });
+
     render(<SpotWhaleMonitor />);
 
+    await user.click(screen.getByRole("button", { name: "历史查询" }));
     await screen.findByLabelText("净方向");
-
-    fetchSpotWhaleHistory.mockResolvedValueOnce({
-      summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
-      items: [
-        {
-          id: "spot-whale-negative-100-BTC",
-          ts: 1_700_000_000_002,
-          symbol: "BTC",
-          windowSec: 15,
-          signalType: "spot_aggressive_sell",
-          direction: "sell",
-          severity: "medium",
-          score: 80,
-          totalVolumeBase: 150,
-          netVolumeBase: -100,
-          totalNotionalUsd: 6_000_000,
-          dominance: 0.67,
-          priceMovePct: -0.05,
-          coinbasePremiumPct: 0,
-          mainExchange: "binance",
-          dataQuality: 88,
-          discordEligible: false,
-          discordSent: false,
-          exchanges: [],
-          finalResult: "spot sell pressure",
-        },
-      ],
-      error: null,
-    });
-
     await user.selectOptions(screen.getByLabelText("净方向"), "abs100");
 
     expect(fetchSpotWhaleHistory).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 50, net_direction: "abs100", symbol: "BTC" }),
+      expect.objectContaining({ limit: 50, offset: 0, net_direction: "abs100", symbol: "BTC" }),
     );
     expect(await screen.findByTestId("spot-whale-row-spot-whale-negative-100-BTC")).toBeInTheDocument();
     expect(screen.getByText("-100 BTC")).toBeInTheDocument();
   });
 
-  it("refreshes summary and latest when switching to ETH", async () => {
-    const user = userEvent.setup();
-    render(<SpotWhaleMonitor />);
+  it("scopes summary and latest to locked ETH", async () => {
+    render(<SpotWhaleMonitor lockedSymbol="ETH" />);
 
-    const symbolSelect = await screen.findByLabelText("币种");
-    await user.selectOptions(symbolSelect, "ETH");
-
+    expect(await screen.findByText("ETH 现货监控")).toBeInTheDocument();
+    expect(screen.getByText("ETH SPOT WHALE FLOW")).toBeInTheDocument();
+    expect(screen.getByText("币种：ETH（当前页面固定）")).toBeInTheDocument();
+    expect(screen.queryByLabelText("币种")).not.toBeInTheDocument();
+    expect(screen.queryByText("SOL")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(fetchSpotWhaleSummary).toHaveBeenCalledWith("ETH");
       expect(fetchSpotWhaleLatest).toHaveBeenCalledWith(50, "ETH");
@@ -240,5 +283,116 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getByText("健康状态")).toBeInTheDocument();
     expect(screen.getByText("异常")).toBeInTheDocument();
     expect(screen.getByText(/60s 总成交 0 BTC/)).toBeInTheDocument();
+  });
+
+  it("supports permanent-only history paging", async () => {
+    const user = userEvent.setup();
+    fetchSpotWhaleHistory
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [],
+        limit: 50,
+        offset: 0,
+        total: 51,
+        hasMore: true,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [
+          {
+            id: "spot-whale-history-page-1",
+            ts: 1_700_000_000_000,
+            symbol: "BTC",
+            windowSec: 15,
+            signalType: "spot_aggressive_buy",
+            direction: "buy",
+            severity: "critical",
+            score: 90,
+            totalVolumeBase: 500,
+            netVolumeBase: 65,
+            totalNotionalUsd: 35_000_000,
+            dominance: 0.7,
+            mainExchange: "binance",
+            dataQuality: 90,
+            discordEligible: true,
+            discordSent: true,
+            discordReason: "critical_or_s_gate",
+            exchanges: [],
+            finalResult: "permanent page 1",
+            isPermanent: true,
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        total: 51,
+        hasMore: true,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        summary: { enabled: true, dryRun: false, symbol: "BTC", exchanges: {} },
+        items: [
+          {
+            id: "spot-whale-history-page-2",
+            ts: 1_699_999_000_000,
+            symbol: "BTC",
+            windowSec: 15,
+            signalType: "spot_aggressive_sell",
+            direction: "sell",
+            severity: "high",
+            score: 86,
+            totalVolumeBase: 300,
+            netVolumeBase: -80,
+            totalNotionalUsd: 20_000_000,
+            dominance: 0.68,
+            mainExchange: "coinbase",
+            dataQuality: 88,
+            discordEligible: true,
+            discordSent: false,
+            discordReason: "high_score_multi_exchange",
+            exchanges: [],
+            finalResult: "permanent page 2",
+            isPermanent: true,
+          },
+        ],
+        limit: 50,
+        offset: 50,
+        total: 51,
+        hasMore: false,
+        error: null,
+      });
+
+    render(<SpotWhaleMonitor />);
+
+    await user.click(screen.getByRole("button", { name: "历史查询" }));
+    await user.click(screen.getByLabelText("只看永久信号"));
+
+    await waitFor(() => {
+      expect(fetchSpotWhaleHistory).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          symbol: "BTC",
+          limit: 50,
+          offset: 0,
+          permanent_only: true,
+        }),
+      );
+    });
+
+    expect(await screen.findByText("共 51 条 · 第 1 / 2 页")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+
+    await waitFor(() => {
+      expect(fetchSpotWhaleHistory).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          symbol: "BTC",
+          limit: 50,
+          offset: 50,
+          permanent_only: true,
+        }),
+      );
+    });
+
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-history-page-2")).toBeInTheDocument();
   });
 });

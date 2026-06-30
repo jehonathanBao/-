@@ -37,9 +37,9 @@ export async function fetchSpotWhaleSummary(symbol = "BTC") {
   try {
     const query = buildSpotWhaleQuery({ symbol });
     const response = await axios.get(`${baseURL}/api/spot-whale/summary?${query}`);
-    return { summary: normalizeSummary(response.data), error: null };
+    return { summary: normalizeSummary(response.data, symbol), error: null };
   } catch {
-    return { summary: calmSummary, error: "summary_unavailable" };
+    return { summary: fallbackSummary(symbol), error: "summary_unavailable" };
   }
 }
 
@@ -49,13 +49,28 @@ export async function fetchSpotWhaleLatest(limit = 50, symbol = "BTC") {
     const query = buildSpotWhaleQuery({ limit, symbol });
     const response = await axios.get(`${baseURL}/api/spot-whale/latest?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const normalizedItems = items
+      .filter((item) => signalMatchesRequestedSymbol(item, symbol))
+      .map((item) => normalizeSpotWhaleSignal(item, symbol));
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeSpotWhaleSignal),
+      summary: normalizeSummary(response.data?.summary, symbol),
+      items: normalizedItems,
+      limit: numberOrNull(response.data?.limit) || limit,
+      offset: numberOrNull(response.data?.offset) || 0,
+      total: numberOrNull(response.data?.total) || normalizedItems.length,
+      hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], error: "latest_unavailable" };
+    return {
+      summary: fallbackSummary(symbol),
+      items: [],
+      limit,
+      offset: 0,
+      total: 0,
+      hasMore: false,
+      error: "latest_unavailable",
+    };
   }
 }
 
@@ -65,23 +80,40 @@ export async function fetchSpotWhaleHistory(filters = {}) {
     const query = buildSpotWhaleQuery({ ...filters, limit: filters.limit ?? 50 });
     const response = await axios.get(`${baseURL}/api/spot-whale/history?${query}`);
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
+    const requestedSymbol = filters.symbol || "BTC";
+    const normalizedItems = items
+      .filter((item) => signalMatchesRequestedSymbol(item, requestedSymbol))
+      .map((item) => normalizeSpotWhaleSignal(item, requestedSymbol));
     return {
-      summary: normalizeSummary(response.data?.summary),
-      items: items.map(normalizeSpotWhaleSignal),
+      summary: normalizeSummary(response.data?.summary, requestedSymbol),
+      items: normalizedItems,
+      limit: numberOrNull(response.data?.limit) || Number(filters.limit ?? 50),
+      offset: numberOrNull(response.data?.offset) || Number(filters.offset ?? 0),
+      total: numberOrNull(response.data?.total) || normalizedItems.length,
+      hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
       error: null,
     };
   } catch {
-    return { summary: calmSummary, items: [], error: "history_unavailable" };
+    return {
+      summary: fallbackSummary(filters.symbol || "BTC"),
+      items: [],
+      limit: Number(filters.limit ?? 50),
+      offset: Number(filters.offset ?? 0),
+      total: 0,
+      hasMore: false,
+      error: "history_unavailable",
+    };
   }
 }
 
-export function normalizeSpotWhaleSignal(item) {
+export function normalizeSpotWhaleSignal(item, fallbackSymbol = "BTC") {
   const totalVolumeBase = numberOrNull(item.totalVolumeBase) || 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
+  const symbol = item.symbol || item.quantityUnit || item.baseAsset || fallbackSymbol || "BTC";
   return {
-    id: item.id || `${item.symbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
+    id: item.id || `${symbol}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
-    symbol: item.symbol || "BTC",
+    symbol,
     windowSec: numberOrNull(item.windowSec) || 0,
     signalType: item.signalType || "unknown",
     direction: item.direction || "neutral",
@@ -103,6 +135,7 @@ export function normalizeSpotWhaleSignal(item) {
     discordSent: Boolean(item.discordSent),
     discordSentAt: numberOrNull(item.discordSentAt),
     discordReason: item.discordReason || "not_sent",
+    isPermanent: Boolean(item.isPermanent ?? item.is_permanent),
     finalResult: item.finalResult || "spot whale flow candidate",
   };
 }
@@ -123,9 +156,9 @@ function normalizeTriggerPrice(item, totalVolumeBase, totalNotionalUsd) {
   return null;
 }
 
-function normalizeSummary(summary) {
+function normalizeSummary(summary, fallbackSymbol = "BTC") {
   if (!summary || typeof summary !== "object") {
-    return calmSummary;
+    return fallbackSummary(fallbackSymbol);
   }
   return {
     status: summary.status || calmSummary.status,
@@ -141,9 +174,16 @@ function normalizeSummary(summary) {
     readOnly: summary.readOnly !== false,
     enabled: Boolean(summary.enabled),
     dryRun: summary.dryRun !== false,
-    symbol: summary.symbol || "BTC",
+    symbol: summary.symbol || summary.quantityUnit || summary.baseAsset || fallbackSymbol || "BTC",
     trend60s: normalizeTrend60s(summary.trend60s),
     exchanges: normalizeExchanges(summary.exchanges),
+  };
+}
+
+function fallbackSummary(symbol = "BTC") {
+  return {
+    ...calmSummary,
+    symbol: symbol || "BTC",
   };
 }
 
@@ -195,6 +235,21 @@ function buildSpotWhaleQuery(filters) {
     params.set(key, String(value));
   });
   return params.toString();
+}
+
+function signalMatchesRequestedSymbol(item, requestedSymbol = "BTC") {
+  const requested = baseAssetKey(requestedSymbol);
+  if (!requested || requested === "ALL") return true;
+  const itemSymbol = item?.symbol || item?.quantityUnit || item?.baseAsset;
+  if (!itemSymbol) return true;
+  return baseAssetKey(itemSymbol) === requested;
+}
+
+function baseAssetKey(symbol = "") {
+  return String(symbol || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[-_/]?(USDT|USD|PERP|SWAP)$/i, "");
 }
 
 function numberOrNull(value) {

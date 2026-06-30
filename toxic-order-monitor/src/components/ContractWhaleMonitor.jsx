@@ -31,7 +31,8 @@ const DEFAULT_FILTERS = {
   exchange: "all",
 };
 
-export default function ContractWhaleMonitor() {
+export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
+  const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
   const [state, setState] = useState({
     loading: true,
     summary: null,
@@ -78,7 +79,15 @@ export default function ContractWhaleMonitor() {
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
   const [selectedWhaleId, setSelectedWhaleId] = useState(null);
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, symbol: assetSymbol }));
+
+  useEffect(() => {
+    setSelectedSignalId(null);
+    setSelectedWhaleId(null);
+    setFilters((previous) => (
+      previous.symbol === assetSymbol ? previous : { ...previous, symbol: assetSymbol }
+    ));
+  }, [assetSymbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -310,21 +319,23 @@ export default function ContractWhaleMonitor() {
   }, [filters]);
 
   useEffect(() => {
-    if (selectedSignalId && !state.items.some((item) => item.id === selectedSignalId)) {
+    const scopedItems = filterContractItemsBySymbol(state.items, assetSymbol);
+    if (selectedSignalId && !scopedItems.some((item) => item.id === selectedSignalId)) {
       setSelectedSignalId(null);
     }
-  }, [selectedSignalId, state.items]);
+  }, [assetSymbol, selectedSignalId, state.items]);
 
   useEffect(() => {
-    if (state.items.length === 0) {
+    const scopedItems = filterContractItemsBySymbol(state.items, assetSymbol);
+    if (scopedItems.length === 0) {
       if (selectedWhaleId) setSelectedWhaleId(null);
       return;
     }
-    const entities = buildWhaleEntities(state.items);
+    const entities = buildWhaleEntities(scopedItems);
     if (!selectedWhaleId || !entities.some((entity) => entity.id === selectedWhaleId)) {
       setSelectedWhaleId(entities[0]?.id || null);
     }
-  }, [selectedWhaleId, state.items]);
+  }, [assetSymbol, selectedWhaleId, state.items]);
 
   const summary = state.summary || {
     status: "calm",
@@ -400,11 +411,19 @@ export default function ContractWhaleMonitor() {
     },
   };
   const platformCapabilities = summary.platforms || {};
-  const lifecycleItems = [...state.finalEvents.active, ...state.finalEvents.closed];
-  const detailItems = dedupeSignalsById([...state.items, ...state.contractEvents, ...lifecycleItems]);
-  const visibleContractEvents = state.contractEvents.filter(passesContractWhaleVisibleNotionalFilter);
-  const hiddenLowNotionalCount = Math.max(0, state.contractEvents.length - visibleContractEvents.length);
-  const shouldApplyNotionalDisplayFilter = state.contractEvents.length > 0;
+  const latestItems = filterContractItemsBySymbol(state.items, assetSymbol);
+  const contractEvents = filterContractItemsBySymbol(state.contractEvents, assetSymbol);
+  const finalEvents = {
+    active: filterContractItemsBySymbol(state.finalEvents.active, assetSymbol),
+    closed: filterContractItemsBySymbol(state.finalEvents.closed, assetSymbol),
+  };
+  const whaleEvents = filterContractItemsBySymbol(state.events, assetSymbol);
+  const hiddenContractEvents = filterContractItemsBySymbol(state.hiddenContractEvents, assetSymbol);
+  const lifecycleItems = [...finalEvents.active, ...finalEvents.closed];
+  const detailItems = dedupeSignalsById([...latestItems, ...contractEvents, ...lifecycleItems]);
+  const visibleContractEvents = contractEvents.filter(passesContractWhaleVisibleNotionalFilter);
+  const hiddenLowNotionalCount = Math.max(0, contractEvents.length - visibleContractEvents.length);
+  const shouldApplyNotionalDisplayFilter = contractEvents.length > 0;
   const visibleSignalIds = buildVisibleSignalIdSet(visibleContractEvents);
   const displayIntelligence = shouldApplyNotionalDisplayFilter
     ? filterIntelligenceByVisibleSignals(state.intelligenceTerminal, visibleSignalIds)
@@ -414,13 +433,13 @@ export default function ContractWhaleMonitor() {
     : summary;
   const latestSignalTs = Math.max(
     0,
-    ...state.items.map((item) => Number(item?.ts) || 0),
+    ...latestItems.map((item) => Number(item?.ts) || 0),
   );
   const eventsSyncLag = latestSignalTs > 0 &&
     Number.isFinite(state.contractEventsLastEventTs) &&
     latestSignalTs - state.contractEventsLastEventTs > EVENTS_SYNC_LAG_MS;
   const selectedSignal = detailItems.find((item) => item.id === selectedSignalId) || null;
-  const whaleEntities = buildWhaleEntities(state.items);
+  const whaleEntities = buildWhaleEntities(latestItems);
   const showCoinbaseSpotOnlyNotice =
     filters.exchange === "coinbase" || state.meta?.reason === "coinbase_perp_disabled";
 
@@ -508,7 +527,7 @@ export default function ContractWhaleMonitor() {
           <p className="console-label text-cyan-300">Contract Whale Flow</p>
           <h3 className="mt-2 text-lg font-bold text-white">主力合约监控</h3>
           <p className="mt-1 text-sm leading-6 text-slate-400">
-            BTC / ETH 永续合约主动成交流异常，Critical / S 才进入外部告警判断。
+            {assetSymbol} 永续合约主动成交流异常，Critical / S 才进入外部告警判断。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-7">
@@ -525,10 +544,11 @@ export default function ContractWhaleMonitor() {
 
       <ContractWhaleFilters
         filters={filters}
+        lockedSymbol={assetSymbol}
         onChange={(nextFilters) => {
           setSelectedSignalId(null);
           setSelectedWhaleId(null);
-          setFilters(nextFilters);
+          setFilters({ ...nextFilters, symbol: assetSymbol });
         }}
       />
       <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
@@ -549,7 +569,7 @@ export default function ContractWhaleMonitor() {
 
       <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)] xl:items-start">
         <HistoricalEventStreamPanel
-          contractEvents={state.contractEvents}
+          contractEvents={contractEvents}
           visibleContractEvents={visibleContractEvents}
           hiddenLowNotionalCount={hiddenLowNotionalCount}
           debugCounts={state.contractEventDebugCounts}
@@ -587,7 +607,7 @@ export default function ContractWhaleMonitor() {
 
       <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)] xl:items-start">
         <LifecycleEventSections
-          finalEvents={state.finalEvents}
+          finalEvents={finalEvents}
           finalEventsHasMore={state.finalEventsHasMore}
           onLoadMoreFinalEvents={loadMoreFinalEvents}
           onOpenSignal={setSelectedSignalId}
@@ -596,15 +616,15 @@ export default function ContractWhaleMonitor() {
       </section>
 
       <ContractWhaleSystemStatusPanel
-        contractEvents={state.contractEvents}
+        contractEvents={contractEvents}
         debugCounts={state.contractEventDebugCounts}
         rawFlowDebug={state.rawFlowDebug}
         latencyDebug={state.latencyDebug}
         enabled={summary.enabled}
-        latestItems={state.items}
-        finalEvents={state.finalEvents}
+        latestItems={latestItems}
+        finalEvents={finalEvents}
         finalEventsHasMore={state.finalEventsHasMore}
-        hiddenContractEvents={state.hiddenContractEvents}
+        hiddenContractEvents={hiddenContractEvents}
         hiddenContractEventsExpanded={state.hiddenContractEventsExpanded}
         hiddenContractEventsLoading={state.hiddenContractEventsLoading}
         loading={state.loading}
@@ -640,7 +660,7 @@ export default function ContractWhaleMonitor() {
         whales={whaleEntities}
       />
 
-      <MainForceEventsSection events={state.events} symbol={filters.symbol} />
+      <MainForceEventsSection events={whaleEvents} symbol={filters.symbol} />
 
       {selectedSignal ? (
         <ContractWhaleDetailModal
@@ -3030,15 +3050,11 @@ function ProgressRow({ label, value }) {
   );
 }
 
-function ContractWhaleFilters({ filters, onChange }) {
+function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
   return (
     <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-8">
-      <FilterSelect label="币种" value={filters.symbol} onChange={(value) => update("symbol", value)}>
-        <option value="BTC">BTC</option>
-        <option value="ETH">ETH</option>
-        <option value="SOL">SOL</option>
-      </FilterSelect>
+      <LockedAssetField symbol={lockedSymbol || filters.symbol} />
       <FilterSelect label="等级" value={filters.severity} onChange={(value) => update("severity", value)}>
         <option value="all">全部</option>
         <option value="s">S</option>
@@ -3082,6 +3098,18 @@ function ContractWhaleFilters({ filters, onChange }) {
         <option value="bitfinex">Bitfinex</option>
         <option value="coinbase">Coinbase</option>
       </FilterSelect>
+    </div>
+  );
+}
+
+function LockedAssetField({ symbol }) {
+  const asset = normalizeMainstreamSymbol(symbol);
+  return (
+    <div className="block">
+      <span className="mb-1 block text-[11px] font-medium text-slate-400">币种</span>
+      <div className="console-field border-cyan-500/25 bg-cyan-500/5 font-semibold text-cyan-100">
+        币种：{asset}（当前页面固定）
+      </div>
     </div>
   );
 }
@@ -4013,6 +4041,18 @@ function baseAssetSymbol(symbol = "BTC") {
   return String(symbol || "BTC")
     .toUpperCase()
     .replace(/[-_/]?(USDT|USD|PERP|SWAP)$/i, "") || "BTC";
+}
+
+function normalizeMainstreamSymbol(symbol = "BTC") {
+  return baseAssetSymbol(symbol) === "ETH" ? "ETH" : "BTC";
+}
+
+function filterContractItemsBySymbol(items, symbol = "BTC") {
+  const expected = normalizeMainstreamSymbol(symbol);
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const sourceSymbol = item?.symbol || item?.quantityUnit || item?.baseAsset || item?.asset || expected;
+    return normalizeMainstreamSymbol(sourceSymbol) === expected;
+  });
 }
 
 function formatUsd(value) {

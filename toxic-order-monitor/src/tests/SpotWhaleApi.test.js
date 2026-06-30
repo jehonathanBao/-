@@ -71,12 +71,52 @@ describe("spotWhale API", () => {
     expect(result.items[0].exchanges[1].exchange).toBe("bitfinex");
   });
 
+  it("drops latest rows whose explicit symbol does not match the requested symbol", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: { enabled: true, symbol: "ETH" },
+        items: [
+          { id: "btc-row", symbol: "BTC", totalVolumeBase: 10 },
+          { id: "eth-row", symbol: "ETH", totalVolumeBase: 20 },
+          { id: "sol-row", symbol: "SOL", totalVolumeBase: 30 },
+        ],
+      },
+    });
+
+    const result = await fetchSpotWhaleLatest(50, "ETH");
+
+    expect(axios.get).toHaveBeenCalledWith("/api/spot-whale/latest?limit=50&symbol=ETH");
+    expect(result.items.map((item) => item.id)).toEqual(["eth-row"]);
+    expect(result.items[0].symbol).toBe("ETH");
+  });
+
+  it("uses the requested symbol for legacy rows when the backend omits symbol", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: { enabled: true },
+        items: [
+          { id: undefined, windowSec: 15, ts: 1_700_000_000_000, totalVolumeBase: 12 },
+        ],
+      },
+    });
+
+    const result = await fetchSpotWhaleLatest(50, "ETH");
+
+    expect(result.summary.symbol).toBe("ETH");
+    expect(result.items[0]).toMatchObject({
+      id: "ETH-15-1700000000000",
+      symbol: "ETH",
+      totalVolumeBase: 12,
+    });
+  });
+
   it("normalizes missing fields safely", () => {
     const signal = normalizeSpotWhaleSignal({ symbol: "ETH" });
 
     expect(signal.symbol).toBe("ETH");
     expect(signal.totalVolumeBase).toBe(0);
     expect(signal.discordSent).toBe(false);
+    expect(signal.isPermanent).toBe(false);
   });
 
   it("passes absolute net direction filter to history endpoint", async () => {
@@ -109,5 +149,62 @@ describe("spotWhale API", () => {
 
     expect(axios.get.mock.calls[0][0]).toContain("net_direction=abs50");
     expect(axios.get.mock.calls[1][0]).toContain("net_direction=abs100");
+  });
+
+  it("passes paging, time-range, and permanent filters to history endpoint", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: { enabled: true, symbol: "BTC" },
+        items: [],
+        limit: 50,
+        offset: 50,
+        total: 120,
+        hasMore: true,
+      },
+    });
+
+    const result = await fetchSpotWhaleHistory({
+      symbol: "BTC",
+      net_direction: "abs50",
+      limit: 50,
+      offset: 50,
+      from_ts: 1_717_776_000_000,
+      to_ts: 1_717_862_400_000,
+      permanent_only: true,
+    });
+
+    const url = axios.get.mock.calls[0][0];
+    expect(url).toContain("offset=50");
+    expect(url).toContain("from_ts=1717776000000");
+    expect(url).toContain("to_ts=1717862400000");
+    expect(url).toContain("permanent_only=true");
+    expect(result.offset).toBe(50);
+    expect(result.total).toBe(120);
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("normalizes permanent flags from history results", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: { enabled: true, symbol: "BTC" },
+        items: [
+          {
+            id: "spot-whale:BTC:15:2:sell",
+            symbol: "BTC",
+            netVolumeBase: -70,
+            isPermanent: true,
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        total: 1,
+        hasMore: false,
+      },
+    });
+
+    const result = await fetchSpotWhaleHistory({ symbol: "BTC", permanent_only: true, limit: 50 });
+
+    expect(result.items[0].isPermanent).toBe(true);
+    expect(result.hasMore).toBe(false);
   });
 });
