@@ -317,6 +317,7 @@ pub fn spawn_contract_whale_retention_task(
     flow_1s_days: i64,
     signals_days: i64,
 ) {
+    const INITIAL_RETENTION_DELAY_SECS: u64 = 30;
     let Some(store) = store else {
         return;
     };
@@ -324,6 +325,16 @@ pub fn spawn_contract_whale_retention_task(
         return;
     };
     handle.spawn(async move {
+        tracing::info!(
+            target: LOG_TARGET,
+            event = log_events::RETENTION_PRUNED,
+            flow_1s_days,
+            signals_days,
+            initial_delay_seconds = INITIAL_RETENTION_DELAY_SECS,
+            "{} retention task scheduled",
+            LOG_PREFIX
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(INITIAL_RETENTION_DELAY_SECS)).await;
         prune_contract_whale_retention_nonblocking(
             store.clone(),
             flow_1s_days,
@@ -332,6 +343,7 @@ pub fn spawn_contract_whale_retention_task(
         )
         .await;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        interval.tick().await;
         loop {
             interval.tick().await;
             prune_contract_whale_retention_nonblocking(

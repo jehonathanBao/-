@@ -76,6 +76,7 @@ impl SnapshotService {
     }
 
     pub fn start(&self) {
+        const INITIAL_RETENTION_DELAY_MS: i64 = 30_000;
         if self.task.read().is_some() || !self.enabled || self.store.is_none() {
             return;
         }
@@ -84,7 +85,8 @@ impl SnapshotService {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(
                 service.persist_interval_ms.max(100),
             ));
-            let mut last_retention_run_ts = 0_i64;
+            let mut last_retention_run_ts = now_ms()
+                .saturating_add(service.retention_interval_ms as i64 - INITIAL_RETENTION_DELAY_MS);
             loop {
                 interval.tick().await;
                 let now_ts = now_ms();
