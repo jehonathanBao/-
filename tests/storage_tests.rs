@@ -16,8 +16,12 @@ use btc_toxic_flow_monitor_rs::{
         AppConfig,
     },
     storage::{
-        snapshots_repo::SnapshotsRepo, sqlite::SqliteStore, toxic_events_repo::ToxicEventsRepo,
+        runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
+        snapshots_repo::SnapshotsRepo,
+        sqlite::SqliteStore,
+        toxic_events_repo::ToxicEventsRepo,
         venue_health_repo::VenueHealthRepo,
+        vpin_repo::VpinRepo,
     },
     types::{
         flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
@@ -25,6 +29,7 @@ use btc_toxic_flow_monitor_rs::{
         toxic::{
             ToxicDirection, ToxicEvent, ToxicQuality, ToxicSeverity, ToxicState, ToxicVolumeResult,
         },
+        vpin::{VpinBucket, VpinDirection},
     },
 };
 
@@ -142,6 +147,129 @@ async fn storage_status_api_reports_snapshot_state() {
     assert_eq!(payload["lastWriteTs"], 7_000);
 
     server.abort();
+}
+
+#[test]
+fn runtime_retention_prunes_snapshot_and_event_tables() {
+    let store = open_store("runtime_retention");
+    store.migrate().expect("migrate");
+    let now = 1_800_000_000_000_i64;
+
+    store
+        .insert_event(&sample_event(now - 40_000))
+        .expect("old toxic event");
+    store
+        .insert_event(&sample_event(now - 5_000))
+        .expect("fresh toxic event");
+    store
+        .insert_flow_snapshot(&sample_flow_state(now - 40_000))
+        .expect("old flow snapshot");
+    store
+        .insert_flow_snapshot(&sample_flow_state(now - 5_000))
+        .expect("fresh flow snapshot");
+    store
+        .insert_toxic_snapshot(&sample_toxic_state(
+            now - 40_000,
+            &sample_event(now - 40_000),
+        ))
+        .expect("old toxic snapshot");
+    store
+        .insert_toxic_snapshot(&sample_toxic_state(now - 5_000, &sample_event(now - 5_000)))
+        .expect("fresh toxic snapshot");
+    store
+        .insert_venue_health_snapshot(now - 40_000, &sample_venue_health())
+        .expect("old venue health");
+    store
+        .insert_venue_health_snapshot(now - 5_000, &sample_venue_health())
+        .expect("fresh venue health");
+    store
+        .insert_bucket(&sample_vpin_bucket(1, now - 40_000, now - 35_000))
+        .expect("old vpin bucket");
+    store
+        .insert_bucket(&sample_vpin_bucket(2, now - 5_000, now - 1_000))
+        .expect("fresh vpin bucket");
+    store
+        .with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO replay_runs (id, started_at, finished_at, input_path, event_count, toxic_event_count, report_path, status, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    "old-replay",
+                    now - 60_000,
+                    now - 55_000,
+                    "old.jsonl",
+                    1_i64,
+                    1_i64,
+                    "old.md",
+                    "done",
+                    Option::<String>::None,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO replay_runs (id, started_at, finished_at, input_path, event_count, toxic_event_count, report_path, status, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    "fresh-replay",
+                    now - 5_000,
+                    now - 3_000,
+                    "fresh.jsonl",
+                    1_i64,
+                    1_i64,
+                    "fresh.md",
+                    "done",
+                    Option::<String>::None,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("insert replay runs");
+
+    let result = store
+        .prune_runtime_retention(
+            now,
+            &RuntimeRetentionPolicy {
+                toxic_events_retention_ms: 10_000,
+                toxic_snapshots_retention_ms: 10_000,
+                flow_snapshots_retention_ms: 10_000,
+                venue_health_retention_ms: 10_000,
+                vpin_buckets_retention_ms: 10_000,
+                replay_runs_retention_ms: 10_000,
+            },
+        )
+        .expect("prune runtime retention");
+
+    assert_eq!(result.toxic_events_deleted, 1);
+    assert_eq!(result.toxic_snapshots_deleted, 1);
+    assert_eq!(result.flow_snapshots_deleted, 1);
+    assert_eq!(result.venue_health_snapshots_deleted, 1);
+    assert_eq!(result.vpin_buckets_deleted, 1);
+    assert_eq!(result.replay_runs_deleted, 1);
+
+    store
+        .with_connection(|conn| {
+            let toxic_events: i64 =
+                conn.query_row("SELECT COUNT(*) FROM toxic_events", [], |row| row.get(0))?;
+            let toxic_snapshots: i64 =
+                conn.query_row("SELECT COUNT(*) FROM toxic_snapshots", [], |row| row.get(0))?;
+            let flow_snapshots: i64 =
+                conn.query_row("SELECT COUNT(*) FROM flow_snapshots", [], |row| row.get(0))?;
+            let venue_health: i64 =
+                conn.query_row("SELECT COUNT(*) FROM venue_health_snapshots", [], |row| {
+                    row.get(0)
+                })?;
+            let vpin_buckets: i64 =
+                conn.query_row("SELECT COUNT(*) FROM vpin_buckets", [], |row| row.get(0))?;
+            let replay_runs: i64 =
+                conn.query_row("SELECT COUNT(*) FROM replay_runs", [], |row| row.get(0))?;
+            assert_eq!(toxic_events, 1);
+            assert_eq!(toxic_snapshots, 1);
+            assert_eq!(flow_snapshots, 1);
+            assert_eq!(venue_health, 1);
+            assert_eq!(vpin_buckets, 1);
+            assert_eq!(replay_runs, 1);
+            Ok(())
+        })
+        .expect("verify remaining rows");
 }
 
 fn sample_event(ts: i64) -> ToxicEvent {
@@ -409,6 +537,24 @@ fn sample_venue_health() -> std::collections::BTreeMap<String, VenueHealth> {
     map
 }
 
+fn sample_vpin_bucket(id: u64, start_ts: i64, end_ts: i64) -> VpinBucket {
+    VpinBucket {
+        id,
+        start_ts,
+        end_ts,
+        symbol: "BTC-PERP".to_string(),
+        bucket_size_btc: 100.0,
+        total_btc: 120.0,
+        buy_btc: 80.0,
+        sell_btc: 40.0,
+        net_btc: 40.0,
+        imbalance_btc: 40.0,
+        imbalance_ratio: 0.333,
+        direction: VpinDirection::Buy,
+        venue_breakdown: BTreeMap::new(),
+    }
+}
+
 fn test_config(sqlite_path: String) -> AppConfig {
     AppConfig {
         app_env: "test".to_string(),
@@ -476,6 +622,7 @@ fn test_config(sqlite_path: String) -> AppConfig {
         liq_hunt_watch_score: 30.0,
         book_stale_ms: 5000,
         max_buffer_age_ms: 120000,
+        system_mode: btc_toxic_flow_monitor_rs::config::system_mode::SystemModeConfig::default(),
         contract_whale_monitor:
             btc_toxic_flow_monitor_rs::config::env::ContractWhaleMonitorConfig {
                 enabled: false,

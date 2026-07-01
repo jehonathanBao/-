@@ -116,6 +116,10 @@ pub trait ContractWhaleRepo {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ContractWhaleRetentionPruneResult {
     pub flow_1s_deleted: usize,
+    pub liquidation_deleted: usize,
+    pub oi_deleted: usize,
+    pub funding_deleted: usize,
+    pub percentile_deleted: usize,
     pub signal_deleted: usize,
     pub flow_cutoff_ts: i64,
     pub signal_cutoff_ts: i64,
@@ -895,6 +899,30 @@ impl ContractWhaleRepo for SqliteStore {
                     params![flow_cutoff_ts],
                 )
                 .context("failed to prune contract flow 1s buckets")?;
+            let liquidation_deleted = tx
+                .execute(
+                    "DELETE FROM contract_liquidation_1s WHERE ts_bucket < ?1",
+                    params![flow_cutoff_ts],
+                )
+                .context("failed to prune contract liquidation 1s buckets")?;
+            let oi_deleted = tx
+                .execute(
+                    "DELETE FROM contract_oi_snapshots WHERE ts < ?1",
+                    params![flow_cutoff_ts],
+                )
+                .context("failed to prune contract oi snapshots")?;
+            let funding_deleted = tx
+                .execute(
+                    "DELETE FROM contract_funding_snapshots WHERE ts < ?1",
+                    params![flow_cutoff_ts],
+                )
+                .context("failed to prune contract funding snapshots")?;
+            let percentile_deleted = tx
+                .execute(
+                    "DELETE FROM contract_whale_percentile_thresholds WHERE computed_at < ?1",
+                    params![flow_cutoff_ts],
+                )
+                .context("failed to prune contract whale percentile thresholds")?;
             let signal_deleted = tx
                 .execute(
                     r#"
@@ -911,8 +939,22 @@ impl ContractWhaleRepo for SqliteStore {
                 )
                 .context("failed to prune contract whale signals")?;
             tx.commit()?;
+            let deleted_any = flow_1s_deleted > 0
+                || liquidation_deleted > 0
+                || oi_deleted > 0
+                || funding_deleted > 0
+                || percentile_deleted > 0
+                || signal_deleted > 0;
+            if deleted_any {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                    .context("failed to checkpoint sqlite wal after contract whale prune")?;
+            }
             Ok(ContractWhaleRetentionPruneResult {
                 flow_1s_deleted,
+                liquidation_deleted,
+                oi_deleted,
+                funding_deleted,
+                percentile_deleted,
                 signal_deleted,
                 flow_cutoff_ts,
                 signal_cutoff_ts,

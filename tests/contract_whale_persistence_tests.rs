@@ -19,8 +19,10 @@ use btc_toxic_flow_monitor_rs::{
         persistence::flush_contract_flow_buckets_nonblocking,
         persistence::persist_contract_whale_signals_nonblocking,
         types::{
-            ContractFlowBucket, ContractWhaleDirection, ContractWhaleMarketType,
-            ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleSourceRole,
+            ContractExchange, ContractFlowBucket, ContractFundingSnapshot,
+            ContractLiquidationBucket, ContractOiSnapshot, ContractWhaleDirection,
+            ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleSeverity,
+            ContractWhaleSignalType, ContractWhaleSourceRole,
         },
     },
     storage::{
@@ -492,6 +494,90 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         },
     ];
     store.upsert_contract_flow_buckets(&buckets).unwrap();
+    store
+        .upsert_contract_liquidation_buckets(&[
+            ContractLiquidationBucket {
+                ts_bucket: now - 20 * 24 * 60 * 60 * 1000,
+                exchange: "binance".to_string(),
+                symbol: "BTC".to_string(),
+                long_liq_btc: 10.0,
+                short_liq_btc: 1.0,
+                liq_notional_usd: 700_000.0,
+                order_count: 5,
+                max_single_liq_btc: 5.0,
+                vwap: Some(70_000.0),
+            },
+            ContractLiquidationBucket {
+                ts_bucket: now - 1_000,
+                exchange: "binance".to_string(),
+                symbol: "BTC".to_string(),
+                long_liq_btc: 3.0,
+                short_liq_btc: 0.5,
+                liq_notional_usd: 210_000.0,
+                order_count: 2,
+                max_single_liq_btc: 2.0,
+                vwap: Some(70_000.0),
+            },
+        ])
+        .unwrap();
+    store
+        .upsert_contract_oi_snapshots(&[
+            ContractOiSnapshot {
+                ts: now - 20 * 24 * 60 * 60 * 1000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100.0,
+                oi_notional_usd: Some(7_000_000.0),
+            },
+            ContractOiSnapshot {
+                ts: now - 1_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 150.0,
+                oi_notional_usd: Some(10_500_000.0),
+            },
+        ])
+        .unwrap();
+    store
+        .upsert_contract_funding_snapshots(&[
+            ContractFundingSnapshot {
+                ts: now - 20 * 24 * 60 * 60 * 1000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                funding_rate: 0.01,
+            },
+            ContractFundingSnapshot {
+                ts: now - 1_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                funding_rate: 0.02,
+            },
+        ])
+        .unwrap();
+    store
+        .upsert_contract_whale_percentiles(&[
+            ContractWhalePercentileThreshold {
+                computed_at: now - 20 * 24 * 60 * 60 * 1000,
+                symbol: "BTC".to_string(),
+                exchange: "binance".to_string(),
+                window_sec: 15,
+                p99_0_btc: 100.0,
+                p99_5_btc: 120.0,
+                p99_9_btc: 140.0,
+                sample_count: 100,
+            },
+            ContractWhalePercentileThreshold {
+                computed_at: now - 1_000,
+                symbol: "BTC".to_string(),
+                exchange: "binance".to_string(),
+                window_sec: 15,
+                p99_0_btc: 150.0,
+                p99_5_btc: 170.0,
+                p99_9_btc: 190.0,
+                sample_count: 120,
+            },
+        ])
+        .unwrap();
 
     let mut old_s_signal = sample_s_signal();
     old_s_signal.id = "contract-whale:BTC:15:old:s".to_string();
@@ -530,6 +616,10 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
 
     assert_eq!(result.flow_1s_deleted, 1);
     assert_eq!(result.signal_deleted, 1);
+    assert_eq!(result.liquidation_deleted, 1);
+    assert_eq!(result.oi_deleted, 1);
+    assert_eq!(result.funding_deleted, 1);
+    assert_eq!(result.percentile_deleted, 1);
     assert_eq!(
         store
             .list_recent_contract_flow_buckets("BTC", 10)
@@ -537,6 +627,38 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             .len(),
         1
     );
+    assert_eq!(
+        store
+            .list_contract_liquidation_buckets_between("BTC", 0, now + 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_contract_oi_snapshots_between("BTC", 0, now + 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_contract_funding_snapshots_between("BTC", 0, now + 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    let percentile_count: i64 = store
+        .with_connection(|conn| {
+            let count = conn.query_row(
+                "SELECT COUNT(*) FROM contract_whale_percentile_thresholds",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+        .unwrap();
+    assert_eq!(percentile_count, 1);
     let remaining = store
         .query_contract_whale_signals(&ContractWhaleSignalQuery {
             symbol: Some("BTC".to_string()),

@@ -8,7 +8,10 @@ use crate::{
 };
 
 use super::{
-    snapshots_repo::SnapshotsRepo, sqlite::SqliteStore, venue_health_repo::VenueHealthRepo,
+    runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
+    snapshots_repo::SnapshotsRepo,
+    sqlite::SqliteStore,
+    venue_health_repo::VenueHealthRepo,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,6 +32,8 @@ pub struct SnapshotService {
     toxic_service: ToxicService,
     connector_manager: ConnectorManager,
     persist_interval_ms: u64,
+    retention_policy: RuntimeRetentionPolicy,
+    retention_interval_ms: u64,
     latest_state: Arc<RwLock<StorageState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -57,6 +62,8 @@ impl SnapshotService {
             toxic_service,
             connector_manager,
             persist_interval_ms,
+            retention_policy: RuntimeRetentionPolicy::default(),
+            retention_interval_ms: 60 * 60 * 1000,
             latest_state: Arc::new(RwLock::new(StorageState {
                 enabled,
                 status: status.to_string(),
@@ -77,9 +84,17 @@ impl SnapshotService {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(
                 service.persist_interval_ms.max(100),
             ));
+            let mut last_retention_run_ts = 0_i64;
             loop {
                 interval.tick().await;
-                service.persist_once(now_ms());
+                let now_ts = now_ms();
+                service.persist_once(now_ts);
+                if now_ts.saturating_sub(last_retention_run_ts)
+                    >= service.retention_interval_ms.max(60_000) as i64
+                {
+                    service.prune_retention_once(now_ts).await;
+                    last_retention_run_ts = now_ts;
+                }
             }
         });
         *self.task.write() = Some(handle);
@@ -127,5 +142,35 @@ impl SnapshotService {
 
         *self.latest_state.write() = state.clone();
         state
+    }
+
+    async fn prune_retention_once(&self, now_ts: i64) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let policy = self.retention_policy;
+        let started_at = std::time::Instant::now();
+        match tokio::task::spawn_blocking(move || store.prune_runtime_retention(now_ts, &policy))
+            .await
+        {
+            Ok(Ok(result)) => {
+                tracing::info!(
+                    deleted_toxic_events = result.toxic_events_deleted,
+                    deleted_toxic_snapshots = result.toxic_snapshots_deleted,
+                    deleted_flow_snapshots = result.flow_snapshots_deleted,
+                    deleted_venue_health_snapshots = result.venue_health_snapshots_deleted,
+                    deleted_vpin_buckets = result.vpin_buckets_deleted,
+                    deleted_replay_runs = result.replay_runs_deleted,
+                    duration_ms = started_at.elapsed().as_millis() as u64,
+                    "runtime retention prune completed"
+                );
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "runtime retention prune failed");
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "runtime retention prune task failed");
+            }
+        }
     }
 }
