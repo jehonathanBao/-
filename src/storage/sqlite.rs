@@ -8,7 +8,7 @@ use anyhow::Context;
 use rusqlite::Connection;
 
 use super::migrations::MIGRATIONS;
-use crate::spot_whale_monitor::types::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
+use crate::storage::spot_whale_repo::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
