@@ -678,6 +678,80 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
 }
 
 #[test]
+fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tables() {
+    let store = temp_store("contract-whale-retention-missing-column");
+    let now = 1_700_000_000_000;
+    store
+        .upsert_contract_flow_buckets(&[ContractFlowBucket {
+            ts_bucket: now - 20 * 24 * 60 * 60 * 1000,
+            exchange: "binance".to_string(),
+            symbol: "BTC".to_string(),
+            market_type: ContractWhaleMarketType::Perp,
+            source_role: ContractWhaleSourceRole::Primary,
+            product_id: None,
+            buy_volume_btc: 1.0,
+            sell_volume_btc: 0.0,
+            buy_notional_usd: 70_000.0,
+            sell_notional_usd: 0.0,
+            trade_count: 1,
+            max_single_trade_btc: 1.0,
+            vwap: Some(70_000.0),
+        }])
+        .unwrap();
+    store
+        .with_connection(|conn| {
+            conn.execute_batch(
+                r#"
+                DROP TABLE contract_oi_snapshots;
+                CREATE TABLE contract_oi_snapshots (
+                  exchange TEXT NOT NULL,
+                  symbol TEXT NOT NULL,
+                  oi_btc REAL NOT NULL,
+                  oi_notional_usd REAL,
+                  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+                );
+                "#,
+            )?;
+            Ok(())
+        })
+        .expect("replace contract_oi_snapshots");
+
+    let mut old_weak_signal = sample_s_signal();
+    old_weak_signal.id = "contract-whale:BTC:15:old:weak:missing-column".to_string();
+    old_weak_signal.ts = now - 380 * 24 * 60 * 60 * 1000;
+    old_weak_signal.net_volume_btc = 499.0;
+    old_weak_signal.severity = ContractWhaleSeverity::Medium;
+    store
+        .upsert_contract_whale_signal(&old_weak_signal)
+        .unwrap();
+
+    let result = store
+        .prune_contract_whale_retention(
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 365 * 24 * 60 * 60 * 1000,
+        )
+        .expect("prune contract whale retention");
+
+    assert_eq!(result.flow_1s_deleted, 1);
+    assert_eq!(result.signal_deleted, 1);
+    assert!(result
+        .table_results
+        .iter()
+        .any(|entry| entry.table == "contract_oi_snapshots"
+            && entry.status.as_str() == "skipped"
+            && entry.reason.as_deref() == Some("time_column_missing")));
+
+    let remaining = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert!(remaining.is_empty());
+}
+
+#[test]
 fn contract_flow_history_builds_dynamic_average_and_percentile_thresholds() {
     let store = temp_store("contract-whale-percentiles");
     let base_ts = 1_700_000_000_000;

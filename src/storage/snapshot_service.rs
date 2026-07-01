@@ -11,6 +11,7 @@ use super::{
     runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
     snapshots_repo::SnapshotsRepo,
     sqlite::SqliteStore,
+    storage_health::{RetentionRunHealth, StorageHealthTracker},
     venue_health_repo::VenueHealthRepo,
 };
 
@@ -34,6 +35,7 @@ pub struct SnapshotService {
     persist_interval_ms: u64,
     retention_policy: RuntimeRetentionPolicy,
     retention_interval_ms: u64,
+    storage_health: StorageHealthTracker,
     latest_state: Arc<RwLock<StorageState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -47,6 +49,7 @@ impl SnapshotService {
         flow_service: FlowWindowService,
         toxic_service: ToxicService,
         connector_manager: ConnectorManager,
+        storage_health: StorageHealthTracker,
     ) -> Self {
         let status = if enabled && store.is_some() {
             "ok"
@@ -64,6 +67,7 @@ impl SnapshotService {
             persist_interval_ms,
             retention_policy: RuntimeRetentionPolicy::default(),
             retention_interval_ms: 60 * 60 * 1000,
+            storage_health,
             latest_state: Arc::new(RwLock::new(StorageState {
                 enabled,
                 status: status.to_string(),
@@ -125,6 +129,16 @@ impl SnapshotService {
         let toxic_state = self.toxic_service.get_state();
         let venue_health = self.connector_manager.get_venue_health();
         let mut state = self.get_state();
+        let storage_health = self.storage_health.refresh_if_due(false);
+        if storage_health.degraded_mode_active {
+            state.status = "degraded".to_string();
+            state.last_error = Some(format!(
+                "storage_guard_degraded_mode disabled_writes={}",
+                storage_health.degraded_writes.join(",")
+            ));
+            *self.latest_state.write() = state.clone();
+            return state;
+        }
 
         match store
             .insert_flow_snapshot(&flow_state)
@@ -151,11 +165,46 @@ impl SnapshotService {
             return;
         };
         let policy = self.retention_policy;
+        let storage_health = self.storage_health.clone();
         let started_at = std::time::Instant::now();
         match tokio::task::spawn_blocking(move || store.prune_runtime_retention(now_ts, &policy))
             .await
         {
             Ok(Ok(result)) => {
+                for table_result in &result.table_results {
+                    match table_result.status {
+                        crate::storage::storage_health::RetentionTableStatus::Ok => tracing::info!(
+                            table = table_result.table.as_str(),
+                            time_column = table_result.time_column.as_str(),
+                            status = table_result.status.as_str(),
+                            deleted = table_result.deleted_rows,
+                            duration_ms = table_result.duration_ms,
+                            "runtime_retention table result"
+                        ),
+                        crate::storage::storage_health::RetentionTableStatus::Skipped => {
+                            tracing::warn!(
+                                table = table_result.table.as_str(),
+                                time_column = table_result.time_column.as_str(),
+                                status = table_result.status.as_str(),
+                                reason = table_result.reason.as_deref().unwrap_or("unknown"),
+                                duration_ms = table_result.duration_ms,
+                                "runtime_retention table skipped"
+                            )
+                        }
+                        crate::storage::storage_health::RetentionTableStatus::Error => {
+                            tracing::warn!(
+                                table = table_result.table.as_str(),
+                                time_column = table_result.time_column.as_str(),
+                                status = table_result.status.as_str(),
+                                error_kind =
+                                    table_result.error_kind.as_deref().unwrap_or("unknown"),
+                                error = table_result.error.as_deref().unwrap_or("unknown"),
+                                duration_ms = table_result.duration_ms,
+                                "runtime_retention table failed"
+                            )
+                        }
+                    }
+                }
                 tracing::info!(
                     deleted_toxic_events = result.toxic_events_deleted,
                     deleted_toxic_snapshots = result.toxic_snapshots_deleted,
@@ -163,15 +212,86 @@ impl SnapshotService {
                     deleted_venue_health_snapshots = result.venue_health_snapshots_deleted,
                     deleted_vpin_buckets = result.vpin_buckets_deleted,
                     deleted_replay_runs = result.replay_runs_deleted,
+                    total_deleted_rows = result.total_deleted(),
+                    failed_tables = result
+                        .table_results
+                        .iter()
+                        .filter(|entry| entry.status
+                            == crate::storage::storage_health::RetentionTableStatus::Error)
+                        .count(),
+                    skipped_tables = result
+                        .table_results
+                        .iter()
+                        .filter(|entry| entry.status
+                            == crate::storage::storage_health::RetentionTableStatus::Skipped)
+                        .count(),
                     duration_ms = started_at.elapsed().as_millis() as u64,
                     "runtime retention prune completed"
                 );
+                storage_health.record_runtime_retention(
+                    RetentionRunHealth {
+                        ok: result.table_results.iter().all(|entry| {
+                            entry.status
+                                != crate::storage::storage_health::RetentionTableStatus::Error
+                        }),
+                        total_deleted_rows: result.total_deleted(),
+                        failed_tables: result
+                            .table_results
+                            .iter()
+                            .filter(|entry| {
+                                entry.status
+                                    == crate::storage::storage_health::RetentionTableStatus::Error
+                            })
+                            .map(|entry| entry.table.clone())
+                            .collect(),
+                        skipped_tables: result
+                            .table_results
+                            .iter()
+                            .filter(|entry| {
+                                entry.status
+                                    == crate::storage::storage_health::RetentionTableStatus::Skipped
+                            })
+                            .map(|entry| entry.table.clone())
+                            .collect(),
+                        error: None,
+                        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                        finished_at_ms: Some(now_ts),
+                    },
+                    result.wal_checkpoint.clone(),
+                );
+                storage_health.refresh_now();
             }
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "runtime retention prune failed");
+                storage_health.record_runtime_retention(
+                    RetentionRunHealth {
+                        ok: false,
+                        total_deleted_rows: 0,
+                        failed_tables: Vec::new(),
+                        skipped_tables: Vec::new(),
+                        error: Some(error.to_string()),
+                        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                        finished_at_ms: Some(now_ts),
+                    },
+                    None,
+                );
+                storage_health.refresh_now();
             }
             Err(error) => {
                 tracing::warn!(error = %error, "runtime retention prune task failed");
+                storage_health.record_runtime_retention(
+                    RetentionRunHealth {
+                        ok: false,
+                        total_deleted_rows: 0,
+                        failed_tables: Vec::new(),
+                        skipped_tables: Vec::new(),
+                        error: Some(error.to_string()),
+                        duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                        finished_at_ms: Some(now_ts),
+                    },
+                    None,
+                );
+                storage_health.refresh_now();
             }
         }
     }

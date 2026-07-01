@@ -121,6 +121,11 @@ impl AppConfig {
         crate::runtime::score_config::set_score_runtime_config(
             crate::runtime::score_config::load_score_runtime_config_from_settings(&settings),
         );
+        crate::storage::storage_health::set_storage_health_guard_config(
+            crate::storage::storage_health::load_storage_health_guard_config_from_settings(
+                &settings,
+            ),
+        );
 
         let read_only = bool_setting(&settings, "READ_ONLY", "read_only", true);
         if !read_only {

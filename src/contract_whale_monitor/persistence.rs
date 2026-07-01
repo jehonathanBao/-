@@ -7,6 +7,7 @@ use crate::{
     normalizers::trade::now_ms,
     storage::{
         contract_whale_repo::{ContractWhaleRepo, ContractWhaleRetentionPruneResult},
+        storage_health::{RetentionRunHealth, RetentionTableStatus, StorageHealthTracker},
         SqliteStore,
     },
 };
@@ -316,6 +317,7 @@ pub fn spawn_contract_whale_retention_task(
     store: Option<SqliteStore>,
     flow_1s_days: i64,
     signals_days: i64,
+    storage_health: StorageHealthTracker,
 ) {
     const INITIAL_RETENTION_DELAY_SECS: u64 = 30;
     let Some(store) = store else {
@@ -340,6 +342,7 @@ pub fn spawn_contract_whale_retention_task(
             flow_1s_days,
             signals_days,
             now_ms(),
+            storage_health.clone(),
         )
         .await;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
@@ -351,6 +354,7 @@ pub fn spawn_contract_whale_retention_task(
                 flow_1s_days,
                 signals_days,
                 now_ms(),
+                storage_health.clone(),
             )
             .await;
         }
@@ -362,6 +366,7 @@ pub async fn prune_contract_whale_retention_nonblocking(
     flow_1s_days: i64,
     signals_days: i64,
     now_ms: i64,
+    storage_health: StorageHealthTracker,
 ) -> Option<ContractWhaleRetentionPruneResult> {
     let flow_cutoff = retention_cutoff_ms(now_ms, flow_1s_days);
     let signal_cutoff = retention_cutoff_ms(now_ms, signals_days);
@@ -372,6 +377,47 @@ pub async fn prune_contract_whale_retention_nonblocking(
     .await
     {
         Ok(Ok(result)) => {
+            for table_result in &result.table_results {
+                match table_result.status {
+                    RetentionTableStatus::Ok => tracing::info!(
+                        target: LOG_TARGET,
+                        table = table_result.table.as_str(),
+                        time_column = table_result.time_column.as_str(),
+                        status = table_result.status.as_str(),
+                        deleted = table_result.deleted_rows,
+                        duration_ms = table_result.duration_ms,
+                        "{} retention table result",
+                        LOG_PREFIX
+                    ),
+                    RetentionTableStatus::Skipped => tracing::warn!(
+                        target: LOG_TARGET,
+                        table = table_result.table.as_str(),
+                        time_column = table_result.time_column.as_str(),
+                        status = table_result.status.as_str(),
+                        reason = table_result.reason.as_deref().unwrap_or("unknown"),
+                        duration_ms = table_result.duration_ms,
+                        "{} retention table skipped",
+                        LOG_PREFIX
+                    ),
+                    RetentionTableStatus::Error => tracing::warn!(
+                        target: LOG_TARGET,
+                        table = table_result.table.as_str(),
+                        time_column = table_result.time_column.as_str(),
+                        status = table_result.status.as_str(),
+                        error_kind = table_result.error_kind.as_deref().unwrap_or("unknown"),
+                        error = table_result.error.as_deref().unwrap_or("unknown"),
+                        duration_ms = table_result.duration_ms,
+                        "{} retention table failed",
+                        LOG_PREFIX
+                    ),
+                }
+            }
+            let total_deleted_rows = result.flow_1s_deleted
+                + result.liquidation_deleted
+                + result.oi_deleted
+                + result.funding_deleted
+                + result.percentile_deleted
+                + result.signal_deleted;
             tracing::info!(
                 target: LOG_TARGET,
                 event = log_events::RETENTION_PRUNED,
@@ -383,12 +429,49 @@ pub async fn prune_contract_whale_retention_nonblocking(
                 funding_deleted = result.funding_deleted,
                 percentile_deleted = result.percentile_deleted,
                 signal_deleted = result.signal_deleted,
+                total_deleted_rows = total_deleted_rows,
+                failed_tables = result
+                    .table_results
+                    .iter()
+                    .filter(|entry| entry.status == RetentionTableStatus::Error)
+                    .count(),
+                skipped_tables = result
+                    .table_results
+                    .iter()
+                    .filter(|entry| entry.status == RetentionTableStatus::Skipped)
+                    .count(),
                 protected_s_count = result.protected_s_count,
                 protected_net_volume_count = result.protected_net_volume_count,
                 duration_ms = started_at.elapsed().as_millis() as u64,
                 "{} retention pruned",
                 LOG_PREFIX
             );
+            storage_health.record_contract_whale_retention(
+                RetentionRunHealth {
+                    ok: result
+                        .table_results
+                        .iter()
+                        .all(|entry| entry.status != RetentionTableStatus::Error),
+                    total_deleted_rows,
+                    failed_tables: result
+                        .table_results
+                        .iter()
+                        .filter(|entry| entry.status == RetentionTableStatus::Error)
+                        .map(|entry| entry.table.clone())
+                        .collect(),
+                    skipped_tables: result
+                        .table_results
+                        .iter()
+                        .filter(|entry| entry.status == RetentionTableStatus::Skipped)
+                        .map(|entry| entry.table.clone())
+                        .collect(),
+                    error: None,
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                    finished_at_ms: Some(now_ms),
+                },
+                result.wal_checkpoint.clone(),
+            );
+            storage_health.refresh_now();
             Some(result)
         }
         Ok(Err(error)) => {
@@ -399,6 +482,19 @@ pub async fn prune_contract_whale_retention_nonblocking(
                 "{} retention prune failed",
                 LOG_PREFIX
             );
+            storage_health.record_contract_whale_retention(
+                RetentionRunHealth {
+                    ok: false,
+                    total_deleted_rows: 0,
+                    failed_tables: Vec::new(),
+                    skipped_tables: Vec::new(),
+                    error: Some(error.to_string()),
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                    finished_at_ms: Some(now_ms),
+                },
+                None,
+            );
+            storage_health.refresh_now();
             None
         }
         Err(error) => {
@@ -409,6 +505,19 @@ pub async fn prune_contract_whale_retention_nonblocking(
                 "{} retention prune task failed",
                 LOG_PREFIX
             );
+            storage_health.record_contract_whale_retention(
+                RetentionRunHealth {
+                    ok: false,
+                    total_deleted_rows: 0,
+                    failed_tables: Vec::new(),
+                    skipped_tables: Vec::new(),
+                    error: Some(error.to_string()),
+                    duration_ms: Some(started_at.elapsed().as_millis() as u64),
+                    finished_at_ms: Some(now_ms),
+                },
+                None,
+            );
+            storage_health.refresh_now();
             None
         }
     }

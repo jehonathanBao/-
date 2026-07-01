@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -149,6 +149,36 @@ pub async fn storage_status(State(state): State<AppState>) -> Json<StorageStatus
         last_write_ts: storage.last_write_ts,
         last_error: storage.last_error,
     })
+}
+
+pub async fn storage_health(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.operator_token_configured() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "ok": false,
+                "reason": "operator_token_missing",
+                "message": "storage health requires operator token configuration"
+            })),
+        )
+            .into_response();
+    }
+    if !state.operator_token_authorized(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "ok": false,
+                "reason": "operator_token_required",
+                "message": "storage health requires Authorization: Bearer <token> or X-Operator-Token"
+            })),
+        )
+            .into_response();
+    }
+
+    Json(state.storage_health_snapshot()).into_response()
 }
 
 pub async fn replay_reports(State(state): State<AppState>) -> Json<serde_json::Value> {

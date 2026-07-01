@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/web/app.js", get(static_files::app_js))
         .route("/web/styles.css", get(static_files::styles_css))
         .route("/api/status", get(routes::status))
+        .route("/api/system/storage-health", get(routes::storage_health))
         .route(
             "/api/docs/usage-guide",
             get(usage_guide_routes::usage_guide_route),

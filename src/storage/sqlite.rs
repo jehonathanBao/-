@@ -8,6 +8,7 @@ use anyhow::Context;
 use rusqlite::Connection;
 
 use super::migrations::MIGRATIONS;
+use crate::spot_whale_monitor::types::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -40,6 +41,7 @@ impl SqliteStore {
                 .context("failed to run sqlite migration")?;
         }
         ensure_contract_whale_columns(&conn)?;
+        ensure_spot_whale_columns(&conn)?;
         Ok(())
     }
 
@@ -67,6 +69,30 @@ impl SqliteStore {
             .context("failed to enable sqlite WAL journal mode")?;
         Ok(conn)
     }
+}
+
+pub fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .with_context(|| format!("failed to inspect sqlite table {table}"))
+}
+
+pub fn column_exists(conn: &Connection, table: &str, column: &str) -> anyhow::Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&pragma)
+        .with_context(|| format!("failed to inspect sqlite schema for {table}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .with_context(|| format!("failed to query sqlite schema for {table}"))?;
+    let has_column = columns
+        .flatten()
+        .any(|existing| existing.eq_ignore_ascii_case(column));
+    Ok(has_column)
 }
 
 fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
@@ -112,22 +138,38 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
+    ensure_column(
+        conn,
+        "spot_whale_signals",
+        "is_permanent",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    conn.execute(
+        r#"
+        UPDATE spot_whale_signals
+        SET is_permanent = CASE
+          WHEN ABS(net_volume_base) > ?1 THEN 1
+          ELSE 0
+        END
+        WHERE is_permanent != CASE
+          WHEN ABS(net_volume_base) > ?1 THEN 1
+          ELSE 0
+        END
+        "#,
+        [SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE],
+    )
+    .context("failed to backfill spot_whale_signals.is_permanent")?;
+    Ok(())
+}
+
 fn ensure_column(
     conn: &Connection,
     table: &str,
     column: &str,
     definition: &str,
 ) -> anyhow::Result<()> {
-    let pragma = format!("PRAGMA table_info({table})");
-    let mut stmt = conn
-        .prepare(&pragma)
-        .with_context(|| format!("failed to inspect sqlite schema for {table}"))?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .with_context(|| format!("failed to query sqlite schema for {table}"))?;
-    let has_column = columns
-        .flatten()
-        .any(|existing| existing.eq_ignore_ascii_case(column));
+    let has_column = column_exists(conn, table, column)?;
     if has_column {
         return Ok(());
     }

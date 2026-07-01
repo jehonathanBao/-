@@ -8,7 +8,12 @@ use crate::contract_whale_monitor::types::{
     ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 
-use super::sqlite::SqliteStore;
+use super::{
+    sqlite::{column_exists, table_exists, SqliteStore},
+    storage_health::{
+        classify_retention_error, RetentionTableResult, RetentionTableStatus, WalCheckpointResult,
+    },
+};
 
 pub const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
 
@@ -113,7 +118,7 @@ pub trait ContractWhaleRepo {
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult>;
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContractWhaleRetentionPruneResult {
     pub flow_1s_deleted: usize,
     pub liquidation_deleted: usize,
@@ -125,6 +130,8 @@ pub struct ContractWhaleRetentionPruneResult {
     pub signal_cutoff_ts: i64,
     pub protected_s_count: usize,
     pub protected_net_volume_count: usize,
+    pub table_results: Vec<RetentionTableResult>,
+    pub wal_checkpoint: Option<WalCheckpointResult>,
 }
 
 impl ContractWhaleRepo for SqliteStore {
@@ -878,90 +885,199 @@ impl ContractWhaleRepo for SqliteStore {
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
         let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_connection(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let protected_s_count = tx.query_row(
-                "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity = ?2",
-                params![signal_cutoff_ts, s_severity.clone()],
-                |row| row.get::<_, i64>(0),
-            )? as usize;
-            let protected_net_volume_count = tx.query_row(
-                "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity != ?2 AND ABS(COALESCE(net_volume_btc, 0.0)) >= ?3",
-                params![
-                    signal_cutoff_ts,
-                    s_severity.clone(),
-                    CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                ],
-                |row| row.get::<_, i64>(0),
-            )? as usize;
-            let flow_1s_deleted = tx
-                .execute(
-                    "DELETE FROM contract_flow_1s WHERE ts_bucket < ?1",
-                    params![flow_cutoff_ts],
-                )
-                .context("failed to prune contract flow 1s buckets")?;
-            let liquidation_deleted = tx
-                .execute(
-                    "DELETE FROM contract_liquidation_1s WHERE ts_bucket < ?1",
-                    params![flow_cutoff_ts],
-                )
-                .context("failed to prune contract liquidation 1s buckets")?;
-            let oi_deleted = tx
-                .execute(
-                    "DELETE FROM contract_oi_snapshots WHERE ts < ?1",
-                    params![flow_cutoff_ts],
-                )
-                .context("failed to prune contract oi snapshots")?;
-            let funding_deleted = tx
-                .execute(
-                    "DELETE FROM contract_funding_snapshots WHERE ts < ?1",
-                    params![flow_cutoff_ts],
-                )
-                .context("failed to prune contract funding snapshots")?;
-            let percentile_deleted = tx
-                .execute(
-                    "DELETE FROM contract_whale_percentile_thresholds WHERE computed_at < ?1",
-                    params![flow_cutoff_ts],
-                )
-                .context("failed to prune contract whale percentile thresholds")?;
-            let signal_deleted = tx
-                .execute(
-                    r#"
-                    DELETE FROM contract_whale_signals
-                    WHERE ts < ?1
-                      AND severity != ?2
-                      AND ABS(COALESCE(net_volume_btc, 0.0)) < ?3
-                    "#,
-                    params![
-                        signal_cutoff_ts,
-                        s_severity,
-                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                    ],
-                )
-                .context("failed to prune contract whale signals")?;
-            tx.commit()?;
-            let deleted_any = flow_1s_deleted > 0
-                || liquidation_deleted > 0
-                || oi_deleted > 0
-                || funding_deleted > 0
-                || percentile_deleted > 0
-                || signal_deleted > 0;
-            if deleted_any {
-                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                    .context("failed to checkpoint sqlite wal after contract whale prune")?;
-            }
-            Ok(ContractWhaleRetentionPruneResult {
-                flow_1s_deleted,
-                liquidation_deleted,
-                oi_deleted,
-                funding_deleted,
-                percentile_deleted,
-                signal_deleted,
+            let mut result = ContractWhaleRetentionPruneResult {
                 flow_cutoff_ts,
                 signal_cutoff_ts,
-                protected_s_count,
-                protected_net_volume_count,
-            })
+                ..ContractWhaleRetentionPruneResult::default()
+            };
+            if table_exists(conn, "contract_whale_signals")?
+                && column_exists(conn, "contract_whale_signals", "ts")?
+                && column_exists(conn, "contract_whale_signals", "severity")?
+            {
+                result.protected_s_count = conn.query_row(
+                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity = ?2",
+                    params![signal_cutoff_ts, s_severity.clone()],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+            }
+            if table_exists(conn, "contract_whale_signals")?
+                && column_exists(conn, "contract_whale_signals", "ts")?
+                && column_exists(conn, "contract_whale_signals", "severity")?
+                && column_exists(conn, "contract_whale_signals", "net_volume_btc")?
+            {
+                result.protected_net_volume_count = conn.query_row(
+                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity != ?2 AND ABS(COALESCE(net_volume_btc, 0.0)) >= ?3",
+                    params![
+                        signal_cutoff_ts,
+                        s_severity.clone(),
+                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )? as usize;
+            }
+
+            result.flow_1s_deleted = prune_contract_table(
+                conn,
+                "contract_flow_1s",
+                "ts_bucket",
+                "DELETE FROM contract_flow_1s WHERE ts_bucket < ?1",
+                params![flow_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.liquidation_deleted = prune_contract_table(
+                conn,
+                "contract_liquidation_1s",
+                "ts_bucket",
+                "DELETE FROM contract_liquidation_1s WHERE ts_bucket < ?1",
+                params![flow_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.oi_deleted = prune_contract_table(
+                conn,
+                "contract_oi_snapshots",
+                "ts",
+                "DELETE FROM contract_oi_snapshots WHERE ts < ?1",
+                params![flow_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.funding_deleted = prune_contract_table(
+                conn,
+                "contract_funding_snapshots",
+                "ts",
+                "DELETE FROM contract_funding_snapshots WHERE ts < ?1",
+                params![flow_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.percentile_deleted = prune_contract_table(
+                conn,
+                "contract_whale_percentile_thresholds",
+                "computed_at",
+                "DELETE FROM contract_whale_percentile_thresholds WHERE computed_at < ?1",
+                params![flow_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.signal_deleted = prune_contract_table(
+                conn,
+                "contract_whale_signals",
+                "ts",
+                r#"
+                DELETE FROM contract_whale_signals
+                WHERE ts < ?1
+                  AND severity != ?2
+                  AND ABS(COALESCE(net_volume_btc, 0.0)) < ?3
+                "#,
+                params![
+                    signal_cutoff_ts,
+                    s_severity,
+                    CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                ],
+                &mut result.table_results,
+            )?;
+            if let Some(last_entry) = result.table_results.last_mut() {
+                if last_entry.status == RetentionTableStatus::Ok {
+                    last_entry.reason = Some(format!(
+                        "severity_protected_threshold_lt_{}",
+                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
+                    ));
+                }
+            }
+
+            let deleted_any = result.flow_1s_deleted > 0
+                || result.liquidation_deleted > 0
+                || result.oi_deleted > 0
+                || result.funding_deleted > 0
+                || result.percentile_deleted > 0
+                || result.signal_deleted > 0;
+            if deleted_any {
+                result.wal_checkpoint = Some(run_contract_wal_checkpoint(conn));
+            }
+            Ok(result)
         })
+    }
+}
+
+fn prune_contract_table(
+    conn: &rusqlite::Connection,
+    table: &str,
+    time_column: &str,
+    sql: &str,
+    sql_params: impl rusqlite::Params,
+    table_results: &mut Vec<RetentionTableResult>,
+) -> anyhow::Result<usize> {
+    let started_at = std::time::Instant::now();
+    if !table_exists(conn, table)? {
+        table_results.push(RetentionTableResult {
+            table: table.to_string(),
+            time_column: time_column.to_string(),
+            status: RetentionTableStatus::Skipped,
+            deleted_rows: 0,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            reason: Some("table_missing".to_string()),
+            error: None,
+            error_kind: None,
+        });
+        return Ok(0);
+    }
+    if !column_exists(conn, table, time_column)? {
+        table_results.push(RetentionTableResult {
+            table: table.to_string(),
+            time_column: time_column.to_string(),
+            status: RetentionTableStatus::Skipped,
+            deleted_rows: 0,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            reason: Some("time_column_missing".to_string()),
+            error: None,
+            error_kind: None,
+        });
+        return Ok(0);
+    }
+
+    match conn.execute(sql, sql_params) {
+        Ok(deleted_rows) => {
+            table_results.push(RetentionTableResult {
+                table: table.to_string(),
+                time_column: time_column.to_string(),
+                status: RetentionTableStatus::Ok,
+                deleted_rows,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                reason: None,
+                error: None,
+                error_kind: None,
+            });
+            Ok(deleted_rows)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            table_results.push(RetentionTableResult {
+                table: table.to_string(),
+                time_column: time_column.to_string(),
+                status: RetentionTableStatus::Error,
+                deleted_rows: 0,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                reason: None,
+                error_kind: Some(classify_retention_error(&message)),
+                error: Some(message),
+            });
+            Ok(0)
+        }
+    }
+}
+
+fn run_contract_wal_checkpoint(conn: &rusqlite::Connection) -> WalCheckpointResult {
+    let started_at = std::time::Instant::now();
+    match conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+        Ok(()) => WalCheckpointResult {
+            attempted: true,
+            ok: true,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            error: None,
+        },
+        Err(error) => WalCheckpointResult {
+            attempted: true,
+            ok: false,
+            duration_ms: started_at.elapsed().as_millis() as u64,
+            error: Some(format!("{error:#}")),
+        },
     }
 }
 

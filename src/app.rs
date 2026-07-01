@@ -3,6 +3,7 @@ use std::sync::{
     Arc,
 };
 
+use axum::http::{header, HeaderMap};
 use parking_lot::RwLock;
 
 use crate::{
@@ -45,7 +46,11 @@ use crate::{
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
     storage::{
-        main_force_events_repo::MainForceEventsRepo, snapshot_service::StorageState,
+        main_force_events_repo::MainForceEventsRepo,
+        snapshot_service::StorageState,
+        storage_health::{
+            storage_health_guard_config, StorageHealthSnapshot, StorageHealthTracker,
+        },
         SnapshotService, SqliteStore,
     },
     toxicity::{
@@ -98,6 +103,8 @@ struct AppStateInner {
     orderbook_wall_lifecycle_service: OrderbookWallLifecycleService,
     alert_service: AlertService,
     snapshot_service: SnapshotService,
+    storage_health: StorageHealthTracker,
+    operator_api_token: Option<String>,
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
     final_events_v2_cache:
@@ -208,6 +215,12 @@ impl AppState {
             OrderbookWallLifecycleService::new(bus.clone(), config.symbol.clone());
         let alert_service = AlertService::new(Arc::new(toxic_service.clone()), &config);
         let connector_manager = ConnectorManager::new(bus.clone(), &config);
+        let storage_health = StorageHealthTracker::new(
+            config
+                .sqlite_enabled
+                .then_some(std::path::PathBuf::from(config.sqlite_path.clone())),
+            storage_health_guard_config(),
+        );
         let snapshot_service = SnapshotService::new(
             config.sqlite_enabled,
             config.sqlite_path.clone(),
@@ -216,6 +229,7 @@ impl AppState {
             flow_service.clone(),
             toxic_service.clone(),
             connector_manager.clone(),
+            storage_health.clone(),
         );
         let contract_whale_store = shared_store_for_state.or_else(|| toxic_service.store());
         let signal_history_service = ToxicSignalHistoryService::default();
@@ -320,7 +334,13 @@ impl AppState {
             contract_whale_store.clone(),
             cwm_retention.flow_1s_days,
             cwm_retention.signals_days,
+            storage_health.clone(),
         );
+        let _ = storage_health.refresh_now();
+        let operator_api_token = std::env::var("OPERATOR_TOKEN")
+            .or_else(|_| std::env::var("OPERATOR_API_TOKEN"))
+            .ok()
+            .filter(|value| !value.trim().is_empty());
 
         Self {
             inner: Arc::new(AppStateInner {
@@ -343,6 +363,8 @@ impl AppState {
                 orderbook_wall_lifecycle_service,
                 alert_service,
                 snapshot_service,
+                storage_health,
+                operator_api_token,
                 contract_whale_store,
                 contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
                     std::collections::BTreeMap::new(),
@@ -957,6 +979,32 @@ impl AppState {
 
     pub fn storage_state(&self) -> StorageState {
         self.inner.snapshot_service.get_state()
+    }
+
+    pub fn storage_health_snapshot(&self) -> StorageHealthSnapshot {
+        self.inner.storage_health.refresh_now()
+    }
+
+    pub fn operator_token_authorized(&self, headers: &HeaderMap) -> bool {
+        let Some(expected) = self.inner.operator_api_token.as_deref() else {
+            return false;
+        };
+        let header_token = headers
+            .get("x-operator-api-token")
+            .or_else(|| headers.get("x-operator-token"))
+            .and_then(|value| value.to_str().ok());
+        if header_token == Some(expected) {
+            return true;
+        }
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            == Some(expected)
+    }
+
+    pub fn operator_token_configured(&self) -> bool {
+        self.inner.operator_api_token.is_some()
     }
 
     pub fn signal_history_service(&self) -> ToxicSignalHistoryService {

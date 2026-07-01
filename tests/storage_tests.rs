@@ -1,10 +1,11 @@
 mod support;
-use support::test_http_get;
+use support::{test_http_client, test_http_get};
 
 use std::{
     collections::BTreeMap,
     fs,
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,13 +16,21 @@ use btc_toxic_flow_monitor_rs::{
         venues::{VenueConfig, VenueConfigs},
         AppConfig,
     },
+    connectors::manager::ConnectorManager,
+    market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
     storage::{
         runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
         snapshots_repo::SnapshotsRepo,
         sqlite::SqliteStore,
+        storage_health::{StorageHealthGuardConfig, StorageHealthTracker},
         toxic_events_repo::ToxicEventsRepo,
         venue_health_repo::VenueHealthRepo,
         vpin_repo::VpinRepo,
+        SnapshotService,
+    },
+    toxicity::{
+        liquidation_service::LiquidationService, markout_service::MarkoutService,
+        sweep_service::SweepService, toxic_service::ToxicService, vpin_service::VpinService,
     },
     types::{
         flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
@@ -149,6 +158,60 @@ async fn storage_status_api_reports_snapshot_state() {
     server.abort();
 }
 
+#[tokio::test]
+async fn storage_health_api_requires_token_and_reports_sizes() {
+    let _guard = operator_env_lock().lock().expect("operator env lock");
+    std::env::set_var("OPERATOR_TOKEN", "test-storage-token");
+
+    let sqlite_path = unique_path("api/storage-health.sqlite");
+    let state = AppState::new(test_config(
+        sqlite_path.to_str().expect("utf8 path").to_string(),
+    ));
+    state
+        .snapshot_service_for_tests()
+        .persist_once_for_tests(9_000);
+
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let unauthorized = client
+        .get(format!("http://{addr}/api/system/storage-health"))
+        .send()
+        .await
+        .expect("unauthorized response");
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let response = client
+        .get(format!("http://{addr}/api/system/storage-health"))
+        .bearer_auth("test-storage-token")
+        .send()
+        .await
+        .expect("storage health response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json");
+    assert_eq!(payload["dbPath"], sqlite_path.to_str().unwrap());
+    assert!(payload["dbSizeBytes"].as_u64().is_some());
+    assert!(payload["walSizeBytes"].as_u64().is_some());
+    assert!(payload["diskUsedPercent"].as_f64().is_some());
+    assert!(
+        payload["lastRuntimeRetention"].is_object() || payload["lastRuntimeRetention"].is_null()
+    );
+    assert!(
+        payload["lastContractWhaleRetention"].is_object()
+            || payload["lastContractWhaleRetention"].is_null()
+    );
+
+    server.abort();
+    std::env::remove_var("OPERATOR_TOKEN");
+}
+
 #[test]
 fn runtime_retention_prunes_snapshot_and_event_tables() {
     let store = open_store("runtime_retention");
@@ -270,6 +333,129 @@ fn runtime_retention_prunes_snapshot_and_event_tables() {
             Ok(())
         })
         .expect("verify remaining rows");
+}
+
+#[test]
+fn runtime_retention_skips_missing_table_and_keeps_other_tables() {
+    let store = open_store("runtime_retention_missing_table");
+    store.migrate().expect("migrate");
+    let now = 1_800_000_000_000_i64;
+    store
+        .insert_event(&sample_event(now - 40_000))
+        .expect("old toxic event");
+    store
+        .insert_toxic_snapshot(&sample_toxic_state(
+            now - 40_000,
+            &sample_event(now - 40_000),
+        ))
+        .expect("old toxic snapshot");
+    store
+        .with_connection(|conn| {
+            conn.execute_batch("DROP TABLE flow_snapshots;")?;
+            Ok(())
+        })
+        .expect("drop flow_snapshots");
+
+    let result = store
+        .prune_runtime_retention(
+            now,
+            &RuntimeRetentionPolicy {
+                toxic_events_retention_ms: 10_000,
+                toxic_snapshots_retention_ms: 10_000,
+                flow_snapshots_retention_ms: 10_000,
+                venue_health_retention_ms: 10_000,
+                vpin_buckets_retention_ms: 10_000,
+                replay_runs_retention_ms: 10_000,
+            },
+        )
+        .expect("prune runtime retention");
+
+    assert_eq!(result.toxic_events_deleted, 1);
+    assert_eq!(result.toxic_snapshots_deleted, 1);
+    assert_eq!(result.flow_snapshots_deleted, 0);
+    assert!(result
+        .table_results
+        .iter()
+        .any(|entry| entry.table == "flow_snapshots"
+            && entry.status.as_str() == "skipped"
+            && entry.reason.as_deref() == Some("table_missing")));
+}
+
+#[test]
+fn snapshot_service_enters_degraded_mode_when_disk_is_critical() {
+    let sqlite_path = unique_path("degraded/storage.sqlite");
+    let config = test_config(sqlite_path.to_str().expect("utf8 path").to_string());
+    let store = SqliteStore::open(sqlite_path.to_str().unwrap()).expect("open sqlite");
+    store.migrate().expect("migrate");
+    let bus = MarketDataBus::new(256);
+    let flow_service = FlowWindowService::new(bus.clone(), &config);
+    let markout_service = MarkoutService::new(bus.clone(), flow_service.clone(), &config);
+    let sweep_service = SweepService::new(flow_service.clone(), &config);
+    let vpin_service = VpinService::new(bus.clone(), &config, Some(store.clone()));
+    let liquidation_service = LiquidationService::new(
+        flow_service.clone(),
+        sweep_service.clone(),
+        vpin_service.clone(),
+        &config,
+    );
+    let toxic_service = ToxicService::new(
+        flow_service.clone(),
+        markout_service,
+        sweep_service,
+        vpin_service,
+        liquidation_service,
+        &config,
+    );
+    let connector_manager = ConnectorManager::new(bus, &config);
+    let snapshot_service = SnapshotService::new(
+        true,
+        sqlite_path.to_str().expect("utf8 path").to_string(),
+        1000,
+        Some(store.clone()),
+        flow_service,
+        toxic_service,
+        connector_manager,
+        StorageHealthTracker::new(
+            Some(sqlite_path.clone()),
+            StorageHealthGuardConfig {
+                enabled: true,
+                db_warn_gb: 20.0,
+                db_critical_gb: 40.0,
+                wal_warn_gb: 1.0,
+                wal_critical_gb: 3.0,
+                disk_warn_percent: 10.0,
+                disk_critical_percent: 0.0,
+                refresh_interval_ms: 0,
+                degraded_mode_enabled: true,
+            },
+        ),
+    );
+    let storage_state = snapshot_service.persist_once_for_tests(11_000);
+
+    assert_eq!(storage_state.status, "degraded");
+    assert!(storage_state
+        .last_error
+        .as_deref()
+        .is_some_and(|value| value.contains("storage_guard_degraded_mode")));
+
+    let store = SqliteStore::open(sqlite_path.to_str().unwrap()).expect("open sqlite");
+    store.migrate().expect("migrate");
+    store
+        .with_connection(|conn| {
+            let flow_snapshots: i64 =
+                conn.query_row("SELECT COUNT(*) FROM flow_snapshots", [], |row| row.get(0))?;
+            let toxic_snapshots: i64 =
+                conn.query_row("SELECT COUNT(*) FROM toxic_snapshots", [], |row| row.get(0))?;
+            let venue_health: i64 =
+                conn.query_row("SELECT COUNT(*) FROM venue_health_snapshots", [], |row| {
+                    row.get(0)
+                })?;
+            assert_eq!(flow_snapshots, 0);
+            assert_eq!(toxic_snapshots, 0);
+            assert_eq!(venue_health, 0);
+            Ok(())
+        })
+        .expect("verify skipped snapshot writes");
 }
 
 fn sample_event(ts: i64) -> ToxicEvent {
@@ -646,6 +832,11 @@ fn unique_path(suffix: &str) -> PathBuf {
         fs::create_dir_all(parent).expect("create temp dir");
     }
     path
+}
+
+fn operator_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn open_store(name: &str) -> SqliteStore {

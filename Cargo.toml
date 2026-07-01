@@ -29,6 +29,7 @@ url = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 base64 = "0.22"
+fs2 = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
