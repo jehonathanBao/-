@@ -35,6 +35,10 @@ describe("frontend production deployment", () => {
     expect(fs.existsSync(nginxConfigPath)).toBe(true);
     const nginxConfig = fs.readFileSync(nginxConfigPath, "utf8");
     expect(nginxConfig).toContain("location /api/");
+    expect(nginxConfig).toContain("location ^~ /api/system/");
+    expect(nginxConfig).toContain("location = /api/contract-whale/pipeline-debug");
+    expect(nginxConfig).toContain("location = /api/contract-whale/raw-flow-debug");
+    expect(nginxConfig).toContain("location = /api/contract-whale/latency-debug");
     expect(nginxConfig).toContain("location /ws/");
     expect(nginxConfig).toContain("try_files $uri $uri/ /index.html");
     expect(nginxConfig).toContain("X-Operator-Api-Token ${OPERATOR_TOKEN}");
@@ -58,6 +62,10 @@ describe("frontend production deployment", () => {
     expect(ingressTemplate).toContain("listen 5173;");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:8000");
     expect(ingressTemplate).toContain("location /api/");
+    expect(ingressTemplate).toContain("location ^~ /api/system/");
+    expect(ingressTemplate).toContain("location = /api/contract-whale/pipeline-debug");
+    expect(ingressTemplate).toContain("location = /api/contract-whale/raw-flow-debug");
+    expect(ingressTemplate).toContain("location = /api/contract-whale/latency-debug");
     expect(ingressTemplate).toContain("location /ws/");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
     expect(ingressTemplate).not.toContain("root /opt/toxic-order-monitor-rs/toxic-order-monitor/dist;");

@@ -5,6 +5,22 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
+  location ^~ /api/system/ {
+    return 404;
+  }
+
+  location = /api/contract-whale/pipeline-debug {
+    return 404;
+  }
+
+  location = /api/contract-whale/raw-flow-debug {
+    return 404;
+  }
+
+  location = /api/contract-whale/latency-debug {
+    return 404;
+  }
+
   location /api/ {
     proxy_pass http://backend:3000;
     proxy_http_version 1.1;
