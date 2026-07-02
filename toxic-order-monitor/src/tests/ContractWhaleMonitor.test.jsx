@@ -1314,8 +1314,8 @@ describe("ContractWhaleMonitor", () => {
           direction: "sell",
           severity: "medium",
           score: 62,
-          totalVolumeBtc: 377,
-          netVolumeBtc: -82,
+          totalVolumeBtc: 577,
+          netVolumeBtc: -182,
           totalNotionalUsd: 22_000_000,
           dominance: 0.61,
           triggerPriceUsd: 59_500,
@@ -1329,7 +1329,7 @@ describe("ContractWhaleMonitor", () => {
             status: "active",
             startTime: 1_700_000_020_000,
             lastUpdateTime: 1_700_000_020_000,
-            volumeAccumulated: 377,
+            volumeAccumulated: 577,
             updateCount: 1,
           },
           eventQuality: {
@@ -1356,7 +1356,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByTitle(/主力拉盘\/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示/).length).toBeGreaterThan(0);
   });
 
-  it("hides sub-$10M contract events and linked setups from the default desk view", async () => {
+  it("hides sub-500 BTC contract events and linked setups from the default desk view", async () => {
     fetchContractEvents.mockResolvedValueOnce({
       items: [
         {
@@ -1372,8 +1372,8 @@ describe("ContractWhaleMonitor", () => {
           direction: "buy",
           severity: "medium",
           score: 71,
-          totalVolumeBtc: 95,
-          netVolumeBtc: 55,
+          totalVolumeBtc: 450,
+          netVolumeBtc: 255,
           totalNotionalUsd: 6_000_000,
           dominance: 0.58,
           priceDeviationPct: 0.2,
@@ -1384,7 +1384,7 @@ describe("ContractWhaleMonitor", () => {
             status: "active",
             startTime: 1_700_000_000_000,
             lastUpdateTime: 1_700_000_000_000,
-            volumeAccumulated: 95,
+            volumeAccumulated: 450,
             updateCount: 1,
           },
           eventQuality: {
@@ -1409,8 +1409,8 @@ describe("ContractWhaleMonitor", () => {
           direction: "sell",
           severity: "high",
           score: 86,
-          totalVolumeBtc: 180,
-          netVolumeBtc: -110,
+          totalVolumeBtc: 620,
+          netVolumeBtc: -410,
           totalNotionalUsd: 11_000_000,
           dominance: 0.61,
           priceDeviationPct: 0.3,
@@ -1421,7 +1421,7 @@ describe("ContractWhaleMonitor", () => {
             status: "active",
             startTime: 1_700_000_010_000,
             lastUpdateTime: 1_700_000_010_000,
-            volumeAccumulated: 180,
+            volumeAccumulated: 620,
             updateCount: 1,
           },
           eventQuality: {
@@ -1532,7 +1532,7 @@ describe("ContractWhaleMonitor", () => {
 
     await screen.findByText("HISTORICAL EVENTS (24h stream)");
 
-    expect(screen.getAllByText(/当前过滤：名义金额 ≥ \$10M/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/当前过滤：窗口总流量 ≥ 500 BTC/).length).toBeGreaterThan(0);
     expect(screen.queryByTestId("contract-whale-row-cwm-event:BTC:aggressive_buy:low-notional")).not.toBeInTheDocument();
     expect(screen.getByTestId("contract-whale-row-cwm-event:BTC:aggressive_sell:high-notional")).toBeInTheDocument();
     expect(screen.queryByText("Low Notional Setup")).not.toBeInTheDocument();

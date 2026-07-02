@@ -17,6 +17,9 @@ use crate::{
     contract_whale_monitor::{
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
+        discord::{
+            contract_whale_min_display_total_volume_btc, meets_contract_whale_display_total_volume,
+        },
         event_lifecycle::apply_contract_whale_event_lifecycle,
         event_quality::decorate_contract_whale_event_quality,
         merge::merge_contract_whale_signals,
@@ -732,6 +735,24 @@ fn visibility_metadata(signal: &ContractWhaleSignal) -> (bool, Option<String>, O
             )
         };
         return (false, Some("bad_quality".to_string()), Some(detail));
+    }
+    if !meets_contract_whale_display_total_volume(&signal.symbol, signal.total_volume_btc) {
+        let unit = if signal.quantity_unit.trim().is_empty() {
+            signal.symbol.as_str()
+        } else {
+            signal.quantity_unit.as_str()
+        };
+        let detail = contract_whale_min_display_total_volume_btc(&signal.symbol).map(|threshold| {
+            format!(
+                "total volume {:.2} {unit} < display threshold {:.2} {unit}",
+                signal.total_volume_btc, threshold
+            )
+        });
+        return (
+            false,
+            Some("below_display_volume_threshold".to_string()),
+            detail,
+        );
     }
     (true, None, None)
 }

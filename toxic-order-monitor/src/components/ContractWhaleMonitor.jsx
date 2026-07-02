@@ -18,8 +18,7 @@ const LATEST_REFRESH_MS = 3_000;
 const CONTRACT_EVENTS_REFRESH_MS = 5_000;
 const FINAL_EVENTS_REFRESH_MS = 10_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
-const MIN_VISIBLE_NOTIONAL_USD = 10_000_000;
-const MIN_VISIBLE_NOTIONAL_LABEL = "$10M";
+const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
 const DEFAULT_FILTERS = {
   symbol: "BTC",
   severity: "all",
@@ -421,8 +420,9 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const hiddenContractEvents = filterContractItemsBySymbol(state.hiddenContractEvents, assetSymbol);
   const lifecycleItems = [...finalEvents.active, ...finalEvents.closed];
   const detailItems = dedupeSignalsById([...latestItems, ...contractEvents, ...lifecycleItems]);
-  const visibleContractEvents = contractEvents.filter(passesContractWhaleVisibleNotionalFilter);
-  const hiddenLowNotionalCount = Math.max(0, contractEvents.length - visibleContractEvents.length);
+  const displayFilterLabel = contractWhaleDisplayFilterLabel(assetSymbol);
+  const visibleContractEvents = contractEvents.filter((item) => passesContractWhaleVisibleDisplayFilter(item, assetSymbol));
+  const hiddenDisplayFilteredCount = Math.max(0, contractEvents.length - visibleContractEvents.length);
   const shouldApplyNotionalDisplayFilter = contractEvents.length > 0;
   const visibleSignalIds = buildVisibleSignalIdSet(visibleContractEvents);
   const displayIntelligence = shouldApplyNotionalDisplayFilter
@@ -552,7 +552,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         }}
       />
       <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
-        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；当前过滤：名义金额 ≥ {MIN_VISIBLE_NOTIONAL_LABEL}。低于阈值的事件仍保留在原始数据里。
+        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；当前过滤：{displayFilterLabel}。低于阈值的事件仍保留在原始数据里。
       </p>
       {state.error ? (
         <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
@@ -571,7 +571,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         <HistoricalEventStreamPanel
           contractEvents={contractEvents}
           visibleContractEvents={visibleContractEvents}
-          hiddenLowNotionalCount={hiddenLowNotionalCount}
+          hiddenDisplayFilteredCount={hiddenDisplayFilteredCount}
           debugCounts={state.contractEventDebugCounts}
           rawFlowDebug={state.rawFlowDebug}
           enabled={summary.enabled}
@@ -586,6 +586,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           contractEventsLatestLagSec={state.contractEventsLatestLagSec}
           contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
           contractEventsHasMore={state.contractEventsHasMore}
+          displayFilterLabel={displayFilterLabel}
           symbol={filters.symbol}
         />
 
@@ -1051,7 +1052,7 @@ function deriveEventFeedDiagnostics({
 function HistoricalEventStreamPanel({
   contractEvents,
   visibleContractEvents,
-  hiddenLowNotionalCount,
+  hiddenDisplayFilteredCount,
   debugCounts,
   rawFlowDebug,
   enabled,
@@ -1066,6 +1067,7 @@ function HistoricalEventStreamPanel({
   contractEventsLatestLagSec,
   contractEventsHistoryLagSec,
   contractEventsHasMore,
+  displayFilterLabel,
   symbol,
 }) {
   const historicalVolumeLabel = "窗口总流量 BTC";
@@ -1114,8 +1116,8 @@ function HistoricalEventStreamPanel({
         <div className="rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-3 py-3 text-xs leading-5 text-cyan-100">
           <p>先看事件流，再用下方分析面板解释市场状态；latest 只服务顶部实时状态，不会直接覆盖这里的历史事件。</p>
           <p className="mt-1 text-[11px] text-cyan-200/90">
-            当前过滤：名义金额 ≥ {MIN_VISIBLE_NOTIONAL_LABEL}。
-            {hiddenLowNotionalCount > 0 ? ` 本页额外隐藏 ${hiddenLowNotionalCount} 条低名义金额事件。` : " 低于阈值的事件不会进入默认事件流。"}
+            当前过滤：{displayFilterLabel}。
+            {hiddenDisplayFilteredCount > 0 ? ` 本页额外隐藏 ${hiddenDisplayFilteredCount} 条未达展示门槛事件。` : " 低于阈值的事件不会进入默认事件流。"}
           </p>
           {debugCounts && !debugCounts.error ? (
             <p className="mt-1 text-[11px] text-cyan-200/90">
@@ -1145,7 +1147,7 @@ function HistoricalEventStreamPanel({
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
         ) : visibleContractEvents.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">
-            当前历史事件已接入，但都低于 {MIN_VISIBLE_NOTIONAL_LABEL} 展示阈值。
+            当前历史事件已接入，但都低于 {displayFilterLabel} 展示阈值。
           </p>
         ) : (
           <div className="rounded-xl border border-slate-800 bg-slate-950/40">
@@ -3662,22 +3664,30 @@ function deriveDeskTradeIdeas(intelligence, summary) {
   }));
 }
 
-function passesContractWhaleVisibleNotionalFilter(item) {
-  return resolveContractWhaleNotionalUsd(item) >= MIN_VISIBLE_NOTIONAL_USD;
+function passesContractWhaleVisibleDisplayFilter(item, symbol) {
+  if (item?.isVisible === false) return false;
+  if (normalizeMainstreamSymbol(symbol) !== "BTC") return true;
+  return resolveContractWhaleVolumeBtc(item) >= BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC;
 }
 
-function resolveContractWhaleNotionalUsd(item) {
+function resolveContractWhaleVolumeBtc(item) {
   const rawValue =
-    item?.totalNotionalUsd ??
-    item?.notionalUsd ??
-    item?.notional_usd ??
-    item?.windowNotionalUsd ??
-    item?.window_notional_usd ??
-    item?.usdNotional ??
-    item?.usd_notional ??
+    item?.volumeBtc ??
+    item?.totalVolumeBtc ??
+    item?.volume_btc ??
+    item?.total_volume_btc ??
+    item?.windowVolumeBtc ??
+    item?.window_volume_btc ??
     0;
   const normalized = Number(rawValue);
   return Number.isFinite(normalized) ? normalized : 0;
+}
+
+function contractWhaleDisplayFilterLabel(symbol) {
+  if (normalizeMainstreamSymbol(symbol) === "BTC") {
+    return `窗口总流量 ≥ ${BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC} BTC`;
+  }
+  return "后端可见性过滤";
 }
 
 function buildVisibleSignalIdSet(items) {

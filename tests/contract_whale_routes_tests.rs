@@ -1047,10 +1047,10 @@ fn contract_whale_history_response_marks_active_and_closed_event_lifecycle() {
     let _guard = contract_whale_test_guard();
     let mut closed = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     closed.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
-    closed.total_volume_btc = 420.0;
-    closed.total_volume = 420.0;
-    closed.net_volume_btc = 380.0;
-    closed.net_volume = 380.0;
+    closed.total_volume_btc = 520.0;
+    closed.total_volume = 520.0;
+    closed.net_volume_btc = 460.0;
+    closed.net_volume = 460.0;
     let mut active = persisted_signal(1_700_000_180_000, ContractWhaleSeverity::Medium);
     active.id = "contract-whale:BTC:15:1700000180000:buy".to_string();
     active.total_volume_btc = 520.0;
@@ -1081,7 +1081,7 @@ fn contract_whale_history_response_marks_active_and_closed_event_lifecycle() {
 
     assert_eq!(active_item["eventLifecycle"]["status"], "active");
     assert_eq!(closed_item["eventLifecycle"]["status"], "closed");
-    assert_eq!(closed_item["eventLifecycle"]["volumeAccumulated"], 420.0);
+    assert_eq!(closed_item["eventLifecycle"]["volumeAccumulated"], 520.0);
     assert_eq!(closed_item["eventLifecycle"]["updateCount"], 1);
 }
 
@@ -1126,17 +1126,17 @@ fn contract_whale_history_response_suppresses_repeated_medium_updates_within_thi
     let _guard = contract_whale_test_guard();
     let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
-    first.total_volume_btc = 320.0;
-    first.total_volume = 320.0;
-    first.net_volume_btc = 260.0;
-    first.net_volume = 260.0;
+    first.total_volume_btc = 520.0;
+    first.total_volume = 520.0;
+    first.net_volume_btc = 420.0;
+    first.net_volume = 420.0;
 
     let mut second = persisted_signal(1_700_000_010_000, ContractWhaleSeverity::Medium);
     second.id = "contract-whale:BTC:15:1700000010000:buy".to_string();
-    second.total_volume_btc = 340.0;
-    second.total_volume = 340.0;
-    second.net_volume_btc = 280.0;
-    second.net_volume = 280.0;
+    second.total_volume_btc = 540.0;
+    second.total_volume = 540.0;
+    second.net_volume_btc = 440.0;
+    second.net_volume = 440.0;
 
     let response = build_contract_whale_history_response(
         vec![first, second],
@@ -1153,9 +1153,9 @@ fn contract_whale_history_response_suppresses_repeated_medium_updates_within_thi
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["eventLifecycle"]["status"], "active");
     assert_eq!(items[0]["eventLifecycle"]["updateCount"], 1);
-    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 340.0);
-    assert_eq!(items[0]["totalVolumeBtc"], 340.0);
-    assert_eq!(items[0]["netVolumeBtc"], 280.0);
+    assert_eq!(items[0]["eventLifecycle"]["volumeAccumulated"], 540.0);
+    assert_eq!(items[0]["totalVolumeBtc"], 540.0);
+    assert_eq!(items[0]["netVolumeBtc"], 440.0);
 }
 
 #[test]
@@ -1163,11 +1163,11 @@ fn contract_whale_history_response_scores_clean_event_quality() {
     let _guard = contract_whale_test_guard();
     let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
-    first.total_volume_btc = 420.0;
-    first.total_volume = 420.0;
-    first.net_volume_btc = 360.0;
-    first.net_volume = 360.0;
-    first.total_notional_usd = 28_000_000.0;
+    first.total_volume_btc = 520.0;
+    first.total_volume = 520.0;
+    first.net_volume_btc = 420.0;
+    first.net_volume = 420.0;
+    first.total_notional_usd = 36_400_000.0;
     first.price_move_pct = Some(0.22);
     first.oi_change_1m_btc = Some(80.0);
 
@@ -1287,11 +1287,11 @@ fn final_event_store_response_keeps_source_signal_as_read_only_projection_eviden
     let _guard = contract_whale_test_guard();
     let mut first = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     first.id = "contract-whale:BTC:15:1700000000000:buy".to_string();
-    first.total_volume_btc = 420.0;
-    first.total_volume = 420.0;
-    first.net_volume_btc = 360.0;
-    first.net_volume = 360.0;
-    first.total_notional_usd = 28_000_000.0;
+    first.total_volume_btc = 520.0;
+    first.total_volume = 520.0;
+    first.net_volume_btc = 420.0;
+    first.net_volume = 420.0;
+    first.total_notional_usd = 36_400_000.0;
     first.price_move_pct = Some(0.22);
     first.oi_change_1m_btc = Some(80.0);
 
@@ -1322,9 +1322,9 @@ fn final_event_store_response_keeps_source_signal_as_read_only_projection_eviden
 fn final_event_store_computes_cross_event_impact_normalization() {
     let mut low = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     low.id = "contract-whale:BTC:15:1700000000000:low".to_string();
-    low.total_volume_btc = 100.0;
-    low.net_volume_btc = 70.0;
-    low.total_notional_usd = 6_400_000.0;
+    low.total_volume_btc = 520.0;
+    low.net_volume_btc = 360.0;
+    low.total_notional_usd = 33_280_000.0;
 
     let mut mid = persisted_signal(1_700_000_600_000, ContractWhaleSeverity::Medium);
     mid.id = "contract-whale:BTC:15:1700000600000:mid".to_string();
@@ -1332,9 +1332,9 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     mid.event_lifecycle.event_id = "cwm-event:BTC:aggressive_buy:1700000600000".to_string();
     mid.event_lifecycle.start_time = 1_700_000_600_000;
     mid.event_lifecycle.last_update_time = 1_700_000_600_000;
-    mid.total_volume_btc = 200.0;
-    mid.net_volume_btc = 140.0;
-    mid.total_notional_usd = 12_800_000.0;
+    mid.total_volume_btc = 620.0;
+    mid.net_volume_btc = 430.0;
+    mid.total_notional_usd = 39_680_000.0;
 
     let mut high = persisted_signal(1_700_001_200_000, ContractWhaleSeverity::High);
     high.id = "contract-whale:BTC:15:1700001200000:high".to_string();
@@ -1342,9 +1342,9 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     high.event_lifecycle.event_id = "cwm-event:BTC:aggressive_buy:1700001200000".to_string();
     high.event_lifecycle.start_time = 1_700_001_200_000;
     high.event_lifecycle.last_update_time = 1_700_001_200_000;
-    high.total_volume_btc = 700.0;
-    high.net_volume_btc = 620.0;
-    high.total_notional_usd = 44_800_000.0;
+    high.total_volume_btc = 1_500.0;
+    high.net_volume_btc = 1_280.0;
+    high.total_notional_usd = 96_000_000.0;
 
     let response = build_contract_whale_history_response(
         vec![high, mid, low],
@@ -1361,9 +1361,9 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     let strongest = final_response
         .items
         .iter()
-        .find(|event| (event.raw_volume - 700.0).abs() < f64::EPSILON)
+        .find(|event| (event.raw_volume - 1_500.0).abs() < f64::EPSILON)
         .expect("highest-volume event should be present");
-    assert!(strongest.impact_score > 2.0);
+    assert!(strongest.impact_score > 1.0);
     assert!(strongest.z_score > 1.0);
     assert!(strongest.percentile >= 90.0);
     assert_eq!(strongest.normalized_strength, "EXTREME");
@@ -1614,6 +1614,33 @@ fn contract_whale_latest_response_filters_price_deviated_items() {
 }
 
 #[test]
+fn contract_whale_latest_response_hides_btc_signals_below_500_volume_display_threshold() {
+    let _guard = contract_whale_test_guard();
+    let mut hidden = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::High);
+    hidden.id = "contract-whale:BTC:15:hidden-below-500".to_string();
+    hidden.total_volume_btc = 499.0;
+    hidden.total_volume = 499.0;
+    hidden.net_volume_btc = 430.0;
+    hidden.net_volume = 430.0;
+    hidden.total_notional_usd = 34_930_000.0;
+    hidden.order_price_usd = Some(70_000.0);
+    hidden.current_market_price_usd = Some(70_000.0);
+
+    let response = build_contract_whale_items_response(
+        vec![hidden],
+        "BTC",
+        50,
+        true,
+        true,
+        BTreeMap::new(),
+        ContractWhaleTrend60s::default(),
+    );
+
+    assert!(response.items.is_empty());
+    assert_eq!(response.summary.signal_count, 0);
+}
+
+#[test]
 fn contract_whale_generated_response_marks_price_deviation_context() {
     let _guard = contract_whale_test_guard();
     let flow_state = FlowState {
@@ -1645,6 +1672,7 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
         window_sec: Some("15".to_string()),
         exchange: Some("binance".to_string()),
         net_direction: Some("abs500".to_string()),
+        min_notional_usd: None,
         from: Some("1700000000000".to_string()),
         to: Some("1700086400000".to_string()),
         limit: Some("999".to_string()),
@@ -1900,6 +1928,7 @@ fn empty_query() -> ContractWhaleQuery {
         discord_sent: None,
         window_sec: None,
         exchange: None,
+        min_notional_usd: None,
         from: None,
         to: None,
         offset: None,

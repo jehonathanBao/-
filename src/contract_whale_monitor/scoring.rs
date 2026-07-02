@@ -186,6 +186,7 @@ pub fn discord_gate(
     data_quality: u8,
     primary_source_override: bool,
     symbol: &str,
+    total_volume_btc: f64,
     impact_level: Option<&str>,
     config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
@@ -196,6 +197,7 @@ pub fn discord_gate(
         data_quality,
         primary_source_override,
         symbol,
+        total_volume_btc,
         impact_level,
         config,
     )

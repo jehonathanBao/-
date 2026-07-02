@@ -1,9 +1,8 @@
 use super::{
-    LOG_PREFIX, LOG_TARGET,
     classification::classify_contract_whale_signal_v2,
     config::{
-        ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig, ThresholdProfileResolution,
-        contract_whale_runtime_config,
+        contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
+        ThresholdProfileResolution,
     },
     log_events,
     scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
@@ -16,9 +15,10 @@ use super::{
         ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleThresholds,
         ContractWhaleWindowStats,
     },
+    LOG_PREFIX, LOG_TARGET,
 };
 use crate::normalization::market_impact::{
-    MarketImpactNormalization, normalize_market_impact_from_metrics,
+    normalize_market_impact_from_metrics, MarketImpactNormalization,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -136,6 +136,7 @@ pub fn inspect_contract_whale_signal_with_config(
         scoring_stats.data_quality,
         primary_source_override,
         &scoring_stats.symbol,
+        scoring_stats.total_volume_btc,
         Some(impact.impact_level.as_str()),
         config,
     );

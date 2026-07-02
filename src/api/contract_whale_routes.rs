@@ -27,6 +27,7 @@ use crate::{
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
+        discord::meets_contract_whale_display_total_volume,
         event_lifecycle::apply_contract_whale_event_lifecycle,
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
@@ -2851,6 +2852,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
     items = apply_contract_whale_event_lifecycle(items, now);
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    apply_contract_whale_display_volume_filter(&mut items);
     let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
@@ -2948,6 +2950,7 @@ pub fn build_contract_whale_history_response(
     items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    apply_contract_whale_display_volume_filter(&mut items);
     let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
@@ -3016,6 +3019,7 @@ pub fn build_contract_whale_items_response(
     items = apply_contract_whale_event_lifecycle(items, now);
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
+    apply_contract_whale_display_volume_filter(&mut items);
     let filtered_events = items.len();
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
@@ -3066,6 +3070,12 @@ fn decorate_signal_units(items: &mut [ContractWhaleSignal], fallback_symbol: &st
         signal.total_volume = signal.total_volume_btc;
         signal.net_volume = signal.net_volume_btc;
     }
+}
+
+fn apply_contract_whale_display_volume_filter(items: &mut Vec<ContractWhaleSignal>) {
+    items.retain(|signal| {
+        meets_contract_whale_display_total_volume(&signal.symbol, signal.total_volume_btc)
+    });
 }
 
 fn filter_latest_response_by_exchange(

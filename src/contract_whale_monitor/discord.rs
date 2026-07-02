@@ -4,6 +4,10 @@ use super::{
     types::{ContractWhaleSeverity, ContractWhaleSignal},
 };
 
+const BTC_MIN_PUSH_TOTAL_VOLUME_BTC: f64 = 500.0;
+const ETH_MIN_PUSH_TOTAL_VOLUME_BTC: f64 = 30_000.0;
+const BTC_MIN_DISPLAY_TOTAL_VOLUME_BTC: f64 = 500.0;
+
 pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> serde_json::Value {
     serde_json::json!({
         "symbol": signal.symbol,
@@ -35,6 +39,9 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
 }
 
 pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool {
+    if !meets_contract_whale_push_total_volume(&signal.symbol, signal.total_volume_btc) {
+        return false;
+    }
     if !classify_contract_whale_signal_semantic(signal).allows_discord() {
         return false;
     }
@@ -54,11 +61,43 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
         || impact_level_discord_eligible(signal, &contract_whale_runtime_config())
 }
 
+pub fn contract_whale_min_push_total_volume_btc(symbol: &str) -> Option<f64> {
+    if is_btc_contract_symbol(symbol) {
+        Some(BTC_MIN_PUSH_TOTAL_VOLUME_BTC)
+    } else if is_eth_contract_symbol(symbol) {
+        Some(ETH_MIN_PUSH_TOTAL_VOLUME_BTC)
+    } else {
+        None
+    }
+}
+
+pub fn contract_whale_min_display_total_volume_btc(symbol: &str) -> Option<f64> {
+    is_btc_contract_symbol(symbol).then_some(BTC_MIN_DISPLAY_TOTAL_VOLUME_BTC)
+}
+
+pub fn meets_contract_whale_push_total_volume(symbol: &str, total_volume_btc: f64) -> bool {
+    contract_whale_min_push_total_volume_btc(symbol)
+        .is_none_or(|threshold| total_volume_btc >= threshold)
+}
+
+pub fn meets_contract_whale_display_total_volume(symbol: &str, total_volume_btc: f64) -> bool {
+    contract_whale_min_display_total_volume_btc(symbol)
+        .is_none_or(|threshold| total_volume_btc >= threshold)
+}
+
 pub fn is_btc_contract_symbol(symbol: &str) -> bool {
+    matches!(normalized_contract_symbol(symbol).as_str(), "BTC" | "BTCUSDT" | "BTCPERP")
+}
+
+pub fn is_eth_contract_symbol(symbol: &str) -> bool {
+    matches!(normalized_contract_symbol(symbol).as_str(), "ETH" | "ETHUSDT" | "ETHPERP")
+}
+
+fn normalized_contract_symbol(symbol: &str) -> String {
     let normalized = symbol
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_uppercase();
-    matches!(normalized.as_str(), "BTC" | "BTCUSDT" | "BTCPERP")
+    normalized
 }

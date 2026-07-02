@@ -1,7 +1,7 @@
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     aggregator::{
-        RollingWindowStatsOptions, aggregate_1s_buckets, rolling_window_stats,
-        rolling_window_stats_with_config,
+        aggregate_1s_buckets, rolling_window_stats, rolling_window_stats_with_config,
+        RollingWindowStatsOptions,
     },
     classification::classify_contract_whale_signal_v2,
     collector_binance::handle_force_order_message,
@@ -410,13 +410,11 @@ fn classification_v2_only_marks_main_force_dump_when_price_follows_and_flow_conf
         signal.classification_v2.oi_context,
         ContractWhaleOiContextTag::NewShortBuild
     );
-    assert!(
-        signal
-            .classification_v2
-            .classification_reasons
-            .iter()
-            .any(|reason| reason.contains("price_follow_through"))
-    );
+    assert!(signal
+        .classification_v2
+        .classification_reasons
+        .iter()
+        .any(|reason| reason.contains("price_follow_through")));
 }
 
 #[test]
@@ -918,6 +916,47 @@ fn detector_triggers_5s_btc_high_threshold_with_discord_gate() {
         signal.discord_reason.as_str(),
         "btc_high_gate" | "high_score_multi_exchange"
     ));
+}
+
+#[test]
+fn discord_push_requires_symbol_min_total_volume_thresholds() {
+    let now = 1_700_000_005_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 30_000.0, 0.01, "buy").unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 50.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats =
+        rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
+    let signal = detect_contract_whale_signal(&stats).expect("high signal");
+
+    let mut btc_below_gate = signal.clone();
+    btc_below_gate.symbol = "BTC".to_string();
+    btc_below_gate.base_asset = "BTC".to_string();
+    btc_below_gate.quantity_unit = "BTC".to_string();
+    btc_below_gate.total_volume_btc = 499.0;
+    btc_below_gate.total_volume = 499.0;
+    assert!(!should_push_contract_whale_discord(&btc_below_gate));
+
+    let mut btc_at_gate = btc_below_gate.clone();
+    btc_at_gate.total_volume_btc = 500.0;
+    btc_at_gate.total_volume = 500.0;
+    assert!(should_push_contract_whale_discord(&btc_at_gate));
+
+    let mut eth_below_gate = signal.clone();
+    eth_below_gate.symbol = "ETH".to_string();
+    eth_below_gate.base_asset = "ETH".to_string();
+    eth_below_gate.quantity_unit = "ETH".to_string();
+    eth_below_gate.discord_reason = "high_primary_source_extreme".to_string();
+    eth_below_gate.total_volume_btc = 29_999.0;
+    eth_below_gate.total_volume = 29_999.0;
+    assert!(!should_push_contract_whale_discord(&eth_below_gate));
+
+    let mut eth_at_gate = eth_below_gate.clone();
+    eth_at_gate.total_volume_btc = 30_000.0;
+    eth_at_gate.total_volume = 30_000.0;
+    assert!(should_push_contract_whale_discord(&eth_at_gate));
 }
 
 #[test]

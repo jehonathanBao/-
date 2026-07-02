@@ -2,7 +2,7 @@ use crate::signal_semantics::SignalSemanticTier;
 
 use super::{
     config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
-    discord::is_btc_contract_symbol,
+    discord::{is_btc_contract_symbol, meets_contract_whale_push_total_volume},
     types::{ContractWhaleSeverity, ContractWhaleSignal},
 };
 
@@ -31,9 +31,13 @@ pub fn discord_gate(
     data_quality: u8,
     primary_source_override: bool,
     symbol: &str,
+    total_volume_btc: f64,
     impact_level: Option<&str>,
     config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
+    if !meets_contract_whale_push_total_volume(symbol, total_volume_btc) {
+        return (false, "below_push_volume_threshold".to_string());
+    }
     if !semantic_tier_for_contract_whale_severity(severity).allows_discord() {
         if config
             .discord

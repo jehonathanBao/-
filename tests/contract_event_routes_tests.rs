@@ -95,11 +95,63 @@ async fn contract_events_can_filter_low_notional_without_deleting_hidden_metadat
     let payload: serde_json::Value = response.json().await.expect("contract events json");
     let items = payload["items"].as_array().expect("items array");
     assert_eq!(items.len(), 2);
-    assert!(items.iter().all(|item| item["notionalUsd"].as_f64().unwrap_or_default() >= 10_000_000.0));
-    assert!(items.iter().any(|item| item["hiddenReason"] == "price_deviation_gt_5pct"));
+    assert!(items
+        .iter()
+        .all(|item| item["notionalUsd"].as_f64().unwrap_or_default() >= 10_000_000.0));
+    assert!(items
+        .iter()
+        .any(|item| item["hiddenReason"] == "price_deviation_gt_5pct"));
     assert!(!items
         .iter()
         .any(|item| item["notionalUsd"].as_f64().unwrap_or_default() < 10_000_000.0));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_hide_btc_sub_500_volume_rows_with_explicit_reason() {
+    let config = test_config(temp_sqlite_path("contract-event-low-volume-hidden"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut low_volume = base_signal("low-volume", now - 5 * 60 * 1000);
+    low_volume.total_volume_btc = 499.0;
+    low_volume.net_volume_btc = 430.0;
+    low_volume.total_volume = 499.0;
+    low_volume.net_volume = 430.0;
+    low_volume.total_notional_usd = 34_930_000.0;
+    low_volume.order_price_usd = Some(70_000.0);
+    low_volume.current_market_price_usd = Some(70_000.0);
+    low_volume.price_move_pct = Some(0.12);
+    store.upsert_contract_whale_signal(&low_volume).unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let items = payload["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["isVisible"], false);
+    assert_eq!(items[0]["hiddenReason"], "below_display_volume_threshold");
+    assert!(items[0]["hiddenDetail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("500.00 BTC")));
 
     server.abort();
 }
