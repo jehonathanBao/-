@@ -218,14 +218,16 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
     let severity = severity_label(signal.severity);
     let direction = direction_label(signal.direction);
     let signal_type = signal_type_label(signal.signal_type);
+    let volume_unit = quantity_unit_label(signal);
     let exchange_breakdown = signal
         .exchanges
         .iter()
         .map(|item| {
             format!(
-                "{}: {:.0} BTC",
+                "{}: {:.0} {}",
                 item.exchange,
-                item.total_volume_btc.max(0.0)
+                item.total_volume_btc.max(0.0),
+                volume_unit
             )
         })
         .collect::<Vec<_>>()
@@ -254,10 +256,10 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
                 {"name": "Window", "value": format!("{}s", signal.window_sec), "inline": true},
                 {"name": "Risk Score", "value": format!("{}/100", signal.score), "inline": true},
                 {"name": "Data Quality", "value": format!("{}/100", signal.data_quality), "inline": true},
-                {"name": "Total Volume", "value": format!("{:.0} BTC", signal.total_volume_btc), "inline": true},
+                {"name": "Total Volume", "value": format!("{:.0} {}", signal.total_volume_btc, volume_unit), "inline": true},
                 {"name": "Notional", "value": format!("${:.0}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
                 {"name": "Price", "value": trigger_price_label(signal.total_volume_btc, signal.total_notional_usd), "inline": true},
-                {"name": "Net Direction", "value": format!("{:.0} BTC", signal.net_volume_btc), "inline": true},
+                {"name": "Net Direction", "value": format!("{:.0} {}", signal.net_volume_btc, volume_unit), "inline": true},
                 {"name": "Dominance", "value": format!("{:.1}%", signal.dominance * 100.0), "inline": true},
                 {"name": "Price Move", "value": signal.price_move_pct.map(|value| format!("{value:+.2}%")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
                 {"name": "Dynamic Multiple", "value": signal.dynamic_multiple.map(|value| format!("{value:.1}x")).unwrap_or_else(|| "n/a".to_string()), "inline": true},
@@ -281,6 +283,16 @@ fn trigger_price_label(total_volume_btc: f64, total_notional_usd: f64) -> String
         return "n/a".to_string();
     }
     format_price(total_notional_usd / total_volume_btc)
+}
+
+fn quantity_unit_label(signal: &ContractWhaleSignal) -> &str {
+    if !signal.quantity_unit.trim().is_empty() {
+        signal.quantity_unit.as_str()
+    } else if !signal.base_asset.trim().is_empty() {
+        signal.base_asset.as_str()
+    } else {
+        signal.symbol.as_str()
+    }
 }
 
 fn format_price(price: f64) -> String {
@@ -327,6 +339,7 @@ pub fn build_contract_whale_discord_log_preview(signal: &ContractWhaleSignal) ->
 }
 
 fn oi_label(signal: &ContractWhaleSignal) -> String {
+    let volume_unit = quantity_unit_label(signal);
     let bias = match signal.oi_bias.as_deref() {
         Some("rising") => "OI 上升，偏新开仓",
         Some("falling") => "OI 下降，偏平仓/去杠杆",
@@ -334,8 +347,8 @@ fn oi_label(signal: &ContractWhaleSignal) -> String {
         _ => "OI n/a",
     };
     match (signal.oi_change_5m_btc, signal.oi_change_pct) {
-        (Some(change), Some(pct)) => format!("{change:+.0} BTC / {pct:+.2}% - {bias}"),
-        (Some(change), None) => format!("{change:+.0} BTC - {bias}"),
+        (Some(change), Some(pct)) => format!("{change:+.0} {volume_unit} / {pct:+.2}% - {bias}"),
+        (Some(change), None) => format!("{change:+.0} {volume_unit} - {bias}"),
         _ => bias.to_string(),
     }
 }
@@ -354,10 +367,12 @@ fn funding_label(signal: &ContractWhaleSignal) -> String {
 }
 
 fn liquidation_label(signal: &ContractWhaleSignal) -> String {
+    let volume_unit = quantity_unit_label(signal);
     if signal.liquidation_suspected {
         format!(
-            "suspected {:.0} BTC / {:.1}%",
+            "suspected {:.0} {} / {:.1}%",
             signal.liquidation_long_btc + signal.liquidation_short_btc,
+            volume_unit,
             signal.liquidation_ratio.unwrap_or(0.0) * 100.0
         )
     } else {

@@ -2,6 +2,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     config::contract_whale_runtime_config,
+    discord::{contract_whale_gate_symbol, effective_push_total_volume},
     discord_gate::discord_gate,
     types::{ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal},
 };
@@ -128,19 +129,14 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 fn refresh_lifecycle_discord_gate(signal: &mut ContractWhaleSignal) {
     let warmup_collect_only = signal.discord_reason == "warmup_collect_only";
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
-    let total_volume_btc = if signal.event_lifecycle.volume_accumulated > f64::EPSILON {
-        signal.event_lifecycle.volume_accumulated
-    } else {
-        signal.total_volume_btc
-    };
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         signal.severity,
         signal.score,
         signal.multi_exchange_confirmed,
         signal.data_quality,
         primary_source_override,
-        &signal.symbol,
-        total_volume_btc,
+        contract_whale_gate_symbol(signal),
+        effective_push_total_volume(signal),
         signal.impact_level.as_deref(),
         &contract_whale_runtime_config(),
     );

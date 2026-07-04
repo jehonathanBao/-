@@ -40,8 +40,8 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
 
 pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool {
     if !meets_contract_whale_push_total_volume(
-        &signal.symbol,
-        lifecycle_or_window_total_volume_btc(signal),
+        contract_whale_gate_symbol(signal),
+        effective_push_total_volume(signal),
     ) {
         return false;
     }
@@ -64,8 +64,20 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
         || impact_level_discord_eligible(signal, &contract_whale_runtime_config())
 }
 
-fn lifecycle_or_window_total_volume_btc(signal: &ContractWhaleSignal) -> f64 {
-    if signal.event_lifecycle.volume_accumulated > f64::EPSILON {
+pub(crate) fn contract_whale_gate_symbol(signal: &ContractWhaleSignal) -> &str {
+    if !signal.quantity_unit.trim().is_empty() {
+        signal.quantity_unit.as_str()
+    } else if !signal.base_asset.trim().is_empty() {
+        signal.base_asset.as_str()
+    } else {
+        signal.symbol.as_str()
+    }
+}
+
+pub(crate) fn effective_push_total_volume(signal: &ContractWhaleSignal) -> f64 {
+    if is_btc_contract_symbol(contract_whale_gate_symbol(signal))
+        && signal.event_lifecycle.volume_accumulated > f64::EPSILON
+    {
         signal.event_lifecycle.volume_accumulated
     } else {
         signal.total_volume_btc

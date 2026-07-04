@@ -224,6 +224,29 @@ fn cwm_discord_gate_keeps_medium_c_impact_observe_only() {
 }
 
 #[test]
+fn cwm_discord_gate_does_not_use_lifecycle_volume_to_push_sub_30k_eth() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_medium_impact_signal("S", 80);
+    signal.id = "contract-whale:ETH:15:1700000015000:impact-s".to_string();
+    signal.symbol = "ETH".to_string();
+    signal.base_asset = "ETH".to_string();
+    signal.quantity_unit = "ETH".to_string();
+    signal.total_volume_btc = 6_855.0;
+    signal.total_volume = 6_855.0;
+    signal.net_volume_btc = -3_979.0;
+    signal.net_volume = -3_979.0;
+    signal.total_notional_usd = 12_000_000.0;
+    signal.order_price_usd = Some(1_750.0);
+    signal.current_market_price_usd = Some(1_750.0);
+    signal.event_lifecycle.volume_accumulated = 40_000.0;
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "low_score");
+}
+
+#[test]
 fn cwm_discord_gate_blocks_medium_impact_when_quality_or_warmup_blocks() {
     let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
@@ -310,11 +333,23 @@ fn cwm_discord_payload_uses_safe_final_fields_only() {
 
     let mut eth_signal = signal.clone();
     eth_signal.symbol = "ETH".to_string();
+    eth_signal.base_asset = "ETH".to_string();
+    eth_signal.quantity_unit = "ETH".to_string();
     eth_signal.id = "contract-whale:ETH:15:1700000015000:buy".to_string();
+    eth_signal.total_volume_btc = 6_855.0;
+    eth_signal.total_volume = 6_855.0;
+    eth_signal.net_volume_btc = -3_979.0;
+    eth_signal.net_volume = -3_979.0;
+    eth_signal.total_notional_usd = 12_000_000.0;
+    eth_signal.order_price_usd = Some(1_750.0);
+    eth_signal.current_market_price_usd = Some(1_750.0);
     let eth_payload = build_contract_whale_discord_payload(&eth_signal).to_string();
     let eth_preview = build_contract_whale_discord_log_preview(&eth_signal);
     assert!(eth_payload.contains("ETH 主力合约异动"));
     assert!(!eth_payload.contains("BTC 主力合约异动"));
+    assert!(eth_payload.contains("6855 ETH"));
+    assert!(eth_payload.contains("-3979 ETH"));
+    assert!(!eth_payload.contains("6855 BTC"));
     assert!(eth_preview.contains("ETH CWM S级"));
 }
 
