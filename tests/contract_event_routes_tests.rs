@@ -157,6 +157,67 @@ async fn contract_events_hide_btc_sub_500_volume_rows_with_explicit_reason() {
 }
 
 #[tokio::test]
+async fn final_events_v2_uses_lifecycle_accumulated_volume_for_btc_display_gate() {
+    let config = test_config(temp_sqlite_path("final-events-lifecycle-volume-gate"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+
+    let mut first = base_signal("lifecycle-first", now - 5 * 60 * 1000 - 15_000);
+    first.total_volume_btc = 260.0;
+    first.net_volume_btc = 220.0;
+    first.total_volume = 260.0;
+    first.net_volume = 220.0;
+    first.total_notional_usd = 18_200_000.0;
+    first.dominance = 220.0 / 260.0;
+    first.price_move_pct = Some(0.10);
+
+    let mut second = base_signal("lifecycle-second", now - 5 * 60 * 1000);
+    second.total_volume_btc = 260.0;
+    second.net_volume_btc = 210.0;
+    second.total_volume = 260.0;
+    second.net_volume = 210.0;
+    second.total_notional_usd = 18_200_000.0;
+    second.dominance = 210.0 / 260.0;
+    second.price_move_pct = Some(0.09);
+
+    store.upsert_contract_whale_signal(&first).unwrap();
+    store.upsert_contract_whale_signal(&second).unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("final events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("final events json");
+    let items = payload["active"]
+        .as_array()
+        .expect("active array")
+        .iter()
+        .chain(payload["closed"].as_array().expect("closed array").iter())
+        .collect::<Vec<_>>();
+    assert_eq!(items.len(), 1, "payload={payload}");
+    assert_eq!(items[0]["displayVolumeLabel"], "生命周期累计流量 BTC");
+    assert_eq!(items[0]["displayVolumeBtc"], 520.0);
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_events_expose_latency_metadata_fields() {
     let state = seeded_contract_event_state();
     let app = router(state);

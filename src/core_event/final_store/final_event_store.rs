@@ -237,6 +237,7 @@ pub fn build_volume_display_meta(
     source_signal_ids: &[String],
     context: VolumeDisplayContext,
 ) -> VolumeDisplayMeta {
+    let display_volume_btc = display_volume_for_context(signal, context);
     let (buy_volume_btc, sell_volume_btc) =
         derive_buy_sell_from_total_net(Some(signal.total_volume_btc), Some(signal.net_volume_btc));
     let source_exchanges = unique_source_exchanges(signal);
@@ -244,7 +245,7 @@ pub fn build_volume_display_meta(
     let merged_windows_sec = merged_windows_from_signal_ids(source_signal_ids, signal.window_sec);
     let merged_signal_count = source_signal_ids.len().max(1);
     VolumeDisplayMeta {
-        display_volume_btc: signal.total_volume_btc,
+        display_volume_btc,
         display_volume_label: context.display_label().to_string(),
         volume_semantics: context.semantics().to_string(),
         is_bidirectional_volume: true,
@@ -256,6 +257,16 @@ pub fn build_volume_display_meta(
         merged_windows_sec,
         buy_volume_btc,
         sell_volume_btc,
+    }
+}
+
+fn display_volume_for_context(signal: &ContractWhaleSignal, context: VolumeDisplayContext) -> f64 {
+    if context.is_lifecycle_accumulated()
+        && signal.event_lifecycle.volume_accumulated > f64::EPSILON
+    {
+        signal.event_lifecycle.volume_accumulated
+    } else {
+        signal.total_volume_btc
     }
 }
 

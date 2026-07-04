@@ -703,7 +703,8 @@ fn project_contract_event_candidates(
         .into_iter()
         .zip(final_events)
         .map(|(signal, event)| {
-            let (is_visible, hidden_reason, hidden_detail) = visibility_metadata(&signal);
+            let (is_visible, hidden_reason, hidden_detail) =
+                visibility_metadata(&signal, event.display_volume_btc);
             ContractEventCandidate {
                 event,
                 is_visible,
@@ -714,7 +715,10 @@ fn project_contract_event_candidates(
         .collect()
 }
 
-fn visibility_metadata(signal: &ContractWhaleSignal) -> (bool, Option<String>, Option<String>) {
+fn visibility_metadata(
+    signal: &ContractWhaleSignal,
+    display_volume_btc: f64,
+) -> (bool, Option<String>, Option<String>) {
     if signal.price_deviation_filtered {
         let detail = signal
             .price_deviation_pct
@@ -736,7 +740,7 @@ fn visibility_metadata(signal: &ContractWhaleSignal) -> (bool, Option<String>, O
         };
         return (false, Some("bad_quality".to_string()), Some(detail));
     }
-    if !meets_contract_whale_display_total_volume(&signal.symbol, signal.total_volume_btc) {
+    if !meets_contract_whale_display_total_volume(&signal.symbol, display_volume_btc) {
         let unit = if signal.quantity_unit.trim().is_empty() {
             signal.symbol.as_str()
         } else {
@@ -745,7 +749,7 @@ fn visibility_metadata(signal: &ContractWhaleSignal) -> (bool, Option<String>, O
         let detail = contract_whale_min_display_total_volume_btc(&signal.symbol).map(|threshold| {
             format!(
                 "total volume {:.2} {unit} < display threshold {:.2} {unit}",
-                signal.total_volume_btc, threshold
+                display_volume_btc, threshold
             )
         });
         return (

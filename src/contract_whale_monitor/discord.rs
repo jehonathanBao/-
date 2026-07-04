@@ -39,7 +39,10 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
 }
 
 pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool {
-    if !meets_contract_whale_push_total_volume(&signal.symbol, signal.total_volume_btc) {
+    if !meets_contract_whale_push_total_volume(
+        &signal.symbol,
+        lifecycle_or_window_total_volume_btc(signal),
+    ) {
         return false;
     }
     if !classify_contract_whale_signal_semantic(signal).allows_discord() {
@@ -59,6 +62,14 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
                     >= 2)
                 || signal.discord_reason == "high_primary_source_extreme"))
         || impact_level_discord_eligible(signal, &contract_whale_runtime_config())
+}
+
+fn lifecycle_or_window_total_volume_btc(signal: &ContractWhaleSignal) -> f64 {
+    if signal.event_lifecycle.volume_accumulated > f64::EPSILON {
+        signal.event_lifecycle.volume_accumulated
+    } else {
+        signal.total_volume_btc
+    }
 }
 
 pub fn contract_whale_min_push_total_volume_btc(symbol: &str) -> Option<f64> {
@@ -86,11 +97,17 @@ pub fn meets_contract_whale_display_total_volume(symbol: &str, total_volume_btc:
 }
 
 pub fn is_btc_contract_symbol(symbol: &str) -> bool {
-    matches!(normalized_contract_symbol(symbol).as_str(), "BTC" | "BTCUSDT" | "BTCPERP")
+    matches!(
+        normalized_contract_symbol(symbol).as_str(),
+        "BTC" | "BTCUSDT" | "BTCPERP"
+    )
 }
 
 pub fn is_eth_contract_symbol(symbol: &str) -> bool {
-    matches!(normalized_contract_symbol(symbol).as_str(), "ETH" | "ETHUSDT" | "ETHPERP")
+    matches!(
+        normalized_contract_symbol(symbol).as_str(),
+        "ETH" | "ETHUSDT" | "ETHPERP"
+    )
 }
 
 fn normalized_contract_symbol(symbol: &str) -> String {

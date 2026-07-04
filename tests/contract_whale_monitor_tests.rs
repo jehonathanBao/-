@@ -9,6 +9,7 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     config::ContractWhaleRuntimeConfig,
     detector::{detect_contract_whale_signal, detect_contract_whale_signal_with_config},
     discord::{build_contract_whale_discord_preview, should_push_contract_whale_discord},
+    event_lifecycle::apply_contract_whale_event_lifecycle,
     normalizer::{
         normalize_binance_agg_trade, normalize_binance_force_order,
         normalize_binance_force_order_json, normalize_binance_funding_rate_json,
@@ -938,6 +939,38 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
     btc_below_gate.total_volume_btc = 499.0;
     btc_below_gate.total_volume = 499.0;
     assert!(!should_push_contract_whale_discord(&btc_below_gate));
+
+    let mut btc_lifecycle_at_gate = btc_below_gate.clone();
+    btc_lifecycle_at_gate.event_lifecycle.volume_accumulated = 520.0;
+    assert!(should_push_contract_whale_discord(&btc_lifecycle_at_gate));
+
+    let mut first_lifecycle_update = btc_below_gate.clone();
+    first_lifecycle_update.id = "contract-whale:BTC:15:1700000000000:lifecycle-first".to_string();
+    first_lifecycle_update.ts = now;
+    first_lifecycle_update.total_volume_btc = 260.0;
+    first_lifecycle_update.total_volume = 260.0;
+    first_lifecycle_update.net_volume_btc = 230.0;
+    first_lifecycle_update.net_volume = 230.0;
+    first_lifecycle_update.discord_eligible = false;
+    first_lifecycle_update.discord_would_send = false;
+    first_lifecycle_update.discord_reason = "below_push_volume_threshold".to_string();
+
+    let mut second_lifecycle_update = first_lifecycle_update.clone();
+    second_lifecycle_update.id = "contract-whale:BTC:15:1700000015000:lifecycle-second".to_string();
+    second_lifecycle_update.ts = now + 15_000;
+
+    let lifecycle_events = apply_contract_whale_event_lifecycle(
+        vec![first_lifecycle_update, second_lifecycle_update],
+        now + 15_000,
+    );
+    assert_eq!(lifecycle_events.len(), 1);
+    assert_eq!(
+        lifecycle_events[0].event_lifecycle.volume_accumulated,
+        520.0
+    );
+    assert!(lifecycle_events[0].discord_eligible);
+    assert!(lifecycle_events[0].discord_would_send);
+    assert!(should_push_contract_whale_discord(&lifecycle_events[0]));
 
     let mut btc_at_gate = btc_below_gate.clone();
     btc_at_gate.total_volume_btc = 500.0;

@@ -1,6 +1,10 @@
 use sha2::{Digest, Sha256};
 
-use super::types::{ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal};
+use super::{
+    config::contract_whale_runtime_config,
+    discord_gate::discord_gate,
+    types::{ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal},
+};
 
 const EVENT_UPDATE_WINDOW_MS: i64 = 30_000;
 const EVENT_CLOSE_AFTER_MS: i64 = 120_000;
@@ -36,6 +40,7 @@ pub fn apply_contract_whale_event_lifecycle(
         } else {
             event.event_lifecycle.status = ContractWhaleEventStatus::Active;
         }
+        refresh_lifecycle_discord_gate(event);
     }
 
     events
@@ -76,10 +81,8 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 
     existing.event_lifecycle.last_update_time =
         existing.event_lifecycle.last_update_time.max(next.ts);
-    existing.event_lifecycle.volume_accumulated = existing
-        .event_lifecycle
-        .volume_accumulated
-        .max(next.total_volume_btc);
+    existing.event_lifecycle.volume_accumulated =
+        existing.event_lifecycle.volume_accumulated + next.total_volume_btc.max(0.0);
     existing.event_lifecycle.oi_accumulated = existing
         .event_lifecycle
         .oi_accumulated
@@ -120,6 +123,34 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
         (existing.liquidation_long_btc + existing.liquidation_short_btc)
             / existing.total_volume_btc,
     );
+}
+
+fn refresh_lifecycle_discord_gate(signal: &mut ContractWhaleSignal) {
+    let warmup_collect_only = signal.discord_reason == "warmup_collect_only";
+    let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
+    let total_volume_btc = if signal.event_lifecycle.volume_accumulated > f64::EPSILON {
+        signal.event_lifecycle.volume_accumulated
+    } else {
+        signal.total_volume_btc
+    };
+    let (mut discord_eligible, mut discord_reason) = discord_gate(
+        signal.severity,
+        signal.score,
+        signal.multi_exchange_confirmed,
+        signal.data_quality,
+        primary_source_override,
+        &signal.symbol,
+        total_volume_btc,
+        signal.impact_level.as_deref(),
+        &contract_whale_runtime_config(),
+    );
+    if warmup_collect_only {
+        discord_eligible = false;
+        discord_reason = "warmup_collect_only".to_string();
+    }
+    signal.discord_eligible = discord_eligible;
+    signal.discord_would_send = discord_eligible;
+    signal.discord_reason = discord_reason;
 }
 
 fn repeated_medium_refresh(existing: &ContractWhaleSignal, next: &ContractWhaleSignal) -> bool {
