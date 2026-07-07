@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1354,6 +1354,79 @@ describe("ContractWhaleMonitor", () => {
     expect(await screen.findByText("主动卖压")).toBeInTheDocument();
     expect(screen.getByText("主动流：主动卖占优 · 价格：价格响应不明确 · OI：OI 未确认")).toBeInTheDocument();
     expect(screen.getAllByTitle(/主力拉盘\/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示/).length).toBeGreaterThan(0);
+  });
+
+  it("renders notional inline after the symbol in the historical events market column", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-notional-inline",
+          eventId: "cwm-event:BTC:aggressive_sell:notional-inline",
+          sourceSignalId: "contract-whale-notional-inline",
+          ts: 1_700_000_020_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 60,
+          signalType: "aggressive_sell",
+          displaySignalType: "主动卖压",
+          flowDirection: "sell_dominant",
+          priceResponseTypeV2: "price_follow_through",
+          oiContext: "oi_not_confirmed",
+          classificationReasons: ["sell_dominant", "price_follow_through"],
+          direction: "sell",
+          severity: "medium",
+          score: 62,
+          totalVolumeBtc: 577,
+          netVolumeBtc: -182,
+          totalNotionalUsd: 22_000_000,
+          dominance: 0.61,
+          triggerPriceUsd: 59_500,
+          orderPriceUsd: 59_500,
+          currentMarketPriceUsd: 59_500,
+          priceDeviationPct: 0.1,
+          priceDeviationFiltered: false,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:notional-inline",
+            status: "active",
+            startTime: 1_700_000_020_000,
+            lastUpdateTime: 1_700_000_020_000,
+            volumeAccumulated: 577,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.81,
+            mergeSimilarityScore: 0.86,
+            valid: true,
+            falseEventFlags: [],
+          },
+          status: "active",
+          source: "contract_whale_signals",
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    const table = await screen.findByTestId("raw-contract-whale-signals");
+    const headers = Array.from(table.querySelectorAll("thead th")).map((node) => node.textContent?.trim());
+    expect(headers).not.toContain("名义金额");
+
+    const row = screen.getByTestId("contract-whale-row-cwm-event:BTC:aggressive_sell:notional-inline");
+    const marketCell = row.querySelectorAll("td")[1];
+    expect(marketCell).toBeTruthy();
+    expect(within(marketCell).getByText("BTC")).toBeInTheDocument();
+    expect(within(marketCell).getByText("$22M")).toBeInTheDocument();
+    expect(within(marketCell).getByText("$59,500")).toBeInTheDocument();
+    const marketText = marketCell.textContent || "";
+    expect(marketText.indexOf("BTC")).toBeLessThan(marketText.indexOf("$22M"));
+    expect(marketText.indexOf("$22M")).toBeLessThan(marketText.indexOf("$59,500"));
   });
 
   it("hides sub-500 BTC contract events and linked setups from the default desk view", async () => {

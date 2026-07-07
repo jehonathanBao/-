@@ -1935,14 +1935,13 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
       <thead className="bg-slate-950/80 text-slate-400">
         <tr>
           <HeaderCell>时间</HeaderCell>
-          <HeaderCell>币种 / 价格</HeaderCell>
+          <HeaderCell>币种 / 名义金额 / 价格</HeaderCell>
           <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
           <HeaderCell>等级</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
           <HeaderCell>市场冲击等级</HeaderCell>
           <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
-          <HeaderCell>名义金额</HeaderCell>
           <HeaderCell>价格</HeaderCell>
           <HeaderCell>价格偏离</HeaderCell>
           <HeaderCell>主力评分</HeaderCell>
@@ -2012,7 +2011,6 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             <Cell>{eventQualityBadge(item)}</Cell>
             <Cell>{impactNormalizationBadge(item)}</Cell>
             <Cell>{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, item.symbol)}</Cell>
-            <Cell>{formatUsd(item.totalNotionalUsd)}</Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
             <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
             <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
@@ -3247,8 +3245,9 @@ function Cell({ children }) {
 
 function SymbolWithPrice({ item }) {
   return (
-    <span className="flex min-w-[96px] flex-col leading-tight">
+    <span className="flex min-w-[112px] flex-col leading-tight">
       <span className="font-semibold text-slate-100">{item.symbol}</span>
+      <span className="mt-1 text-[11px] font-semibold text-amber-200">{formatUsd(item.totalNotionalUsd)}</span>
       <span className="mt-1 text-[11px] font-semibold text-cyan-200">{formatPrice(signalTriggerPrice(item))}</span>
     </span>
   );
