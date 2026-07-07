@@ -4,11 +4,11 @@ use std::{
 };
 
 use super::{
-    LOG_PREFIX, LOG_TARGET,
     types::{
         ContractExchange, ContractWhaleExchangeStatus, ContractWhaleMarketType,
         ContractWhaleSourceRole, ContractWhaleThresholds,
     },
+    LOG_PREFIX, LOG_TARGET,
 };
 
 const DEFAULT_VOLUME_STRENGTH_WEIGHT: f64 = 35.0;
@@ -924,6 +924,7 @@ impl Default for ContractWhaleScoringConfig {
 #[derive(Debug, Clone)]
 pub struct ContractWhaleClassificationConfig {
     pub enabled: bool,
+    pub oi_context_enabled: bool,
     pub flow_direction_dominance_min: f64,
     pub strong_intent_dominance_min: f64,
     pub absorption_dominance_min: f64,
@@ -937,6 +938,9 @@ pub struct ContractWhaleClassificationConfig {
     pub min_data_quality_for_absorption: u8,
     pub require_multi_exchange_for_strong_intent: bool,
     pub require_multi_exchange_for_absorption: bool,
+    pub oi_lookup_max_gap_seconds: i64,
+    pub oi_delta_min_pct: f64,
+    pub oi_flat_max_abs_pct: f64,
     pub oi_context_change_pct: f64,
 }
 
@@ -944,6 +948,7 @@ impl Default for ContractWhaleClassificationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            oi_context_enabled: true,
             flow_direction_dominance_min: 0.55,
             strong_intent_dominance_min: 0.60,
             absorption_dominance_min: 0.65,
@@ -957,6 +962,9 @@ impl Default for ContractWhaleClassificationConfig {
             min_data_quality_for_absorption: 70,
             require_multi_exchange_for_strong_intent: true,
             require_multi_exchange_for_absorption: true,
+            oi_lookup_max_gap_seconds: 90,
+            oi_delta_min_pct: 0.10,
+            oi_flat_max_abs_pct: 0.05,
             oi_context_change_pct: 0.20,
         }
     }
@@ -1409,6 +1417,12 @@ fn load_classification_config(settings: &::config::Config) -> ContractWhaleClass
             "contract_whale_monitor.classification.enabled",
             defaults.enabled,
         ),
+        oi_context_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_OI_CONTEXT_ENABLED",
+            "contract_whale_monitor.classification.oi_context_enabled",
+            defaults.oi_context_enabled,
+        ),
         flow_direction_dominance_min: positive_float_setting(
             settings,
             "contract_whale_monitor.classification.flow_direction_dominance_min",
@@ -1475,6 +1489,21 @@ fn load_classification_config(settings: &::config::Config) -> ContractWhaleClass
             "CONTRACT_WHALE_CLASSIFICATION_REQUIRE_MULTI_EXCHANGE_ABSORPTION",
             "contract_whale_monitor.classification.require_multi_exchange_for_absorption",
             defaults.require_multi_exchange_for_absorption,
+        ),
+        oi_lookup_max_gap_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.classification.oi_lookup_max_gap_seconds",
+            defaults.oi_lookup_max_gap_seconds,
+        ),
+        oi_delta_min_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.oi_delta_min_pct",
+            defaults.oi_delta_min_pct,
+        ),
+        oi_flat_max_abs_pct: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.oi_flat_max_abs_pct",
+            defaults.oi_flat_max_abs_pct,
         ),
         oi_context_change_pct: positive_float_setting(
             settings,

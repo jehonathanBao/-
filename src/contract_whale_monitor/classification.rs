@@ -3,7 +3,8 @@ use super::{
     types::{
         ContractWhaleActiveFlowDirection, ContractWhaleClassificationV2,
         ContractWhaleDynamicPriceThresholds, ContractWhaleOiContextTag,
-        ContractWhalePriceResponseType, ContractWhaleSignalType,
+        ContractWhaleOiWindowContext, ContractWhalePriceResponseType,
+        ContractWhaleResolvedOiContext, ContractWhaleSignalType,
         ContractWhaleStructureInterpretation, ContractWhaleWindowStats,
     },
 };
@@ -16,12 +17,19 @@ pub fn classify_contract_whale_signal_v2(
     config: &ContractWhaleRuntimeConfig,
 ) -> ContractWhaleClassificationV2 {
     if !config.classification.enabled {
+        let flow = flow_direction(stats, config);
+        let oi = legacy_oi_context_resolution(stats, config, flow);
         return ContractWhaleClassificationV2 {
             display_signal_type: legacy_display_label(signal_type).to_string(),
             structure_interpretation: legacy_structure(signal_type),
-            flow_direction: flow_direction(stats, config),
+            flow_direction: flow,
             price_response_type_v2: legacy_price_response_type,
-            oi_context: oi_context(stats, config, flow_direction(stats, config)),
+            oi_context: oi.oi_context,
+            oi_context_label: oi.oi_context_label,
+            oi_delta: oi.oi_delta,
+            oi_delta_pct: oi.oi_delta_pct,
+            oi_available: oi.oi_available,
+            oi_reason: oi.oi_reason,
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: "v2_disabled_legacy_compat".to_string(),
@@ -151,7 +159,8 @@ pub fn classify_contract_whale_signal_v2(
         reasons.push("active_pressure_without_full_intent_confirmation".to_string());
     }
 
-    let oi_context = oi_context(stats, config, flow);
+    let oi = legacy_oi_context_resolution(stats, config, flow);
+    let oi_context = oi.oi_context;
     reasons.push(format!("oi_context:{oi_context:?}"));
 
     ContractWhaleClassificationV2 {
@@ -160,6 +169,11 @@ pub fn classify_contract_whale_signal_v2(
         flow_direction: flow,
         price_response_type_v2,
         oi_context,
+        oi_context_label: oi.oi_context_label,
+        oi_delta: oi.oi_delta,
+        oi_delta_pct: oi.oi_delta_pct,
+        oi_available: oi.oi_available,
+        oi_reason: oi.oi_reason,
         intent_confidence: intent_confidence(
             stats,
             same_direction_follow,
@@ -241,6 +255,235 @@ fn oi_context(
             ContractWhaleOiContextTag::LongUnwind
         }
         _ => ContractWhaleOiContextTag::OiNotConfirmed,
+    }
+}
+
+fn legacy_oi_context_resolution(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+    flow: ContractWhaleActiveFlowDirection,
+) -> ContractWhaleResolvedOiContext {
+    let oi_context = oi_context(stats, config, flow);
+    ContractWhaleResolvedOiContext {
+        oi_context,
+        oi_context_label: oi_context.label().to_string(),
+        oi_delta: stats
+            .market_context
+            .oi_change_5m_btc
+            .or(stats.market_context.oi_change_1m_btc),
+        oi_delta_pct: stats.market_context.oi_change_pct,
+        oi_available: stats.market_context.oi_available
+            && stats.market_context.oi_change_pct.is_some(),
+        oi_reason: Some(
+            match oi_context {
+                ContractWhaleOiContextTag::NewLongBuild => {
+                    "market_context_oi_increased_with_buy_pressure"
+                }
+                ContractWhaleOiContextTag::NewShortBuild => {
+                    "market_context_oi_increased_with_sell_pressure"
+                }
+                ContractWhaleOiContextTag::ShortCovering => {
+                    "market_context_oi_decreased_with_buy_pressure"
+                }
+                ContractWhaleOiContextTag::LongUnwind => {
+                    "market_context_oi_decreased_with_sell_pressure"
+                }
+                ContractWhaleOiContextTag::OiNotConfirmed => "market_context_oi_not_confirmed",
+                ContractWhaleOiContextTag::OiUnavailable => "market_context_oi_unavailable",
+            }
+            .to_string(),
+        ),
+    }
+}
+
+pub fn resolve_contract_whale_oi_context_from_window(
+    structure_interpretation: ContractWhaleStructureInterpretation,
+    flow: ContractWhaleActiveFlowDirection,
+    price_response_type: ContractWhalePriceResponseType,
+    price_move_pct: Option<f64>,
+    oi_window: Option<&ContractWhaleOiWindowContext>,
+    config: &ContractWhaleRuntimeConfig,
+) -> ContractWhaleResolvedOiContext {
+    if !config.classification.oi_context_enabled {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+            oi_delta: None,
+            oi_delta_pct: None,
+            oi_available: false,
+            oi_reason: Some("oi_context_disabled".to_string()),
+        };
+    }
+    let Some(oi_window) = oi_window else {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+            oi_delta: None,
+            oi_delta_pct: None,
+            oi_available: false,
+            oi_reason: Some("no_oi_snapshot_in_window".to_string()),
+        };
+    };
+    if !oi_window.available {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct: oi_window.oi_delta_pct,
+            oi_available: false,
+            oi_reason: Some(
+                oi_window
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "no_oi_snapshot_in_window".to_string()),
+            ),
+        };
+    }
+
+    let oi_delta_pct = oi_window.oi_delta_pct;
+    let Some(delta_pct) = oi_delta_pct else {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct: None,
+            oi_available: false,
+            oi_reason: Some(
+                oi_window
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "no_oi_snapshot_in_window".to_string()),
+            ),
+        };
+    };
+
+    if matches!(
+        structure_interpretation,
+        ContractWhaleStructureInterpretation::DownsideAbsorption
+            | ContractWhaleStructureInterpretation::UpsideSuppression
+    ) {
+        let (label, reason) = if delta_pct >= config.classification.oi_delta_min_pct {
+            (
+                "OI 增加，新仓对抗".to_string(),
+                "oi_increased_during_absorption_or_suppression".to_string(),
+            )
+        } else if delta_pct <= -config.classification.oi_delta_min_pct {
+            (
+                "OI 下降，平仓/止损参与".to_string(),
+                "oi_decreased_during_absorption_or_suppression".to_string(),
+            )
+        } else {
+            (
+                ContractWhaleOiContextTag::OiNotConfirmed
+                    .label()
+                    .to_string(),
+                "oi_delta_below_threshold".to_string(),
+            )
+        };
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+            oi_context_label: label,
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct,
+            oi_available: true,
+            oi_reason: Some(reason),
+        };
+    }
+
+    if delta_pct.abs() <= config.classification.oi_flat_max_abs_pct
+        || delta_pct.abs() < config.classification.oi_delta_min_pct
+    {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+            oi_context_label: ContractWhaleOiContextTag::OiNotConfirmed
+                .label()
+                .to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct,
+            oi_available: true,
+            oi_reason: Some("oi_delta_below_threshold".to_string()),
+        };
+    }
+
+    match flow {
+        ContractWhaleActiveFlowDirection::Balanced | ContractWhaleActiveFlowDirection::Unknown => {
+            return ContractWhaleResolvedOiContext {
+                oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+                oi_context_label: ContractWhaleOiContextTag::OiNotConfirmed
+                    .label()
+                    .to_string(),
+                oi_delta: oi_window.oi_delta,
+                oi_delta_pct,
+                oi_available: true,
+                oi_reason: Some("direction_not_clear_for_oi_context".to_string()),
+            };
+        }
+        ContractWhaleActiveFlowDirection::BuyDominant
+        | ContractWhaleActiveFlowDirection::SellDominant => {}
+    }
+
+    let price_confirmed = match flow {
+        ContractWhaleActiveFlowDirection::BuyDominant => {
+            matches!(
+                price_response_type,
+                ContractWhalePriceResponseType::TrendFollowUp
+            ) || price_move_pct.unwrap_or_default() > 0.0
+        }
+        ContractWhaleActiveFlowDirection::SellDominant => {
+            matches!(
+                price_response_type,
+                ContractWhalePriceResponseType::TrendFollowDown
+            ) || price_move_pct.unwrap_or_default() < 0.0
+        }
+        ContractWhaleActiveFlowDirection::Balanced | ContractWhaleActiveFlowDirection::Unknown => {
+            false
+        }
+    };
+
+    if !price_confirmed {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+            oi_context_label: ContractWhaleOiContextTag::OiNotConfirmed
+                .label()
+                .to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct,
+            oi_available: true,
+            oi_reason: Some("price_not_confirmed_for_oi_context".to_string()),
+        };
+    }
+
+    let (oi_context, reason) = match (flow, delta_pct.is_sign_positive()) {
+        (ContractWhaleActiveFlowDirection::BuyDominant, true) => (
+            ContractWhaleOiContextTag::NewLongBuild,
+            "oi_increased_with_buy_pressure",
+        ),
+        (ContractWhaleActiveFlowDirection::BuyDominant, false) => (
+            ContractWhaleOiContextTag::ShortCovering,
+            "oi_decreased_with_buy_pressure",
+        ),
+        (ContractWhaleActiveFlowDirection::SellDominant, true) => (
+            ContractWhaleOiContextTag::NewShortBuild,
+            "oi_increased_with_sell_pressure",
+        ),
+        (ContractWhaleActiveFlowDirection::SellDominant, false) => (
+            ContractWhaleOiContextTag::LongUnwind,
+            "oi_decreased_with_sell_pressure",
+        ),
+        (ContractWhaleActiveFlowDirection::Balanced, _)
+        | (ContractWhaleActiveFlowDirection::Unknown, _) => (
+            ContractWhaleOiContextTag::OiNotConfirmed,
+            "direction_not_clear_for_oi_context",
+        ),
+    };
+
+    ContractWhaleResolvedOiContext {
+        oi_context,
+        oi_context_label: oi_context.label().to_string(),
+        oi_delta: oi_window.oi_delta,
+        oi_delta_pct,
+        oi_available: true,
+        oi_reason: Some(reason.to_string()),
     }
 }
 

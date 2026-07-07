@@ -1351,6 +1351,11 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     priceResponseTypeV2:
       item.priceResponseTypeV2 || item.price_response_type_v2 || item.priceResponseType || "no_clear_response",
     oiContext: item.oiContext || item.oi_context || "oi_unavailable",
+    oiContextLabel: item.oiContextLabel || item.oi_context_label || "OI 不可用",
+    oiDelta: numberOrNull(item.oiDelta ?? item.oi_delta),
+    oiDeltaPct: numberOrNull(item.oiDeltaPct ?? item.oi_delta_pct),
+    oiAvailable: Boolean(item.oiAvailable ?? item.oi_available),
+    oiReason: item.oiReason || item.oi_reason || "oi_unavailable",
     intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
     isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
     classificationVersion: item.classificationVersion || item.classification_version || "",

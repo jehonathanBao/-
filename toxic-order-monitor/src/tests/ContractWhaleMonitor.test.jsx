@@ -1352,8 +1352,80 @@ describe("ContractWhaleMonitor", () => {
     render(<ContractWhaleMonitor />);
 
     expect(await screen.findByText("主动卖压")).toBeInTheDocument();
-    expect(screen.getByText("主动流：主动卖占优 · 价格：价格响应不明确 · OI：OI 未确认")).toBeInTheDocument();
+    expect(screen.getByText("主动流：主动卖占优 · 价格：价格响应不明确 · OI：OI 不确认")).toBeInTheDocument();
     expect(screen.getAllByTitle(/主力拉盘\/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示/).length).toBeGreaterThan(0);
+  });
+
+  it("renders resolved oi context labels and tooltip text in the historical events stream", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [
+        {
+          id: "contract-event-oi-semantic",
+          eventId: "cwm-event:BTC:aggressive_sell:oi-semantic",
+          sourceSignalId: "contract-whale-oi-semantic",
+          ts: 1_700_000_020_000,
+          symbol: "BTC",
+          baseAsset: "BTC",
+          quantityUnit: "BTC",
+          windowSec: 60,
+          signalType: "aggressive_sell",
+          displaySignalType: "主动卖压",
+          flowDirection: "sell_dominant",
+          priceResponseTypeV2: "trend_follow_down",
+          oiContext: "new_short_build",
+          oiContextLabel: "新空开仓",
+          oiDeltaPct: 0.42,
+          oiAvailable: true,
+          oiReason: "oi_increased_with_sell_pressure",
+          classificationReasons: ["sell_dominant", "price_follow_through"],
+          direction: "sell",
+          severity: "medium",
+          score: 62,
+          totalVolumeBtc: 577,
+          netVolumeBtc: -182,
+          totalNotionalUsd: 22_000_000,
+          dominance: 0.61,
+          triggerPriceUsd: 59_500,
+          orderPriceUsd: 59_500,
+          currentMarketPriceUsd: 59_500,
+          priceDeviationPct: 0.1,
+          priceDeviationFiltered: false,
+          mainExchange: "binance",
+          eventLifecycle: {
+            eventId: "cwm-event:BTC:aggressive_sell:oi-semantic",
+            status: "active",
+            startTime: 1_700_000_020_000,
+            lastUpdateTime: 1_700_000_020_000,
+            volumeAccumulated: 577,
+            updateCount: 1,
+          },
+          eventQuality: {
+            qualityScore: 0.81,
+            mergeSimilarityScore: 0.86,
+            valid: true,
+            falseEventFlags: [],
+          },
+          status: "active",
+          source: "contract_whale_signals",
+        },
+      ],
+      nextCursor: null,
+      hasMore: false,
+      limit: 100,
+      range: "24h",
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(
+      await screen.findByText("主动流：主动卖占优 · 价格：卖盘推动下跌 · OI：新空开仓 +0.42%"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\bundefined\b/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bNaN\b/i)).not.toBeInTheDocument();
+    expect(
+      screen.getAllByTitle(/OI 标签用于解释该窗口内未平仓量变化：/).length,
+    ).toBeGreaterThan(0);
   });
 
   it("renders notional inline after the symbol in the historical events market column", async () => {

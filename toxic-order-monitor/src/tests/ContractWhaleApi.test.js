@@ -1427,6 +1427,44 @@ describe("contract whale api", () => {
     expect(signal.priceEfficiency).toBe(0.0615);
   });
 
+  it("normalizes enriched oi context fields from snake_case without leaking undefined or NaN", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "oi-context-signal",
+      symbol: "BTC",
+      signalType: "aggressive_sell",
+      displaySignalType: "主动卖压",
+      flowDirection: "sell_dominant",
+      priceResponseTypeV2: "trend_follow_down",
+      oi_context: "new_short_build",
+      oi_context_label: "新空开仓",
+      oi_delta: 420,
+      oi_delta_pct: 0.42,
+      oi_available: true,
+      oi_reason: "oi_increased_with_sell_pressure",
+    });
+
+    expect(signal.oiContext).toBe("new_short_build");
+    expect(signal.oiContextLabel).toBe("新空开仓");
+    expect(signal.oiDelta).toBe(420);
+    expect(signal.oiDeltaPct).toBe(0.42);
+    expect(signal.oiAvailable).toBe(true);
+    expect(signal.oiReason).toBe("oi_increased_with_sell_pressure");
+  });
+
+  it("defaults missing enriched oi fields to unavailable labels", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "oi-fallback-signal",
+      symbol: "BTC",
+    });
+
+    expect(signal.oiContext).toBe("oi_unavailable");
+    expect(signal.oiContextLabel).toBe("OI 不可用");
+    expect(signal.oiDelta).toBe(null);
+    expect(signal.oiDeltaPct).toBe(null);
+    expect(signal.oiAvailable).toBe(false);
+    expect(signal.oiReason).toBe("oi_unavailable");
+  });
+
   it("maps volume display semantics without changing the underlying math", () => {
     const signal = normalizeContractWhaleSignal({
       id: "volume-semantics-signal",

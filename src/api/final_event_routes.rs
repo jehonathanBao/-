@@ -6,7 +6,8 @@ use axum::{
 
 use crate::{
     api::contract_whale_routes::{
-        build_contract_whale_history_response, parse_history_query, ContractWhaleQuery,
+        build_contract_whale_history_response, decorate_contract_whale_oi_contexts,
+        parse_history_query, ContractWhaleQuery,
     },
     app::AppState,
     core_event::final_store::final_event_store::build_final_event_store_response_from_contract_whale_response,
@@ -48,7 +49,7 @@ fn final_event_response_for_query(
         .contract_whale_store()
         .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
         .unwrap_or_default();
-    let contract_response = build_contract_whale_history_response(
+    let mut contract_response = build_contract_whale_history_response(
         items,
         &symbol_for_filter,
         history_query.limit,
@@ -57,5 +58,8 @@ fn final_event_response_for_query(
         config.dry_run,
         None,
     );
+    if let Some(store) = state.contract_whale_store() {
+        decorate_contract_whale_oi_contexts(&store, &mut contract_response.items);
+    }
     Ok(build_final_event_store_response_from_contract_whale_response(&contract_response))
 }

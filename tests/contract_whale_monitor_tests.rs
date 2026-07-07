@@ -3,7 +3,9 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
         aggregate_1s_buckets, rolling_window_stats, rolling_window_stats_with_config,
         RollingWindowStatsOptions,
     },
-    classification::classify_contract_whale_signal_v2,
+    classification::{
+        classify_contract_whale_signal_v2, resolve_contract_whale_oi_context_from_window,
+    },
     collector_binance::handle_force_order_message,
     collector_okx::handle_liquidation_order_message,
     config::ContractWhaleRuntimeConfig,
@@ -21,8 +23,9 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     types::{
         ContractExchange, ContractLiquidationSide, ContractTradeSide,
         ContractWhaleActiveFlowDirection, ContractWhaleDirection, ContractWhaleLiquidationContext,
-        ContractWhaleMarketContext, ContractWhaleOiContextTag, ContractWhalePriceResponseType,
-        ContractWhaleSeverity, ContractWhaleSignalType, ContractWhaleStructureInterpretation,
+        ContractWhaleMarketContext, ContractWhaleOiContextTag, ContractWhaleOiWindowContext,
+        ContractWhalePriceResponseType, ContractWhaleSeverity, ContractWhaleSignalType,
+        ContractWhaleStructureInterpretation,
     },
 };
 
@@ -626,6 +629,223 @@ fn classification_v2_maps_all_oi_context_tags_without_promoting_oi_to_main_type(
         assert_eq!(classification.oi_context, expected);
         assert_ne!(classification.display_signal_type, "OI 建仓");
     }
+}
+
+#[test]
+fn oi_window_context_maps_buy_follow_through_to_new_long_build() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveBuyPressure,
+        ContractWhaleActiveFlowDirection::BuyDominant,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        Some(0.31),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_420.0),
+            oi_delta: Some(420.0),
+            oi_delta_pct: Some(0.42),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(resolved.oi_context, ContractWhaleOiContextTag::NewLongBuild);
+    assert_eq!(resolved.oi_context_label, "新多开仓");
+    assert_eq!(resolved.oi_delta_pct, Some(0.42));
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_increased_with_buy_pressure")
+    );
+    assert!(resolved.oi_available);
+}
+
+#[test]
+fn oi_window_context_maps_buy_follow_through_to_short_covering_when_oi_falls() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveBuyPressure,
+        ContractWhaleActiveFlowDirection::BuyDominant,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        Some(0.31),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(99_690.0),
+            oi_delta: Some(-310.0),
+            oi_delta_pct: Some(-0.31),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::ShortCovering
+    );
+    assert_eq!(resolved.oi_context_label, "空头回补");
+    assert_eq!(resolved.oi_delta_pct, Some(-0.31));
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_decreased_with_buy_pressure")
+    );
+    assert!(resolved.oi_available);
+}
+
+#[test]
+fn oi_window_context_maps_sell_follow_through_to_new_short_build() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveSellPressure,
+        ContractWhaleActiveFlowDirection::SellDominant,
+        ContractWhalePriceResponseType::TrendFollowDown,
+        Some(-0.45),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_450.0),
+            oi_delta: Some(450.0),
+            oi_delta_pct: Some(0.45),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::NewShortBuild
+    );
+    assert_eq!(resolved.oi_context_label, "新空开仓");
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_increased_with_sell_pressure")
+    );
+}
+
+#[test]
+fn oi_window_context_maps_sell_follow_through_to_long_unwind_when_oi_falls() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveSellPressure,
+        ContractWhaleActiveFlowDirection::SellDominant,
+        ContractWhalePriceResponseType::TrendFollowDown,
+        Some(-0.28),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(99_720.0),
+            oi_delta: Some(-280.0),
+            oi_delta_pct: Some(-0.28),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(resolved.oi_context, ContractWhaleOiContextTag::LongUnwind);
+    assert_eq!(resolved.oi_context_label, "多头平仓");
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_decreased_with_sell_pressure")
+    );
+}
+
+#[test]
+fn oi_window_context_marks_small_delta_as_not_confirmed() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveBuyPressure,
+        ContractWhaleActiveFlowDirection::BuyDominant,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        Some(0.12),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_040.0),
+            oi_delta: Some(40.0),
+            oi_delta_pct: Some(0.04),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::OiNotConfirmed
+    );
+    assert_eq!(resolved.oi_context_label, "OI 不确认");
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_delta_below_threshold")
+    );
+    assert!(resolved.oi_available);
+}
+
+#[test]
+fn oi_window_context_marks_balanced_flow_as_not_confirmed() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::UnclearDirectionalFlow,
+        ContractWhaleActiveFlowDirection::Balanced,
+        ContractWhalePriceResponseType::NoClearResponse,
+        Some(0.02),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_420.0),
+            oi_delta: Some(420.0),
+            oi_delta_pct: Some(0.42),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::OiNotConfirmed
+    );
+    assert_eq!(resolved.oi_context_label, "OI 不确认");
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("direction_not_clear_for_oi_context")
+    );
+}
+
+#[test]
+fn oi_window_context_keeps_absorption_as_not_confirmed_but_explains_position_conflict() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::DownsideAbsorption,
+        ContractWhaleActiveFlowDirection::SellDominant,
+        ContractWhalePriceResponseType::DownsideAbsorption,
+        Some(-0.03),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_180.0),
+            oi_delta: Some(180.0),
+            oi_delta_pct: Some(0.18),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            reason: None,
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::OiNotConfirmed
+    );
+    assert_eq!(resolved.oi_context_label, "OI 增加，新仓对抗");
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_increased_during_absorption_or_suppression")
+    );
+    assert_eq!(resolved.oi_delta_pct, Some(0.18));
 }
 
 #[test]

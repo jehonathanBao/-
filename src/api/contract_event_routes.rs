@@ -10,8 +10,9 @@ use serde::Serialize;
 use crate::{
     api::contract_timeline_routes::{build_canonical_timeline_meta, CanonicalTimelineMeta},
     api::contract_whale_routes::{
-        build_contract_whale_items_response, decorate_price_deviation_signals,
-        encode_contract_history_cursor, parse_history_query, ContractWhaleQuery,
+        build_contract_whale_items_response, decorate_contract_whale_oi_contexts,
+        decorate_price_deviation_signals, encode_contract_history_cursor, parse_history_query,
+        ContractWhaleQuery,
     },
     app::AppState,
     contract_whale_monitor::{
@@ -362,15 +363,17 @@ pub(crate) fn contract_event_page_for_query(
         })
         .unwrap_or(0);
     let requested_status = normalize_status_filter(query.status.as_deref());
-    let items =
-        project_contract_event_candidates(sliced_items, VolumeDisplayContext::ContractEventStream)
-            .into_iter()
-            .filter(|candidate| {
-                status_matches(requested_status.as_deref(), &candidate.event.status)
-            })
-            .filter(|candidate| include_hidden || candidate.is_visible)
-            .map(contract_event_from_candidate)
-            .collect::<Vec<_>>();
+    let store = state.contract_whale_store();
+    let items = project_contract_event_candidates(
+        sliced_items,
+        VolumeDisplayContext::ContractEventStream,
+        store.as_ref(),
+    )
+    .into_iter()
+    .filter(|candidate| status_matches(requested_status.as_deref(), &candidate.event.status))
+    .filter(|candidate| include_hidden || candidate.is_visible)
+    .map(contract_event_from_candidate)
+    .collect::<Vec<_>>();
 
     Ok(ContractEventPage {
         items,
@@ -448,9 +451,12 @@ pub(crate) fn final_events_v2_for_query(
     let max_event_ts = sliced_items.first().map(|signal| signal.ts);
     let mut active = Vec::new();
     let mut closed = Vec::new();
-    for candidate in
-        project_contract_event_candidates(sliced_items, VolumeDisplayContext::FinalLifecycleEvent)
-    {
+    let store = state.contract_whale_store();
+    for candidate in project_contract_event_candidates(
+        sliced_items,
+        VolumeDisplayContext::FinalLifecycleEvent,
+        store.as_ref(),
+    ) {
         if !candidate.is_visible
             || !status_matches(requested_status.as_deref(), &candidate.event.status)
         {
@@ -580,6 +586,7 @@ fn contract_event_debug_counts_for_query(
     let projected = project_contract_event_candidates(
         raw_items.clone(),
         VolumeDisplayContext::ContractEventStream,
+        Some(&store),
     );
     let visibility = visibility_debug_counts(&projected);
     let visible_events = projected
@@ -670,6 +677,7 @@ fn contract_event_debug_counts_for_query(
 fn project_contract_event_candidates(
     raw_items: Vec<ContractWhaleSignal>,
     context: VolumeDisplayContext,
+    store: Option<&SqliteStore>,
 ) -> Vec<ContractEventCandidate> {
     if raw_items.is_empty() {
         return Vec::new();
@@ -689,6 +697,9 @@ fn project_contract_event_candidates(
         .unwrap_or_else(now_ms);
     items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
     items = decorate_contract_whale_event_quality(items);
+    if let Some(store) = store {
+        decorate_contract_whale_oi_contexts(store, &mut items);
+    }
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
     items.sort_by(|left, right| {

@@ -521,6 +521,57 @@ pub enum ContractWhaleOiContextTag {
     OiUnavailable,
 }
 
+impl ContractWhaleOiContextTag {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NewLongBuild => "新多开仓",
+            Self::NewShortBuild => "新空开仓",
+            Self::ShortCovering => "空头回补",
+            Self::LongUnwind => "多头平仓",
+            Self::OiNotConfirmed => "OI 不确认",
+            Self::OiUnavailable => "OI 不可用",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleOiWindowContext {
+    #[serde(default)]
+    pub oi_before: Option<f64>,
+    #[serde(default)]
+    pub oi_after: Option<f64>,
+    #[serde(default)]
+    pub oi_delta: Option<f64>,
+    #[serde(default)]
+    pub oi_delta_pct: Option<f64>,
+    #[serde(default)]
+    pub before_ts: Option<i64>,
+    #[serde(default)]
+    pub after_ts: Option<i64>,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleResolvedOiContext {
+    #[serde(default)]
+    pub oi_context: ContractWhaleOiContextTag,
+    #[serde(default)]
+    pub oi_context_label: String,
+    #[serde(default)]
+    pub oi_delta: Option<f64>,
+    #[serde(default)]
+    pub oi_delta_pct: Option<f64>,
+    #[serde(default)]
+    pub oi_available: bool,
+    #[serde(default)]
+    pub oi_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleDynamicPriceThresholds {
@@ -559,6 +610,16 @@ pub struct ContractWhaleClassificationV2 {
     #[serde(default)]
     pub oi_context: ContractWhaleOiContextTag,
     #[serde(default)]
+    pub oi_context_label: String,
+    #[serde(default)]
+    pub oi_delta: Option<f64>,
+    #[serde(default)]
+    pub oi_delta_pct: Option<f64>,
+    #[serde(default)]
+    pub oi_available: bool,
+    #[serde(default)]
+    pub oi_reason: Option<String>,
+    #[serde(default)]
     pub intent_confidence: u8,
     #[serde(default)]
     pub is_strong_main_force_intent: bool,
@@ -580,6 +641,11 @@ impl Default for ContractWhaleClassificationV2 {
             flow_direction: ContractWhaleActiveFlowDirection::Unknown,
             price_response_type_v2: ContractWhalePriceResponseType::NoClearResponse,
             oi_context: ContractWhaleOiContextTag::OiUnavailable,
+            oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+            oi_delta: None,
+            oi_delta_pct: None,
+            oi_available: false,
+            oi_reason: None,
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: String::new(),

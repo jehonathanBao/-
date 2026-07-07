@@ -2559,7 +2559,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["方向", directionLabel(signal.direction)],
               ["价格响应", priceResponseLabel(signal.priceResponseType)],
               ["v2 流向", flowDirectionLabel(signal.flowDirection)],
-              ["OI 语境", oiContextLabel(signal.oiContext)],
+              ["OI 语境", formatOiContextSummary(signal)],
               ["意图置信", `${signal.intentConfidence || 0}/100`],
               ["强主力意图", yesNoLabel(signal.isStrongMainForceIntent)],
               ["分类版本", signal.classificationVersion || "legacy"],
@@ -3255,6 +3255,8 @@ function SymbolWithPrice({ item }) {
 
 const CONTRACT_CLASSIFICATION_TOOLTIP =
   "主力拉盘/砸盘仅在主动流方向、价格跟随、多窗口确认同时满足时显示。否则显示主动买压/主动卖压；吸收/压制要求主动方向占优，同时价格不跟随或出现有效回收/回落。";
+const OI_CONTEXT_TOOLTIP =
+  "OI 标签用于解释该窗口内未平仓量变化：\n- OI 上升：新仓增加\n- OI 下降：平仓/止损占比更高\n- 结合主动买卖方向与价格响应判断新多、新空、空头回补或多头平仓。";
 
 function SignalTypeSummary({ item }) {
   return (
@@ -3295,7 +3297,7 @@ function signalClassificationMeta(signal) {
   const flow = signal?.flowDirection ? flowDirectionLabel(signal.flowDirection) : "—";
   const priceType = signal?.priceResponseTypeV2 || signal?.priceResponseType;
   const price = priceType ? priceResponseLabel(priceType) : "—";
-  const oi = signal?.oiContext ? oiContextLabel(signal.oiContext) : "—";
+  const oi = formatOiContextSummary(signal);
   return `主动流：${flow} · 价格：${price} · OI：${oi}`;
 }
 
@@ -3303,7 +3305,24 @@ function signalClassificationTooltip(signal) {
   const reasons = Array.isArray(signal?.classificationReasons) && signal.classificationReasons.length
     ? `\n分类原因：${signal.classificationReasons.join(" · ")}`
     : "";
-  return `${CONTRACT_CLASSIFICATION_TOOLTIP}\n${signalClassificationMeta(signal)}${reasons}`;
+  return `${CONTRACT_CLASSIFICATION_TOOLTIP}\n${signalClassificationMeta(signal)}\n${OI_CONTEXT_TOOLTIP}${reasons}`;
+}
+
+function resolvedOiContextLabel(item) {
+  const explicit = String(item?.oiContextLabel || "").trim();
+  if (explicit) return explicit;
+  return oiContextLabel(item?.oiContext);
+}
+
+function formatOiContextSummary(item) {
+  if (item?.oiAvailable === false) return "OI 不可用";
+  const label = resolvedOiContextLabel(item);
+  const deltaPct = Number(item?.oiDeltaPct);
+  if (!Number.isFinite(deltaPct)) {
+    return label || "OI 不确认";
+  }
+  const sign = deltaPct > 0 ? "+" : "";
+  return `${label || "OI 不确认"} ${sign}${deltaPct.toFixed(2)}%`;
 }
 
 function flowDirectionLabel(value) {
@@ -3318,11 +3337,11 @@ function flowDirectionLabel(value) {
 
 function oiContextLabel(value) {
   const labels = {
-    new_long_build: "新增多头建仓",
-    new_short_build: "新增空头建仓",
+    new_long_build: "新多开仓",
+    new_short_build: "新空开仓",
     short_covering: "空头回补",
-    long_unwind: "多头减仓",
-    oi_not_confirmed: "OI 未确认",
+    long_unwind: "多头平仓",
+    oi_not_confirmed: "OI 不确认",
     oi_unavailable: "OI 不可用",
   };
   return labels[String(value || "oi_unavailable").toLowerCase()] || value || "OI 不可用";

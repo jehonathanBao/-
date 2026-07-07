@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::contract_whale_monitor::types::{
-    ContractWhaleEventStatus, ContractWhaleLatestResponse, ContractWhaleSignal,
-    ContractWhaleSignalType,
+    ContractWhaleEventStatus, ContractWhaleLatestResponse, ContractWhaleOiContextTag,
+    ContractWhaleSignal, ContractWhaleSignalType,
 };
 use crate::normalization::market_impact::{MarketImpactBaseline, MarketImpactNormalization};
 
@@ -61,6 +61,18 @@ pub struct FinalEvent {
     pub source_exchanges: Vec<String>,
     #[serde(default)]
     pub merged_windows_sec: Vec<u64>,
+    #[serde(default)]
+    pub oi_context: ContractWhaleOiContextTag,
+    #[serde(default)]
+    pub oi_context_label: String,
+    #[serde(default)]
+    pub oi_delta: Option<f64>,
+    #[serde(default)]
+    pub oi_delta_pct: Option<f64>,
+    #[serde(default)]
+    pub oi_available: bool,
+    #[serde(default)]
+    pub oi_reason: Option<String>,
     pub source_signal: ContractWhaleSignal,
 }
 
@@ -220,6 +232,12 @@ impl FinalEvent {
             source_exchange_count: volume_meta.source_exchange_count,
             source_exchanges: volume_meta.source_exchanges,
             merged_windows_sec: volume_meta.merged_windows_sec,
+            oi_context: signal.classification_v2.oi_context,
+            oi_context_label: signal.classification_v2.oi_context_label.clone(),
+            oi_delta: signal.classification_v2.oi_delta,
+            oi_delta_pct: signal.classification_v2.oi_delta_pct,
+            oi_available: signal.classification_v2.oi_available,
+            oi_reason: signal.classification_v2.oi_reason.clone(),
             source_signal: signal.clone(),
         }
     }

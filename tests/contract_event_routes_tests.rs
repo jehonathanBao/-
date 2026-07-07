@@ -16,7 +16,7 @@ use btc_toxic_flow_monitor_rs::{
         config::reset_contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
-        types::{ContractFlowBucket, ContractWhaleSignal},
+        types::{ContractExchange, ContractFlowBucket, ContractOiSnapshot, ContractWhaleSignal},
     },
     storage::contract_whale_repo::ContractWhaleRepo,
     types::{
@@ -251,6 +251,217 @@ async fn contract_events_expose_latency_metadata_fields() {
     assert_eq!(payload["timeline"]["source"], "contract_whale_signals");
     assert_eq!(payload["timeline"]["eventTs"], payload["maxEventTs"]);
     assert!(payload["timeline"]["timelineLagSec"].as_i64().is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_include_resolved_oi_context_fields() {
+    let config = test_config(temp_sqlite_path("contract-events-oi-context"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let signal = base_signal("oi-context", now - 5 * 60 * 1000);
+    let start_ts = signal.ts - (signal.window_sec as i64 * 1000);
+    store.upsert_contract_whale_signal(&signal).unwrap();
+    store
+        .upsert_contract_oi_snapshots(&[
+            ContractOiSnapshot {
+                ts: start_ts,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_000.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: signal.ts,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_420.0,
+                oi_notional_usd: None,
+            },
+        ])
+        .unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let item = payload["items"][0].clone();
+    assert_eq!(item["oiContext"], "new_long_build");
+    assert_eq!(item["oiContextLabel"], "新多开仓");
+    assert_eq!(item["oiDeltaPct"], 0.42);
+    assert_eq!(item["oiAvailable"], true);
+    assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_mark_missing_oi_snapshots_as_unavailable() {
+    let config = test_config(temp_sqlite_path("contract-events-oi-missing"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let signal = base_signal("oi-missing", now - 5 * 60 * 1000);
+    store.upsert_contract_whale_signal(&signal).unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let item = payload["items"][0].clone();
+    assert_eq!(item["oiContext"], "oi_unavailable");
+    assert_eq!(item["oiContextLabel"], "OI 不可用");
+    assert!(item["oiDeltaPct"].is_null());
+    assert_eq!(item["oiAvailable"], false);
+    assert_eq!(item["oiReason"], "no_oi_snapshot_in_window");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_mark_far_oi_snapshots_as_unavailable() {
+    let config = test_config(temp_sqlite_path("contract-events-oi-gap"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let signal = base_signal("oi-gap", now - 5 * 60 * 1000);
+    let start_ts = signal.ts - (signal.window_sec as i64 * 1000);
+    store.upsert_contract_whale_signal(&signal).unwrap();
+    store
+        .upsert_contract_oi_snapshots(&[
+            ContractOiSnapshot {
+                ts: start_ts - 91_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_000.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: signal.ts - 91_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_420.0,
+                oi_notional_usd: None,
+            },
+        ])
+        .unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let item = payload["items"][0].clone();
+    assert_eq!(item["oiContext"], "oi_unavailable");
+    assert_eq!(item["oiAvailable"], false);
+    assert_eq!(item["oiReason"], "oi_snapshot_gap_too_large");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn final_events_v2_include_resolved_oi_context_fields() {
+    let config = test_config(temp_sqlite_path("final-events-v2-oi-context"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let signal = base_signal("final-events-oi-context", now - 5 * 60 * 1000);
+    let start_ts = signal.ts - (signal.window_sec as i64 * 1000);
+    store.upsert_contract_whale_signal(&signal).unwrap();
+    store
+        .upsert_contract_oi_snapshots(&[
+            ContractOiSnapshot {
+                ts: start_ts,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_000.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: signal.ts,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 100_420.0,
+                oi_notional_usd: None,
+            },
+        ])
+        .unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let response = client
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("final events v2 response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("final events v2 json");
+    let item = payload["active"][0].clone();
+    assert_eq!(item["oiContext"], "new_long_build");
+    assert_eq!(item["oiContextLabel"], "新多开仓");
+    assert_eq!(item["oiDeltaPct"], 0.42);
+    assert_eq!(item["oiAvailable"], true);
+    assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
 
     server.abort();
 }

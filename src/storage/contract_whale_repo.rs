@@ -4,8 +4,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
     ContractOiSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
-    ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleSeverity,
-    ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
+    ContractWhaleMarketType, ContractWhaleOiWindowContext, ContractWhalePercentileThreshold,
+    ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 
 use super::{
@@ -70,6 +70,13 @@ pub trait ContractWhaleRepo {
         from_ts: i64,
         to_ts: i64,
     ) -> anyhow::Result<Vec<ContractOiSnapshot>>;
+    fn find_oi_context_for_event(
+        &self,
+        symbol: &str,
+        event_ts: i64,
+        window_sec: i64,
+        max_gap_sec: i64,
+    ) -> anyhow::Result<ContractWhaleOiWindowContext>;
     fn upsert_contract_funding_snapshots(
         &self,
         snapshots: &[ContractFundingSnapshot],
@@ -447,6 +454,108 @@ impl ContractWhaleRepo for SqliteStore {
                 snapshots.push(row?);
             }
             Ok(snapshots)
+        })
+    }
+
+    fn find_oi_context_for_event(
+        &self,
+        symbol: &str,
+        event_ts: i64,
+        window_sec: i64,
+        max_gap_sec: i64,
+    ) -> anyhow::Result<ContractWhaleOiWindowContext> {
+        let window_ms = window_sec.max(0).saturating_mul(1000);
+        let max_gap_ms = max_gap_sec.max(0).saturating_mul(1000);
+        let start_ts = event_ts.saturating_sub(window_ms);
+        self.with_connection(|conn| {
+            let before_ts = conn
+                .query_row(
+                    "SELECT MAX(ts) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts <= ?2",
+                    params![symbol, start_ts],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()?
+                .flatten();
+            let after_ts = conn
+                .query_row(
+                    "SELECT MAX(ts) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts <= ?2",
+                    params![symbol, event_ts],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()?
+                .flatten();
+
+            let Some(before_ts) = before_ts else {
+                return Ok(ContractWhaleOiWindowContext {
+                    available: false,
+                    reason: Some("no_oi_snapshot_in_window".to_string()),
+                    ..ContractWhaleOiWindowContext::default()
+                });
+            };
+            let Some(after_ts) = after_ts else {
+                return Ok(ContractWhaleOiWindowContext {
+                    available: false,
+                    reason: Some("no_oi_snapshot_in_window".to_string()),
+                    ..ContractWhaleOiWindowContext::default()
+                });
+            };
+
+            if start_ts.saturating_sub(before_ts).abs() > max_gap_ms
+                || event_ts.saturating_sub(after_ts).abs() > max_gap_ms
+            {
+                return Ok(ContractWhaleOiWindowContext {
+                    before_ts: Some(before_ts),
+                    after_ts: Some(after_ts),
+                    available: false,
+                    reason: Some("oi_snapshot_gap_too_large".to_string()),
+                    ..ContractWhaleOiWindowContext::default()
+                });
+            }
+
+            let oi_before = conn.query_row(
+                "SELECT SUM(oi_btc) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts = ?2",
+                params![symbol, before_ts],
+                |row| row.get::<_, Option<f64>>(0),
+            )?;
+            let oi_after = conn.query_row(
+                "SELECT SUM(oi_btc) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts = ?2",
+                params![symbol, after_ts],
+                |row| row.get::<_, Option<f64>>(0),
+            )?;
+
+            let Some(oi_before) = oi_before.filter(|value| value.is_finite() && *value > 0.0)
+            else {
+                return Ok(ContractWhaleOiWindowContext {
+                    before_ts: Some(before_ts),
+                    after_ts: Some(after_ts),
+                    available: false,
+                    reason: Some("no_oi_snapshot_in_window".to_string()),
+                    ..ContractWhaleOiWindowContext::default()
+                });
+            };
+            let Some(oi_after) = oi_after.filter(|value| value.is_finite()) else {
+                return Ok(ContractWhaleOiWindowContext {
+                    before_ts: Some(before_ts),
+                    after_ts: Some(after_ts),
+                    available: false,
+                    reason: Some("no_oi_snapshot_in_window".to_string()),
+                    ..ContractWhaleOiWindowContext::default()
+                });
+            };
+
+            let oi_delta = oi_after - oi_before;
+            let oi_delta_pct =
+                (oi_before.abs() > f64::EPSILON).then_some((oi_delta / oi_before) * 100.0);
+            Ok(ContractWhaleOiWindowContext {
+                oi_before: Some(oi_before),
+                oi_after: Some(oi_after),
+                oi_delta: Some(oi_delta),
+                oi_delta_pct,
+                before_ts: Some(before_ts),
+                after_ts: Some(after_ts),
+                available: true,
+                reason: None,
+            })
         })
     }
 

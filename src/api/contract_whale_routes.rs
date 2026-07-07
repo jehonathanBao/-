@@ -24,6 +24,7 @@ use crate::{
             market_context_from_snapshots, percentile_level_for_volume,
             rolling_window_stats_with_config, RollingWindowStatsOptions,
         },
+        classification::resolve_contract_whale_oi_context_from_window,
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
@@ -42,8 +43,9 @@ use crate::{
             ContractWhaleLatestResponse, ContractWhaleLiquidationContext,
             ContractWhaleMarketCapability, ContractWhaleMarketContext,
             ContractWhaleMarketStructureLite, ContractWhaleMarketType,
-            ContractWhaleNoiseSuppressionSummary, ContractWhalePercentileThreshold,
-            ContractWhalePlatformCapability, ContractWhaleResponseMeta, ContractWhaleSeverity,
+            ContractWhaleNoiseSuppressionSummary, ContractWhaleOiContextTag,
+            ContractWhalePercentileThreshold, ContractWhalePlatformCapability,
+            ContractWhaleResolvedOiContext, ContractWhaleResponseMeta, ContractWhaleSeverity,
             ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSpotConfirmationContext,
             ContractWhaleSummary, ContractWhaleTradeOpportunity,
             ContractWhaleTradingDecisionResponse, ContractWhaleTrend60s, ContractWhaleWindowStats,
@@ -55,7 +57,10 @@ use crate::{
     spot_whale_monitor::types::{
         SpotWhaleDirection, SpotWhaleSeverity, SpotWhaleSignal, SpotWhaleSignalType,
     },
-    storage::contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+    storage::{
+        contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+        SqliteStore,
+    },
     types::{
         flow::{FlowState, FlowWindow, VenueFlowBreakdown},
         market::{VenueConnectionStatus, VenueHealth},
@@ -980,6 +985,9 @@ fn enrich_contract_whale_response_with_state(
     state: &AppState,
     symbol: &str,
 ) {
+    if let Some(store) = state.contract_whale_store() {
+        decorate_contract_whale_oi_contexts(&store, &mut response.items);
+    }
     let flow_state = state.flow_state_for_symbol(symbol);
     let current_market_price = current_market_price_from_flow_state(&flow_state, symbol);
     decorate_and_filter_price_deviated_signals(
@@ -991,6 +999,65 @@ fn enrich_contract_whale_response_with_state(
     );
     let spot_context = spot_confirmation_context_from_state(state, symbol);
     enrich_contract_whale_response(response, &spot_context);
+}
+
+pub(crate) fn decorate_contract_whale_oi_contexts(
+    store: &SqliteStore,
+    items: &mut [ContractWhaleSignal],
+) {
+    let runtime_config = contract_whale_runtime_config();
+    for signal in items.iter_mut() {
+        let resolved = match store.find_oi_context_for_event(
+            &signal.symbol,
+            signal.ts,
+            signal.window_sec as i64,
+            runtime_config.classification.oi_lookup_max_gap_seconds,
+        ) {
+            Ok(window) => resolve_contract_whale_oi_context_from_window(
+                signal.classification_v2.structure_interpretation,
+                signal.classification_v2.flow_direction,
+                signal.classification_v2.price_response_type_v2,
+                signal.price_move_pct,
+                Some(&window),
+                &runtime_config,
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    signal_id = %signal.id,
+                    symbol = %signal.symbol,
+                    error = %error,
+                    "{} oi context query failed",
+                    CWM_LOG_PREFIX
+                );
+                unavailable_oi_context("oi_query_failed")
+            }
+        };
+        apply_resolved_oi_context(signal, resolved);
+    }
+}
+
+fn apply_resolved_oi_context(
+    signal: &mut ContractWhaleSignal,
+    resolved: ContractWhaleResolvedOiContext,
+) {
+    signal.classification_v2.oi_context = resolved.oi_context;
+    signal.classification_v2.oi_context_label = resolved.oi_context_label;
+    signal.classification_v2.oi_delta = resolved.oi_delta;
+    signal.classification_v2.oi_delta_pct = resolved.oi_delta_pct;
+    signal.classification_v2.oi_available = resolved.oi_available;
+    signal.classification_v2.oi_reason = resolved.oi_reason;
+}
+
+fn unavailable_oi_context(reason: &str) -> ContractWhaleResolvedOiContext {
+    ContractWhaleResolvedOiContext {
+        oi_context: ContractWhaleOiContextTag::OiUnavailable,
+        oi_context_label: ContractWhaleOiContextTag::OiUnavailable.label().to_string(),
+        oi_delta: None,
+        oi_delta_pct: None,
+        oi_available: false,
+        oi_reason: Some(reason.to_string()),
+    }
 }
 
 fn enrich_contract_whale_response(
