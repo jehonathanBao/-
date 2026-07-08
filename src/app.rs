@@ -31,14 +31,20 @@ use crate::{
     connectors::manager::ConnectorManager,
     contract_whale_monitor::{
         aggregator::aggregate_1s_buckets,
+        collector_binance, collector_okx,
         config::contract_whale_runtime_config,
         discord_notifier::{notify_contract_whale_discord, ContractWhaleDiscordSettings},
         log_events as cwm_log_events,
         persistence::{
-            flush_contract_flow_buckets_nonblocking, persist_contract_whale_signals_nonblocking,
+            flush_contract_flow_buckets_nonblocking,
+            persist_contract_funding_snapshots_nonblocking,
+            persist_contract_oi_snapshots_nonblocking, persist_contract_whale_signals_nonblocking,
             spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
         },
-        types::{ContractExchange, ContractTrade, ContractTradeSide},
+        types::{
+            ContractExchange, ContractFundingSnapshot, ContractOiSnapshot, ContractTrade,
+            ContractTradeSide, ContractWhaleMarketType,
+        },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
@@ -90,6 +96,7 @@ struct AppStateInner {
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
     discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_market_context_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     scan_log: ScanLogStore,
     market_data_bus: MarketDataBus,
     connector_manager: ConnectorManager,
@@ -350,6 +357,7 @@ impl AppState {
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
                 cwm_auto_push_task: Arc::new(RwLock::new(None)),
+                cwm_market_context_task: Arc::new(RwLock::new(None)),
                 scan_log,
                 market_data_bus: bus,
                 connector_manager,
@@ -449,6 +457,7 @@ impl AppState {
         self.inner.spot_whale_service.start();
         self.inner.binance_alt_contract_service.start();
         self.start_discord_auto_push_loop();
+        self.start_contract_whale_market_context_loop();
         self.start_contract_whale_auto_push_loop();
         self.record_scan_log(
             "info",
@@ -525,6 +534,7 @@ impl AppState {
         self.inner.spot_whale_service.stop();
         self.inner.snapshot_service.stop();
         self.stop_contract_whale_auto_push_loop();
+        self.stop_contract_whale_market_context_loop();
         self.stop_discord_auto_push_loop();
         self.inner.alert_service.stop();
         self.inner.orderbook_wall_lifecycle_service.stop();
@@ -650,6 +660,179 @@ impl AppState {
     fn stop_contract_whale_auto_push_loop(&self) {
         if let Some(handle) = self.inner.cwm_auto_push_task.write().take() {
             handle.abort();
+        }
+    }
+
+    fn start_contract_whale_market_context_loop(&self) {
+        if !self.config().contract_whale_monitor.enabled {
+            return;
+        }
+        if self.inner.cwm_market_context_task.read().is_some() {
+            return;
+        }
+        let state = self.clone();
+        let handle = tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            state.poll_contract_whale_market_context_once(&client).await;
+            let mut interval = tokio::time::interval(contract_whale_market_context_poll_interval());
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                state.poll_contract_whale_market_context_once(&client).await;
+            }
+        });
+        *self.inner.cwm_market_context_task.write() = Some(handle);
+    }
+
+    fn stop_contract_whale_market_context_loop(&self) {
+        if let Some(handle) = self.inner.cwm_market_context_task.write().take() {
+            handle.abort();
+        }
+    }
+
+    async fn poll_contract_whale_market_context_once(&self, client: &reqwest::Client) {
+        let runtime_config = contract_whale_runtime_config();
+        let store = self.contract_whale_store();
+        if store.is_none() {
+            return;
+        }
+
+        let symbols = enabled_contract_whale_symbols();
+        if symbols.is_empty() {
+            return;
+        }
+
+        let mut oi_snapshots = Vec::<ContractOiSnapshot>::new();
+        let mut funding_snapshots = Vec::<ContractFundingSnapshot>::new();
+        let fallback_ts = crate::normalizers::trade::now_ms();
+
+        for symbol in symbols {
+            if runtime_config
+                .exchanges
+                .binance
+                .market_enabled(ContractWhaleMarketType::Oi)
+            {
+                match collector_binance::fetch_binance_open_interest_snapshot_for_symbol(
+                    client,
+                    &symbol,
+                    None,
+                    fallback_ts,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => oi_snapshots.push(snapshot),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            symbol = symbol.as_str(),
+                            exchange = "binance",
+                            context = "oi",
+                            error = %error,
+                            "{} binance oi snapshot fetch failed",
+                            CWM_LOG_PREFIX
+                        );
+                    }
+                }
+            }
+            if runtime_config
+                .exchanges
+                .binance
+                .market_enabled(ContractWhaleMarketType::Funding)
+            {
+                match collector_binance::fetch_binance_funding_snapshot_for_symbol(
+                    client,
+                    &symbol,
+                    fallback_ts,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => funding_snapshots.push(snapshot),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            symbol = symbol.as_str(),
+                            exchange = "binance",
+                            context = "funding",
+                            error = %error,
+                            "{} binance funding snapshot fetch failed",
+                            CWM_LOG_PREFIX
+                        );
+                    }
+                }
+            }
+            if runtime_config
+                .exchanges
+                .okx
+                .market_enabled(ContractWhaleMarketType::Oi)
+            {
+                match collector_okx::fetch_okx_open_interest_snapshot_for_symbol(
+                    client,
+                    &symbol,
+                    okx_contract_value_base(&symbol),
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => oi_snapshots.push(snapshot),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            symbol = symbol.as_str(),
+                            exchange = "okx",
+                            context = "oi",
+                            error = %error,
+                            "{} okx oi snapshot fetch failed",
+                            CWM_LOG_PREFIX
+                        );
+                    }
+                }
+            }
+            if runtime_config
+                .exchanges
+                .okx
+                .market_enabled(ContractWhaleMarketType::Funding)
+            {
+                match collector_okx::fetch_okx_funding_snapshot_for_symbol(client, &symbol).await {
+                    Ok(Some(snapshot)) => funding_snapshots.push(snapshot),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            symbol = symbol.as_str(),
+                            exchange = "okx",
+                            context = "funding",
+                            error = %error,
+                            "{} okx funding snapshot fetch failed",
+                            CWM_LOG_PREFIX
+                        );
+                    }
+                }
+            }
+        }
+
+        let oi_outcome =
+            persist_contract_oi_snapshots_nonblocking(store.clone(), oi_snapshots).await;
+        let funding_outcome =
+            persist_contract_funding_snapshots_nonblocking(store, funding_snapshots).await;
+
+        if oi_outcome.written > 0 || funding_outcome.written > 0 {
+            tracing::info!(
+                target: CWM_LOG_TARGET,
+                event = "contract_market_context_poll",
+                oi_written = oi_outcome.written,
+                funding_written = funding_outcome.written,
+                "{} contract market context poll persisted snapshots",
+                CWM_LOG_PREFIX
+            );
         }
     }
 
@@ -1178,6 +1361,33 @@ fn contract_whale_auto_push_interval() -> std::time::Duration {
         .filter(|value| (1_000..=60_000).contains(value))
         .unwrap_or(2_000);
     std::time::Duration::from_millis(ms)
+}
+
+fn contract_whale_market_context_poll_interval() -> std::time::Duration {
+    let ms = std::env::var("CONTRACT_WHALE_MARKET_CONTEXT_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (5_000..=120_000).contains(value))
+        .unwrap_or(15_000);
+    std::time::Duration::from_millis(ms)
+}
+
+fn enabled_contract_whale_symbols() -> Vec<String> {
+    contract_whale_runtime_config()
+        .symbols
+        .iter()
+        .filter(|(_, symbol_config)| symbol_config.enabled)
+        .map(|(symbol, _)| symbol.trim().to_ascii_uppercase())
+        .collect()
+}
+
+fn okx_contract_value_base(symbol: &str) -> f64 {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "BTC" => 0.01,
+        "ETH" => 0.1,
+        "SOL" => 10.0,
+        _ => 1.0,
+    }
 }
 
 fn contract_flow_initial_lookback_ms() -> i64 {

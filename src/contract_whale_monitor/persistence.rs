@@ -1,7 +1,10 @@
 use crate::{
     contract_whale_monitor::{
         log_events,
-        types::{ContractFlowBucket, ContractLiquidationBucket, ContractWhaleSignal},
+        types::{
+            ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
+            ContractOiSnapshot, ContractWhaleSignal,
+        },
         LOG_PREFIX, LOG_TARGET,
     },
     normalizers::trade::now_ms,
@@ -160,6 +163,119 @@ pub async fn flush_contract_liquidation_buckets_nonblocking(
                 bucket_count = count,
                 error = %error,
                 "{} liquidation bucket flush task failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+    }
+}
+
+pub async fn persist_contract_oi_snapshots_nonblocking(
+    store: Option<SqliteStore>,
+    snapshots: Vec<ContractOiSnapshot>,
+) -> ContractWhalePersistenceOutcome {
+    if snapshots.is_empty() {
+        return ContractWhalePersistenceOutcome::success(0);
+    }
+    let Some(store) = store else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            event = log_events::BUCKET_FLUSHED,
+            "{} oi snapshot flush skipped: sqlite store unavailable",
+            LOG_PREFIX
+        );
+        return ContractWhalePersistenceOutcome::skipped();
+    };
+
+    let count = snapshots.len();
+    match tokio::task::spawn_blocking(move || store.upsert_contract_oi_snapshots(&snapshots)).await
+    {
+        Ok(Ok(written)) => {
+            tracing::info!(
+                target: LOG_TARGET,
+                event = log_events::BUCKET_FLUSHED,
+                snapshot_count = count,
+                written,
+                "{} oi snapshot flush success",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::success(written)
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                snapshot_count = count,
+                error = %error,
+                "{} oi snapshot flush failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                snapshot_count = count,
+                error = %error,
+                "{} oi snapshot flush task failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+    }
+}
+
+pub async fn persist_contract_funding_snapshots_nonblocking(
+    store: Option<SqliteStore>,
+    snapshots: Vec<ContractFundingSnapshot>,
+) -> ContractWhalePersistenceOutcome {
+    if snapshots.is_empty() {
+        return ContractWhalePersistenceOutcome::success(0);
+    }
+    let Some(store) = store else {
+        tracing::warn!(
+            target: LOG_TARGET,
+            event = log_events::BUCKET_FLUSHED,
+            "{} funding snapshot flush skipped: sqlite store unavailable",
+            LOG_PREFIX
+        );
+        return ContractWhalePersistenceOutcome::skipped();
+    };
+
+    let count = snapshots.len();
+    match tokio::task::spawn_blocking(move || store.upsert_contract_funding_snapshots(&snapshots))
+        .await
+    {
+        Ok(Ok(written)) => {
+            tracing::info!(
+                target: LOG_TARGET,
+                event = log_events::BUCKET_FLUSHED,
+                snapshot_count = count,
+                written,
+                "{} funding snapshot flush success",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::success(written)
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                snapshot_count = count,
+                error = %error,
+                "{} funding snapshot flush failed",
+                LOG_PREFIX
+            );
+            ContractWhalePersistenceOutcome::failed()
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                event = log_events::ERROR,
+                snapshot_count = count,
+                error = %error,
+                "{} funding snapshot flush task failed",
                 LOG_PREFIX
             );
             ContractWhalePersistenceOutcome::failed()
