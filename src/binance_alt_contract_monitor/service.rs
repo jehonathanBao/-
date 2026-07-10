@@ -31,7 +31,8 @@ use super::{
         AltContractExchange, AltContractExchangeStatus, AltContractLatestResponse,
         AltContractSeverity, AltContractSignal, AltContractSummary, AltContractSymbolMeta,
         AltContractSymbolTier, AltContractSymbolUniverseSummary, AltContractTrade,
-        AltContractTradeSide, AltContractWindowStats, BacmRuntimeDiagnostics,
+        AltContractTradeSide, AltContractWindowStats, AltLiquidationEvent, AltLiquidationWindow,
+        BacmRuntimeDiagnostics, LiquidationSide,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -42,6 +43,7 @@ const TRADE_RETENTION_MS: i64 = 3_600_000;
 const DUPLICATE_WINDOW_MS: i64 = 10_000;
 const OI_RETENTION_MS: i64 = 10 * 60_000;
 const LIQUIDATION_CONTEXT_TTL_MS: i64 = 60_000;
+const LIQUIDATION_EVENT_RETENTION_MS: i64 = 300_000;
 const SUMMARY_MONITORED_SYMBOL_LIMIT: usize = 12;
 
 #[derive(Clone)]
@@ -65,6 +67,8 @@ struct BinanceAltContractState {
     symbol_metas: BTreeMap<String, AltContractSymbolMeta>,
     active_symbol_last_trade_at: BTreeMap<String, i64>,
     oi_snapshots: BTreeMap<String, VecDeque<(i64, f64)>>,
+    liquidation_events: BTreeMap<String, VecDeque<AltLiquidationEvent>>,
+    liquidation_event_seen_at: BTreeMap<String, i64>,
     liquidation_seen_at: BTreeMap<String, i64>,
     candidate_seen_at: BTreeMap<String, i64>,
     hot_oi_seen_at: BTreeMap<String, i64>,
@@ -184,6 +188,8 @@ impl BinanceAltContractService {
                 symbol_metas: BTreeMap::new(),
                 active_symbol_last_trade_at: BTreeMap::new(),
                 oi_snapshots: BTreeMap::new(),
+                liquidation_events: BTreeMap::new(),
+                liquidation_event_seen_at: BTreeMap::new(),
                 liquidation_seen_at: BTreeMap::new(),
                 candidate_seen_at: BTreeMap::new(),
                 hot_oi_seen_at: BTreeMap::new(),
@@ -570,19 +576,67 @@ impl BinanceAltContractService {
     }
 
     pub fn update_liquidation_context(&self, product_id: &str, ts: i64, notional_usd: f64) {
-        if !notional_usd.is_finite() || notional_usd <= 0.0 {
+        self.update_liquidation_event(AltLiquidationEvent {
+            product_id: product_id.to_string(),
+            ts,
+            side: LiquidationSide::Unknown,
+            notional_usd,
+            price: None,
+            quantity: None,
+            source_event_id: None,
+        });
+    }
+
+    pub fn update_liquidation_event(&self, mut event: AltLiquidationEvent) {
+        if !event.notional_usd.is_finite() || event.notional_usd <= 0.0 {
             return;
         }
-        let product_id = product_id_for_symbol(product_id);
+        event.product_id = product_id_for_symbol(&event.product_id);
+        let event_key = liquidation_event_key(&event);
         let mut state = self.state.write();
-        let context = state.contexts.entry(product_id.clone()).or_default();
-        context.liquidation_notional_usd =
-            Some(context.liquidation_notional_usd.unwrap_or_default() + notional_usd);
+        if state.liquidation_event_seen_at.contains_key(&event_key) {
+            return;
+        }
+        let summary = {
+            let events = state
+                .liquidation_events
+                .entry(event.product_id.clone())
+                .or_default();
+            events.push_back(event.clone());
+            prune_liquidation_events(events, event.ts);
+            liquidation_window(events, 60, event.ts)
+        };
+        state.liquidation_event_seen_at.insert(event_key, event.ts);
+        prune_timestamp_map(
+            &mut state.liquidation_event_seen_at,
+            event.ts,
+            LIQUIDATION_EVENT_RETENTION_MS,
+        );
+        let context = state.contexts.entry(event.product_id.clone()).or_default();
+        context.liquidation_notional_usd = Some(summary.liquidation_total_usd);
         context.liquidation_suspected = true;
         context.force_order_snapshot = true;
-        state.liquidation_seen_at.insert(product_id, ts);
-        state.last_force_order_at = Some(ts);
+        state.liquidation_seen_at.insert(event.product_id, event.ts);
+        state.last_force_order_at = Some(event.ts);
         state.force_order_stream_connected = true;
+    }
+
+    pub fn liquidation_window_snapshot(
+        &self,
+        product_id: &str,
+        window_sec: u64,
+        now: i64,
+    ) -> AltLiquidationWindow {
+        let product_id = product_id_for_symbol(product_id);
+        let state = self.state.read();
+        state
+            .liquidation_events
+            .get(&product_id)
+            .map(|events| liquidation_window(events, window_sec, now))
+            .unwrap_or_else(|| AltLiquidationWindow {
+                window_sec,
+                ..Default::default()
+            })
     }
 
     pub fn mark_all_market_context_connected(&self) {
@@ -1684,6 +1738,64 @@ fn mark_oi_period_stale(period: &mut super::types::OiPeriodDelta) {
     period.available = false;
     period.stale = true;
     period.reason = Some("latest_snapshot_stale".to_string());
+}
+
+fn liquidation_event_key(event: &AltLiquidationEvent) -> String {
+    event.source_event_id.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{:?}:{:.8}:{:.8}",
+            event.product_id,
+            event.ts,
+            event.side,
+            event.price.unwrap_or_default(),
+            event.quantity.unwrap_or_default()
+        )
+    })
+}
+
+fn prune_liquidation_events(events: &mut VecDeque<AltLiquidationEvent>, now: i64) {
+    while events
+        .front()
+        .is_some_and(|event| now.saturating_sub(event.ts) > LIQUIDATION_EVENT_RETENTION_MS)
+    {
+        events.pop_front();
+    }
+}
+
+fn liquidation_window(
+    events: &VecDeque<AltLiquidationEvent>,
+    window_sec: u64,
+    now: i64,
+) -> AltLiquidationWindow {
+    let window_ms = i64::try_from(window_sec)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000);
+    let mut summary = AltLiquidationWindow {
+        window_sec,
+        ..Default::default()
+    };
+    for event in events.iter().filter(|event| {
+        now.saturating_sub(event.ts) >= 0 && now.saturating_sub(event.ts) <= window_ms
+    }) {
+        summary.liquidation_count += 1;
+        summary.liquidation_total_usd += event.notional_usd;
+        match event.side {
+            LiquidationSide::LongLiquidation => summary.long_liquidation_usd += event.notional_usd,
+            LiquidationSide::ShortLiquidation => {
+                summary.short_liquidation_usd += event.notional_usd
+            }
+            LiquidationSide::Unknown => {}
+        }
+    }
+    summary.dominant_liquidation_side =
+        if summary.long_liquidation_usd > summary.short_liquidation_usd {
+            LiquidationSide::LongLiquidation
+        } else if summary.short_liquidation_usd > summary.long_liquidation_usd {
+            LiquidationSide::ShortLiquidation
+        } else {
+            LiquidationSide::Unknown
+        };
+    summary
 }
 
 fn product_id_for_symbol(symbol: &str) -> String {

@@ -8,7 +8,10 @@ use super::{
     config::binance_alt_contract_runtime_config,
     service::BinanceAltContractService,
     symbol_universe::{build_symbol_universe, BinanceAltSymbolCandidate},
-    types::{AltContractExchange, AltContractTrade, AltContractTradeSide},
+    types::{
+        AltContractExchange, AltContractTrade, AltContractTradeSide, AltLiquidationEvent,
+        LiquidationSide,
+    },
     LOG_PREFIX, LOG_TARGET,
 };
 
@@ -129,6 +132,10 @@ struct BinanceForceOrder {
     accumulated_filled_qty: Option<String>,
     #[serde(rename = "T")]
     trade_time_ms: Option<i64>,
+    #[serde(rename = "S")]
+    side: Option<String>,
+    #[serde(rename = "i")]
+    order_id: Option<i64>,
 }
 
 pub async fn run(service: BinanceAltContractService) {
@@ -626,14 +633,22 @@ fn handle_force_order_message(text: &str, service: &BinanceAltContractService) {
             .unwrap_or_default();
         let notional_usd = price * qty;
         if notional_usd.is_finite() && notional_usd > 0.0 {
-            service.update_liquidation_context(
-                &product_id,
-                event
+            service.update_liquidation_event(AltLiquidationEvent {
+                product_id,
+                ts: event
                     .order
                     .trade_time_ms
                     .unwrap_or_else(crate::normalizers::trade::now_ms),
+                side: match event.order.side.as_deref() {
+                    Some("SELL") => LiquidationSide::LongLiquidation,
+                    Some("BUY") => LiquidationSide::ShortLiquidation,
+                    _ => LiquidationSide::Unknown,
+                },
                 notional_usd,
-            );
+                price: (price > 0.0).then_some(price),
+                quantity: (qty > 0.0).then_some(qty),
+                source_event_id: event.order.order_id.map(|value| value.to_string()),
+            });
         }
     }
 }

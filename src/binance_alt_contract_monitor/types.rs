@@ -241,6 +241,43 @@ pub struct OiPeriodDelta {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiquidationSide {
+    LongLiquidation,
+    ShortLiquidation,
+    Unknown,
+}
+
+impl Default for LiquidationSide {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltLiquidationEvent {
+    pub product_id: String,
+    pub ts: i64,
+    pub side: LiquidationSide,
+    pub notional_usd: f64,
+    pub price: Option<f64>,
+    pub quantity: Option<f64>,
+    pub source_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltLiquidationWindow {
+    pub window_sec: u64,
+    pub liquidation_total_usd: f64,
+    pub long_liquidation_usd: f64,
+    pub short_liquidation_usd: f64,
+    pub liquidation_count: usize,
+    pub dominant_liquidation_side: LiquidationSide,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractWindowStats {
