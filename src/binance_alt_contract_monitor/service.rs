@@ -446,6 +446,7 @@ impl BinanceAltContractService {
         if !open_interest_base.is_finite() || open_interest_base <= 0.0 {
             return;
         }
+        let config = binance_alt_contract_runtime_config();
         let product_id = product_id_for_symbol(product_id);
         let mut state = self.state.write();
         let snapshots = state.oi_snapshots.entry(product_id.clone()).or_default();
@@ -456,21 +457,32 @@ impl BinanceAltContractService {
         {
             snapshots.pop_front();
         }
-        let change_1m = oi_change_for_window(snapshots, ts, 60_000, open_interest_base);
-        let change_5m = oi_change_for_window(snapshots, ts, 5 * 60_000, open_interest_base);
-        let base = change_5m.or(change_1m).and_then(|change| {
-            snapshots
-                .front()
-                .map(|(_, value)| *value)
-                .filter(|value| *value > 0.0)
-                .map(|previous| (change / previous) * 100.0)
-        });
+        let change_1m = oi_period_delta(
+            snapshots,
+            ts,
+            60,
+            config.oi.min_1m_history_seconds,
+            config.oi.max_snapshot_gap_seconds,
+        );
+        let change_5m = oi_period_delta(
+            snapshots,
+            ts,
+            300,
+            config.oi.min_5m_history_seconds,
+            config.oi.max_snapshot_gap_seconds,
+        );
         let context = state.contexts.entry(product_id).or_default();
-        context.oi_change_1m_base = change_1m;
-        context.oi_change_5m_base = change_5m;
-        context.oi_change_pct = base;
+        context.oi_change_1m_base = change_1m.delta;
+        context.oi_change_5m_base = change_5m.delta;
+        context.oi_change_pct = change_1m.delta_pct;
+        context.oi_change_1m = change_1m;
+        context.oi_change_5m = change_5m;
         context.oi_updated_at = Some(ts);
         state.last_oi_poll_at = Some(ts);
+    }
+
+    pub fn context_snapshot(&self, product_id: &str) -> AltContractContext {
+        self.context_for_product(product_id)
     }
 
     pub fn update_funding_context(&self, product_id: &str, funding_rate: Option<f64>) {
@@ -1168,6 +1180,7 @@ impl BinanceAltContractService {
 
     fn context_for_product(&self, product_id: &str) -> AltContractContext {
         let now = now_ms();
+        let config = binance_alt_contract_runtime_config();
         let product_id = product_id_for_symbol(product_id);
         let mut context = self
             .state
@@ -1187,6 +1200,19 @@ impl BinanceAltContractService {
             context.liquidation_notional_usd = None;
             context.liquidation_suspected = false;
             context.force_order_snapshot = false;
+        }
+        let oi_stale = context.oi_updated_at.is_some_and(|updated_at| {
+            now.saturating_sub(updated_at)
+                > i64::try_from(config.oi.max_snapshot_gap_seconds)
+                    .unwrap_or(i64::MAX)
+                    .saturating_mul(1_000)
+        });
+        if oi_stale {
+            mark_oi_period_stale(&mut context.oi_change_1m);
+            mark_oi_period_stale(&mut context.oi_change_5m);
+            context.oi_change_1m_base = None;
+            context.oi_change_5m_base = None;
+            context.oi_change_pct = None;
         }
         context
     }
@@ -1594,17 +1620,70 @@ fn light_scan_candidate(
         || (stats.dominance >= 0.60 && stats.total_notional_usd >= high * 0.25)
 }
 
-fn oi_change_for_window(
+fn oi_period_delta(
     snapshots: &VecDeque<(i64, f64)>,
     now: i64,
-    window_ms: i64,
-    current: f64,
-) -> Option<f64> {
-    snapshots
+    period_sec: u64,
+    min_history_sec: u64,
+    max_gap_sec: u64,
+) -> super::types::OiPeriodDelta {
+    let period_ms = i64::try_from(period_sec)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000);
+    let min_history_ms = i64::try_from(min_history_sec)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000);
+    let max_gap_ms = i64::try_from(max_gap_sec)
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1_000);
+    let mut result = super::types::OiPeriodDelta {
+        period_sec,
+        ..Default::default()
+    };
+    let Some((after_ts, after_oi)) = snapshots.back().copied() else {
+        result.reason = Some("missing_snapshot".to_string());
+        return result;
+    };
+    result.after_ts = Some(after_ts);
+    result.after_oi = Some(after_oi);
+    if now.saturating_sub(after_ts) > max_gap_ms {
+        result.stale = true;
+        result.reason = Some("latest_snapshot_stale".to_string());
+        return result;
+    }
+    if after_ts.saturating_sub(snapshots.front().map(|(ts, _)| *ts).unwrap_or(after_ts))
+        < min_history_ms
+    {
+        result.reason = Some("insufficient_history".to_string());
+        return result;
+    }
+    let target = after_ts.saturating_sub(period_ms);
+    let Some((before_ts, before_oi)) = snapshots
         .iter()
-        .rev()
-        .find(|(ts, _)| now.saturating_sub(*ts) >= window_ms)
-        .map(|(_, previous)| current - *previous)
+        .copied()
+        .min_by_key(|(snapshot_ts, _)| snapshot_ts.saturating_sub(target).abs())
+    else {
+        result.reason = Some("missing_reference_snapshot".to_string());
+        return result;
+    };
+    result.before_ts = Some(before_ts);
+    result.before_oi = Some(before_oi);
+    if before_oi <= 0.0 || (before_ts.saturating_sub(target)).abs() > max_gap_ms {
+        result.stale = true;
+        result.reason = Some("reference_snapshot_stale_or_invalid".to_string());
+        return result;
+    }
+    let delta = after_oi - before_oi;
+    result.delta = Some(delta);
+    result.delta_pct = Some(delta / before_oi * 100.0);
+    result.available = true;
+    result
+}
+
+fn mark_oi_period_stale(period: &mut super::types::OiPeriodDelta) {
+    period.available = false;
+    period.stale = true;
+    period.reason = Some("latest_snapshot_stale".to_string());
 }
 
 fn product_id_for_symbol(symbol: &str) -> String {

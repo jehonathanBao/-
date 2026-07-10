@@ -203,6 +203,10 @@ pub struct AltContractExchangeContribution {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractContext {
+    #[serde(default)]
+    pub oi_change_1m: OiPeriodDelta,
+    #[serde(default)]
+    pub oi_change_5m: OiPeriodDelta,
     pub oi_change_1m_base: Option<f64>,
     pub oi_change_5m_base: Option<f64>,
     pub oi_change_pct: Option<f64>,
@@ -220,6 +224,21 @@ pub struct AltContractContext {
     pub price_move_1m_pct: Option<f64>,
     pub force_order_snapshot: bool,
     pub persistence_windows: u8,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OiPeriodDelta {
+    pub period_sec: u64,
+    pub before_oi: Option<f64>,
+    pub after_oi: Option<f64>,
+    pub before_ts: Option<i64>,
+    pub after_ts: Option<i64>,
+    pub delta: Option<f64>,
+    pub delta_pct: Option<f64>,
+    pub available: bool,
+    pub stale: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -202,8 +202,16 @@ pub fn detect_alt_contract_signal_with_context(
         oi_freshness_sec: context
             .oi_updated_at
             .map(|seen_at| stats.ts.saturating_sub(seen_at).max(0) as u64 / 1000),
-        oi_change_1m_pct: context.oi_change_pct.map(|value| round(value, 4)),
-        oi_change_5m_pct: context.oi_change_pct.map(|value| round(value, 4)),
+        oi_change_1m_pct: context
+            .oi_change_1m
+            .delta_pct
+            .or(context.oi_change_pct)
+            .map(|value| round(value, 4)),
+        oi_change_5m_pct: context
+            .oi_change_5m
+            .delta_pct
+            .or(context.oi_change_pct)
+            .map(|value| round(value, 4)),
         oi_change_15m_pct: None,
         oi_notional_change_usd: context
             .oi_change_1m_base

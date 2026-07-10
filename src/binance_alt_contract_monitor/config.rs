@@ -24,6 +24,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub data_quality: BinanceAltDataQualityConfig,
     pub detector: BinanceAltDetectorConfig,
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
+    pub oi: BinanceAltOiConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
     pub market_classification: BinanceAltMarketClassificationConfig,
@@ -158,6 +159,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             data_quality: BinanceAltDataQualityConfig::default(),
             detector: BinanceAltDetectorConfig::default(),
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
+            oi: BinanceAltOiConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
             market_classification: BinanceAltMarketClassificationConfig::default(),
@@ -301,6 +303,23 @@ pub struct BinanceAltOiSchedulerConfig {
     pub candidate_ttl_sec: u64,
     pub max_oi_requests_per_sec: u64,
     pub immediate_fetch_on_candidate: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltOiConfig {
+    pub max_snapshot_gap_seconds: u64,
+    pub min_1m_history_seconds: u64,
+    pub min_5m_history_seconds: u64,
+}
+
+impl Default for BinanceAltOiConfig {
+    fn default() -> Self {
+        Self {
+            max_snapshot_gap_seconds: 90,
+            min_1m_history_seconds: 45,
+            min_5m_history_seconds: 240,
+        }
+    }
 }
 
 impl Default for BinanceAltOiSchedulerConfig {
@@ -773,6 +792,23 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
             immediate_fetch_on_candidate: settings
                 .get_bool("binance_alt_contract_monitor.oi_scheduler.immediate_fetch_on_candidate")
                 .unwrap_or(fallback.oi_scheduler.immediate_fetch_on_candidate),
+        },
+        oi: BinanceAltOiConfig {
+            max_snapshot_gap_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi.max_snapshot_gap_seconds",
+                fallback.oi.max_snapshot_gap_seconds,
+            ),
+            min_1m_history_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi.min_1m_history_seconds",
+                fallback.oi.min_1m_history_seconds,
+            ),
+            min_5m_history_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.oi.min_5m_history_seconds",
+                fallback.oi.min_5m_history_seconds,
+            ),
         },
         storage: BinanceAltStorageConfig {
             persist_all_1s: settings
