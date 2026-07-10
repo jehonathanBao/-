@@ -30,10 +30,10 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
 
     let compose = fs::read_to_string(root.join("docker-compose.yml")).expect("compose");
     assert!(compose.contains("OPERATOR_TOKEN: ${OPERATOR_TOKEN:?"));
-    assert!(compose.contains("VITE_PROXY_API_TARGET: http://backend:3000"));
+    assert!(compose.contains("INTERNAL_API_ORIGIN: ${INTERNAL_API_ORIGIN:-http://127.0.0.1:3000}"));
     assert!(compose.contains("WS_SIGNAL_INTERVAL_MS"));
     assert!(compose.contains("127.0.0.1:8000:3000"));
-    assert!(compose.contains("${DASHBOARD_BIND_HOST:-0.0.0.0}:5173:5173"));
+    assert!(compose.contains("${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"));
     assert!(compose.contains("./data"));
     assert!(compose.contains("/app/data"));
     assert!(compose.contains("./config"));
@@ -41,6 +41,21 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(compose.contains("8000:3000"));
     assert!(!compose.contains("VITE_OPERATOR_TOKEN"));
     assert!(!compose.contains("VITE_API_TOKEN"));
+
+    for relative in [
+        "deploy/nginx-site.toxic-order-monitor.conf",
+        "toxic-order-monitor/nginx.conf.template",
+    ] {
+        let nginx = fs::read_to_string(root.join(relative)).expect("nginx config");
+        assert!(
+            nginx.contains(
+                "location = /api/binance-alt-contract/runtime-debug {\n        return 404;\n    }"
+            ) || nginx.contains(
+                "location = /api/binance-alt-contract/runtime-debug {\n    return 404;\n  }"
+            ),
+            "operator-only BACM diagnostics must not be forwarded by {relative}"
+        );
+    }
 
     let vite = fs::read_to_string(root.join("toxic-order-monitor/vite.config.js")).expect("vite");
     assert!(vite.contains("VITE_PROXY_API_TARGET"));
@@ -54,7 +69,7 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(runbook.contains("127.0.0.1:8000"));
     assert!(runbook.contains("http://<server-ip>:5173"));
     assert!(runbook.contains("`/ws/signals` streams redacted toxic signal snapshots"));
-    assert!(runbook.contains("browser refresh and HMR"));
+    assert!(runbook.contains("Browser refreshes and Vite HMR reloads"));
 
     let smoke_script = fs::read_to_string(root.join("scripts/smoke-compose.sh")).expect("smoke");
     assert!(smoke_script.contains("backend StartedAt before frontend refresh"));

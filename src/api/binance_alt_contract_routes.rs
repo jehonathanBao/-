@@ -1,6 +1,7 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     Json,
 };
 use serde::Deserialize;
@@ -80,6 +81,60 @@ pub async fn binance_alt_contract_history_route(
             min_build_score,
             limit: Some(limit),
         }))))
+}
+
+pub async fn binance_alt_contract_runtime_debug_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.operator_token_configured() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "ok": false,
+                "reason": "operator_token_missing",
+                "message": "BACM runtime diagnostics require operator token configuration"
+            })),
+        )
+            .into_response();
+    }
+    if !state.operator_token_authorized(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "ok": false,
+                "reason": "operator_token_required",
+                "message": "BACM runtime diagnostics require an operator token"
+            })),
+        )
+            .into_response();
+    }
+
+    let diagnostics = state.binance_alt_contract_service().runtime_diagnostics();
+    Json(serde_json::json!({
+        "universe": {
+            "configured": diagnostics.universe_symbol_count,
+            "active": diagnostics.active_symbol_count,
+            "connectedShards": diagnostics.connected_shards,
+            "totalShards": diagnostics.total_shards,
+            "lastRefreshAt": diagnostics.universe_last_refreshed_at,
+            "refreshAgeSec": diagnostics.universe_refresh_age_sec,
+        },
+        "scheduler": {
+            "candidateCount": diagnostics.light_candidates_total,
+            "scoredCount": diagnostics.full_score_attempts_total,
+            "budgetSkippedCount": diagnostics.full_score_skipped_budget_total,
+        },
+        "persistence": {
+            "queueDepth": diagnostics.persistence_queue_depth,
+            "oldestPendingAgeMs": diagnostics.oldest_persistence_age_ms,
+        },
+        "buffers": {
+            "tradeBufferTotal": diagnostics.trade_buffer_total,
+            "perSymbolStateCount": diagnostics.per_symbol_state_count,
+        },
+    }))
+    .into_response()
 }
 
 fn parse_optional_symbol(

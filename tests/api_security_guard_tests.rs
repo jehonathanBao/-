@@ -126,6 +126,56 @@ async fn lan_bound_post_accepts_operator_token_without_lan_dashboard_flag() {
 }
 
 #[tokio::test]
+async fn bacm_runtime_debug_requires_an_explicit_operator_token() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
+
+    let missing_configuration = test_http_client()
+        .get(format!(
+            "http://{addr}/api/binance-alt-contract/runtime-debug"
+        ))
+        .send()
+        .await
+        .expect("runtime debug response");
+    assert_eq!(
+        missing_configuration.status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+
+    server.abort();
+    clear_operator_env();
+
+    std::env::set_var("OPERATOR_TOKEN", "test-token");
+    let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
+    let missing_token = test_http_client()
+        .get(format!(
+            "http://{addr}/api/binance-alt-contract/runtime-debug"
+        ))
+        .send()
+        .await
+        .expect("missing token response");
+    assert_eq!(missing_token.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let allowed = test_http_client()
+        .get(format!(
+            "http://{addr}/api/binance-alt-contract/runtime-debug"
+        ))
+        .header("x-operator-token", "test-token")
+        .send()
+        .await
+        .expect("authorized runtime debug response");
+    assert_eq!(allowed.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = allowed.json().await.expect("runtime debug json");
+    assert!(payload["universe"].is_object());
+    assert!(payload["scheduler"].is_object());
+    assert!(payload["persistence"].is_object());
+
+    server.abort();
+    clear_operator_env();
+}
+
+#[tokio::test]
 async fn lan_bound_sensitive_get_without_token_is_rejected() {
     let _guard = ENV_LOCK.lock().await;
     clear_operator_env();

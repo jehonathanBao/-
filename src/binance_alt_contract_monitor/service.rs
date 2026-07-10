@@ -31,7 +31,7 @@ use super::{
         AltContractExchange, AltContractExchangeStatus, AltContractLatestResponse,
         AltContractSeverity, AltContractSignal, AltContractSummary, AltContractSymbolMeta,
         AltContractSymbolTier, AltContractSymbolUniverseSummary, AltContractTrade,
-        AltContractTradeSide, AltContractWindowStats,
+        AltContractTradeSide, AltContractWindowStats, BacmRuntimeDiagnostics,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -63,12 +63,19 @@ struct BinanceAltContractState {
     exchanges: BTreeMap<String, AltContractExchangeStatus>,
     contexts: BTreeMap<String, AltContractContext>,
     symbol_metas: BTreeMap<String, AltContractSymbolMeta>,
+    active_symbol_last_trade_at: BTreeMap<String, i64>,
     oi_snapshots: BTreeMap<String, VecDeque<(i64, f64)>>,
     liquidation_seen_at: BTreeMap<String, i64>,
     candidate_seen_at: BTreeMap<String, i64>,
     hot_oi_seen_at: BTreeMap<String, i64>,
     last_detector_scan_at: BTreeMap<String, i64>,
     scoring_budget: ScoringBudgetState,
+    light_candidates_total: u64,
+    full_score_attempts_total: u64,
+    full_score_skipped_budget_total: u64,
+    shard_connected: BTreeMap<usize, bool>,
+    total_shards: usize,
+    universe_last_refreshed_at: Option<i64>,
     events: BTreeMap<String, AltContractEventState>,
     last_oi_poll_at: Option<i64>,
     last_force_order_at: Option<i64>,
@@ -175,12 +182,19 @@ impl BinanceAltContractService {
                 exchanges,
                 contexts: BTreeMap::new(),
                 symbol_metas: BTreeMap::new(),
+                active_symbol_last_trade_at: BTreeMap::new(),
                 oi_snapshots: BTreeMap::new(),
                 liquidation_seen_at: BTreeMap::new(),
                 candidate_seen_at: BTreeMap::new(),
                 hot_oi_seen_at: BTreeMap::new(),
                 last_detector_scan_at: BTreeMap::new(),
                 scoring_budget: ScoringBudgetState::default(),
+                light_candidates_total: 0,
+                full_score_attempts_total: 0,
+                full_score_skipped_budget_total: 0,
+                shard_connected: BTreeMap::new(),
+                total_shards: 0,
+                universe_last_refreshed_at: None,
                 events: BTreeMap::new(),
                 last_oi_poll_at: None,
                 last_force_order_at: None,
@@ -257,6 +271,9 @@ impl BinanceAltContractService {
         {
             let mut state = self.state.write();
             state.trades.push_back(trade.clone());
+            state
+                .active_symbol_last_trade_at
+                .insert(trade.product_id.clone(), trade.ts);
             prune_trades(&mut state.trades, trade.ts);
         }
         self.update_post_signal_validation(&trade);
@@ -358,6 +375,46 @@ impl BinanceAltContractService {
             .into_iter()
             .map(|meta| (meta.product_id.clone(), meta))
             .collect();
+        state.universe_last_refreshed_at = Some(now_ms());
+    }
+
+    pub fn update_shard_status(&self, shard_id: usize, total_shards: usize, connected: bool) {
+        let mut state = self.state.write();
+        state.total_shards = total_shards;
+        state.shard_connected.insert(shard_id, connected);
+    }
+
+    pub fn runtime_diagnostics(&self) -> BacmRuntimeDiagnostics {
+        let config = binance_alt_contract_runtime_config();
+        let now = now_ms();
+        let state = self.state.read();
+        let universe_symbol_count = if state.symbol_metas.is_empty() {
+            config.enabled_symbols().len()
+        } else {
+            state.symbol_metas.len()
+        };
+        let universe_refresh_age_sec = state.universe_last_refreshed_at.map(|refreshed_at| {
+            u64::try_from(now.saturating_sub(refreshed_at).max(0) / 1_000).unwrap_or(u64::MAX)
+        });
+        BacmRuntimeDiagnostics {
+            universe_symbol_count,
+            active_symbol_count: state.active_symbol_last_trade_at.len(),
+            connected_shards: state
+                .shard_connected
+                .values()
+                .filter(|connected| **connected)
+                .count(),
+            total_shards: state.total_shards,
+            trade_buffer_total: state.trades.len(),
+            per_symbol_state_count: 0,
+            light_candidates_total: state.light_candidates_total,
+            full_score_attempts_total: state.full_score_attempts_total,
+            full_score_skipped_budget_total: state.full_score_skipped_budget_total,
+            persistence_queue_depth: 0,
+            oldest_persistence_age_ms: None,
+            universe_last_refreshed_at: state.universe_last_refreshed_at,
+            universe_refresh_age_sec,
+        }
     }
 
     pub fn monitored_product_ids(&self) -> Vec<String> {
@@ -987,6 +1044,7 @@ impl BinanceAltContractService {
     fn mark_candidate_product(&self, product_id: &str, ts: i64) {
         let product_id = product_id_for_symbol(product_id);
         let mut state = self.state.write();
+        state.light_candidates_total = state.light_candidates_total.saturating_add(1);
         state.candidate_seen_at.insert(product_id.clone(), ts);
         state.hot_oi_seen_at.insert(product_id, ts);
     }
@@ -1006,6 +1064,7 @@ impl BinanceAltContractService {
         {
             return false;
         }
+        state.full_score_attempts_total = state.full_score_attempts_total.saturating_add(1);
         let max_full_scores = config
             .detector
             .max_global_full_scoring_per_sec
@@ -1019,6 +1078,8 @@ impl BinanceAltContractService {
             max_burst_scores,
             config.detector.burst_window_ms,
         ) {
+            state.full_score_skipped_budget_total =
+                state.full_score_skipped_budget_total.saturating_add(1);
             return false;
         }
         state.last_detector_scan_at.insert(product_id, ts);
@@ -1232,6 +1293,11 @@ impl BinanceAltContractService {
         prune_timestamp_map(&mut state.candidate_seen_at, now, context_retention_ms);
         prune_timestamp_map(&mut state.hot_oi_seen_at, now, context_retention_ms);
         prune_timestamp_map(&mut state.last_detector_scan_at, now, context_retention_ms);
+        prune_timestamp_map(
+            &mut state.active_symbol_last_trade_at,
+            now,
+            TRADE_RETENTION_MS,
+        );
         for snapshots in state.oi_snapshots.values_mut() {
             while snapshots
                 .front()

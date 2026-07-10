@@ -177,6 +177,10 @@ pub fn router(state: AppState) -> Router {
             get(binance_alt_contract_routes::binance_alt_contract_history_route),
         )
         .route(
+            "/api/binance-alt-contract/runtime-debug",
+            get(binance_alt_contract_routes::binance_alt_contract_runtime_debug_route),
+        )
+        .route(
             "/api/spot-whale/summary",
             get(spot_whale_routes::spot_whale_summary_route),
         )

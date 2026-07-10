@@ -62,8 +62,8 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
     assert!(signal.evidence_count >= 4);
     assert_eq!(signal.severity, AltContractSeverity::S);
     assert!(
-        signal.discord_eligible,
-        "discord_reason={} alert_kind={} build={} abnormal={} confidence={} evidence={} oi_quality={}",
+        !signal.discord_eligible,
+        "a single-window observation must remain display-only; discord_reason={} alert_kind={} build={} abnormal={} confidence={} evidence={} oi_quality={}",
         signal.discord_reason,
         signal.discord_alert_kind,
         signal.build_score,
@@ -72,7 +72,8 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
         signal.evidence_count,
         signal.oi_quality
     );
-    assert!(signal.discord_would_send);
+    assert!(!signal.discord_would_send);
+    assert_eq!(signal.discord_reason, "semantic_interpretation_only");
     assert!(!signal.explain_tags.is_empty());
     assert!(signal.abnormal_explanation.contains("异常分"));
     assert!(signal.build_explanation.contains("建仓分"));

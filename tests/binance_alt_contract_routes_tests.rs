@@ -14,8 +14,8 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     service::{BinanceAltContractQuery, BinanceAltContractService},
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractImpactScore, AltContractMarketTier, AltContractSeverity, AltContractSymbolTier,
-        AltContractWindowStats,
+        AltContractImpactScore, AltContractMarketTier, AltContractSeverity, AltContractSymbolMeta,
+        AltContractSymbolTier, AltContractWindowStats,
     },
 };
 
@@ -481,6 +481,46 @@ fn disabled_service_does_not_restore_or_return_persisted_bacm_signals() {
     assert_eq!(history.summary.signal_count, 0);
 
     let _ = fs::remove_file(&path);
+    reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn runtime_diagnostics_read_maintained_bacm_counters_without_signal_history_scans() {
+    let _guard = guard();
+    reset_binance_alt_contract_runtime_config();
+    let config = BinanceAltContractRuntimeConfig {
+        enabled: true,
+        ..BinanceAltContractRuntimeConfig::default()
+    };
+    set_binance_alt_contract_runtime_config(config);
+
+    let service = BinanceAltContractService::new(true, true, 1_700_000_000_000);
+    service.update_symbol_universe(vec![
+        AltContractSymbolMeta {
+            symbol: "SOLUSDT".to_string(),
+            product_id: "SOLUSDT".to_string(),
+            tier: AltContractSymbolTier::B,
+            market_tier: AltContractMarketTier::UltraCore,
+            quote_volume_24h_usd: 3_000_000_000.0,
+        },
+        AltContractSymbolMeta {
+            symbol: "DOGEUSDT".to_string(),
+            product_id: "DOGEUSDT".to_string(),
+            tier: AltContractSymbolTier::C,
+            market_tier: AltContractMarketTier::Mainstream,
+            quote_volume_24h_usd: 600_000_000.0,
+        },
+    ]);
+
+    let diagnostics = service.runtime_diagnostics();
+
+    assert_eq!(diagnostics.universe_symbol_count, 2);
+    assert_eq!(diagnostics.active_symbol_count, 0);
+    assert_eq!(diagnostics.trade_buffer_total, 0);
+    assert_eq!(diagnostics.per_symbol_state_count, 0);
+    assert_eq!(diagnostics.persistence_queue_depth, 0);
+    assert!(diagnostics.oldest_persistence_age_ms.is_none());
+    assert!(diagnostics.universe_last_refreshed_at.is_some());
     reset_binance_alt_contract_runtime_config();
 }
 

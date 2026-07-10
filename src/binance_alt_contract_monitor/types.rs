@@ -898,6 +898,24 @@ pub struct AltContractSummary {
     pub amios_report: AltContractMarketOsReport,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacmRuntimeDiagnostics {
+    pub universe_symbol_count: usize,
+    pub active_symbol_count: usize,
+    pub connected_shards: usize,
+    pub total_shards: usize,
+    pub trade_buffer_total: usize,
+    pub per_symbol_state_count: usize,
+    pub light_candidates_total: u64,
+    pub full_score_attempts_total: u64,
+    pub full_score_skipped_budget_total: u64,
+    pub persistence_queue_depth: usize,
+    pub oldest_persistence_age_ms: Option<u64>,
+    pub universe_last_refreshed_at: Option<i64>,
+    pub universe_refresh_age_sec: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractDisplayThresholds {

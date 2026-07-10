@@ -171,11 +171,12 @@ pub async fn run(service: BinanceAltContractService) {
             "{} binance alt aggTrade shards starting",
             LOG_PREFIX
         );
+        let total_shards = shards.len();
         let shard_futures = shards
             .into_iter()
             .enumerate()
             .map(|(shard_id, shard_symbols)| {
-                run_agg_trade_shard(service.clone(), shard_id, shard_symbols)
+                run_agg_trade_shard(service.clone(), shard_id, total_shards, shard_symbols)
             })
             .collect::<Vec<_>>();
         futures_util::future::join_all(shard_futures).await;
@@ -186,10 +187,12 @@ pub async fn run(service: BinanceAltContractService) {
 async fn run_agg_trade_shard(
     service: BinanceAltContractService,
     shard_id: usize,
+    total_shards: usize,
     symbols: Vec<String>,
 ) {
     loop {
         let url = stream_url(&symbols);
+        service.update_shard_status(shard_id, total_shards, false);
         service.set_exchange_status(AltContractExchange::Binance, "connecting", false, None);
         match connect_async(&url).await {
             Ok((ws, _)) => {
@@ -201,6 +204,7 @@ async fn run_agg_trade_shard(
                     LOG_PREFIX
                 );
                 service.mark_connected(AltContractExchange::Binance);
+                service.update_shard_status(shard_id, total_shards, true);
                 let (_, mut read) = ws.split();
                 while let Some(message) = read.next().await {
                     match message {
@@ -210,6 +214,7 @@ async fn run_agg_trade_shard(
                             }
                         }
                         Err(error) => {
+                            service.update_shard_status(shard_id, total_shards, false);
                             service.mark_reconnecting(
                                 AltContractExchange::Binance,
                                 Some(error.to_string()),
@@ -220,6 +225,7 @@ async fn run_agg_trade_shard(
                 }
             }
             Err(error) => {
+                service.update_shard_status(shard_id, total_shards, false);
                 service.mark_reconnecting(AltContractExchange::Binance, Some(error.to_string()));
             }
         }
