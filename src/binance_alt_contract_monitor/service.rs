@@ -24,7 +24,7 @@ use super::{
     },
     impact::{impact_displayable, is_legacy_impact_score},
     smaf::{audit_smart_money_system, SmafAuditInput},
-    smll::audit_self_learning_loop,
+    smll::audit_self_learning_loop_with_mode,
     symbol_universe::{meta_from_product_id, tier_for_quote_volume},
     types::{
         AltContractAllMarketContextStatus, AltContractContext, AltContractDryRunStats,
@@ -831,7 +831,8 @@ impl BinanceAltContractService {
             last_ticker_at: state.last_ticker_at,
             errors1h,
         });
-        let smll_report = audit_self_learning_loop(now, signals);
+        let smll_report =
+            audit_self_learning_loop_with_mode(&config.self_learning.mode, now, signals);
         let atca_report =
             run_trading_cognition_agent(now, &state.signals, &smaf_report, &smll_report);
         let amios_report =

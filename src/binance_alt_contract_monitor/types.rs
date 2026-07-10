@@ -370,8 +370,21 @@ pub struct AltContractImpactScore {
     pub discord_threshold: f64,
     pub s_threshold: f64,
     pub reference_volume_24h_usd: Option<f64>,
+    #[serde(default)]
+    pub reference_age_sec: Option<u64>,
+    #[serde(default)]
+    pub evidence_degraded: bool,
     pub reference_source: String,
     pub interpretation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImpactReferenceSource {
+    BinanceTicker24h,
+    LocalRolling24h,
+    HistoricalBaseline,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -630,6 +643,12 @@ pub struct AltContractCalibrationUpdate {
 #[serde(rename_all = "camelCase")]
 pub struct AltContractSmllReport {
     pub enabled: bool,
+    #[serde(default = "default_learning_mode")]
+    pub learning_mode: String,
+    #[serde(default)]
+    pub accuracy_available: bool,
+    #[serde(default)]
+    pub reason: String,
     pub protected_realtime: bool,
     pub status: String,
     pub learning_score: f64,
@@ -643,6 +662,10 @@ pub struct AltContractSmllReport {
     pub suggested_weights: AltContractAdaptiveWeightConfig,
     pub drift_report: AltContractDriftReport,
     pub calibration_updates: Vec<AltContractCalibrationUpdate>,
+}
+
+fn default_learning_mode() -> String {
+    "disabled".to_string()
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

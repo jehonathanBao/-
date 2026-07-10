@@ -40,17 +40,23 @@ pub fn score_alt_impact(
         discord_threshold: ALT_IMPACT_DISCORD_THRESHOLD,
         s_threshold: ALT_IMPACT_S_THRESHOLD,
         reference_volume_24h_usd: reference_volume_24h_usd.map(round2),
+        reference_age_sec: context
+            .ticker_updated_at
+            .map(|updated_at| stats.ts.saturating_sub(updated_at).max(0) as u64 / 1_000),
+        evidence_degraded: reference_volume_24h_usd.is_none(),
         reference_source,
         interpretation: interpretation(final_score),
     }
 }
 
 pub fn impact_displayable(score: &AltContractImpactScore) -> bool {
-    score.final_score >= score.display_threshold.max(ALT_IMPACT_DISPLAY_THRESHOLD)
+    !score.evidence_degraded
+        && score.final_score >= score.display_threshold.max(ALT_IMPACT_DISPLAY_THRESHOLD)
 }
 
 pub fn impact_discord_ready(score: &AltContractImpactScore) -> bool {
-    score.final_score >= score.discord_threshold.max(ALT_IMPACT_DISCORD_THRESHOLD)
+    !score.evidence_degraded
+        && score.final_score >= score.discord_threshold.max(ALT_IMPACT_DISCORD_THRESHOLD)
 }
 
 pub fn impact_discord_level(score: &AltContractImpactScore) -> Option<&'static str> {
@@ -64,7 +70,7 @@ pub fn impact_discord_level(score: &AltContractImpactScore) -> Option<&'static s
 }
 
 pub fn impact_s_ready(score: &AltContractImpactScore) -> bool {
-    score.final_score >= score.s_threshold.max(ALT_IMPACT_S_THRESHOLD)
+    !score.evidence_degraded && score.final_score >= score.s_threshold.max(ALT_IMPACT_S_THRESHOLD)
 }
 
 pub fn is_legacy_impact_score(score: &AltContractImpactScore) -> bool {
@@ -77,7 +83,7 @@ pub fn is_legacy_impact_score(score: &AltContractImpactScore) -> bool {
 }
 
 fn reference_volume_24h(
-    stats: &AltContractWindowStats,
+    _stats: &AltContractWindowStats,
     context: &AltContractContext,
 ) -> (Option<f64>, String) {
     if let Some(value) = context
@@ -85,23 +91,6 @@ fn reference_volume_24h(
         .filter(|value| value.is_finite() && *value > 0.0)
     {
         return (Some(value), "ticker_quote_volume_24h".to_string());
-    }
-
-    // Test/replay samples and legacy persisted signals may not have ticker
-    // context. Use a conservative synthetic baseline so the model still
-    // remains relative instead of falling back to a raw USD gate.
-    if stats.total_notional_usd.is_finite() && stats.total_notional_usd > 0.0 {
-        let multiplier = match stats.tier {
-            AltContractSymbolTier::A => 80.0,
-            AltContractSymbolTier::B => 60.0,
-            AltContractSymbolTier::C => 45.0,
-            AltContractSymbolTier::D => 35.0,
-            AltContractSymbolTier::E => 30.0,
-        };
-        return (
-            Some(stats.total_notional_usd * multiplier),
-            "synthetic_tier_volume_proxy".to_string(),
-        );
     }
 
     (None, "unavailable".to_string())

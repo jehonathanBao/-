@@ -25,6 +25,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub detector: BinanceAltDetectorConfig,
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub oi: BinanceAltOiConfig,
+    pub self_learning: BinanceAltSelfLearningConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
     pub market_classification: BinanceAltMarketClassificationConfig,
@@ -160,6 +161,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             detector: BinanceAltDetectorConfig::default(),
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             oi: BinanceAltOiConfig::default(),
+            self_learning: BinanceAltSelfLearningConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
             market_classification: BinanceAltMarketClassificationConfig::default(),
@@ -310,6 +312,19 @@ pub struct BinanceAltOiConfig {
     pub max_snapshot_gap_seconds: u64,
     pub min_1m_history_seconds: u64,
     pub min_5m_history_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltSelfLearningConfig {
+    pub mode: String,
+}
+
+impl Default for BinanceAltSelfLearningConfig {
+    fn default() -> Self {
+        Self {
+            mode: "disabled".to_string(),
+        }
+    }
 }
 
 impl Default for BinanceAltOiConfig {
@@ -808,6 +823,13 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 settings,
                 "binance_alt_contract_monitor.oi.min_5m_history_seconds",
                 fallback.oi.min_5m_history_seconds,
+            ),
+        },
+        self_learning: BinanceAltSelfLearningConfig {
+            mode: string_setting(
+                settings,
+                "binance_alt_contract_monitor.self_learning.mode",
+                &fallback.self_learning.mode,
             ),
         },
         storage: BinanceAltStorageConfig {

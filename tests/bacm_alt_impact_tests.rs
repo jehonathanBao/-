@@ -70,6 +70,22 @@ fn s_grade_requires_extreme_relative_impact_not_just_high_direction() {
     assert!(impact_s_ready(&impact));
 }
 
+#[test]
+fn impact_without_a_reliable_reference_is_unavailable_and_not_displayable() {
+    let stats = stats("NOREF", 9_000_000.0, 0.92, 12.0);
+    let impact = score_alt_impact(
+        &stats,
+        &AltContractContext::default(),
+        AltContractMarketTier::Alt,
+    );
+
+    assert_eq!(impact.reference_source, "unavailable");
+    assert!(impact.reference_volume_24h_usd.is_none());
+    assert!(impact.evidence_degraded);
+    assert!(!impact_displayable(&impact));
+    assert!(!impact_discord_ready(&impact));
+}
+
 fn stats(
     symbol: &str,
     notional: f64,

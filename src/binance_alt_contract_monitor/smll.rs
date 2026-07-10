@@ -14,6 +14,29 @@ pub fn audit_self_learning_loop(
     now_ms: i64,
     signals: &VecDeque<AltContractSignal>,
 ) -> AltContractSmllReport {
+    audit_self_learning_loop_with_mode("heuristic_audit", now_ms, signals)
+}
+
+pub fn audit_self_learning_loop_with_mode(
+    mode: &str,
+    now_ms: i64,
+    signals: &VecDeque<AltContractSignal>,
+) -> AltContractSmllReport {
+    if !mode.eq_ignore_ascii_case("heuristic_audit") {
+        return AltContractSmllReport {
+            enabled: false,
+            learning_mode: "disabled".to_string(),
+            accuracy_available: false,
+            reason: if mode.eq_ignore_ascii_case("disabled") {
+                "future_outcome_evaluator_not_enabled".to_string()
+            } else {
+                "self_learning_mode_not_enabled".to_string()
+            },
+            protected_realtime: true,
+            status: "disabled".to_string(),
+            ..AltContractSmllReport::default()
+        };
+    }
     let mut outcome_records = signals
         .iter()
         .filter(|signal| now_ms.saturating_sub(signal.ts) <= OUTCOME_LOOKBACK_MS)
@@ -55,6 +78,9 @@ pub fn audit_self_learning_loop(
 
     AltContractSmllReport {
         enabled: true,
+        learning_mode: "heuristic_audit".to_string(),
+        accuracy_available: false,
+        reason: "heuristic_consistency_only".to_string(),
         protected_realtime: true,
         status: if sample_size < MIN_SAMPLES_FOR_UPDATE {
             "collecting_outcomes".to_string()
