@@ -26,6 +26,7 @@ pub struct BinanceAltContractRuntimeConfig {
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub oi: BinanceAltOiConfig,
     pub self_learning: BinanceAltSelfLearningConfig,
+    pub liquidation: BinanceAltLiquidationConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
     pub market_classification: BinanceAltMarketClassificationConfig,
@@ -162,6 +163,7 @@ impl Default for BinanceAltContractRuntimeConfig {
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             oi: BinanceAltOiConfig::default(),
             self_learning: BinanceAltSelfLearningConfig::default(),
+            liquidation: BinanceAltLiquidationConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
             market_classification: BinanceAltMarketClassificationConfig::default(),
@@ -317,6 +319,21 @@ pub struct BinanceAltOiConfig {
 #[derive(Debug, Clone)]
 pub struct BinanceAltSelfLearningConfig {
     pub mode: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltLiquidationConfig {
+    pub retention_seconds: u64,
+    pub deduplicate: bool,
+}
+
+impl Default for BinanceAltLiquidationConfig {
+    fn default() -> Self {
+        Self {
+            retention_seconds: 600,
+            deduplicate: true,
+        }
+    }
 }
 
 impl Default for BinanceAltSelfLearningConfig {
@@ -831,6 +848,16 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.self_learning.mode",
                 &fallback.self_learning.mode,
             ),
+        },
+        liquidation: BinanceAltLiquidationConfig {
+            retention_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.liquidation.retention_seconds",
+                fallback.liquidation.retention_seconds,
+            ),
+            deduplicate: settings
+                .get_bool("binance_alt_contract_monitor.liquidation.deduplicate")
+                .unwrap_or(fallback.liquidation.deduplicate),
         },
         storage: BinanceAltStorageConfig {
             persist_all_1s: settings

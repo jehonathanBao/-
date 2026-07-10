@@ -65,7 +65,7 @@ fn liquidation_windows_expire_deduplicate_and_keep_side_totals() {
         LiquidationSide::ShortLiquidation
     );
 
-    let expired = service.liquidation_window_snapshot("SOL", 60, 400_000);
+    let expired = service.liquidation_window_snapshot("SOL", 60, 700_000);
     assert_eq!(expired.liquidation_count, 0);
     assert_eq!(expired.liquidation_total_usd, 0.0);
     reset_binance_alt_contract_runtime_config();

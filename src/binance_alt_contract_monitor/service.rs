@@ -43,7 +43,6 @@ const TRADE_RETENTION_MS: i64 = 3_600_000;
 const DUPLICATE_WINDOW_MS: i64 = 10_000;
 const OI_RETENTION_MS: i64 = 10 * 60_000;
 const LIQUIDATION_CONTEXT_TTL_MS: i64 = 60_000;
-const LIQUIDATION_EVENT_RETENTION_MS: i64 = 300_000;
 const SUMMARY_MONITORED_SYMBOL_LIMIT: usize = 12;
 
 #[derive(Clone)]
@@ -592,9 +591,15 @@ impl BinanceAltContractService {
             return;
         }
         event.product_id = product_id_for_symbol(&event.product_id);
+        let config = binance_alt_contract_runtime_config();
+        let retention_ms = i64::try_from(config.liquidation.retention_seconds)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(1_000);
         let event_key = liquidation_event_key(&event);
         let mut state = self.state.write();
-        if state.liquidation_event_seen_at.contains_key(&event_key) {
+        if config.liquidation.deduplicate
+            && state.liquidation_event_seen_at.contains_key(&event_key)
+        {
             return;
         }
         let summary = {
@@ -603,15 +608,11 @@ impl BinanceAltContractService {
                 .entry(event.product_id.clone())
                 .or_default();
             events.push_back(event.clone());
-            prune_liquidation_events(events, event.ts);
+            prune_liquidation_events(events, event.ts, retention_ms);
             liquidation_window(events, 60, event.ts)
         };
         state.liquidation_event_seen_at.insert(event_key, event.ts);
-        prune_timestamp_map(
-            &mut state.liquidation_event_seen_at,
-            event.ts,
-            LIQUIDATION_EVENT_RETENTION_MS,
-        );
+        prune_timestamp_map(&mut state.liquidation_event_seen_at, event.ts, retention_ms);
         let context = state.contexts.entry(event.product_id.clone()).or_default();
         context.liquidation_notional_usd = Some(summary.liquidation_total_usd);
         context.liquidation_count = summary.liquidation_count;
@@ -1758,10 +1759,14 @@ fn liquidation_event_key(event: &AltLiquidationEvent) -> String {
     })
 }
 
-fn prune_liquidation_events(events: &mut VecDeque<AltLiquidationEvent>, now: i64) {
+fn prune_liquidation_events(
+    events: &mut VecDeque<AltLiquidationEvent>,
+    now: i64,
+    retention_ms: i64,
+) {
     while events
         .front()
-        .is_some_and(|event| now.saturating_sub(event.ts) > LIQUIDATION_EVENT_RETENTION_MS)
+        .is_some_and(|event| now.saturating_sub(event.ts) > retention_ms)
     {
         events.pop_front();
     }
