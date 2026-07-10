@@ -345,6 +345,8 @@ fn impact_score(final_score: f64) -> AltContractImpactScore {
         discord_threshold: 85.0,
         s_threshold: 90.0,
         reference_volume_24h_usd: Some(1_500_000_000.0),
+        reference_age_sec: Some(0),
+        evidence_degraded: false,
         reference_source: "ticker_quote_volume_24h".to_string(),
         interpretation: if final_score >= 70.0 {
             "有效相对冲击".to_string()

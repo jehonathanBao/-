@@ -29,6 +29,10 @@ pub fn semantic_title(signal_type: AltContractSignalType) -> &'static str {
 }
 
 pub fn semantic_summary(signal: &AltContractSignal) -> String {
+    if signal.liquidation_suspected {
+        return "当前异动伴随清算上下文，优先按清算驱动的行情冲击解释，不直接确认主力建仓。"
+            .to_string();
+    }
     let prediction_hint = prediction_hint(&signal.smart_money_prediction);
     match signal.signal_type {
         AltContractSignalType::MainForceLongBuild => format!(

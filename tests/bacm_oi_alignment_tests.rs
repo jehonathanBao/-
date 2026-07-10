@@ -6,8 +6,12 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
         BinanceAltContractRuntimeConfig,
     },
     context::context_for_window,
+    detector::detect_alt_contract_signal,
     service::BinanceAltContractService,
-    types::{AltContractContext, OiPeriodDelta},
+    types::{
+        AltContractContext, AltContractDirection, AltContractExchangeContribution,
+        AltContractSymbolTier, AltContractWindowStats, OiPeriodDelta,
+    },
 };
 
 fn guard() -> MutexGuard<'static, ()> {
@@ -118,4 +122,50 @@ fn window_context_uses_only_the_matching_oi_period() {
     assert!(five_minutes.oi_change_1m_base.is_none());
     assert_eq!(five_minutes.oi_change_5m_base, Some(30.0));
     assert_eq!(five_minutes.oi_change_pct, Some(30.0));
+}
+
+#[test]
+fn stale_oi_cannot_make_an_s_grade_signal_eligible() {
+    let stats = AltContractWindowStats {
+        symbol: "SOL".to_string(),
+        product_id: "SOLUSDT".to_string(),
+        tier: AltContractSymbolTier::B,
+        window_sec: 60,
+        ts: 1_700_000_000_000,
+        buy_volume_base: 10_000.0,
+        sell_volume_base: 500.0,
+        total_volume_base: 10_500.0,
+        net_volume_base: 9_500.0,
+        total_notional_usd: 200_000_000.0,
+        dominance: 0.9,
+        direction: AltContractDirection::Buy,
+        trigger_price_usd: Some(20_000.0),
+        price_move_pct: Some(1.2),
+        exchange_count: 1,
+        main_exchange: Some("binance".to_string()),
+        exchanges: vec![AltContractExchangeContribution::default()],
+        dynamic_multiple: Some(12.0),
+        data_quality: 100,
+        startup_age_ms: Some(120_000),
+    };
+    let context = AltContractContext {
+        oi_change_1m: OiPeriodDelta {
+            period_sec: 60,
+            delta: Some(500_000.0),
+            delta_pct: Some(2.0),
+            stale: true,
+            reason: Some("latest_snapshot_stale".to_string()),
+            ..OiPeriodDelta::default()
+        },
+        ..AltContractContext::default()
+    };
+
+    let signal = detect_alt_contract_signal(
+        &stats,
+        &context,
+        &BinanceAltContractRuntimeConfig::default(),
+    )
+    .expect("high notional signal");
+
+    assert!(!signal.s_grade_eligible);
 }

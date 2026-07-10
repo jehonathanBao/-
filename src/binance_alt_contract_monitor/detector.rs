@@ -953,6 +953,10 @@ fn final_result_text(
     main_force_confidence: f64,
     context: &AltContractContext,
 ) -> String {
+    if context.liquidation_suspected && signal_type != AltContractSignalType::LiquidationCascade {
+        return "当前异动伴随清算上下文，优先按清算驱动的行情冲击解释，不直接确认主力建仓。"
+            .to_string();
+    }
     match signal_type {
         AltContractSignalType::MainForceLongBuild => {
             format!(
@@ -967,6 +971,10 @@ fn final_result_text(
             )
         }
         AltContractSignalType::AbnormalPump => {
+            if context.liquidation_suspected {
+                return "山寨永续主动买入和成交额异常放大，伴随清算上下文，暂作为上行失衡观察，不直接确认主力建仓。"
+                    .to_string();
+            }
             if context
                 .oi_change_1m_base
                 .or(context.oi_change_5m_base)
@@ -979,6 +987,10 @@ fn final_result_text(
             }
         }
         AltContractSignalType::AbnormalDump => {
+            if context.liquidation_suspected {
+                return "山寨永续主动卖出和成交额异常放大，伴随清算上下文，暂作为下行失衡观察，不直接确认主力建仓。"
+                    .to_string();
+            }
             if context
                 .oi_change_1m_base
                 .or(context.oi_change_5m_base)
