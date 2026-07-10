@@ -39,6 +39,7 @@ pub struct ContractWhaleRuntimeConfig {
     pub classification: ContractWhaleClassificationConfig,
     pub toxic_order: ContractWhaleToxicOrderConfig,
     pub discord: ContractWhaleDiscordGateConfig,
+    pub emission: ContractWhaleEmissionConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
     pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
@@ -491,6 +492,7 @@ impl Default for ContractWhaleRuntimeConfig {
             classification: ContractWhaleClassificationConfig::default(),
             toxic_order: ContractWhaleToxicOrderConfig::default(),
             discord: ContractWhaleDiscordGateConfig::default(),
+            emission: ContractWhaleEmissionConfig::default(),
             symbols,
             threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
@@ -925,6 +927,9 @@ impl Default for ContractWhaleScoringConfig {
 pub struct ContractWhaleClassificationConfig {
     pub enabled: bool,
     pub oi_context_enabled: bool,
+    pub oi_batch_resolver_enabled: bool,
+    pub oi_consensus_guard_enabled: bool,
+    pub evidence_fail_closed_enabled: bool,
     pub flow_direction_dominance_min: f64,
     pub strong_intent_dominance_min: f64,
     pub absorption_dominance_min: f64,
@@ -934,6 +939,15 @@ pub struct ContractWhaleClassificationConfig {
     pub follow_same_direction_min_pct: f64,
     pub absorption_min_notional_usd: f64,
     pub low_price_efficiency_max: f64,
+    pub normalized_price_efficiency_enabled: bool,
+    pub low_price_efficiency_max_bps_per_million: f64,
+    pub micro_volatility_enabled: bool,
+    pub micro_volatility_min_samples: usize,
+    pub micro_volatility_ewma_alpha: f64,
+    pub micro_volatility_no_follow_multiplier: f64,
+    pub micro_volatility_follow_multiplier: f64,
+    pub micro_volatility_strong_follow_multiplier: f64,
+    pub micro_volatility_max_staleness_seconds: i64,
     pub min_data_quality_for_strong_intent: u8,
     pub min_data_quality_for_absorption: u8,
     pub require_multi_exchange_for_strong_intent: bool,
@@ -944,11 +958,33 @@ pub struct ContractWhaleClassificationConfig {
     pub oi_context_change_pct: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractWhaleEmissionConfig {
+    pub enabled: bool,
+    pub score_delta_min: u8,
+    pub volume_delta_ratio_min: f64,
+    pub force_refresh_seconds: i64,
+}
+
+impl Default for ContractWhaleEmissionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            score_delta_min: 5,
+            volume_delta_ratio_min: 0.10,
+            force_refresh_seconds: 15,
+        }
+    }
+}
+
 impl Default for ContractWhaleClassificationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             oi_context_enabled: true,
+            oi_batch_resolver_enabled: true,
+            oi_consensus_guard_enabled: true,
+            evidence_fail_closed_enabled: true,
             flow_direction_dominance_min: 0.55,
             strong_intent_dominance_min: 0.60,
             absorption_dominance_min: 0.65,
@@ -958,6 +994,15 @@ impl Default for ContractWhaleClassificationConfig {
             follow_same_direction_min_pct: 0.20,
             absorption_min_notional_usd: 10_000_000.0,
             low_price_efficiency_max: 0.25,
+            normalized_price_efficiency_enabled: true,
+            low_price_efficiency_max_bps_per_million: 2.5,
+            micro_volatility_enabled: true,
+            micro_volatility_min_samples: 60,
+            micro_volatility_ewma_alpha: 0.08,
+            micro_volatility_no_follow_multiplier: 0.20,
+            micro_volatility_follow_multiplier: 0.35,
+            micro_volatility_strong_follow_multiplier: 0.60,
+            micro_volatility_max_staleness_seconds: 30,
             min_data_quality_for_strong_intent: 70,
             min_data_quality_for_absorption: 70,
             require_multi_exchange_for_strong_intent: true,
@@ -1147,6 +1192,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
         classification: load_classification_config(settings),
         toxic_order: load_toxic_order_config(settings),
         discord: load_discord_gate_config(settings),
+        emission: load_emission_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
         threshold_profiles: load_threshold_profiles(settings),
@@ -1408,6 +1454,36 @@ fn load_scoring_config(settings: &::config::Config) -> ContractWhaleScoringConfi
     }
 }
 
+fn load_emission_config(settings: &::config::Config) -> ContractWhaleEmissionConfig {
+    let defaults = ContractWhaleEmissionConfig::default();
+    ContractWhaleEmissionConfig {
+        enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_EMISSION_ENABLED",
+            "contract_whale_monitor.emission.enabled",
+            defaults.enabled,
+        ),
+        score_delta_min: u8_setting(
+            settings,
+            "contract_whale_monitor.emission.score_delta_min",
+            defaults.score_delta_min,
+        )
+        .clamp(1, 100),
+        volume_delta_ratio_min: positive_float_setting(
+            settings,
+            "contract_whale_monitor.emission.volume_delta_ratio_min",
+            defaults.volume_delta_ratio_min,
+        )
+        .clamp(0.01, 1.0),
+        force_refresh_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.emission.force_refresh_seconds",
+            defaults.force_refresh_seconds,
+        )
+        .clamp(1, 300),
+    }
+}
+
 fn load_classification_config(settings: &::config::Config) -> ContractWhaleClassificationConfig {
     let defaults = ContractWhaleClassificationConfig::default();
     ContractWhaleClassificationConfig {
@@ -1422,6 +1498,24 @@ fn load_classification_config(settings: &::config::Config) -> ContractWhaleClass
             "CONTRACT_WHALE_OI_CONTEXT_ENABLED",
             "contract_whale_monitor.classification.oi_context_enabled",
             defaults.oi_context_enabled,
+        ),
+        oi_batch_resolver_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_OI_BATCH_RESOLVER_ENABLED",
+            "contract_whale_monitor.classification.oi_batch_resolver_enabled",
+            defaults.oi_batch_resolver_enabled,
+        ),
+        oi_consensus_guard_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_OI_CONSENSUS_GUARD_ENABLED",
+            "contract_whale_monitor.classification.oi_consensus_guard_enabled",
+            defaults.oi_consensus_guard_enabled,
+        ),
+        evidence_fail_closed_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_EVIDENCE_FAIL_CLOSED_ENABLED",
+            "contract_whale_monitor.classification.evidence_fail_closed_enabled",
+            defaults.evidence_fail_closed_enabled,
         ),
         flow_direction_dominance_min: positive_float_setting(
             settings,
@@ -1468,6 +1562,55 @@ fn load_classification_config(settings: &::config::Config) -> ContractWhaleClass
             "contract_whale_monitor.classification.low_price_efficiency_max",
             defaults.low_price_efficiency_max,
         ),
+        normalized_price_efficiency_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_NORMALIZED_PRICE_EFFICIENCY_ENABLED",
+            "contract_whale_monitor.classification.normalized_price_efficiency_enabled",
+            defaults.normalized_price_efficiency_enabled,
+        ),
+        low_price_efficiency_max_bps_per_million: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.low_price_efficiency_max_bps_per_million",
+            defaults.low_price_efficiency_max_bps_per_million,
+        ),
+        micro_volatility_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_MICRO_VOLATILITY_ENABLED",
+            "contract_whale_monitor.classification.volatility.enabled",
+            defaults.micro_volatility_enabled,
+        ),
+        micro_volatility_min_samples: usize_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.min_samples",
+            defaults.micro_volatility_min_samples,
+        ),
+        micro_volatility_ewma_alpha: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.ewma_alpha",
+            defaults.micro_volatility_ewma_alpha,
+        )
+        .clamp(0.001, 1.0),
+        micro_volatility_no_follow_multiplier: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.no_follow_multiplier",
+            defaults.micro_volatility_no_follow_multiplier,
+        ),
+        micro_volatility_follow_multiplier: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.follow_multiplier",
+            defaults.micro_volatility_follow_multiplier,
+        ),
+        micro_volatility_strong_follow_multiplier: positive_float_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.strong_follow_multiplier",
+            defaults.micro_volatility_strong_follow_multiplier,
+        ),
+        micro_volatility_max_staleness_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.classification.volatility.max_staleness_seconds",
+            defaults.micro_volatility_max_staleness_seconds,
+        )
+        .clamp(1, 300),
         min_data_quality_for_strong_intent: u8_setting(
             settings,
             "contract_whale_monitor.classification.min_data_quality_for_strong_intent",

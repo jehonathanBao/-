@@ -29,7 +29,7 @@ use crate::{
         config::contract_whale_runtime_config,
         detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
         discord::meets_contract_whale_display_total_volume,
-        event_lifecycle::apply_contract_whale_event_lifecycle,
+        event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
         },
@@ -58,7 +58,9 @@ use crate::{
         SpotWhaleDirection, SpotWhaleSeverity, SpotWhaleSignal, SpotWhaleSignalType,
     },
     storage::{
-        contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+        contract_whale_repo::{
+            resolve_oi_window_from_snapshots, ContractWhaleRepo, ContractWhaleSignalQuery,
+        },
         SqliteStore,
     },
     types::{
@@ -111,6 +113,7 @@ struct ContractWhalePipelineDebugResponse {
     persistence: PipelinePersistenceDebug,
     history: PipelineHistoryDebug,
     latest: PipelineLatestDebug,
+    runtime: crate::app::ContractWhaleRuntimeDiagnostics,
     error: Option<String>,
 }
 
@@ -501,6 +504,45 @@ pub async fn contract_whale_latest_route(
         range.as_deref(),
         hide_stale,
     )))
+}
+
+pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>) -> ApiJsonResult {
+    let Some(store) = state.contract_whale_store() else {
+        return Ok(Json(serde_json::json!({
+            "items": [],
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": "contract_outcome_store_unavailable",
+            "servedAt": now_ms(),
+            "shadowOnly": true,
+        })));
+    };
+    match store.contract_whale_outcome_summary() {
+        Ok(items) => Ok(Json(serde_json::json!({
+            "items": items,
+            "dataState": "fresh",
+            "degraded": false,
+            "servedAt": now_ms(),
+            "shadowOnly": true,
+            "outcomeVersion": "v1_shadow",
+        }))),
+        Err(error) => {
+            tracing::warn!(
+                target: CWM_LOG_TARGET,
+                error = %error,
+                "{} contract whale outcome summary query failed",
+                CWM_LOG_PREFIX
+            );
+            Ok(Json(serde_json::json!({
+                "items": [],
+                "dataState": "degraded",
+                "degraded": true,
+                "errorCode": "contract_outcome_summary_query_failed",
+                "servedAt": now_ms(),
+                "shadowOnly": true,
+            })))
+        }
+    }
 }
 
 pub async fn contract_whale_trading_decisions_route(
@@ -1006,34 +1048,116 @@ pub(crate) fn decorate_contract_whale_oi_contexts(
     items: &mut [ContractWhaleSignal],
 ) {
     let runtime_config = contract_whale_runtime_config();
+    if !runtime_config.classification.oi_batch_resolver_enabled {
+        for signal in items.iter_mut() {
+            let resolved = match store.find_oi_context_for_event(
+                &signal.symbol,
+                signal.ts,
+                signal.window_sec as i64,
+                runtime_config.classification.oi_lookup_max_gap_seconds,
+            ) {
+                Ok(window) => resolve_contract_whale_oi_context_from_window(
+                    signal.classification_v2.structure_interpretation,
+                    signal.classification_v2.flow_direction,
+                    signal.classification_v2.price_response_type_v2,
+                    signal.price_move_pct,
+                    Some(&window),
+                    &runtime_config,
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        signal_id = %signal.id,
+                        symbol = %signal.symbol,
+                        error = %error,
+                        "{} oi legacy context query failed",
+                        CWM_LOG_PREFIX
+                    );
+                    unavailable_oi_context("oi_query_failed")
+                }
+            };
+            apply_resolved_oi_context(signal, resolved);
+        }
+        return;
+    }
+    let max_gap_ms = runtime_config
+        .classification
+        .oi_lookup_max_gap_seconds
+        .max(0)
+        .saturating_mul(1000);
+    let mut ranges_by_symbol = BTreeMap::<String, (i64, i64)>::new();
+    for signal in items.iter() {
+        let start_ts = lifecycle_start_ts(signal);
+        let end_ts = lifecycle_end_ts(signal);
+        ranges_by_symbol
+            .entry(signal.symbol.to_ascii_uppercase())
+            .and_modify(|range| {
+                range.0 = range.0.min(start_ts.saturating_sub(max_gap_ms));
+                range.1 = range.1.max(end_ts);
+            })
+            .or_insert((start_ts.saturating_sub(max_gap_ms), end_ts));
+    }
+
+    let mut snapshots_by_symbol = BTreeMap::new();
+    let mut failed_symbols = BTreeMap::new();
+    for (symbol, (from_ts, to_ts)) in ranges_by_symbol {
+        match store.load_oi_snapshots_for_range(&symbol, from_ts, to_ts) {
+            Ok(snapshots) => {
+                snapshots_by_symbol.insert(symbol, snapshots);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    symbol = %symbol,
+                    error = %error,
+                    "{} oi batch range query failed",
+                    CWM_LOG_PREFIX
+                );
+                failed_symbols.insert(symbol, ());
+            }
+        }
+    }
+
     for signal in items.iter_mut() {
-        let resolved = match store.find_oi_context_for_event(
-            &signal.symbol,
-            signal.ts,
-            signal.window_sec as i64,
-            runtime_config.classification.oi_lookup_max_gap_seconds,
-        ) {
-            Ok(window) => resolve_contract_whale_oi_context_from_window(
+        let symbol = signal.symbol.to_ascii_uppercase();
+        let resolved = if failed_symbols.contains_key(&symbol) {
+            unavailable_oi_context("oi_query_failed")
+        } else {
+            let window = snapshots_by_symbol.get(&symbol).map(|snapshots| {
+                resolve_oi_window_from_snapshots(
+                    snapshots,
+                    lifecycle_start_ts(signal),
+                    lifecycle_end_ts(signal),
+                    runtime_config.classification.oi_lookup_max_gap_seconds,
+                )
+            });
+            resolve_contract_whale_oi_context_from_window(
                 signal.classification_v2.structure_interpretation,
                 signal.classification_v2.flow_direction,
                 signal.classification_v2.price_response_type_v2,
                 signal.price_move_pct,
-                Some(&window),
+                window.as_ref(),
                 &runtime_config,
-            ),
-            Err(error) => {
-                tracing::warn!(
-                    target: CWM_LOG_TARGET,
-                    signal_id = %signal.id,
-                    symbol = %signal.symbol,
-                    error = %error,
-                    "{} oi context query failed",
-                    CWM_LOG_PREFIX
-                );
-                unavailable_oi_context("oi_query_failed")
-            }
+            )
         };
         apply_resolved_oi_context(signal, resolved);
+    }
+}
+
+fn lifecycle_start_ts(signal: &ContractWhaleSignal) -> i64 {
+    let first_snapshot_ts = if signal.event_lifecycle.start_time > 0 {
+        signal.event_lifecycle.start_time
+    } else {
+        signal.ts
+    };
+    first_snapshot_ts.saturating_sub((signal.window_sec as i64).saturating_mul(1000))
+}
+
+fn lifecycle_end_ts(signal: &ContractWhaleSignal) -> i64 {
+    if signal.event_lifecycle.last_update_time > 0 {
+        signal.event_lifecycle.last_update_time
+    } else {
+        signal.ts
     }
 }
 
@@ -1827,6 +1951,7 @@ fn contract_whale_pipeline_debug_for_query(
             contract_whale_signals_rows: history_rows.len(),
         },
         latest,
+        runtime: state.contract_whale_runtime_diagnostics(),
         error: None,
     }
 }
@@ -2465,11 +2590,6 @@ fn project_pipeline_persistence_debug(
         return PipelinePersistenceDebug::default();
     }
     let mut merged = merge_contract_whale_signals(accepted_signals);
-    let reference_now = merged
-        .iter()
-        .map(|signal| signal.ts)
-        .max()
-        .unwrap_or_else(now_ms);
     decorate_and_filter_price_deviated_signals(
         &mut merged,
         None,
@@ -2481,7 +2601,10 @@ fn project_pipeline_persistence_debug(
         .iter()
         .filter(|signal| signal.price_deviation_filtered)
         .count();
-    merged = apply_contract_whale_event_lifecycle(merged, reference_now);
+    merged = apply_contract_whale_event_lifecycle(
+        merged,
+        ContractWhaleLifecycleClock::Live { now_ms: now_ms() },
+    );
     let quality_decorated = decorate_contract_whale_event_quality(merged);
     let quality_filtered = quality_decorated
         .iter()
@@ -2916,7 +3039,10 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             .toxic_order
             .max_price_deviation_pct,
     );
-    items = apply_contract_whale_event_lifecycle(items, now);
+    items = apply_contract_whale_event_lifecycle(
+        items,
+        ContractWhaleLifecycleClock::Live { now_ms: now },
+    );
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_display_volume_filter(&mut items);
@@ -3013,8 +3139,10 @@ pub fn build_contract_whale_history_response(
             .toxic_order
             .max_price_deviation_pct,
     );
-    let lifecycle_reference_now = items.iter().map(|item| item.ts).max().unwrap_or(now);
-    items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
+    items = apply_contract_whale_event_lifecycle(
+        items,
+        ContractWhaleLifecycleClock::Live { now_ms: now },
+    );
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_display_volume_filter(&mut items);
@@ -3083,7 +3211,10 @@ pub fn build_contract_whale_items_response(
             .toxic_order
             .max_price_deviation_pct,
     );
-    items = apply_contract_whale_event_lifecycle(items, now);
+    items = apply_contract_whale_event_lifecycle(
+        items,
+        ContractWhaleLifecycleClock::Live { now_ms: now },
+    );
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_display_volume_filter(&mut items);
@@ -3268,6 +3399,7 @@ fn stats_from_flow_window(
         startup_age_ms: booted_at_ms.map(|booted_at_ms| now.saturating_sub(booted_at_ms)),
         liquidation_driven,
         price_jump_anomaly: false,
+        micro_volatility: Default::default(),
     })
 }
 

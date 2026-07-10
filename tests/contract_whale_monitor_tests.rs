@@ -11,7 +11,7 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     config::ContractWhaleRuntimeConfig,
     detector::{detect_contract_whale_signal, detect_contract_whale_signal_with_config},
     discord::{build_contract_whale_discord_preview, should_push_contract_whale_discord},
-    event_lifecycle::apply_contract_whale_event_lifecycle,
+    event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
     normalizer::{
         normalize_binance_agg_trade, normalize_binance_force_order,
         normalize_binance_force_order_json, normalize_binance_funding_rate_json,
@@ -19,6 +19,7 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
         normalize_okx_funding_rate_json, normalize_okx_liquidation_order_json,
         normalize_okx_open_interest_json, normalize_okx_swap_trade,
     },
+    outcome_calibration::evaluate_contract_whale_signal_outcome,
     scoring::score_contract_whale_signal_with_config,
     types::{
         ContractExchange, ContractLiquidationSide, ContractTradeSide,
@@ -313,8 +314,9 @@ fn detector_upgrades_multi_exchange_aggressive_buy_to_s_and_discord_eligible() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.2), 94)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.2), 94)
         .expect("window stats");
+    stats.percentile_level = Some(99.9);
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
@@ -470,6 +472,12 @@ fn classification_v2_keeps_buy_flow_without_follow_through_as_active_buy_pressur
         signal.classification_v2.structure_interpretation,
         ContractWhaleStructureInterpretation::ActiveBuyPressure
     );
+    assert_eq!(
+        signal.classification_v2.legacy_signal_type,
+        "aggressive_buy"
+    );
+    assert!(signal.classification_v2.semantic_mismatch);
+    assert!(signal.final_result.contains("主动买压"));
     assert!(!signal.classification_v2.is_strong_main_force_intent);
 }
 
@@ -647,6 +655,7 @@ fn oi_window_context_maps_buy_follow_through_to_new_long_build() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -659,6 +668,67 @@ fn oi_window_context_maps_buy_follow_through_to_new_long_build() {
         Some("oi_increased_with_buy_pressure")
     );
     assert!(resolved.oi_available);
+}
+
+#[test]
+fn oi_window_context_does_not_confirm_build_when_source_coverage_changes() {
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveBuyPressure,
+        ContractWhaleActiveFlowDirection::BuyDominant,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        Some(0.31),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_420.0),
+            oi_delta: Some(420.0),
+            oi_delta_pct: Some(0.42),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            source_coverage_changed: true,
+            cross_exchange_consensus: Some(false),
+            reason: None,
+            ..ContractWhaleOiWindowContext::default()
+        }),
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        resolved.oi_context,
+        ContractWhaleOiContextTag::OiNotConfirmed
+    );
+    assert_eq!(
+        resolved.oi_reason.as_deref(),
+        Some("oi_source_coverage_changed")
+    );
+}
+
+#[test]
+fn oi_consensus_guard_can_be_disabled_for_shadow_comparison() {
+    let mut config = ContractWhaleRuntimeConfig::default();
+    config.classification.oi_consensus_guard_enabled = false;
+    let resolved = resolve_contract_whale_oi_context_from_window(
+        ContractWhaleStructureInterpretation::ActiveBuyPressure,
+        ContractWhaleActiveFlowDirection::BuyDominant,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        Some(0.31),
+        Some(&ContractWhaleOiWindowContext {
+            oi_before: Some(100_000.0),
+            oi_after: Some(100_420.0),
+            oi_delta: Some(420.0),
+            oi_delta_pct: Some(0.42),
+            before_ts: Some(1_700_000_000_000),
+            after_ts: Some(1_700_000_015_000),
+            available: true,
+            source_coverage_changed: true,
+            cross_exchange_consensus: Some(false),
+            reason: None,
+            ..ContractWhaleOiWindowContext::default()
+        }),
+        &config,
+    );
+
+    assert_eq!(resolved.oi_context, ContractWhaleOiContextTag::NewLongBuild);
 }
 
 #[test]
@@ -677,6 +747,7 @@ fn oi_window_context_maps_buy_follow_through_to_short_covering_when_oi_falls() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -710,6 +781,7 @@ fn oi_window_context_maps_sell_follow_through_to_new_short_build() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -741,6 +813,7 @@ fn oi_window_context_maps_sell_follow_through_to_long_unwind_when_oi_falls() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -769,6 +842,7 @@ fn oi_window_context_marks_small_delta_as_not_confirmed() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -801,6 +875,7 @@ fn oi_window_context_marks_balanced_flow_as_not_confirmed() {
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -832,6 +907,7 @@ fn oi_window_context_keeps_absorption_as_not_confirmed_but_explains_position_con
             after_ts: Some(1_700_000_015_000),
             available: true,
             reason: None,
+            ..ContractWhaleOiWindowContext::default()
         }),
         &ContractWhaleRuntimeConfig::default(),
     );
@@ -973,8 +1049,9 @@ fn detector_marks_btc_high_signal_pushable_while_data_quality_controls_eligibili
     let now = 1_700_000_015_000;
     let trades = vec![normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_600.0, false).unwrap()];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.12), Some(5.2), 80)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.12), Some(5.2), 80)
         .expect("window stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
@@ -997,10 +1074,107 @@ fn detector_allows_primary_single_exchange_extreme_high_override() {
     let signal = detect_contract_whale_signal(&stats).expect("high override signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert_eq!(signal.data_quality, 70);
-    assert!(signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "high_primary_source_extreme");
+    assert!(signal.data_quality <= 68);
+    assert!(!signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "data_quality_display_only");
     assert!(should_push_contract_whale_discord(&signal));
+}
+
+#[test]
+fn detector_does_not_promote_multi_exchange_flow_when_dynamic_evidence_is_missing() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_000.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let config = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: None,
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
+            data_quality: 90,
+            config: &config,
+        },
+    )
+    .expect("window stats");
+    stats.percentile_level = Some(99.9);
+
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("signal");
+
+    assert_ne!(signal.severity, ContractWhaleSeverity::High);
+    assert_ne!(signal.severity, ContractWhaleSeverity::Critical);
+    assert_ne!(signal.severity, ContractWhaleSeverity::S);
+}
+
+#[test]
+fn detector_can_restore_legacy_missing_evidence_behavior_for_shadow_comparison() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_000.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let mut config = three_exchange_config();
+    config.classification.evidence_fail_closed_enabled = false;
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: None,
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
+            data_quality: 90,
+            config: &config,
+        },
+    )
+    .expect("window stats");
+    stats.percentile_level = Some(99.9);
+
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("signal");
+
+    assert!(signal.severity >= ContractWhaleSeverity::High);
+}
+
+#[test]
+fn detector_does_not_promote_multi_exchange_flow_when_percentile_evidence_is_missing() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 1_000.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let config = three_exchange_config();
+    let stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: Some(10.5),
+            dynamic_baseline_btc: Some(100.0),
+            dynamic_threshold_level: "p99".to_string(),
+            data_quality: 90,
+            config: &config,
+        },
+    )
+    .expect("window stats");
+
+    let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("signal");
+
+    assert_ne!(signal.severity, ContractWhaleSeverity::High);
+    assert_ne!(signal.severity, ContractWhaleSeverity::Critical);
+    assert_ne!(signal.severity, ContractWhaleSeverity::S);
 }
 
 #[test]
@@ -1018,6 +1192,13 @@ fn detector_recovers_critical_when_dynamic_baseline_is_temporarily_unavailable()
     assert_eq!(signal.severity, ContractWhaleSeverity::Critical);
     assert!(signal.discord_eligible);
     assert_eq!(signal.discord_reason, "critical_or_s_gate");
+    let classification =
+        serde_json::to_value(&signal.classification_v2).expect("classification json");
+    assert_eq!(classification["evidence"]["evidenceDegraded"], true);
+    assert_eq!(
+        classification["evidence"]["evidenceReason"],
+        "critical_absolute_fallback"
+    );
 }
 
 #[test]
@@ -1124,8 +1305,9 @@ fn detector_triggers_5s_btc_high_threshold_with_discord_gate() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 50.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats =
+    let mut stats =
         rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("5s signal");
 
     assert_eq!(signal.window_sec, 5);
@@ -1148,8 +1330,9 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 50.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats =
+    let mut stats =
         rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("high signal");
 
     let mut btc_below_gate = signal.clone();
@@ -1181,16 +1364,18 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
 
     let lifecycle_events = apply_contract_whale_event_lifecycle(
         vec![first_lifecycle_update, second_lifecycle_update],
-        now + 15_000,
+        ContractWhaleLifecycleClock::Replay {
+            replay_now_ms: now + 15_000,
+        },
     );
     assert_eq!(lifecycle_events.len(), 1);
     assert_eq!(
-        lifecycle_events[0].event_lifecycle.volume_accumulated,
-        520.0
+        lifecycle_events[0].event_lifecycle.volume_accumulated, 260.0,
+        "overlapping lifecycle windows must map the deprecated accumulated field to peak volume"
     );
-    assert!(lifecycle_events[0].discord_eligible);
-    assert!(lifecycle_events[0].discord_would_send);
-    assert!(should_push_contract_whale_discord(&lifecycle_events[0]));
+    assert!(!lifecycle_events[0].discord_eligible);
+    assert!(!lifecycle_events[0].discord_would_send);
+    assert!(!should_push_contract_whale_discord(&lifecycle_events[0]));
 
     let mut btc_at_gate = btc_below_gate.clone();
     btc_at_gate.total_volume_btc = 500.0;
@@ -1210,6 +1395,54 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
     eth_at_gate.total_volume_btc = 30_000.0;
     eth_at_gate.total_volume = 30_000.0;
     assert!(should_push_contract_whale_discord(&eth_at_gate));
+}
+
+#[test]
+fn lifecycle_keeps_peak_snapshot_separate_from_latest_update() {
+    let now = 1_700_000_005_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 30_000.0, 0.01, "buy").unwrap(),
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 50.0, true).unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats =
+        rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("stats");
+    let mut peak = detect_contract_whale_signal(&stats).expect("peak signal");
+    peak.id = "contract-whale:BTC:5:peak".to_string();
+    peak.ts = now;
+    peak.total_volume_btc = 1_000.0;
+    peak.total_volume = 1_000.0;
+    peak.net_volume_btc = 860.0;
+    peak.net_volume = 860.0;
+    peak.score = 90;
+
+    let mut latest = peak.clone();
+    latest.id = "contract-whale:BTC:5:latest".to_string();
+    latest.ts = now + 15_000;
+    latest.total_volume_btc = 600.0;
+    latest.total_volume = 600.0;
+    latest.net_volume_btc = 520.0;
+    latest.net_volume = 520.0;
+    latest.score = 80;
+
+    let events = apply_contract_whale_event_lifecycle(
+        vec![peak.clone(), latest.clone()],
+        ContractWhaleLifecycleClock::Replay {
+            replay_now_ms: latest.ts,
+        },
+    );
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].ts, peak.ts,
+        "display fields must remain the peak snapshot"
+    );
+    assert_eq!(events[0].event_lifecycle.last_update_time, latest.ts);
+    let lifecycle = serde_json::to_value(&events[0].event_lifecycle).expect("lifecycle json");
+    assert_eq!(lifecycle["latestSnapshotTs"], latest.ts);
+    assert_eq!(lifecycle["peakSnapshotTs"], peak.ts);
+    assert_eq!(lifecycle["displaySnapshotKind"], "peak");
 }
 
 #[test]
@@ -1256,7 +1489,7 @@ fn detector_triggers_60s_high_threshold() {
     ];
     let buckets = aggregate_1s_buckets(&trades);
     let config = three_exchange_config();
-    let stats = rolling_window_stats_with_config(
+    let mut stats = rolling_window_stats_with_config(
         &buckets,
         "BTC",
         60,
@@ -1271,6 +1504,7 @@ fn detector_triggers_60s_high_threshold() {
         },
     )
     .expect("60s stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("60s signal");
 
     assert_eq!(signal.window_sec, 60);
@@ -1379,8 +1613,9 @@ fn detector_marks_absorption_as_high_when_sellers_fail_to_move_price() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 150.0, false).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(-0.03), Some(5.4), 86)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(-0.03), Some(5.4), 86)
         .expect("window stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("absorption signal");
 
     assert_eq!(
@@ -1392,7 +1627,12 @@ fn detector_marks_absorption_as_high_when_sellers_fail_to_move_price() {
         ContractWhalePriceResponseType::DownsideAbsorption
     );
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(signal.final_result.contains("承接吸收"));
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::ActiveSellPressure
+    );
+    assert!(signal.classification_v2.semantic_mismatch);
+    assert!(signal.final_result.contains("主动卖压"));
 }
 
 #[test]
@@ -1404,8 +1644,9 @@ fn detector_marks_suppression_as_high_when_buyers_fail_to_move_price() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 150.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.03), Some(5.4), 86)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.03), Some(5.4), 86)
         .expect("window stats");
+    stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("suppression signal");
 
     assert_eq!(
@@ -1417,7 +1658,12 @@ fn detector_marks_suppression_as_high_when_buyers_fail_to_move_price() {
         ContractWhalePriceResponseType::UpsideResistance
     );
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(signal.final_result.contains("卖盘压制"));
+    assert_eq!(
+        signal.classification_v2.structure_interpretation,
+        ContractWhaleStructureInterpretation::ActiveBuyPressure
+    );
+    assert!(signal.classification_v2.semantic_mismatch);
+    assert!(signal.final_result.contains("主动买压"));
 }
 
 #[test]
@@ -1490,8 +1736,9 @@ fn detector_classifies_giant_sell_without_price_drop_as_absorption() {
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, false).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 60, now, Some(-0.03), Some(8.0), 90)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 60, now, Some(-0.03), Some(8.0), 90)
         .expect("window stats");
+    stats.percentile_level = Some(99.5);
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(
@@ -1522,4 +1769,74 @@ fn discord_preview_exposes_only_final_alert_fields() {
     assert!(!text.contains("token"));
     assert!(!text.contains("evidence"));
     assert!(!text.contains("markout"));
+}
+
+#[test]
+fn classification_uses_recent_1s_vwap_micro_volatility_for_price_thresholds() {
+    let now = 1_700_000_060_000;
+    let trades = (0..=60)
+        .map(|second| {
+            let price = 70_000.0 * 1.01_f64.powi(second);
+            normalize_binance_agg_trade(now - (60 - second) as i64 * 1_000, price, 25.0, false)
+                .expect("trade")
+        })
+        .collect::<Vec<_>>();
+    let buckets = aggregate_1s_buckets(&trades);
+    let stats = rolling_window_stats(&buckets, "BTC", 60, now, Some(0.12), Some(6.0), 90)
+        .expect("window stats");
+
+    let classification = classify_contract_whale_signal_v2(
+        &stats,
+        ContractWhaleSignalType::AggressiveBuy,
+        ContractWhalePriceResponseType::TrendFollowUp,
+        false,
+        &ContractWhaleRuntimeConfig::default(),
+    );
+
+    assert_eq!(
+        classification.dynamic_thresholds.volatility_source,
+        "flow_1s_vwap"
+    );
+    assert!(classification.dynamic_thresholds.follow_pct > 0.12);
+}
+
+#[test]
+fn outcome_calibration_records_signed_markout_from_v2_flow_direction() {
+    let now = 1_700_000_000_000;
+    let detection_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 20_000.0, false).expect("buy trade"),
+        normalize_bitfinex_trade(now, 100.0, 5_000.0).expect("confirming buy trade"),
+    ];
+    let mut stats = rolling_window_stats(
+        &aggregate_1s_buckets(&detection_trades),
+        "BTC",
+        15,
+        now,
+        Some(0.30),
+        Some(8.0),
+        90,
+    )
+    .expect("stats");
+    stats.percentile_level = Some(99.5);
+    let mut signal = detect_contract_whale_signal(&stats).expect("signal");
+    signal.order_price_usd = Some(100.0);
+    signal.classification_v2.flow_direction = ContractWhaleActiveFlowDirection::BuyDominant;
+
+    let markout_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
+        normalize_binance_agg_trade(now + 30_000, 101.0, 1.0, false).expect("30s price"),
+        normalize_binance_agg_trade(now + 120_000, 102.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 300_000, 103.0, 1.0, false).expect("5m price"),
+    ];
+    let outcome = evaluate_contract_whale_signal_outcome(
+        &signal,
+        &aggregate_1s_buckets(&markout_trades),
+        now + 300_000,
+    )
+    .expect("outcome");
+
+    assert!(outcome.markout_30s_bps.expect("30s markout") > 0.0);
+    assert_eq!(outcome.follow_through_5m, Some(true));
+    assert_eq!(outcome.classification_v2, "main_force_push_up");
+    assert!(outcome.mfe_5m_bps.expect("mfe") >= outcome.markout_5m_bps.expect("5m"));
 }

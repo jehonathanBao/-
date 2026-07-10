@@ -68,6 +68,9 @@ describe("frontend production deployment", () => {
     expect(ingressTemplate).toContain("location = /api/contract-whale/latency-debug");
     expect(ingressTemplate).toContain("location /ws/");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
+    expect(ingressTemplate).toContain("proxy_buffering off;");
+    expect(ingressTemplate).toContain("proxy_request_buffering off;");
+    expect(ingressTemplate).toContain("proxy_max_temp_file_size 0;");
     expect(ingressTemplate).not.toContain("root /opt/toxic-order-monitor-rs/toxic-order-monitor/dist;");
     expect(ingressTemplate).not.toContain("location /assets/");
     expect(ingressTemplate).not.toContain("try_files $uri $uri/ /index.html;");

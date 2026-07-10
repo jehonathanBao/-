@@ -12,6 +12,11 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
     serde_json::json!({
         "symbol": signal.symbol,
         "eventType": "contract_whale_flow",
+        "legacySignalType": signal.classification_v2.legacy_signal_type,
+        "displaySignalType": signal.classification_v2.display_signal_type,
+        "structureInterpretation": signal.classification_v2.structure_interpretation,
+        "classificationVersion": signal.classification_v2.classification_version,
+        "semanticMismatch": signal.classification_v2.semantic_mismatch,
         "severity": signal.severity,
         "direction": signal.direction,
         "windowSec": signal.window_sec,

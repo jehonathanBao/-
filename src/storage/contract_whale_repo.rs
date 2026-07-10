@@ -1,11 +1,15 @@
+use std::collections::BTreeMap;
+
 use anyhow::Context;
 use rusqlite::{params, OptionalExtension};
 
+use crate::contract_whale_monitor::outcome_calibration::ContractWhaleSignalOutcome;
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
     ContractOiSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
-    ContractWhaleMarketType, ContractWhaleOiWindowContext, ContractWhalePercentileThreshold,
-    ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
+    ContractWhaleEmissionFingerprint, ContractWhaleMarketType, ContractWhaleOiExchangeDelta,
+    ContractWhaleOiWindowContext, ContractWhalePercentileThreshold, ContractWhaleSeverity,
+    ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 
 use super::{
@@ -34,6 +38,65 @@ pub struct ContractWhaleSignalQuery {
     pub cursor_signal_id: Option<String>,
     pub limit: usize,
     pub offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContractWhaleDiscordOutboxStatus {
+    Pending,
+    Sending,
+    Sent,
+    DryRun,
+    Retry,
+    Dead,
+}
+
+impl ContractWhaleDiscordOutboxStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Sending => "sending",
+            Self::Sent => "sent",
+            Self::DryRun => "dry_run",
+            Self::Retry => "retry",
+            Self::Dead => "dead",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleDiscordOutboxItem {
+    pub signal_id: String,
+    pub signal: ContractWhaleSignal,
+    pub attempts: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContractWhaleDiscordOutboxStats {
+    pub pending: usize,
+    pub retrying: usize,
+    pub failed: usize,
+    pub oldest_pending_age_sec: i64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleOutcomeSummaryRow {
+    pub symbol: String,
+    pub signal_type: String,
+    pub classification_v2: String,
+    pub severity: String,
+    pub impact_level: Option<String>,
+    pub window_sec: u64,
+    pub oi_context: String,
+    pub regime: String,
+    pub hour_utc: String,
+    pub sample_count: usize,
+    pub avg_markout_30s_bps: Option<f64>,
+    pub avg_markout_2m_bps: Option<f64>,
+    pub avg_markout_5m_bps: Option<f64>,
+    pub follow_through_30s_rate: Option<f64>,
+    pub follow_through_2m_rate: Option<f64>,
+    pub follow_through_5m_rate: Option<f64>,
 }
 
 pub trait ContractWhaleRepo {
@@ -65,6 +128,12 @@ pub trait ContractWhaleRepo {
         snapshots: &[ContractOiSnapshot],
     ) -> anyhow::Result<usize>;
     fn list_contract_oi_snapshots_between(
+        &self,
+        symbol: &str,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<ContractOiSnapshot>>;
+    fn load_oi_snapshots_for_range(
         &self,
         symbol: &str,
         from_ts: i64,
@@ -108,6 +177,41 @@ pub trait ContractWhaleRepo {
         sent: bool,
         sent_at_ms: Option<i64>,
     ) -> anyhow::Result<usize>;
+    fn enqueue_contract_whale_discord_outbox(
+        &self,
+        signals: &[ContractWhaleSignal],
+        now_ms: i64,
+    ) -> anyhow::Result<usize>;
+    fn claim_contract_whale_discord_outbox(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> anyhow::Result<Vec<ContractWhaleDiscordOutboxItem>>;
+    fn finish_contract_whale_discord_outbox(
+        &self,
+        signal_id: &str,
+        status: ContractWhaleDiscordOutboxStatus,
+        next_attempt_at: Option<i64>,
+        sent_at: Option<i64>,
+        last_error: Option<&str>,
+    ) -> anyhow::Result<usize>;
+    fn contract_whale_discord_outbox_stats(
+        &self,
+        now_ms: i64,
+    ) -> anyhow::Result<ContractWhaleDiscordOutboxStats>;
+    fn load_contract_whale_emission_watermarks(
+        &self,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleEmissionFingerprint>>;
+    fn upsert_contract_whale_emission_watermarks(
+        &self,
+        watermarks: &BTreeMap<String, ContractWhaleEmissionFingerprint>,
+    ) -> anyhow::Result<usize>;
+    fn upsert_contract_whale_signal_outcomes(
+        &self,
+        outcomes: &[ContractWhaleSignalOutcome],
+    ) -> anyhow::Result<usize>;
+    fn contract_whale_outcome_summary(&self)
+        -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>>;
     fn upsert_contract_whale_percentiles(
         &self,
         thresholds: &[ContractWhalePercentileThreshold],
@@ -457,6 +561,15 @@ impl ContractWhaleRepo for SqliteStore {
         })
     }
 
+    fn load_oi_snapshots_for_range(
+        &self,
+        symbol: &str,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<ContractOiSnapshot>> {
+        self.list_contract_oi_snapshots_between(symbol, from_ts, to_ts)
+    }
+
     fn find_oi_context_for_event(
         &self,
         symbol: &str,
@@ -467,96 +580,41 @@ impl ContractWhaleRepo for SqliteStore {
         let window_ms = window_sec.max(0).saturating_mul(1000);
         let max_gap_ms = max_gap_sec.max(0).saturating_mul(1000);
         let start_ts = event_ts.saturating_sub(window_ms);
-        self.with_connection(|conn| {
-            let before_ts = conn
-                .query_row(
-                    "SELECT MAX(ts) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts <= ?2",
-                    params![symbol, start_ts],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .optional()?
-                .flatten();
-            let after_ts = conn
-                .query_row(
-                    "SELECT MAX(ts) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts <= ?2",
-                    params![symbol, event_ts],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .optional()?
-                .flatten();
-
-            let Some(before_ts) = before_ts else {
-                return Ok(ContractWhaleOiWindowContext {
-                    available: false,
-                    reason: Some("no_oi_snapshot_in_window".to_string()),
-                    ..ContractWhaleOiWindowContext::default()
-                });
-            };
-            let Some(after_ts) = after_ts else {
-                return Ok(ContractWhaleOiWindowContext {
-                    available: false,
-                    reason: Some("no_oi_snapshot_in_window".to_string()),
-                    ..ContractWhaleOiWindowContext::default()
-                });
-            };
-
-            if start_ts.saturating_sub(before_ts).abs() > max_gap_ms
-                || event_ts.saturating_sub(after_ts).abs() > max_gap_ms
-            {
-                return Ok(ContractWhaleOiWindowContext {
-                    before_ts: Some(before_ts),
-                    after_ts: Some(after_ts),
-                    available: false,
-                    reason: Some("oi_snapshot_gap_too_large".to_string()),
-                    ..ContractWhaleOiWindowContext::default()
-                });
+        let snapshots = self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT ts, exchange, symbol, oi_btc, oi_notional_usd
+                FROM contract_oi_snapshots
+                WHERE symbol = ?1
+                  AND ts >= ?2
+                  AND ts <= ?3
+                ORDER BY exchange ASC, ts ASC
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                params![symbol, start_ts.saturating_sub(max_gap_ms), event_ts],
+                |row| {
+                    Ok(ContractOiSnapshot {
+                        ts: row.get(0)?,
+                        exchange: exchange_from_key(row.get::<_, String>(1)?.as_str()),
+                        symbol: row.get(2)?,
+                        oi_btc: row.get(3)?,
+                        oi_notional_usd: row.get(4)?,
+                    })
+                },
+            )?;
+            let mut snapshots = Vec::new();
+            for row in rows {
+                snapshots.push(row?);
             }
-
-            let oi_before = conn.query_row(
-                "SELECT SUM(oi_btc) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts = ?2",
-                params![symbol, before_ts],
-                |row| row.get::<_, Option<f64>>(0),
-            )?;
-            let oi_after = conn.query_row(
-                "SELECT SUM(oi_btc) FROM contract_oi_snapshots WHERE symbol = ?1 AND ts = ?2",
-                params![symbol, after_ts],
-                |row| row.get::<_, Option<f64>>(0),
-            )?;
-
-            let Some(oi_before) = oi_before.filter(|value| value.is_finite() && *value > 0.0)
-            else {
-                return Ok(ContractWhaleOiWindowContext {
-                    before_ts: Some(before_ts),
-                    after_ts: Some(after_ts),
-                    available: false,
-                    reason: Some("no_oi_snapshot_in_window".to_string()),
-                    ..ContractWhaleOiWindowContext::default()
-                });
-            };
-            let Some(oi_after) = oi_after.filter(|value| value.is_finite()) else {
-                return Ok(ContractWhaleOiWindowContext {
-                    before_ts: Some(before_ts),
-                    after_ts: Some(after_ts),
-                    available: false,
-                    reason: Some("no_oi_snapshot_in_window".to_string()),
-                    ..ContractWhaleOiWindowContext::default()
-                });
-            };
-
-            let oi_delta = oi_after - oi_before;
-            let oi_delta_pct =
-                (oi_before.abs() > f64::EPSILON).then_some((oi_delta / oi_before) * 100.0);
-            Ok(ContractWhaleOiWindowContext {
-                oi_before: Some(oi_before),
-                oi_after: Some(oi_after),
-                oi_delta: Some(oi_delta),
-                oi_delta_pct,
-                before_ts: Some(before_ts),
-                after_ts: Some(after_ts),
-                available: true,
-                reason: None,
-            })
-        })
+            Ok(snapshots)
+        })?;
+        Ok(resolve_oi_window_from_snapshots(
+            &snapshots,
+            start_ts,
+            event_ts,
+            max_gap_sec,
+        ))
     }
 
     fn upsert_contract_funding_snapshots(
@@ -900,6 +958,323 @@ impl ContractWhaleRepo for SqliteStore {
                 )
                 .context("failed to update contract whale discord status")?;
             Ok(changed)
+        })
+    }
+
+    fn enqueue_contract_whale_discord_outbox(
+        &self,
+        signals: &[ContractWhaleSignal],
+        now_ms: i64,
+    ) -> anyhow::Result<usize> {
+        if signals.is_empty() {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_discord_outbox (
+                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
+                ON CONFLICT(signal_id) DO NOTHING
+                "#,
+            )?;
+            let mut inserted = 0;
+            for signal in signals {
+                inserted += stmt.execute(params![
+                    signal.id,
+                    signal.symbol,
+                    serde_json::to_string(signal)?,
+                    now_ms,
+                    now_ms,
+                ])?;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(inserted)
+        })
+    }
+
+    fn claim_contract_whale_discord_outbox(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> anyhow::Result<Vec<ContractWhaleDiscordOutboxItem>> {
+        let limit = limit.clamp(1, 100) as i64;
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                SELECT signal_id, payload_json, attempts
+                FROM contract_whale_discord_outbox
+                WHERE status IN ('pending', 'retry')
+                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?2
+                "#,
+            )?;
+            let rows = stmt.query_map(params![now_ms, limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?;
+            let mut claimed = Vec::new();
+            for row in rows {
+                let (signal_id, payload_json, attempts) = row?;
+                let changed = tx.execute(
+                    r#"
+                    UPDATE contract_whale_discord_outbox
+                    SET status = 'sending', attempts = attempts + 1, next_attempt_at = NULL
+                    WHERE signal_id = ?1 AND status IN ('pending', 'retry')
+                    "#,
+                    params![signal_id],
+                )?;
+                if changed == 1 {
+                    claimed.push(ContractWhaleDiscordOutboxItem {
+                        signal_id,
+                        signal: serde_json::from_str(&payload_json)
+                            .context("invalid contract whale discord outbox payload")?,
+                        attempts: attempts.max(0) as usize + 1,
+                    });
+                }
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(claimed)
+        })
+    }
+
+    fn finish_contract_whale_discord_outbox(
+        &self,
+        signal_id: &str,
+        status: ContractWhaleDiscordOutboxStatus,
+        next_attempt_at: Option<i64>,
+        sent_at: Option<i64>,
+        last_error: Option<&str>,
+    ) -> anyhow::Result<usize> {
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                UPDATE contract_whale_discord_outbox
+                SET status = ?2,
+                    next_attempt_at = ?3,
+                    sent_at = ?4,
+                    last_error = ?5
+                WHERE signal_id = ?1
+                "#,
+                params![
+                    signal_id,
+                    status.as_str(),
+                    next_attempt_at,
+                    sent_at,
+                    last_error
+                ],
+            )
+            .context("failed to update contract whale discord outbox")
+        })
+    }
+
+    fn contract_whale_discord_outbox_stats(
+        &self,
+        now_ms: i64,
+    ) -> anyhow::Result<ContractWhaleDiscordOutboxStats> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT
+                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END),
+                  MIN(CASE WHEN status IN ('pending', 'retry') THEN created_at END)
+                FROM contract_whale_discord_outbox
+                "#,
+                [],
+                |row| {
+                    let oldest_pending_at = row.get::<_, Option<i64>>(3)?;
+                    Ok(ContractWhaleDiscordOutboxStats {
+                        pending: row.get::<_, Option<i64>>(0)?.unwrap_or_default().max(0) as usize,
+                        retrying: row.get::<_, Option<i64>>(1)?.unwrap_or_default().max(0) as usize,
+                        failed: row.get::<_, Option<i64>>(2)?.unwrap_or_default().max(0) as usize,
+                        oldest_pending_age_sec: oldest_pending_at
+                            .map(|created_at| now_ms.saturating_sub(created_at) / 1000)
+                            .unwrap_or_default(),
+                    })
+                },
+            )
+            .context("failed to query contract whale discord outbox stats")
+        })
+    }
+
+    fn load_contract_whale_emission_watermarks(
+        &self,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleEmissionFingerprint>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT emission_key, payload_json FROM contract_whale_emission_watermarks",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut watermarks = BTreeMap::new();
+            for row in rows {
+                let (key, payload_json) = row?;
+                watermarks.insert(
+                    key,
+                    serde_json::from_str(&payload_json)
+                        .context("invalid contract whale emission watermark payload")?,
+                );
+            }
+            Ok(watermarks)
+        })
+    }
+
+    fn upsert_contract_whale_emission_watermarks(
+        &self,
+        watermarks: &BTreeMap<String, ContractWhaleEmissionFingerprint>,
+    ) -> anyhow::Result<usize> {
+        if watermarks.is_empty() {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_emission_watermarks (emission_key, payload_json, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(emission_key) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                "#,
+            )?;
+            let mut written = 0;
+            for (key, fingerprint) in watermarks {
+                written += stmt.execute(params![
+                    key,
+                    serde_json::to_string(fingerprint)?,
+                    fingerprint.last_emitted_at,
+                ])?;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn upsert_contract_whale_signal_outcomes(
+        &self,
+        outcomes: &[ContractWhaleSignalOutcome],
+    ) -> anyhow::Result<usize> {
+        if outcomes.is_empty() {
+            return Ok(0);
+        }
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_signal_outcomes (
+                  signal_id, symbol, signal_ts, signal_type, classification_v2, severity,
+                  impact_level, window_sec, oi_context, regime, entry_price,
+                  markout_30s_bps, markout_2m_bps, markout_5m_bps, mfe_5m_bps, mae_5m_bps,
+                  follow_through_30s, follow_through_2m, follow_through_5m, evaluated_at,
+                  outcome_version
+                ) VALUES (
+                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                  ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                )
+                ON CONFLICT(signal_id) DO UPDATE SET
+                  classification_v2 = excluded.classification_v2,
+                  severity = excluded.severity,
+                  impact_level = excluded.impact_level,
+                  oi_context = excluded.oi_context,
+                  regime = excluded.regime,
+                  entry_price = excluded.entry_price,
+                  markout_30s_bps = excluded.markout_30s_bps,
+                  markout_2m_bps = excluded.markout_2m_bps,
+                  markout_5m_bps = excluded.markout_5m_bps,
+                  mfe_5m_bps = excluded.mfe_5m_bps,
+                  mae_5m_bps = excluded.mae_5m_bps,
+                  follow_through_30s = excluded.follow_through_30s,
+                  follow_through_2m = excluded.follow_through_2m,
+                  follow_through_5m = excluded.follow_through_5m,
+                  evaluated_at = excluded.evaluated_at,
+                  outcome_version = excluded.outcome_version
+                "#,
+            )?;
+            let mut written = 0;
+            for outcome in outcomes {
+                stmt.execute(params![
+                    outcome.signal_id,
+                    outcome.symbol,
+                    outcome.signal_ts,
+                    outcome.signal_type,
+                    outcome.classification_v2,
+                    outcome.severity,
+                    outcome.impact_level,
+                    outcome.window_sec as i64,
+                    outcome.oi_context,
+                    outcome.regime,
+                    outcome.entry_price,
+                    outcome.markout_30s_bps,
+                    outcome.markout_2m_bps,
+                    outcome.markout_5m_bps,
+                    outcome.mfe_5m_bps,
+                    outcome.mae_5m_bps,
+                    outcome.follow_through_30s.map(bool_to_int),
+                    outcome.follow_through_2m.map(bool_to_int),
+                    outcome.follow_through_5m.map(bool_to_int),
+                    outcome.evaluated_at,
+                    outcome.outcome_version,
+                ])?;
+                written += 1;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn contract_whale_outcome_summary(
+        &self,
+    ) -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT symbol, signal_type, COALESCE(classification_v2, ''), severity,
+                       impact_level, window_sec, COALESCE(oi_context, ''), COALESCE(regime, ''),
+                       strftime('%H', signal_ts / 1000, 'unixepoch') AS hour_utc,
+                       COUNT(*) AS sample_count,
+                       AVG(markout_30s_bps), AVG(markout_2m_bps), AVG(markout_5m_bps),
+                       AVG(follow_through_30s), AVG(follow_through_2m), AVG(follow_through_5m)
+                FROM contract_whale_signal_outcomes
+                GROUP BY symbol, signal_type, classification_v2, severity, impact_level,
+                         window_sec, oi_context, regime, hour_utc
+                ORDER BY sample_count DESC, symbol ASC
+                LIMIT 500
+                "#,
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(ContractWhaleOutcomeSummaryRow {
+                    symbol: row.get(0)?,
+                    signal_type: row.get(1)?,
+                    classification_v2: row.get(2)?,
+                    severity: row.get(3)?,
+                    impact_level: row.get(4)?,
+                    window_sec: row.get::<_, i64>(5)?.max(0) as u64,
+                    oi_context: row.get(6)?,
+                    regime: row.get(7)?,
+                    hour_utc: row.get(8)?,
+                    sample_count: row.get::<_, i64>(9)?.max(0) as usize,
+                    avg_markout_30s_bps: row.get(10)?,
+                    avg_markout_2m_bps: row.get(11)?,
+                    avg_markout_5m_bps: row.get(12)?,
+                    follow_through_30s_rate: row.get(13)?,
+                    follow_through_2m_rate: row.get(14)?,
+                    follow_through_5m_rate: row.get(15)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
 
@@ -1302,6 +1677,148 @@ fn repair_signal_profile_snapshot(
         signal.active_sources.active_contract_sources = signal.active_contract_sources.clone();
     }
     Ok(())
+}
+
+pub fn resolve_oi_window_from_snapshots(
+    snapshots: &[ContractOiSnapshot],
+    start_ts: i64,
+    end_ts: i64,
+    max_gap_sec: i64,
+) -> ContractWhaleOiWindowContext {
+    let max_gap_ms = max_gap_sec.max(0).saturating_mul(1000);
+    let mut snapshots_by_exchange = BTreeMap::<ContractExchange, Vec<&ContractOiSnapshot>>::new();
+    for snapshot in snapshots {
+        if snapshot.ts >= start_ts.saturating_sub(max_gap_ms) && snapshot.ts <= end_ts {
+            snapshots_by_exchange
+                .entry(snapshot.exchange)
+                .or_default()
+                .push(snapshot);
+        }
+    }
+
+    let mut exchanges = Vec::new();
+    let mut consistent_sources = Vec::new();
+    let mut excluded_sources = Vec::new();
+    let mut before_sources = Vec::new();
+    let mut after_sources = Vec::new();
+    let mut oi_before = 0.0;
+    let mut oi_after = 0.0;
+
+    for (exchange, snapshots) in snapshots_by_exchange.iter_mut() {
+        snapshots.sort_by_key(|snapshot| snapshot.ts);
+        let before = snapshots
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.ts <= start_ts)
+            .copied();
+        let after = snapshots
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.ts <= end_ts)
+            .copied();
+        let exchange_key = exchange.as_key().to_string();
+        if before.is_some() {
+            before_sources.push(exchange_key.clone());
+        }
+        if after.is_some() {
+            after_sources.push(exchange_key.clone());
+        }
+        let (Some(before), Some(after)) = (before, after) else {
+            excluded_sources.push(format!("{exchange_key}:missing_before_or_after"));
+            continue;
+        };
+        if start_ts.saturating_sub(before.ts).abs() > max_gap_ms
+            || end_ts.saturating_sub(after.ts).abs() > max_gap_ms
+        {
+            excluded_sources.push(format!("{exchange_key}:snapshot_gap_too_large"));
+            continue;
+        }
+        if !before.oi_btc.is_finite() || before.oi_btc <= 0.0 || !after.oi_btc.is_finite() {
+            excluded_sources.push(format!("{exchange_key}:invalid_oi_value"));
+            continue;
+        }
+
+        let oi_delta_btc = after.oi_btc - before.oi_btc;
+        let oi_delta_pct = (oi_delta_btc / before.oi_btc) * 100.0;
+        exchanges.push(ContractWhaleOiExchangeDelta {
+            exchange: *exchange,
+            before_ts: before.ts,
+            after_ts: after.ts,
+            oi_before_btc: before.oi_btc,
+            oi_after_btc: after.oi_btc,
+            oi_delta_btc,
+            oi_delta_pct,
+        });
+        consistent_sources.push(exchange_key);
+        oi_before += before.oi_btc;
+        oi_after += after.oi_btc;
+    }
+
+    let source_coverage_changed = before_sources != after_sources;
+    if exchanges.is_empty() {
+        let has_gap_rejection = excluded_sources
+            .iter()
+            .any(|source| source.ends_with(":snapshot_gap_too_large"));
+        return ContractWhaleOiWindowContext {
+            excluded_sources,
+            source_coverage_changed,
+            available: false,
+            reason: Some(
+                if has_gap_rejection {
+                    "oi_snapshot_gap_too_large"
+                } else {
+                    "no_consistent_oi_sources"
+                }
+                .to_string(),
+            ),
+            ..ContractWhaleOiWindowContext::default()
+        };
+    }
+
+    let directional = exchanges
+        .iter()
+        .filter(|entry| entry.oi_delta_btc.abs() > f64::EPSILON)
+        .collect::<Vec<_>>();
+    let cross_exchange_consensus = if directional.len() < 2 {
+        None
+    } else {
+        let positive = directional
+            .iter()
+            .filter(|entry| entry.oi_delta_btc.is_sign_positive())
+            .count();
+        let negative = directional.len().saturating_sub(positive);
+        Some(positive * 3 >= directional.len() * 2 || negative * 3 >= directional.len() * 2)
+    };
+    let evidence_degraded = exchanges.len() == 1 || source_coverage_changed;
+    let evidence_reason = if exchanges.len() == 1 {
+        Some("single_consistent_oi_source".to_string())
+    } else if source_coverage_changed {
+        Some("oi_source_coverage_changed".to_string())
+    } else if matches!(cross_exchange_consensus, Some(false)) {
+        Some("oi_cross_exchange_conflict".to_string())
+    } else {
+        None
+    };
+    let oi_delta = oi_after - oi_before;
+    ContractWhaleOiWindowContext {
+        before_ts: exchanges.iter().map(|entry| entry.before_ts).max(),
+        after_ts: exchanges.iter().map(|entry| entry.after_ts).max(),
+        oi_before: Some(oi_before),
+        oi_after: Some(oi_after),
+        oi_delta: Some(oi_delta),
+        oi_delta_pct: (oi_delta / oi_before)
+            .is_finite()
+            .then_some((oi_delta / oi_before) * 100.0),
+        exchanges,
+        consistent_sources,
+        excluded_sources,
+        source_coverage_changed,
+        cross_exchange_consensus,
+        evidence_degraded,
+        evidence_reason,
+        available: true,
+        reason: None,
+    }
 }
 
 fn enum_value<T: serde::Serialize>(value: T) -> anyhow::Result<String> {

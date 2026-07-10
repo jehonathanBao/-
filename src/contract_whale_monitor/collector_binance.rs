@@ -23,13 +23,14 @@ pub const BINANCE_BTC_USDT_PERP_OPEN_INTEREST_URL: &str =
     "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT";
 pub const BINANCE_BTC_USDT_PERP_PREMIUM_INDEX_URL: &str =
     "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
-const FORCE_ORDER_RECONNECT_DELAY_MS: u64 = 1_000;
+const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
 
 pub fn collector_status() -> &'static str {
     "defined_not_started"
 }
 
 pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiquidationOrder>) {
+    let mut reconnect_attempt = 0_u32;
     loop {
         tracing::info!(
             target: LOG_TARGET,
@@ -39,6 +40,7 @@ pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiqu
         );
         match connect_async(BINANCE_BTC_USDT_PERP_FORCE_ORDER_STREAM).await {
             Ok((ws, _)) => {
+                reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     event = log_events::WS_CONNECTED,
@@ -86,8 +88,26 @@ pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiqu
                 );
             }
         }
-        tokio::time::sleep(Duration::from_millis(FORCE_ORDER_RECONNECT_DELAY_MS)).await;
+        reconnect_attempt = reconnect_attempt.saturating_add(1);
+        let next_delay_ms = reconnect_delay_ms(reconnect_attempt, 17);
+        tracing::warn!(
+            target: LOG_TARGET,
+            event = log_events::WS_DISCONNECTED,
+            exchange = "binance",
+            attempt = reconnect_attempt,
+            next_delay_ms,
+            "{} binance forceOrder reconnect scheduled",
+            LOG_PREFIX
+        );
+        tokio::time::sleep(Duration::from_millis(next_delay_ms)).await;
     }
+}
+
+pub fn reconnect_delay_ms(attempt: u32, jitter_seed: u64) -> u64 {
+    let base = 1_000_u64.saturating_mul(1_u64 << attempt.saturating_sub(1).min(5));
+    let capped = base.min(RECONNECT_MAX_DELAY_MS);
+    let jitter = (jitter_seed.wrapping_mul(31).wrapping_add(attempt as u64) % 401) as i64 - 200;
+    (capped as i64 + capped as i64 * jitter / 1_000).max(1_000) as u64
 }
 
 pub fn handle_force_order_message(text: &str) -> Option<ContractLiquidationOrder> {

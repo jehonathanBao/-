@@ -340,6 +340,7 @@ fn whale_stats(exchanges: Vec<ExchangeFlowContribution>) -> ContractWhaleWindowS
         startup_age_ms: Some(120_000),
         liquidation_driven: false,
         price_jump_anomaly: false,
+        micro_volatility: Default::default(),
     }
 }
 

@@ -21,7 +21,6 @@ pub const OKX_BTC_USDT_SWAP_OPEN_INTEREST_URL: &str =
     "https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP";
 pub const OKX_BTC_USDT_SWAP_FUNDING_RATE_URL: &str =
     "https://www.okx.com/api/v5/public/funding-rate?instId=BTC-USDT-SWAP";
-const OKX_LIQUIDATION_RECONNECT_DELAY_MS: u64 = 1_000;
 
 pub fn collector_status() -> &'static str {
     "defined_not_started"
@@ -31,6 +30,7 @@ pub async fn run_okx_liquidation_collector(
     sender: mpsc::Sender<ContractLiquidationOrder>,
     ct_val_btc: f64,
 ) {
+    let mut reconnect_attempt = 0_u32;
     loop {
         tracing::info!(
             target: LOG_TARGET,
@@ -40,6 +40,7 @@ pub async fn run_okx_liquidation_collector(
         );
         match connect_async(OKX_PUBLIC_WS_URL).await {
             Ok((ws, _)) => {
+                reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     event = log_events::WS_CONNECTED,
@@ -104,7 +105,18 @@ pub async fn run_okx_liquidation_collector(
                 );
             }
         }
-        tokio::time::sleep(Duration::from_millis(OKX_LIQUIDATION_RECONNECT_DELAY_MS)).await;
+        reconnect_attempt = reconnect_attempt.saturating_add(1);
+        let next_delay_ms = super::collector_binance::reconnect_delay_ms(reconnect_attempt, 29);
+        tracing::warn!(
+            target: LOG_TARGET,
+            event = log_events::WS_DISCONNECTED,
+            exchange = "okx",
+            attempt = reconnect_attempt,
+            next_delay_ms,
+            "{} okx liquidation reconnect scheduled",
+            LOG_PREFIX
+        );
+        tokio::time::sleep(Duration::from_millis(next_delay_ms)).await;
     }
 }
 
@@ -138,6 +150,79 @@ pub fn okx_funding_rate_url(symbol: &str) -> String {
         "https://www.okx.com/api/v5/public/funding-rate?instId={}",
         okx_usdt_swap_inst_id(symbol)
     )
+}
+
+pub fn okx_instruments_url(symbol: &str) -> String {
+    format!(
+        "https://www.okx.com/api/v5/public/instruments?instType=SWAP&instId={}",
+        okx_usdt_swap_inst_id(symbol)
+    )
+}
+
+pub async fn fetch_okx_contract_value_base(
+    client: &reqwest::Client,
+    symbol: &str,
+) -> anyhow::Result<Option<f64>> {
+    let payload = client
+        .get(okx_instruments_url(symbol))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    Ok(parse_okx_contract_value_base(&payload, symbol))
+}
+
+pub fn parse_okx_contract_value_base(payload: &serde_json::Value, symbol: &str) -> Option<f64> {
+    let expected_inst = okx_usdt_swap_inst_id(symbol);
+    let expected_base = symbol.trim().to_ascii_uppercase();
+    payload
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                let inst_matches = item
+                    .get("instId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(&expected_inst));
+                let ccy_matches = item
+                    .get("ctValCcy")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case(&expected_base));
+                item.get("ctVal")
+                    .and_then(|value| {
+                        value
+                            .as_f64()
+                            .or_else(|| value.as_str().and_then(|raw| raw.parse::<f64>().ok()))
+                    })
+                    .filter(|value| {
+                        inst_matches && ccy_matches && value.is_finite() && *value > 0.0
+                    })
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_okx_contract_value_base;
+
+    #[test]
+    fn instrument_metadata_accepts_only_matching_positive_ctval() {
+        let payload = serde_json::json!({
+            "data": [{"instId": "ETH-USDT-SWAP", "ctValCcy": "ETH", "ctVal": "0.1"}]
+        });
+        assert_eq!(parse_okx_contract_value_base(&payload, "ETH"), Some(0.1));
+
+        let wrong_ccy = serde_json::json!({
+            "data": [{"instId": "ETH-USDT-SWAP", "ctValCcy": "BTC", "ctVal": "0.1"}]
+        });
+        assert_eq!(parse_okx_contract_value_base(&wrong_ccy, "ETH"), None);
+
+        let invalid = serde_json::json!({
+            "data": [{"instId": "ETH-USDT-SWAP", "ctValCcy": "ETH", "ctVal": "0"}]
+        });
+        assert_eq!(parse_okx_contract_value_base(&invalid, "ETH"), None);
+    }
 }
 
 pub async fn fetch_okx_open_interest_snapshot(

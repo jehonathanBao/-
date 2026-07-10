@@ -1193,9 +1193,9 @@ function LifecycleEventSections({
   onLoadMoreFinalEvents,
   onOpenSignal,
 }) {
-  const lifecycleVolumeLabel = "生命周期累计流量 BTC";
+  const lifecycleVolumeLabel = "峰值窗口流量 BTC";
   const volumeTooltip =
-    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
+    "总流量 = 主动买量 + 主动卖量；ACTIVE/CLOSED 优先显示事件真实换手，raw 1s bucket 缺失时显示生命周期内的峰值窗口流量。";
 
   return (
     <section className="mt-4 space-y-4" id="contract-whale-lifecycle">
@@ -2789,6 +2789,10 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Dynamic Multiple", formatMultiple(signal.dynamicMultiple)],
                 ["Dynamic Baseline", signal.dynamicBaselineBtc === null || signal.dynamicBaselineBtc === undefined ? "N/A" : formatBaseVolume(signal.dynamicBaselineBtc, signal.symbol)],
                 ["Dynamic Level", dynamicThresholdLevelLabel(signal.dynamicThresholdLevel)],
+                ["Volatility Source", microVolatilityLabel(signal)],
+                ["Micro Volatility", microVolatilityValueLabel(signal)],
+                ["Price Efficiency", priceEfficiencyLabel(signal)],
+                ["Semantic Shadow", signal.semanticMismatch ? `legacy ${signal.legacySignalType || signal.signalType} != v2` : "一致"],
                 ["Percentile", formatPercentile(signal.percentileLevel)],
                 ["Price Move", formatSignedPct(signal.priceMovePct)],
                 ["5s Price Move", formatSignedPct(signal.priceMove5sPct)],
@@ -3299,6 +3303,29 @@ function signalClassificationMeta(signal) {
   const price = priceType ? priceResponseLabel(priceType) : "—";
   const oi = formatOiContextSummary(signal);
   return `主动流：${flow} · 价格：${price} · OI：${oi}`;
+}
+
+function microVolatilityLabel(signal) {
+  const source = String(signal?.dynamicThresholds?.volatilitySource || "fallback").trim();
+  if (source === "flow_1s_vwap") return "1s VWAP EWMA";
+  if (source === "disabled") return "已关闭";
+  return "基准缺失 / 降级";
+}
+
+function microVolatilityValueLabel(signal) {
+  const thresholds = signal?.dynamicThresholds || {};
+  const value = Number(thresholds.microVolatilityPct);
+  if (!Number.isFinite(value)) return "N/A";
+  const samples = Number(thresholds.volatilitySampleCount || 0);
+  return `${value.toFixed(4)}% · ${samples} samples${thresholds.volatilityStale ? " · stale" : ""}`;
+}
+
+function priceEfficiencyLabel(signal) {
+  const value = Number(signal?.priceEfficiency);
+  if (!Number.isFinite(value)) return "N/A";
+  const version = String(signal?.priceEfficiencyVersion || "legacy_btc_volume_v0");
+  const unit = version === "notional_bps_per_usd_million_v1" ? "bps / $1M" : "legacy";
+  return `${value.toFixed(4)} ${unit}`;
 }
 
 function signalClassificationTooltip(signal) {

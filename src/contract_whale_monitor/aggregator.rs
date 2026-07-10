@@ -6,8 +6,8 @@ use super::{
         ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
         ContractLiquidationOrder, ContractLiquidationSide, ContractOiSnapshot, ContractTrade,
         ContractTradeSide, ContractWhaleLiquidationContext, ContractWhaleMarketContext,
-        ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleWindowStats,
-        ExchangeFlowContribution,
+        ContractWhaleMarketType, ContractWhaleMicroVolatility, ContractWhalePercentileThreshold,
+        ContractWhaleWindowStats, ExchangeFlowContribution,
     },
 };
 
@@ -242,7 +242,94 @@ pub fn rolling_window_stats_with_config(
         startup_age_ms: None,
         liquidation_driven: false,
         price_jump_anomaly: false,
+        micro_volatility: micro_volatility_from_buckets(buckets, symbol, now_ts, config),
     })
+}
+
+fn micro_volatility_from_buckets(
+    buckets: &[ContractFlowBucket],
+    symbol: &str,
+    now_ts: i64,
+    config: &ContractWhaleRuntimeConfig,
+) -> ContractWhaleMicroVolatility {
+    let settings = &config.classification;
+    if !settings.micro_volatility_enabled {
+        return ContractWhaleMicroVolatility {
+            source: "disabled".to_string(),
+            stale: true,
+            ..ContractWhaleMicroVolatility::default()
+        };
+    }
+
+    let from_ts = now_ts.saturating_sub(300_000);
+    let mut by_second: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    for bucket in buckets {
+        if !bucket.symbol.eq_ignore_ascii_case(symbol)
+            || bucket.ts_bucket < from_ts
+            || bucket.ts_bucket > now_ts
+            || !config.exchange_enabled(&bucket.exchange)
+        {
+            continue;
+        }
+        let Some(vwap) = bucket
+            .vwap
+            .filter(|value| value.is_finite() && *value > 0.0)
+        else {
+            continue;
+        };
+        let volume = bucket.buy_volume_btc + bucket.sell_volume_btc;
+        if volume <= f64::EPSILON {
+            continue;
+        }
+        let entry = by_second.entry(bucket.ts_bucket).or_default();
+        entry.0 += vwap * volume;
+        entry.1 += volume;
+    }
+
+    let prices = by_second
+        .iter()
+        .filter_map(|(ts, (weighted_price, volume))| {
+            (*volume > f64::EPSILON).then(|| (*ts, weighted_price / volume))
+        })
+        .collect::<Vec<_>>();
+    let sample_count = prices.len().saturating_sub(1);
+    let stale = prices
+        .last()
+        .map(|(ts, _)| {
+            now_ts.saturating_sub(*ts) > settings.micro_volatility_max_staleness_seconds * 1_000
+        })
+        .unwrap_or(true);
+    if sample_count < settings.micro_volatility_min_samples || stale {
+        return ContractWhaleMicroVolatility {
+            sample_count,
+            source: "fallback".to_string(),
+            stale,
+            ..ContractWhaleMicroVolatility::default()
+        };
+    }
+
+    let mut ewma = None;
+    for pair in prices.windows(2) {
+        let previous = pair[0].1;
+        let current = pair[1].1;
+        if previous <= f64::EPSILON || !previous.is_finite() || !current.is_finite() {
+            continue;
+        }
+        let absolute_return_pct = ((current / previous) - 1.0).abs() * 100.0;
+        ewma = Some(match ewma {
+            Some(value) => {
+                settings.micro_volatility_ewma_alpha * absolute_return_pct
+                    + (1.0 - settings.micro_volatility_ewma_alpha) * value
+            }
+            None => absolute_return_pct,
+        });
+    }
+    ContractWhaleMicroVolatility {
+        value_pct: ewma.filter(|value| value.is_finite()),
+        sample_count,
+        source: "flow_1s_vwap".to_string(),
+        stale: false,
+    }
 }
 
 pub fn liquidation_context_for_window(

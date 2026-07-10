@@ -882,7 +882,7 @@ function normalizeOpportunityZone(item = {}) {
 
 function volumeDisplayLabelForContext(context) {
   if (context === VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM) return "累计总流量 BTC";
-  if (context === VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT) return "生命周期累计流量 BTC";
+  if (context === VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT) return "峰值窗口流量 BTC";
   return "窗口总流量 BTC";
 }
 
@@ -890,7 +890,7 @@ function volumeSemanticsForContext(context) {
   if (context === VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW) {
     return "single_window_bidirectional_cross_exchange";
   }
-  return "multi_exchange_bidirectional_lifecycle_accumulated";
+  return "multi_exchange_bidirectional_peak_window";
 }
 
 function deriveBuySellFromTotalNet(total, net) {

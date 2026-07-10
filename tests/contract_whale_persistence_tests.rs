@@ -16,13 +16,15 @@ use btc_toxic_flow_monitor_rs::{
             normalize_bitfinex_trade, normalize_okx_funding_rate_json,
             normalize_okx_open_interest_json,
         },
+        outcome_calibration::ContractWhaleSignalOutcome,
         persistence::flush_contract_flow_buckets_nonblocking,
         persistence::persist_contract_whale_signals_nonblocking,
         types::{
             ContractExchange, ContractFlowBucket, ContractFundingSnapshot,
             ContractLiquidationBucket, ContractOiSnapshot, ContractWhaleDirection,
-            ContractWhaleMarketType, ContractWhalePercentileThreshold, ContractWhaleSeverity,
-            ContractWhaleSignalType, ContractWhaleSourceRole,
+            ContractWhaleEmissionFingerprint, ContractWhaleMarketType,
+            ContractWhalePercentileThreshold, ContractWhaleSeverity, ContractWhaleSignalType,
+            ContractWhaleSourceRole, ContractWhaleStructureInterpretation,
         },
     },
     storage::{
@@ -74,6 +76,104 @@ fn contract_flow_1s_upsert_is_idempotent() {
     assert_eq!(rows[0].market_type, ContractWhaleMarketType::Perp);
     assert_eq!(rows[0].source_role, ContractWhaleSourceRole::Primary);
     assert_eq!(rows[0].product_id.as_deref(), Some("BTCUSDT"));
+}
+
+#[test]
+fn contract_whale_outcome_summary_persists_shadow_markouts() {
+    let store = temp_store("contract-whale-outcome-summary");
+    let outcome = ContractWhaleSignalOutcome {
+        signal_id: "contract-whale:BTC:15:1700000000000:buy".to_string(),
+        symbol: "BTC".to_string(),
+        signal_ts: 1_700_000_000_000,
+        signal_type: "aggressive_buy".to_string(),
+        classification_v2: "main_force_push_up".to_string(),
+        severity: "critical".to_string(),
+        impact_level: Some("A".to_string()),
+        window_sec: 15,
+        oi_context: "new_long_build".to_string(),
+        regime: "trend".to_string(),
+        entry_price: 70_000.0,
+        markout_30s_bps: Some(12.0),
+        markout_2m_bps: Some(18.0),
+        markout_5m_bps: Some(24.0),
+        mfe_5m_bps: Some(30.0),
+        mae_5m_bps: Some(-4.0),
+        follow_through_30s: Some(true),
+        follow_through_2m: Some(true),
+        follow_through_5m: Some(true),
+        evaluated_at: 1_700_000_300_000,
+        outcome_version: "v1_shadow".to_string(),
+    };
+
+    assert_eq!(
+        store
+            .upsert_contract_whale_signal_outcomes(&[outcome])
+            .unwrap(),
+        1
+    );
+    let summary = store.contract_whale_outcome_summary().unwrap();
+
+    assert_eq!(summary.len(), 1);
+    assert_eq!(summary[0].symbol, "BTC");
+    assert_eq!(summary[0].sample_count, 1);
+    assert_eq!(summary[0].avg_markout_5m_bps, Some(24.0));
+    assert_eq!(summary[0].follow_through_5m_rate, Some(1.0));
+}
+
+#[test]
+fn oi_context_aligns_before_and_after_snapshots_per_exchange() {
+    let store = temp_store("contract-oi-asof-per-exchange");
+    let event_ts = 1_700_000_015_000;
+    let start_ts = event_ts - 15_000;
+    store
+        .upsert_contract_oi_snapshots(&[
+            ContractOiSnapshot {
+                ts: start_ts - 1_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 1_000.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: event_ts - 1_000,
+                exchange: ContractExchange::Binance,
+                symbol: "BTC".to_string(),
+                oi_btc: 1_100.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: start_ts - 500,
+                exchange: ContractExchange::Okx,
+                symbol: "BTC".to_string(),
+                oi_btc: 2_000.0,
+                oi_notional_usd: None,
+            },
+            ContractOiSnapshot {
+                ts: event_ts - 500,
+                exchange: ContractExchange::Okx,
+                symbol: "BTC".to_string(),
+                oi_btc: 2_200.0,
+                oi_notional_usd: None,
+            },
+        ])
+        .unwrap();
+
+    let context = store
+        .find_oi_context_for_event("BTC", event_ts, 15, 90)
+        .expect("resolve oi context");
+
+    assert!(context.available);
+    assert_eq!(context.oi_before, Some(3_000.0));
+    assert_eq!(context.oi_after, Some(3_300.0));
+    assert_eq!(context.oi_delta, Some(300.0));
+    let payload = serde_json::to_value(&context).expect("oi context json");
+    assert_eq!(payload["exchanges"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        payload["consistentSources"],
+        serde_json::json!(["binance", "okx"])
+    );
+    assert_eq!(payload["sourceCoverageChanged"], false);
+    assert_eq!(payload["crossExchangeConsensus"], true);
 }
 
 #[test]
@@ -273,6 +373,38 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
         .spot
         .iter()
         .any(|entry| entry.exchange == "coinbase" && entry.status == "spot_only"));
+}
+
+#[test]
+fn contract_whale_emission_watermarks_survive_reopen() {
+    let store = temp_store("contract-whale-emission-watermarks");
+    let mut watermarks = std::collections::BTreeMap::new();
+    watermarks.insert(
+        "BTC:15:AggressiveBuy:Buy".to_string(),
+        ContractWhaleEmissionFingerprint {
+            source_window_end_ts: 1_700_000_015_000,
+            severity: ContractWhaleSeverity::High,
+            impact_level: Some("A".to_string()),
+            classification: ContractWhaleStructureInterpretation::ActiveBuyPressure,
+            score: 88,
+            total_volume_btc: 1_200.0,
+            net_volume_btc: 860.0,
+            last_emitted_at: 1_700_000_015_000,
+        },
+    );
+    assert_eq!(
+        store
+            .upsert_contract_whale_emission_watermarks(&watermarks)
+            .unwrap(),
+        1
+    );
+
+    let reopened = SqliteStore::open(store.path().to_str().unwrap()).unwrap();
+    reopened.migrate().unwrap();
+    assert_eq!(
+        reopened.load_contract_whale_emission_watermarks().unwrap(),
+        watermarks
+    );
 }
 
 #[test]
@@ -1049,8 +1181,10 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 500.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.4), 94)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.4), 94)
         .expect("window stats");
+    stats.percentile_level = Some(99.9);
+    stats.multi_exchange_confirmed = true;
     detect_contract_whale_signal(&stats).expect("signal")
 }
 

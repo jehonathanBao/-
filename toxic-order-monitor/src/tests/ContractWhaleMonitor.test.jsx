@@ -1915,7 +1915,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("合约市场事件")).toBeInTheDocument();
     expect(screen.getByText(/当前列表为历史事件流，不是 latest 快照/)).toBeInTheDocument();
     expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("生命周期累计流量 BTC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("峰值窗口流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("市场冲击等级").length).toBeGreaterThan(0);
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();

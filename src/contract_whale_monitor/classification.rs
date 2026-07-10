@@ -2,9 +2,9 @@ use super::{
     config::ContractWhaleRuntimeConfig,
     types::{
         ContractWhaleActiveFlowDirection, ContractWhaleClassificationV2,
-        ContractWhaleDynamicPriceThresholds, ContractWhaleOiContextTag,
-        ContractWhaleOiWindowContext, ContractWhalePriceResponseType,
-        ContractWhaleResolvedOiContext, ContractWhaleSignalType,
+        ContractWhaleDynamicPriceThresholds, ContractWhaleEvidenceState,
+        ContractWhaleEvidenceSummary, ContractWhaleOiContextTag, ContractWhaleOiWindowContext,
+        ContractWhalePriceResponseType, ContractWhaleResolvedOiContext, ContractWhaleSignalType,
         ContractWhaleStructureInterpretation, ContractWhaleWindowStats,
     },
 };
@@ -20,6 +20,7 @@ pub fn classify_contract_whale_signal_v2(
         let flow = flow_direction(stats, config);
         let oi = legacy_oi_context_resolution(stats, config, flow);
         return ContractWhaleClassificationV2 {
+            legacy_signal_type: legacy_signal_type_key(signal_type).to_string(),
             display_signal_type: legacy_display_label(signal_type).to_string(),
             structure_interpretation: legacy_structure(signal_type),
             flow_direction: flow,
@@ -33,17 +34,20 @@ pub fn classify_contract_whale_signal_v2(
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: "v2_disabled_legacy_compat".to_string(),
+            semantic_mismatch: false,
             classification_reasons: vec!["classification_v2_disabled".to_string()],
-            dynamic_thresholds: dynamic_thresholds(config),
-            price_efficiency: price_efficiency(stats),
+            dynamic_thresholds: dynamic_thresholds(stats, config),
+            price_efficiency: price_efficiency(stats, config),
+            price_efficiency_version: price_efficiency_version(config).to_string(),
+            evidence: evidence_summary(stats, multi_exchange_confirmed),
         };
     }
 
     let flow = flow_direction(stats, config);
-    let thresholds = dynamic_thresholds(config);
+    let thresholds = dynamic_thresholds(stats, config);
     let price_move = stats.price_move_pct.unwrap_or(0.0);
     let reversal = stats.price_reversal_ratio.unwrap_or(0.0);
-    let efficiency = price_efficiency(stats);
+    let efficiency = price_efficiency(stats, config);
     let same_direction_follow = match flow {
         ContractWhaleActiveFlowDirection::BuyDominant => price_move.max(0.0),
         ContractWhaleActiveFlowDirection::SellDominant => (-price_move).max(0.0),
@@ -75,7 +79,14 @@ pub fn classify_contract_whale_signal_v2(
     let absorption_quality_ok = stats.dominance >= config.classification.absorption_dominance_min
         && stats.total_notional_usd >= config.classification.absorption_min_notional_usd
         && stats.data_quality >= config.classification.min_data_quality_for_absorption
-        && efficiency <= config.classification.low_price_efficiency_max
+        && efficiency
+            <= if config.classification.normalized_price_efficiency_enabled {
+                config
+                    .classification
+                    .low_price_efficiency_max_bps_per_million
+            } else {
+                config.classification.low_price_efficiency_max
+            }
         && absorption_source_ok;
     let downside_absorption = flow == ContractWhaleActiveFlowDirection::SellDominant
         && absorption_quality_ok
@@ -164,6 +175,7 @@ pub fn classify_contract_whale_signal_v2(
     reasons.push(format!("oi_context:{oi_context:?}"));
 
     ContractWhaleClassificationV2 {
+        legacy_signal_type: legacy_signal_type_key(signal_type).to_string(),
         display_signal_type: display_label(structure_interpretation).to_string(),
         structure_interpretation,
         flow_direction: flow,
@@ -183,10 +195,84 @@ pub fn classify_contract_whale_signal_v2(
             config,
         ),
         is_strong_main_force_intent: strong_intent,
-        classification_version: "contract_whale_v2_compat".to_string(),
+        classification_version: "contract_whale_v2_shadow".to_string(),
+        semantic_mismatch: legacy_structure(signal_type) != structure_interpretation,
         classification_reasons: reasons,
         dynamic_thresholds: thresholds,
         price_efficiency: round(efficiency, 4),
+        price_efficiency_version: price_efficiency_version(config).to_string(),
+        evidence: evidence_summary(stats, multi_exchange_confirmed),
+    }
+}
+
+fn evidence_summary(
+    stats: &ContractWhaleWindowStats,
+    multi_exchange_confirmed: bool,
+) -> ContractWhaleEvidenceSummary {
+    let dynamic_multiple = stats
+        .dynamic_multiple
+        .filter(|value| value.is_finite())
+        .map(ContractWhaleEvidenceState::Available)
+        .unwrap_or(ContractWhaleEvidenceState::Missing);
+    let percentile_level = stats
+        .percentile_level
+        .filter(|value| value.is_finite())
+        .map(ContractWhaleEvidenceState::Available)
+        .unwrap_or(ContractWhaleEvidenceState::InsufficientSamples);
+    let oi = if stats.market_context.oi_available {
+        stats
+            .market_context
+            .oi_change_pct
+            .filter(|value| value.is_finite())
+            .map(ContractWhaleEvidenceState::Available)
+            .unwrap_or(ContractWhaleEvidenceState::Missing)
+    } else {
+        ContractWhaleEvidenceState::Missing
+    };
+    let funding = if stats.market_context.funding_available {
+        stats
+            .market_context
+            .funding_rate
+            .filter(|value| value.is_finite())
+            .map(ContractWhaleEvidenceState::Available)
+            .unwrap_or(ContractWhaleEvidenceState::Missing)
+    } else {
+        ContractWhaleEvidenceState::Missing
+    };
+    let multi_exchange_confirmation = if stats.exchange_count >= 2 {
+        ContractWhaleEvidenceState::Available(multi_exchange_confirmed)
+    } else {
+        ContractWhaleEvidenceState::InsufficientSamples
+    };
+    let mut degradation_reasons = Vec::new();
+    if matches!(dynamic_multiple, ContractWhaleEvidenceState::Missing) {
+        degradation_reasons.push("dynamic_multiple_missing".to_string());
+    }
+    if matches!(
+        percentile_level,
+        ContractWhaleEvidenceState::InsufficientSamples
+    ) {
+        degradation_reasons.push("percentile_insufficient_samples".to_string());
+    }
+    if stats.micro_volatility.source == "fallback" {
+        degradation_reasons.push(
+            if stats.micro_volatility.stale {
+                "micro_volatility_stale"
+            } else {
+                "micro_volatility_insufficient_samples"
+            }
+            .to_string(),
+        );
+    }
+    ContractWhaleEvidenceSummary {
+        dynamic_multiple,
+        percentile_level,
+        oi,
+        funding,
+        multi_exchange_confirmation,
+        evidence_degraded: !degradation_reasons.is_empty(),
+        evidence_reason: degradation_reasons.first().cloned(),
+        degradation_reasons,
     }
 }
 
@@ -209,21 +295,75 @@ fn flow_direction(
     }
 }
 
-fn dynamic_thresholds(config: &ContractWhaleRuntimeConfig) -> ContractWhaleDynamicPriceThresholds {
+fn dynamic_thresholds(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> ContractWhaleDynamicPriceThresholds {
+    let micro = &stats.micro_volatility;
+    let usable_micro_volatility = (config.classification.micro_volatility_enabled
+        && !micro.stale
+        && micro.sample_count >= config.classification.micro_volatility_min_samples)
+        .then(|| micro.value_pct.filter(|value| value.is_finite()))
+        .flatten();
+    let (no_follow_pct, follow_pct, strong_follow_pct, volatility_source) =
+        if let Some(volatility) = usable_micro_volatility {
+            (
+                config
+                    .classification
+                    .no_follow_pct
+                    .max(volatility * config.classification.micro_volatility_no_follow_multiplier),
+                config
+                    .classification
+                    .follow_pct
+                    .max(volatility * config.classification.micro_volatility_follow_multiplier),
+                config.classification.strong_follow_pct.max(
+                    volatility
+                        * config
+                            .classification
+                            .micro_volatility_strong_follow_multiplier,
+                ),
+                micro.source.clone(),
+            )
+        } else {
+            (
+                config.classification.no_follow_pct,
+                config.classification.follow_pct,
+                config.classification.strong_follow_pct,
+                "fallback".to_string(),
+            )
+        };
     ContractWhaleDynamicPriceThresholds {
-        no_follow_pct: config.classification.no_follow_pct,
-        follow_pct: config.classification.follow_pct,
-        strong_follow_pct: config.classification.strong_follow_pct,
-        volatility_source: "fallback".to_string(),
+        no_follow_pct,
+        follow_pct,
+        strong_follow_pct,
+        volatility_source,
+        micro_volatility_pct: usable_micro_volatility,
+        volatility_sample_count: micro.sample_count,
+        volatility_stale: micro.stale,
     }
 }
 
-fn price_efficiency(stats: &ContractWhaleWindowStats) -> f64 {
+fn price_efficiency(stats: &ContractWhaleWindowStats, config: &ContractWhaleRuntimeConfig) -> f64 {
     let price_move = stats.price_move_pct.unwrap_or(0.0).abs();
-    if stats.total_volume_btc <= f64::EPSILON {
+    if !config.classification.normalized_price_efficiency_enabled {
+        return if stats.total_volume_btc <= f64::EPSILON {
+            0.0
+        } else {
+            (price_move / stats.total_volume_btc) * 1_000.0
+        };
+    }
+    if stats.total_notional_usd <= f64::EPSILON {
         return 0.0;
     }
-    (price_move / stats.total_volume_btc) * 1_000.0
+    (price_move * 100.0) / (stats.total_notional_usd / 1_000_000.0)
+}
+
+fn price_efficiency_version(config: &ContractWhaleRuntimeConfig) -> &'static str {
+    if config.classification.normalized_price_efficiency_enabled {
+        "notional_bps_per_usd_million_v1"
+    } else {
+        "legacy_btc_volume_v0"
+    }
 }
 
 fn oi_context(
@@ -337,6 +477,34 @@ pub fn resolve_contract_whale_oi_context_from_window(
                     .clone()
                     .unwrap_or_else(|| "no_oi_snapshot_in_window".to_string()),
             ),
+        };
+    }
+
+    if config.classification.oi_consensus_guard_enabled && oi_window.source_coverage_changed {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+            oi_context_label: ContractWhaleOiContextTag::OiNotConfirmed
+                .label()
+                .to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct: oi_window.oi_delta_pct,
+            oi_available: true,
+            oi_reason: Some("oi_source_coverage_changed".to_string()),
+        };
+    }
+
+    if config.classification.oi_consensus_guard_enabled
+        && matches!(oi_window.cross_exchange_consensus, Some(false))
+    {
+        return ContractWhaleResolvedOiContext {
+            oi_context: ContractWhaleOiContextTag::OiNotConfirmed,
+            oi_context_label: ContractWhaleOiContextTag::OiNotConfirmed
+                .label()
+                .to_string(),
+            oi_delta: oi_window.oi_delta,
+            oi_delta_pct: oi_window.oi_delta_pct,
+            oi_available: true,
+            oi_reason: Some("oi_cross_exchange_conflict".to_string()),
         };
     }
 
@@ -528,6 +696,15 @@ fn legacy_display_label(value: ContractWhaleSignalType) -> &'static str {
         ContractWhaleSignalType::AggressiveSell => "主力砸盘",
         ContractWhaleSignalType::DownsideAbsorption => "下方吸收",
         ContractWhaleSignalType::UpsideSuppression => "上方压制",
+    }
+}
+
+fn legacy_signal_type_key(value: ContractWhaleSignalType) -> &'static str {
+    match value {
+        ContractWhaleSignalType::AggressiveBuy => "aggressive_buy",
+        ContractWhaleSignalType::AggressiveSell => "aggressive_sell",
+        ContractWhaleSignalType::DownsideAbsorption => "downside_absorption",
+        ContractWhaleSignalType::UpsideSuppression => "upside_suppression",
     }
 }
 

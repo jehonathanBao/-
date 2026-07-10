@@ -88,16 +88,15 @@ impl VolumeDisplayContext {
         match self {
             Self::SingleWindowSignal => "窗口总流量 BTC",
             Self::ContractEventStream => "累计总流量 BTC",
-            Self::FinalLifecycleEvent => "生命周期累计流量 BTC",
+            Self::FinalLifecycleEvent => "峰值窗口流量 BTC",
         }
     }
 
     pub fn semantics(self) -> &'static str {
         match self {
             Self::SingleWindowSignal => "single_window_bidirectional_cross_exchange",
-            Self::ContractEventStream | Self::FinalLifecycleEvent => {
-                "multi_exchange_bidirectional_lifecycle_accumulated"
-            }
+            Self::ContractEventStream => "multi_exchange_bidirectional_lifecycle_accumulated",
+            Self::FinalLifecycleEvent => "multi_exchange_bidirectional_peak_window",
         }
     }
 
@@ -255,7 +254,20 @@ pub fn build_volume_display_meta(
     source_signal_ids: &[String],
     context: VolumeDisplayContext,
 ) -> VolumeDisplayMeta {
-    let display_volume_btc = display_volume_for_context(signal, context);
+    let unique_turnover = context.is_lifecycle_accumulated()
+        && signal.event_lifecycle.unique_turnover_available
+        && signal
+            .event_lifecycle
+            .unique_turnover_btc
+            .is_some_and(|value| value.is_finite() && value >= 0.0);
+    let display_volume_btc = if unique_turnover {
+        signal
+            .event_lifecycle
+            .unique_turnover_btc
+            .unwrap_or_default()
+    } else {
+        display_volume_for_context(signal, context)
+    };
     let (buy_volume_btc, sell_volume_btc) =
         derive_buy_sell_from_total_net(Some(signal.total_volume_btc), Some(signal.net_volume_btc));
     let source_exchanges = unique_source_exchanges(signal);
@@ -264,8 +276,16 @@ pub fn build_volume_display_meta(
     let merged_signal_count = source_signal_ids.len().max(1);
     VolumeDisplayMeta {
         display_volume_btc,
-        display_volume_label: context.display_label().to_string(),
-        volume_semantics: context.semantics().to_string(),
+        display_volume_label: if unique_turnover {
+            "事件真实换手 BTC".to_string()
+        } else {
+            context.display_label().to_string()
+        },
+        volume_semantics: if unique_turnover {
+            "unique_1s_turnover_per_exchange".to_string()
+        } else {
+            context.semantics().to_string()
+        },
         is_bidirectional_volume: true,
         is_cross_exchange_aggregated: source_exchange_count.is_some_and(|count| count > 1),
         is_lifecycle_accumulated: context.is_lifecycle_accumulated(),
@@ -705,6 +725,16 @@ mod tests {
                 start_time: 1_700_000_000_000,
                 last_update_time: 1_700_000_015_000,
                 status: crate::contract_whale_monitor::types::ContractWhaleEventStatus::Closed,
+                latest_window_volume_btc: 4_280.0,
+                peak_window_volume_btc: 4_280.0,
+                unique_turnover_btc: None,
+                unique_turnover_available: false,
+                unique_turnover_reason: Some("raw_flow_not_enriched".to_string()),
+                net_oi_delta_btc: None,
+                peak_abs_oi_delta_btc: Some(0.0),
+                latest_snapshot_ts: 1_700_000_015_000,
+                peak_snapshot_ts: 1_700_000_015_000,
+                display_snapshot_kind: "peak".to_string(),
                 volume_accumulated: 4_280.0,
                 oi_accumulated: 0.0,
                 update_count: 3,

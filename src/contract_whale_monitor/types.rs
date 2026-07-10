@@ -428,6 +428,8 @@ pub struct ContractWhaleWindowStats {
     pub startup_age_ms: Option<i64>,
     pub liquidation_driven: bool,
     pub price_jump_anomaly: bool,
+    #[serde(default)]
+    pub micro_volatility: ContractWhaleMicroVolatility,
 }
 
 #[derive(
@@ -534,9 +536,35 @@ impl ContractWhaleOiContextTag {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleOiExchangeDelta {
+    pub exchange: ContractExchange,
+    pub before_ts: i64,
+    pub after_ts: i64,
+    pub oi_before_btc: f64,
+    pub oi_after_btc: f64,
+    pub oi_delta_btc: f64,
+    pub oi_delta_pct: f64,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleOiWindowContext {
+    #[serde(default)]
+    pub exchanges: Vec<ContractWhaleOiExchangeDelta>,
+    #[serde(default)]
+    pub consistent_sources: Vec<String>,
+    #[serde(default)]
+    pub excluded_sources: Vec<String>,
+    #[serde(default)]
+    pub source_coverage_changed: bool,
+    #[serde(default)]
+    pub cross_exchange_consensus: Option<bool>,
+    #[serde(default)]
+    pub evidence_degraded: bool,
+    #[serde(default)]
+    pub evidence_reason: Option<String>,
     #[serde(default)]
     pub oi_before: Option<f64>,
     #[serde(default)]
@@ -583,6 +611,12 @@ pub struct ContractWhaleDynamicPriceThresholds {
     pub strong_follow_pct: f64,
     #[serde(default)]
     pub volatility_source: String,
+    #[serde(default)]
+    pub micro_volatility_pct: Option<f64>,
+    #[serde(default)]
+    pub volatility_sample_count: usize,
+    #[serde(default)]
+    pub volatility_stale: bool,
 }
 
 impl Default for ContractWhaleDynamicPriceThresholds {
@@ -592,13 +626,79 @@ impl Default for ContractWhaleDynamicPriceThresholds {
             follow_pct: 0.12,
             strong_follow_pct: 0.20,
             volatility_source: "fallback".to_string(),
+            micro_volatility_pct: None,
+            volatility_sample_count: 0,
+            volatility_stale: true,
         }
     }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContractWhaleMicroVolatility {
+    #[serde(default)]
+    pub value_pct: Option<f64>,
+    #[serde(default)]
+    pub sample_count: usize,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub stale: bool,
+}
+
+impl Default for ContractWhaleMicroVolatility {
+    fn default() -> Self {
+        Self {
+            value_pct: None,
+            sample_count: 0,
+            source: "fallback".to_string(),
+            stale: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+pub enum ContractWhaleEvidenceState<T> {
+    Available(T),
+    Missing,
+    Stale,
+    InsufficientSamples,
+    QueryFailed,
+}
+
+impl<T> Default for ContractWhaleEvidenceState<T> {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleEvidenceSummary {
+    #[serde(default)]
+    pub dynamic_multiple: ContractWhaleEvidenceState<f64>,
+    #[serde(default)]
+    pub percentile_level: ContractWhaleEvidenceState<f64>,
+    #[serde(default)]
+    pub oi: ContractWhaleEvidenceState<f64>,
+    #[serde(default)]
+    pub funding: ContractWhaleEvidenceState<f64>,
+    #[serde(default)]
+    pub multi_exchange_confirmation: ContractWhaleEvidenceState<bool>,
+    #[serde(default)]
+    pub evidence_degraded: bool,
+    #[serde(default)]
+    pub evidence_reason: Option<String>,
+    #[serde(default)]
+    pub degradation_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractWhaleClassificationV2 {
+    #[serde(default)]
+    pub legacy_signal_type: String,
     #[serde(default)]
     pub display_signal_type: String,
     #[serde(default)]
@@ -626,16 +726,23 @@ pub struct ContractWhaleClassificationV2 {
     #[serde(default)]
     pub classification_version: String,
     #[serde(default)]
+    pub semantic_mismatch: bool,
+    #[serde(default)]
     pub classification_reasons: Vec<String>,
     #[serde(default)]
     pub dynamic_thresholds: ContractWhaleDynamicPriceThresholds,
     #[serde(default)]
     pub price_efficiency: f64,
+    #[serde(default)]
+    pub price_efficiency_version: String,
+    #[serde(default)]
+    pub evidence: ContractWhaleEvidenceSummary,
 }
 
 impl Default for ContractWhaleClassificationV2 {
     fn default() -> Self {
         Self {
+            legacy_signal_type: String::new(),
             display_signal_type: String::new(),
             structure_interpretation: ContractWhaleStructureInterpretation::UnclearDirectionalFlow,
             flow_direction: ContractWhaleActiveFlowDirection::Unknown,
@@ -649,9 +756,12 @@ impl Default for ContractWhaleClassificationV2 {
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: String::new(),
+            semantic_mismatch: false,
             classification_reasons: Vec::new(),
             dynamic_thresholds: ContractWhaleDynamicPriceThresholds::default(),
             price_efficiency: 0.0,
+            price_efficiency_version: String::new(),
+            evidence: ContractWhaleEvidenceSummary::default(),
         }
     }
 }
@@ -1039,6 +1149,26 @@ pub struct ContractWhaleEventLifecycle {
     #[serde(default)]
     pub status: ContractWhaleEventStatus,
     #[serde(default)]
+    pub latest_window_volume_btc: f64,
+    #[serde(default)]
+    pub peak_window_volume_btc: f64,
+    #[serde(default)]
+    pub unique_turnover_btc: Option<f64>,
+    #[serde(default)]
+    pub unique_turnover_available: bool,
+    #[serde(default)]
+    pub unique_turnover_reason: Option<String>,
+    #[serde(default)]
+    pub net_oi_delta_btc: Option<f64>,
+    #[serde(default)]
+    pub peak_abs_oi_delta_btc: Option<f64>,
+    #[serde(default)]
+    pub latest_snapshot_ts: i64,
+    #[serde(default)]
+    pub peak_snapshot_ts: i64,
+    #[serde(default)]
+    pub display_snapshot_kind: String,
+    #[serde(default)]
     pub volume_accumulated: f64,
     #[serde(default)]
     pub oi_accumulated: f64,
@@ -1217,6 +1347,19 @@ pub struct ContractWhaleSignal {
     pub execution_enabled: bool,
     #[serde(default)]
     pub merged_from: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleEmissionFingerprint {
+    pub source_window_end_ts: i64,
+    pub severity: ContractWhaleSeverity,
+    pub impact_level: Option<String>,
+    pub classification: ContractWhaleStructureInterpretation,
+    pub score: u8,
+    pub total_volume_btc: f64,
+    pub net_volume_btc: f64,
+    pub last_emitted_at: i64,
 }
 
 fn default_threshold_profile() -> String {

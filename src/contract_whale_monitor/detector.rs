@@ -154,18 +154,50 @@ pub fn inspect_contract_whale_signal_with_config(
         price_response_type,
         &liquidation_force,
     );
-    let classification_v2 = classify_contract_whale_signal_v2(
+    let mut classification_v2 = classify_contract_whale_signal_v2(
         &scoring_stats,
         signal_type,
         price_response_type,
         multi_exchange_confirmed,
         config,
     );
+    if severity == ContractWhaleSeverity::Critical && scoring_stats.dynamic_multiple.is_none() {
+        let thresholds = config.thresholds_for_symbol_window_with_profile(
+            &scoring_stats.symbol,
+            scoring_stats.window_sec,
+            resolution.profile,
+        );
+        let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
+        let primary_source_extreme = primary_source_extreme_flow(
+            &scoring_stats,
+            config,
+            &resolution,
+            thresholds,
+            notional_thresholds,
+        );
+        if critical_absolute_fallback(
+            &scoring_stats,
+            signal_type,
+            config,
+            thresholds,
+            notional_thresholds,
+            primary_source_extreme,
+        ) {
+            classification_v2.evidence.evidence_degraded = true;
+            classification_v2.evidence.evidence_reason =
+                Some("critical_absolute_fallback".to_string());
+            classification_v2
+                .evidence
+                .degradation_reasons
+                .push("critical_absolute_fallback".to_string());
+        }
+    }
 
     let active_sources = active_source_snapshot(&scoring_stats, config, &resolution);
     let base_asset = contract_base_asset(&stats.symbol);
     let total_volume = round(stats.total_volume_btc, 3);
     let net_volume = round(stats.net_volume_btc, 3);
+    let final_result = final_result_text(&classification_v2, liquidation_suspected);
     let signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
@@ -265,7 +297,7 @@ pub fn inspect_contract_whale_signal_with_config(
         discord_sent_at: None,
         discord_reason,
         discord_would_send: discord_eligible,
-        final_result: final_result_text(signal_type, liquidation_suspected),
+        final_result,
         cluster: Default::default(),
         persistence: Default::default(),
         whale_action: Default::default(),
@@ -731,20 +763,24 @@ fn classify_severity(
     let multi_exchange_confirmed = multi_exchange_confirmed_with_config(stats, config, resolution);
     let primary_source_extreme =
         primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds);
-    let critical_dynamic_ok = dynamic_threshold_required(stats.dynamic_multiple, 7.0)
-        || critical_absolute_fallback(
-            stats,
-            signal_type,
-            config,
-            thresholds,
-            notional_thresholds,
-            primary_source_extreme,
-        );
+    let critical_absolute_fallback = critical_absolute_fallback(
+        stats,
+        signal_type,
+        config,
+        thresholds,
+        notional_thresholds,
+        primary_source_extreme,
+    );
+    let evidence_fail_closed = config.classification.evidence_fail_closed_enabled;
+    let critical_evidence_ok =
+        (dynamic_threshold_required(stats.dynamic_multiple, 7.0, evidence_fail_closed)
+            && percentile_threshold_pass(stats.percentile_level, 99.5, evidence_fail_closed))
+            || critical_absolute_fallback;
 
     if stats.total_volume_btc >= thresholds.s_btc
         && stats.total_notional_usd >= notional_thresholds.s
-        && dynamic_threshold_required(stats.dynamic_multiple, 10.0)
-        && percentile_threshold_pass(stats.percentile_level, 99.9)
+        && dynamic_threshold_required(stats.dynamic_multiple, 10.0, evidence_fail_closed)
+        && percentile_threshold_pass(stats.percentile_level, 99.9, evidence_fail_closed)
         && stats.dominance >= 0.65
         && stats.data_quality >= config.data_quality.min_critical_quality
         && !runtime_warmup(stats, config)
@@ -756,8 +792,7 @@ fn classify_severity(
 
     if stats.total_volume_btc >= thresholds.critical_btc
         && stats.total_notional_usd >= notional_thresholds.critical
-        && critical_dynamic_ok
-        && percentile_threshold_pass(stats.percentile_level, 99.5)
+        && critical_evidence_ok
         && stats.dominance >= 0.60
         && stats.data_quality >= config.data_quality.min_critical_quality
         && !runtime_warmup(stats, config)
@@ -769,8 +804,8 @@ fn classify_severity(
 
     let standard_high = stats.total_volume_btc >= thresholds.high_btc
         && stats.total_notional_usd >= notional_thresholds.high
-        && dynamic_threshold_pass(stats.dynamic_multiple, 5.0)
-        && percentile_threshold_pass(stats.percentile_level, 99.0)
+        && dynamic_threshold_pass(stats.dynamic_multiple, 5.0, evidence_fail_closed)
+        && percentile_threshold_pass(stats.percentile_level, 99.0, evidence_fail_closed)
         && stats.dominance >= 0.55
         && stats.data_quality >= 65
         && stats.exchange_count >= 1;
@@ -842,17 +877,25 @@ fn reject_reason_for_calm(
     ContractWhaleDetectorRejectReason::Unknown
 }
 
-fn dynamic_threshold_pass(dynamic_multiple: Option<f64>, required_multiple: f64) -> bool {
+fn dynamic_threshold_pass(
+    dynamic_multiple: Option<f64>,
+    required_multiple: f64,
+    fail_closed: bool,
+) -> bool {
     match dynamic_multiple {
         Some(multiple) => multiple >= required_multiple,
-        None => true,
+        None => !fail_closed,
     }
 }
 
-fn dynamic_threshold_required(dynamic_multiple: Option<f64>, required_multiple: f64) -> bool {
+fn dynamic_threshold_required(
+    dynamic_multiple: Option<f64>,
+    required_multiple: f64,
+    fail_closed: bool,
+) -> bool {
     match dynamic_multiple {
         Some(multiple) => multiple >= required_multiple,
-        None => false,
+        None => !fail_closed,
     }
 }
 
@@ -875,10 +918,14 @@ fn critical_absolute_fallback(
         && same_direction_price_move >= 0.18
 }
 
-fn percentile_threshold_pass(percentile_level: Option<f64>, required_level: f64) -> bool {
+fn percentile_threshold_pass(
+    percentile_level: Option<f64>,
+    required_level: f64,
+    fail_closed: bool,
+) -> bool {
     match percentile_level {
         Some(level) => level >= required_level,
-        None => true,
+        None => !fail_closed,
     }
 }
 
@@ -926,11 +973,12 @@ fn effective_data_quality(
         resolution.profile,
     );
     let notional_thresholds = config.notional_thresholds_usd_for_profile(resolution.profile);
-    if stats.dynamic_multiple.is_none()
-        && primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds)
+    let primary_extreme_missing_dynamic = stats.dynamic_multiple.is_none()
+        && primary_source_extreme_flow(stats, config, resolution, thresholds, notional_thresholds);
+    if config.active_exchange_count() >= 2
+        && stats.exchange_count <= 1
+        && !primary_extreme_missing_dynamic
     {
-        quality = quality.max(config.data_quality.min_discord_quality);
-    } else if config.active_exchange_count() >= 2 && stats.exchange_count <= 1 {
         quality = quality.saturating_sub(config.data_quality.single_exchange_penalty);
     }
     if stats
@@ -1116,15 +1164,31 @@ fn direction_label(direction: ContractWhaleDirection) -> &'static str {
     }
 }
 
-fn final_result_text(signal_type: ContractWhaleSignalType, liquidation_suspected: bool) -> String {
-    let base = match signal_type {
-        ContractWhaleSignalType::AggressiveBuy => "多平台主动买入爆发，疑似主力合约拉盘",
-        ContractWhaleSignalType::AggressiveSell => "多平台主动卖出爆发，疑似主力合约砸盘",
-        ContractWhaleSignalType::DownsideAbsorption => {
+fn final_result_text(
+    classification: &super::types::ContractWhaleClassificationV2,
+    liquidation_suspected: bool,
+) -> String {
+    let base = match classification.structure_interpretation {
+        super::types::ContractWhaleStructureInterpretation::MainForcePushUp => {
+            "多平台主动买入爆发，疑似主力合约拉盘"
+        }
+        super::types::ContractWhaleStructureInterpretation::MainForceDumpDown => {
+            "多平台主动卖出爆发，疑似主力合约砸盘"
+        }
+        super::types::ContractWhaleStructureInterpretation::ActiveBuyPressure => {
+            "多平台主动买入爆发，主动买压待价格确认"
+        }
+        super::types::ContractWhaleStructureInterpretation::ActiveSellPressure => {
+            "多平台主动卖出爆发，主动卖压待价格确认"
+        }
+        super::types::ContractWhaleStructureInterpretation::DownsideAbsorption => {
             "主动卖出放大但价格未明显下跌，疑似下方承接吸收"
         }
-        ContractWhaleSignalType::UpsideSuppression => {
+        super::types::ContractWhaleStructureInterpretation::UpsideSuppression => {
             "主动买入放大但价格未明显上涨，疑似上方卖盘压制"
+        }
+        super::types::ContractWhaleStructureInterpretation::UnclearDirectionalFlow => {
+            "多平台合约成交异常，方向暂不明确"
         }
     };
     if liquidation_suspected {

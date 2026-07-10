@@ -13,8 +13,74 @@ use btc_toxic_flow_monitor_rs::{
         normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
         types::{ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignalType},
     },
-    storage::{contract_whale_repo::ContractWhaleRepo, SqliteStore},
+    storage::{
+        contract_whale_repo::{ContractWhaleDiscordOutboxStatus, ContractWhaleRepo},
+        SqliteStore,
+    },
 };
+
+#[test]
+fn cwm_discord_outbox_is_idempotent_and_retries_only_when_due() {
+    let store = temp_store("cwm-discord-outbox");
+    let signal = sample_s_signal();
+
+    assert_eq!(
+        store
+            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&signal), signal.ts)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&signal), signal.ts)
+            .unwrap(),
+        0
+    );
+
+    let claimed = store
+        .claim_contract_whale_discord_outbox(20, signal.ts)
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].signal_id, signal.id);
+    assert_eq!(claimed[0].attempts, 1);
+
+    store
+        .finish_contract_whale_discord_outbox(
+            &signal.id,
+            ContractWhaleDiscordOutboxStatus::Retry,
+            Some(signal.ts + 1_000),
+            None,
+            Some("transient failure"),
+        )
+        .unwrap();
+    assert!(store
+        .claim_contract_whale_discord_outbox(20, signal.ts + 999)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .claim_contract_whale_discord_outbox(20, signal.ts + 1_000)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn cwm_discord_outbox_stats_expose_pending_retry_dead_and_age() {
+    let store = temp_store("cwm-discord-outbox-stats");
+    let signal = sample_s_signal();
+    store
+        .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&signal), signal.ts)
+        .unwrap();
+    let stats = store
+        .contract_whale_discord_outbox_stats(signal.ts + 9_000)
+        .unwrap();
+    assert_eq!(stats.pending, 1);
+    assert_eq!(stats.retrying, 0);
+    assert_eq!(stats.failed, 0);
+    assert_eq!(stats.oldest_pending_age_sec, 9);
+}
 
 #[tokio::test]
 async fn cwm_discord_dry_run_generates_payload_without_real_send() {
@@ -478,7 +544,7 @@ fn cwm_discord_rate_control_uses_semantic_tier_windows() {
         &execution_cooldown,
         execution_repeat.ts,
     );
-    assert!(execution_decision.allowed);
+    assert!(execution_decision.allowed, "{execution_decision:?}");
     assert_eq!(execution_decision.reason, "eligible");
 }
 
@@ -509,9 +575,22 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 500.0, true).unwrap(),
     ];
     let buckets = aggregate_1s_buckets(&trades);
-    let stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.4), 94)
+    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(10.4), 94)
         .expect("window stats");
-    detect_contract_whale_signal(&stats).expect("signal")
+    stats.percentile_level = Some(99.9);
+    stats.multi_exchange_confirmed = true;
+    let mut signal = detect_contract_whale_signal(&stats).expect("signal");
+    signal.severity = ContractWhaleSeverity::S;
+    signal.score = 94;
+    signal.impact_level = None;
+    signal.signal_level = None;
+    signal.signal_label = None;
+    signal.normalized_strength = None;
+    signal.impact_score = None;
+    signal.impact_z_score = None;
+    signal.discord_eligible = true;
+    signal.discord_reason = "critical_or_s_gate".to_string();
+    signal
 }
 
 fn sample_single_exchange_high_signal(
@@ -538,6 +617,12 @@ fn sample_signal_variant(
     let mut signal = sample_s_signal();
     signal.id = format!("contract-whale:BTC:15:{}:{:?}", signal.ts, signal_type);
     signal.severity = severity;
+    signal.impact_level = None;
+    signal.signal_level = None;
+    signal.signal_label = None;
+    signal.normalized_strength = None;
+    signal.impact_score = None;
+    signal.impact_z_score = None;
     signal.signal_type = signal_type;
     signal.direction = direction;
     signal.final_result = final_result.to_string();

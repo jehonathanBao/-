@@ -266,6 +266,7 @@ pub const MIGRATIONS: &[&str] = &[
       discord_sent INTEGER NOT NULL DEFAULT 0,
       discord_sent_at INTEGER,
       discord_reason TEXT NOT NULL,
+      is_permanent INTEGER NOT NULL DEFAULT 0,
       payload_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
@@ -273,5 +274,65 @@ pub const MIGRATIONS: &[&str] = &[
       ON spot_whale_signals(ts DESC);
     CREATE INDEX IF NOT EXISTS idx_spot_whale_signals_symbol_severity_ts
       ON spot_whale_signals(symbol, severity, ts DESC);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_discord_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_id TEXT NOT NULL UNIQUE,
+      symbol TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER,
+      created_at INTEGER NOT NULL,
+      sent_at INTEGER,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_discord_outbox_due
+      ON contract_whale_discord_outbox(status, next_attempt_at, created_at);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_emission_watermarks (
+      emission_key TEXT PRIMARY KEY,
+      payload_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_signal_outcomes (
+      signal_id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      signal_ts INTEGER NOT NULL,
+      signal_type TEXT NOT NULL,
+      classification_v2 TEXT,
+      severity TEXT NOT NULL,
+      impact_level TEXT,
+      window_sec INTEGER NOT NULL,
+      oi_context TEXT,
+      regime TEXT,
+      entry_price REAL,
+      markout_30s_bps REAL,
+      markout_2m_bps REAL,
+      markout_5m_bps REAL,
+      mfe_5m_bps REAL,
+      mae_5m_bps REAL,
+      follow_through_30s INTEGER,
+      follow_through_2m INTEGER,
+      follow_through_5m INTEGER,
+      evaluated_at INTEGER,
+      outcome_version TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signal_outcomes_summary
+      ON contract_whale_signal_outcomes(symbol, severity, signal_ts DESC);
+    "#,
+    r#"
+    CREATE INDEX IF NOT EXISTS idx_contract_flow_1s_symbol_exchange_ts
+      ON contract_flow_1s(symbol, exchange, ts_bucket DESC);
+    CREATE INDEX IF NOT EXISTS idx_contract_oi_snapshots_symbol_exchange_ts
+      ON contract_oi_snapshots(symbol, exchange, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_contract_funding_snapshots_symbol_exchange_ts
+      ON contract_funding_snapshots(symbol, exchange, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_symbol_ts
+      ON contract_whale_signals(symbol, ts DESC);
     "#,
 ];

@@ -1,18 +1,38 @@
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use super::{
     config::contract_whale_runtime_config,
     discord::{contract_whale_gate_symbol, effective_push_total_volume},
     discord_gate::discord_gate,
-    types::{ContractWhaleEventLifecycle, ContractWhaleEventStatus, ContractWhaleSignal},
+    types::{
+        ContractFlowBucket, ContractWhaleEventLifecycle, ContractWhaleEventStatus,
+        ContractWhaleSignal,
+    },
 };
 
 const EVENT_UPDATE_WINDOW_MS: i64 = 30_000;
 const EVENT_CLOSE_AFTER_MS: i64 = 120_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractWhaleLifecycleClock {
+    Live { now_ms: i64 },
+    Replay { replay_now_ms: i64 },
+}
+
+impl ContractWhaleLifecycleClock {
+    fn reference_now_ms(self) -> i64 {
+        match self {
+            Self::Live { now_ms } => now_ms,
+            Self::Replay { replay_now_ms } => replay_now_ms,
+        }
+    }
+}
+
 pub fn apply_contract_whale_event_lifecycle(
     signals: Vec<ContractWhaleSignal>,
-    reference_now_ms: i64,
+    clock: ContractWhaleLifecycleClock,
 ) -> Vec<ContractWhaleSignal> {
     if signals.is_empty() {
         return signals;
@@ -33,6 +53,7 @@ pub fn apply_contract_whale_event_lifecycle(
         }
     }
 
+    let reference_now_ms = clock.reference_now_ms();
     for event in events.iter_mut() {
         if reference_now_ms.saturating_sub(event.event_lifecycle.last_update_time)
             > EVENT_CLOSE_AFTER_MS
@@ -45,6 +66,60 @@ pub fn apply_contract_whale_event_lifecycle(
     }
 
     events
+}
+
+pub fn enrich_lifecycle_unique_turnover(
+    events: &mut [ContractWhaleSignal],
+    buckets: &[ContractFlowBucket],
+    failed_symbols: &BTreeSet<String>,
+) {
+    for event in events {
+        let symbol = event.symbol.to_ascii_uppercase();
+        if failed_symbols.contains(&symbol) {
+            event.event_lifecycle.unique_turnover_btc = None;
+            event.event_lifecycle.unique_turnover_available = false;
+            event.event_lifecycle.unique_turnover_reason = Some("flow_query_failed".to_string());
+            continue;
+        }
+
+        let start_ts = lifecycle_raw_start_ts(event);
+        let end_ts = event.event_lifecycle.last_update_time.max(event.ts);
+        let mut unique_buckets = BTreeSet::new();
+        let mut turnover = 0.0;
+        for bucket in buckets.iter().filter(|bucket| {
+            bucket.symbol.eq_ignore_ascii_case(&event.symbol)
+                && bucket.ts_bucket >= start_ts
+                && bucket.ts_bucket <= end_ts
+        }) {
+            let key = (
+                bucket.symbol.to_ascii_uppercase(),
+                bucket.exchange.to_ascii_lowercase(),
+                bucket.ts_bucket,
+            );
+            if unique_buckets.insert(key) {
+                turnover +=
+                    (bucket.buy_volume_btc.max(0.0) + bucket.sell_volume_btc.max(0.0)).max(0.0);
+            }
+        }
+        if unique_buckets.is_empty() {
+            event.event_lifecycle.unique_turnover_btc = None;
+            event.event_lifecycle.unique_turnover_available = false;
+            event.event_lifecycle.unique_turnover_reason = Some("raw_flow_missing".to_string());
+        } else {
+            event.event_lifecycle.unique_turnover_btc = Some(turnover);
+            event.event_lifecycle.unique_turnover_available = true;
+            event.event_lifecycle.unique_turnover_reason = None;
+        }
+    }
+}
+
+pub fn lifecycle_raw_start_ts(signal: &ContractWhaleSignal) -> i64 {
+    let first_snapshot_ts = if signal.event_lifecycle.start_time > 0 {
+        signal.event_lifecycle.start_time
+    } else {
+        signal.ts
+    };
+    first_snapshot_ts.saturating_sub((signal.window_sec as i64).saturating_mul(1000))
 }
 
 fn same_lifecycle_event(existing: &ContractWhaleSignal, next: &ContractWhaleSignal) -> bool {
@@ -64,6 +139,16 @@ fn start_lifecycle_event(mut signal: ContractWhaleSignal) -> ContractWhaleSignal
         start_time: signal.ts,
         last_update_time: signal.ts,
         status: ContractWhaleEventStatus::Active,
+        latest_window_volume_btc: signal.total_volume_btc.max(0.0),
+        peak_window_volume_btc: signal.total_volume_btc.max(0.0),
+        unique_turnover_btc: None,
+        unique_turnover_available: false,
+        unique_turnover_reason: Some("raw_flow_not_enriched".to_string()),
+        net_oi_delta_btc: oi_delta(&signal),
+        peak_abs_oi_delta_btc: Some(oi_delta_abs(&signal)),
+        latest_snapshot_ts: signal.ts,
+        peak_snapshot_ts: signal.ts,
+        display_snapshot_kind: "peak".to_string(),
         volume_accumulated: signal.total_volume_btc,
         oi_accumulated: oi_delta_abs(&signal),
         update_count: signal.merged_from.len().saturating_add(1),
@@ -82,12 +167,25 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 
     existing.event_lifecycle.last_update_time =
         existing.event_lifecycle.last_update_time.max(next.ts);
-    existing.event_lifecycle.volume_accumulated =
-        existing.event_lifecycle.volume_accumulated + next.total_volume_btc.max(0.0);
+    existing.event_lifecycle.latest_window_volume_btc = next.total_volume_btc.max(0.0);
+    existing.event_lifecycle.peak_window_volume_btc = existing
+        .event_lifecycle
+        .peak_window_volume_btc
+        .max(next.total_volume_btc.max(0.0));
+    existing.event_lifecycle.volume_accumulated = existing.event_lifecycle.peak_window_volume_btc;
+    existing.event_lifecycle.net_oi_delta_btc = oi_delta(next);
+    existing.event_lifecycle.peak_abs_oi_delta_btc = Some(
+        existing
+            .event_lifecycle
+            .peak_abs_oi_delta_btc
+            .unwrap_or_default()
+            .max(oi_delta_abs(next)),
+    );
     existing.event_lifecycle.oi_accumulated = existing
         .event_lifecycle
-        .oi_accumulated
-        .max(oi_delta_abs(next));
+        .peak_abs_oi_delta_btc
+        .unwrap_or_default();
+    existing.event_lifecycle.latest_snapshot_ts = next.ts;
     if !suppress_medium_refresh {
         existing.event_lifecycle.update_count = existing
             .event_lifecycle
@@ -97,24 +195,7 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 
     if replace_snapshot {
         replace_snapshot_fields(existing, next);
-    } else {
-        existing.ts = existing.ts.max(next.ts);
-        existing.window_sec = existing.window_sec.max(next.window_sec);
-        existing.score = existing.score.max(next.score);
-        existing.main_force_score = max_option_u8(existing.main_force_score, next.main_force_score);
-        existing.spot_score = max_option_u8(existing.spot_score, next.spot_score);
-        existing.contract_score = max_option_u8(existing.contract_score, next.contract_score);
-        existing.data_quality = existing.data_quality.max(next.data_quality);
-        existing.multi_exchange_confirmed |= next.multi_exchange_confirmed;
-        existing.liquidation_suspected |= next.liquidation_suspected;
-        existing.liquidation_long_btc =
-            existing.liquidation_long_btc.max(next.liquidation_long_btc);
-        existing.liquidation_short_btc = existing
-            .liquidation_short_btc
-            .max(next.liquidation_short_btc);
-        existing.liquidation_notional_usd = existing
-            .liquidation_notional_usd
-            .max(next.liquidation_notional_usd);
+        existing.event_lifecycle.peak_snapshot_ts = next.ts;
     }
 
     existing.total_volume = existing.total_volume_btc;
@@ -268,19 +349,11 @@ fn lifecycle_event_id(signal: &ContractWhaleSignal) -> String {
 }
 
 fn oi_delta_abs(signal: &ContractWhaleSignal) -> f64 {
-    signal
-        .oi_change_1m_btc
-        .or(signal.oi_change_5m_btc)
-        .unwrap_or_default()
-        .abs()
+    oi_delta(signal).unwrap_or_default().abs()
 }
 
-fn max_option_u8(left: Option<u8>, right: Option<u8>) -> Option<u8> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
+fn oi_delta(signal: &ContractWhaleSignal) -> Option<f64> {
+    signal.oi_change_1m_btc.or(signal.oi_change_5m_btc)
 }
 
 fn dominance(net_abs: f64, total: f64) -> f64 {

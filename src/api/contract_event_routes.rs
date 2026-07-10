@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
     extract::{Query, State},
@@ -21,7 +21,10 @@ use crate::{
         discord::{
             contract_whale_min_display_total_volume_btc, meets_contract_whale_display_total_volume,
         },
-        event_lifecycle::apply_contract_whale_event_lifecycle,
+        event_lifecycle::{
+            apply_contract_whale_event_lifecycle, enrich_lifecycle_unique_turnover,
+            lifecycle_raw_start_ts, ContractWhaleLifecycleClock,
+        },
         event_quality::decorate_contract_whale_event_quality,
         merge::merge_contract_whale_signals,
         trajectory::apply_contract_whale_trajectories,
@@ -299,10 +302,12 @@ pub(crate) fn contract_event_page_for_query(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
-    let raw_items = state
+    let store = state
         .contract_whale_store()
-        .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
-        .unwrap_or_default();
+        .ok_or_else(|| internal_error(anyhow::anyhow!("contract whale store unavailable")))?;
+    let raw_items = store
+        .query_contract_whale_signals(&history_query)
+        .map_err(internal_error)?;
     let has_more = raw_items.len() > requested_limit;
     let sliced_items = raw_items
         .into_iter()
@@ -431,10 +436,12 @@ pub(crate) fn final_events_v2_for_query(
             return Ok(response);
         }
     }
-    let raw_items = state
+    let store = state
         .contract_whale_store()
-        .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
-        .unwrap_or_default();
+        .ok_or_else(|| internal_error(anyhow::anyhow!("contract whale store unavailable")))?;
+    let raw_items = store
+        .query_contract_whale_signals(&history_query)
+        .map_err(internal_error)?;
     let has_more = raw_items.len() > requested_limit;
     let sliced_items = raw_items
         .into_iter()
@@ -690,12 +697,40 @@ fn project_contract_event_candidates(
             .toxic_order
             .max_price_deviation_pct,
     );
-    let lifecycle_reference_now = items
-        .iter()
-        .map(|item| item.ts)
-        .max()
-        .unwrap_or_else(now_ms);
-    items = apply_contract_whale_event_lifecycle(items, lifecycle_reference_now);
+    items = apply_contract_whale_event_lifecycle(
+        items,
+        ContractWhaleLifecycleClock::Live { now_ms: now_ms() },
+    );
+    if let Some(store) = store {
+        let mut ranges_by_symbol = BTreeMap::<String, (i64, i64)>::new();
+        for signal in &items {
+            let start_ts = lifecycle_raw_start_ts(signal);
+            let end_ts = signal.event_lifecycle.last_update_time.max(signal.ts);
+            ranges_by_symbol
+                .entry(signal.symbol.to_ascii_uppercase())
+                .and_modify(|range| {
+                    range.0 = range.0.min(start_ts);
+                    range.1 = range.1.max(end_ts);
+                })
+                .or_insert((start_ts, end_ts));
+        }
+        let mut buckets = Vec::new();
+        let mut failed_symbols = BTreeSet::new();
+        for (symbol, (from_ts, to_ts)) in ranges_by_symbol {
+            match store.list_contract_flow_buckets_between(&symbol, from_ts, to_ts) {
+                Ok(mut symbol_buckets) => buckets.append(&mut symbol_buckets),
+                Err(error) => {
+                    tracing::warn!(
+                        symbol = %symbol,
+                        error = %error,
+                        "contract lifecycle raw-flow range query failed"
+                    );
+                    failed_symbols.insert(symbol);
+                }
+            }
+        }
+        enrich_lifecycle_unique_turnover(&mut items, &buckets, &failed_symbols);
+    }
     items = decorate_contract_whale_event_quality(items);
     if let Some(store) = store {
         decorate_contract_whale_oi_contexts(store, &mut items);

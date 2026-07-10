@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     Arc,
 };
 
@@ -33,8 +33,13 @@ use crate::{
         aggregator::aggregate_1s_buckets,
         collector_binance, collector_okx,
         config::contract_whale_runtime_config,
-        discord_notifier::{notify_contract_whale_discord, ContractWhaleDiscordSettings},
+        discord_notifier::{
+            evaluate_contract_whale_discord_gate, global_contract_whale_discord_cooldown_store,
+            notify_contract_whale_discord, ContractWhaleDiscordSettings,
+        },
+        emission::{emission_key, fingerprint, should_emit},
         log_events as cwm_log_events,
+        outcome_calibration::evaluate_contract_whale_signal_outcome,
         persistence::{
             flush_contract_flow_buckets_nonblocking,
             persist_contract_funding_snapshots_nonblocking,
@@ -43,7 +48,7 @@ use crate::{
         },
         types::{
             ContractExchange, ContractFundingSnapshot, ContractOiSnapshot, ContractTrade,
-            ContractTradeSide, ContractWhaleMarketType,
+            ContractTradeSide, ContractWhaleEmissionFingerprint, ContractWhaleMarketType,
         },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
@@ -52,6 +57,9 @@ use crate::{
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
     storage::{
+        contract_whale_repo::{
+            ContractWhaleDiscordOutboxStatus, ContractWhaleRepo, ContractWhaleSignalQuery,
+        },
         main_force_events_repo::MainForceEventsRepo,
         snapshot_service::StorageState,
         storage_health::{
@@ -89,6 +97,32 @@ pub struct AppState {
     inner: Arc<AppStateInner>,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleRuntimeDiagnostics {
+    pub producer_loop: ContractWhaleProducerLoopDiagnostics,
+    pub discord_queue: ContractWhaleDiscordQueueDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleProducerLoopDiagnostics {
+    pub last_started_at: Option<i64>,
+    pub last_completed_at: Option<i64>,
+    pub last_duration_ms: Option<i64>,
+    pub overlap_skipped: u64,
+    pub missed_tick_policy: &'static str,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleDiscordQueueDiagnostics {
+    pub pending: usize,
+    pub retrying: usize,
+    pub failed: usize,
+    pub oldest_pending_age_sec: i64,
+}
+
 struct AppStateInner {
     config: AppConfig,
     booted_at_ms: i64,
@@ -96,7 +130,16 @@ struct AppStateInner {
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
     discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_discord_outbox_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_outcome_calibration_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_market_context_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_producer_running: AtomicBool,
+    cwm_producer_last_started_at: AtomicI64,
+    cwm_producer_last_completed_at: AtomicI64,
+    cwm_producer_last_duration_ms: AtomicI64,
+    cwm_producer_overlap_skipped: AtomicU64,
+    cwm_emission_watermarks:
+        Arc<RwLock<std::collections::BTreeMap<String, ContractWhaleEmissionFingerprint>>>,
     scan_log: ScanLogStore,
     market_data_bus: MarketDataBus,
     connector_manager: ConnectorManager,
@@ -343,6 +386,24 @@ impl AppState {
             cwm_retention.signals_days,
             storage_health.clone(),
         );
+        let cwm_emission_watermarks = contract_whale_store
+            .as_ref()
+            .and_then(
+                |store| match store.load_contract_whale_emission_watermarks() {
+                    Ok(watermarks) => Some(watermarks),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            error = %error,
+                            "{} emission watermark restore failed",
+                            CWM_LOG_PREFIX
+                        );
+                        None
+                    }
+                },
+            )
+            .unwrap_or_default();
         let _ = storage_health.refresh_now();
         let operator_api_token = std::env::var("OPERATOR_TOKEN")
             .or_else(|_| std::env::var("OPERATOR_API_TOKEN"))
@@ -357,7 +418,15 @@ impl AppState {
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
                 cwm_auto_push_task: Arc::new(RwLock::new(None)),
+                cwm_discord_outbox_task: Arc::new(RwLock::new(None)),
+                cwm_outcome_calibration_task: Arc::new(RwLock::new(None)),
                 cwm_market_context_task: Arc::new(RwLock::new(None)),
+                cwm_producer_running: AtomicBool::new(false),
+                cwm_producer_last_started_at: AtomicI64::new(0),
+                cwm_producer_last_completed_at: AtomicI64::new(0),
+                cwm_producer_last_duration_ms: AtomicI64::new(0),
+                cwm_producer_overlap_skipped: AtomicU64::new(0),
+                cwm_emission_watermarks: Arc::new(RwLock::new(cwm_emission_watermarks)),
                 scan_log,
                 market_data_bus: bus,
                 connector_manager,
@@ -459,6 +528,8 @@ impl AppState {
         self.start_discord_auto_push_loop();
         self.start_contract_whale_market_context_loop();
         self.start_contract_whale_auto_push_loop();
+        self.start_contract_whale_discord_outbox_loop();
+        self.start_contract_whale_outcome_calibration_loop();
         self.record_scan_log(
             "info",
             "data_source_connecting",
@@ -534,6 +605,8 @@ impl AppState {
         self.inner.spot_whale_service.stop();
         self.inner.snapshot_service.stop();
         self.stop_contract_whale_auto_push_loop();
+        self.stop_contract_whale_discord_outbox_loop();
+        self.stop_contract_whale_outcome_calibration_loop();
         self.stop_contract_whale_market_context_loop();
         self.stop_discord_auto_push_loop();
         self.inner.alert_service.stop();
@@ -649,9 +722,59 @@ impl AppState {
         let state = self.clone();
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(contract_whale_auto_push_interval());
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
+                if state
+                    .inner
+                    .cwm_producer_running
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    state
+                        .inner
+                        .cwm_producer_overlap_skipped
+                        .fetch_add(1, Ordering::SeqCst);
+                    tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        event = "cwm.producer.overlap_skipped",
+                        "{} contract whale producer overlap skipped",
+                        CWM_LOG_PREFIX
+                    );
+                    continue;
+                }
+                let started_at = crate::normalizers::trade::now_ms();
+                state
+                    .inner
+                    .cwm_producer_last_started_at
+                    .store(started_at, Ordering::SeqCst);
+                tracing::debug!(
+                    target: CWM_LOG_TARGET,
+                    event = "cwm.producer.started",
+                    "{} contract whale producer started",
+                    CWM_LOG_PREFIX
+                );
                 state.evaluate_contract_whale_auto_push_once().await;
+                state
+                    .inner
+                    .cwm_producer_running
+                    .store(false, Ordering::SeqCst);
+                let completed_at = crate::normalizers::trade::now_ms();
+                state
+                    .inner
+                    .cwm_producer_last_completed_at
+                    .store(completed_at, Ordering::SeqCst);
+                state
+                    .inner
+                    .cwm_producer_last_duration_ms
+                    .store(completed_at.saturating_sub(started_at), Ordering::SeqCst);
+                tracing::debug!(
+                    target: CWM_LOG_TARGET,
+                    event = "cwm.producer.completed",
+                    duration_ms = completed_at.saturating_sub(started_at),
+                    "{} contract whale producer completed",
+                    CWM_LOG_PREFIX
+                );
             }
         });
         *self.inner.cwm_auto_push_task.write() = Some(handle);
@@ -660,6 +783,212 @@ impl AppState {
     fn stop_contract_whale_auto_push_loop(&self) {
         if let Some(handle) = self.inner.cwm_auto_push_task.write().take() {
             handle.abort();
+        }
+        self.inner
+            .cwm_producer_running
+            .store(false, Ordering::SeqCst);
+    }
+
+    fn start_contract_whale_discord_outbox_loop(&self) {
+        if !self.config().contract_whale_monitor.enabled
+            || !contract_whale_discord_outbox_enabled()
+            || self.contract_whale_store().is_none()
+            || self.inner.cwm_discord_outbox_task.read().is_some()
+        {
+            return;
+        }
+        let state = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                state.process_contract_whale_discord_outbox_once().await;
+            }
+        });
+        *self.inner.cwm_discord_outbox_task.write() = Some(handle);
+    }
+
+    fn stop_contract_whale_discord_outbox_loop(&self) {
+        if let Some(handle) = self.inner.cwm_discord_outbox_task.write().take() {
+            handle.abort();
+        }
+    }
+
+    async fn process_contract_whale_discord_outbox_once(&self) {
+        let Some(store) = self.contract_whale_store() else {
+            return;
+        };
+        let now = crate::normalizers::trade::now_ms();
+        let claimed_store = store.clone();
+        let claimed = match tokio::task::spawn_blocking(move || {
+            claimed_store.claim_contract_whale_discord_outbox(20, now)
+        })
+        .await
+        {
+            Ok(Ok(items)) => items,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    event = cwm_log_events::ERROR,
+                    error = %error,
+                    "{} discord outbox claim failed",
+                    CWM_LOG_PREFIX
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    event = cwm_log_events::ERROR,
+                    error = %error,
+                    "{} discord outbox claim task failed",
+                    CWM_LOG_PREFIX
+                );
+                return;
+            }
+        };
+        let settings =
+            ContractWhaleDiscordSettings::from_env(self.config().contract_whale_monitor.dry_run);
+        for item in claimed {
+            let outcome =
+                notify_contract_whale_discord(&settings, &item.signal, Some(store.clone())).await;
+            let (status, next_attempt_at, sent_at, last_error) = if outcome.sent {
+                (
+                    ContractWhaleDiscordOutboxStatus::Sent,
+                    None,
+                    outcome.sent_at_ms,
+                    None,
+                )
+            } else if outcome.dry_run {
+                (ContractWhaleDiscordOutboxStatus::DryRun, None, None, None)
+            } else if is_contract_whale_discord_retryable(&outcome.reason)
+                && item.attempts < settings.max_attempts
+            {
+                (
+                    ContractWhaleDiscordOutboxStatus::Retry,
+                    Some(crate::normalizers::trade::now_ms().saturating_add(
+                        contract_whale_discord_retry_delay_ms(&item.signal_id, item.attempts),
+                    )),
+                    None,
+                    Some(outcome.reason.as_str()),
+                )
+            } else {
+                (
+                    ContractWhaleDiscordOutboxStatus::Dead,
+                    None,
+                    None,
+                    Some(outcome.reason.as_str()),
+                )
+            };
+            let finish_store = store.clone();
+            let signal_id = item.signal_id.clone();
+            let last_error = last_error.map(str::to_string);
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                finish_store.finish_contract_whale_discord_outbox(
+                    &signal_id,
+                    status,
+                    next_attempt_at,
+                    sent_at,
+                    last_error.as_deref(),
+                )
+            })
+            .await
+            .unwrap_or_else(|error| Err(anyhow::anyhow!(error)))
+            {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    event = cwm_log_events::ERROR,
+                    signal_id = item.signal_id.as_str(),
+                    error = %error,
+                    "{} discord outbox finish failed",
+                    CWM_LOG_PREFIX
+                );
+            }
+        }
+    }
+
+    fn start_contract_whale_outcome_calibration_loop(&self) {
+        if !self.config().contract_whale_monitor.enabled
+            || !contract_whale_outcome_calibration_enabled()
+            || self.contract_whale_store().is_none()
+            || self.inner.cwm_outcome_calibration_task.read().is_some()
+        {
+            return;
+        }
+        let state = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                state
+                    .process_contract_whale_outcome_calibration_once()
+                    .await;
+            }
+        });
+        *self.inner.cwm_outcome_calibration_task.write() = Some(handle);
+    }
+
+    fn stop_contract_whale_outcome_calibration_loop(&self) {
+        if let Some(handle) = self.inner.cwm_outcome_calibration_task.write().take() {
+            handle.abort();
+        }
+    }
+
+    async fn process_contract_whale_outcome_calibration_once(&self) {
+        let Some(store) = self.contract_whale_store() else {
+            return;
+        };
+        let now = crate::normalizers::trade::now_ms();
+        let evaluation_store = store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let signals =
+                evaluation_store.query_contract_whale_signals(&ContractWhaleSignalQuery {
+                    from_ts: Some(now.saturating_sub(24 * 60 * 60 * 1_000)),
+                    to_ts: Some(now.saturating_sub(30_000)),
+                    limit: 500,
+                    ..ContractWhaleSignalQuery::default()
+                })?;
+            let mut outcomes = Vec::new();
+            for signal in signals {
+                let to_ts = now.min(signal.ts.saturating_add(300_000));
+                let buckets = evaluation_store.list_contract_flow_buckets_between(
+                    &signal.symbol,
+                    signal.ts,
+                    to_ts,
+                )?;
+                if let Some(outcome) =
+                    evaluate_contract_whale_signal_outcome(&signal, &buckets, now)
+                {
+                    outcomes.push(outcome);
+                }
+            }
+            evaluation_store.upsert_contract_whale_signal_outcomes(&outcomes)
+        })
+        .await;
+        match result {
+            Ok(Ok(written)) if written > 0 => tracing::debug!(
+                target: CWM_LOG_TARGET,
+                outcomes = written,
+                "{} contract whale outcomes updated",
+                CWM_LOG_PREFIX
+            ),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::warn!(
+                target: CWM_LOG_TARGET,
+                event = cwm_log_events::ERROR,
+                error = %error,
+                "{} contract whale outcome evaluation failed",
+                CWM_LOG_PREFIX
+            ),
+            Err(error) => tracing::warn!(
+                target: CWM_LOG_TARGET,
+                event = cwm_log_events::ERROR,
+                error = %error,
+                "{} contract whale outcome evaluation task failed",
+                CWM_LOG_PREFIX
+            ),
         }
     }
 
@@ -710,19 +1039,92 @@ impl AppState {
         let fallback_ts = crate::normalizers::trade::now_ms();
 
         for symbol in symbols {
+            let binance_oi = async {
+                if runtime_config
+                    .exchanges
+                    .binance
+                    .market_enabled(ContractWhaleMarketType::Oi)
+                {
+                    collector_binance::fetch_binance_open_interest_snapshot_for_symbol(
+                        client,
+                        &symbol,
+                        None,
+                        fallback_ts,
+                    )
+                    .await
+                } else {
+                    Ok(None)
+                }
+            };
+            let binance_funding = async {
+                if runtime_config
+                    .exchanges
+                    .binance
+                    .market_enabled(ContractWhaleMarketType::Funding)
+                {
+                    collector_binance::fetch_binance_funding_snapshot_for_symbol(
+                        client,
+                        &symbol,
+                        fallback_ts,
+                    )
+                    .await
+                } else {
+                    Ok(None)
+                }
+            };
+            let okx_oi = async {
+                if runtime_config
+                    .exchanges
+                    .okx
+                    .market_enabled(ContractWhaleMarketType::Oi)
+                {
+                    match collector_okx::fetch_okx_contract_value_base(client, &symbol).await {
+                        Ok(Some(ct_val_base)) => {
+                            collector_okx::fetch_okx_open_interest_snapshot_for_symbol(
+                                client,
+                                &symbol,
+                                ct_val_base,
+                            )
+                            .await
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                target: CWM_LOG_TARGET,
+                                event = cwm_log_events::ERROR,
+                                symbol = symbol.as_str(),
+                                exchange = "okx",
+                                context = "ct_val",
+                                "{} OKX instrument metadata missing ctVal; OI snapshot skipped",
+                                CWM_LOG_PREFIX
+                            );
+                            Ok(None)
+                        }
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    Ok(None)
+                }
+            };
+            let okx_funding = async {
+                if runtime_config
+                    .exchanges
+                    .okx
+                    .market_enabled(ContractWhaleMarketType::Funding)
+                {
+                    collector_okx::fetch_okx_funding_snapshot_for_symbol(client, &symbol).await
+                } else {
+                    Ok(None)
+                }
+            };
+            let (binance_oi, binance_funding, okx_oi, okx_funding) =
+                tokio::join!(binance_oi, binance_funding, okx_oi, okx_funding);
+
             if runtime_config
                 .exchanges
                 .binance
                 .market_enabled(ContractWhaleMarketType::Oi)
             {
-                match collector_binance::fetch_binance_open_interest_snapshot_for_symbol(
-                    client,
-                    &symbol,
-                    None,
-                    fallback_ts,
-                )
-                .await
-                {
+                match binance_oi {
                     Ok(Some(snapshot)) => oi_snapshots.push(snapshot),
                     Ok(None) => {}
                     Err(error) => {
@@ -744,13 +1146,7 @@ impl AppState {
                 .binance
                 .market_enabled(ContractWhaleMarketType::Funding)
             {
-                match collector_binance::fetch_binance_funding_snapshot_for_symbol(
-                    client,
-                    &symbol,
-                    fallback_ts,
-                )
-                .await
-                {
+                match binance_funding {
                     Ok(Some(snapshot)) => funding_snapshots.push(snapshot),
                     Ok(None) => {}
                     Err(error) => {
@@ -772,13 +1168,7 @@ impl AppState {
                 .okx
                 .market_enabled(ContractWhaleMarketType::Oi)
             {
-                match collector_okx::fetch_okx_open_interest_snapshot_for_symbol(
-                    client,
-                    &symbol,
-                    okx_contract_value_base(&symbol),
-                )
-                .await
-                {
+                match okx_oi {
                     Ok(Some(snapshot)) => oi_snapshots.push(snapshot),
                     Ok(None) => {}
                     Err(error) => {
@@ -800,7 +1190,7 @@ impl AppState {
                 .okx
                 .market_enabled(ContractWhaleMarketType::Funding)
             {
-                match collector_okx::fetch_okx_funding_snapshot_for_symbol(client, &symbol).await {
+                match okx_funding {
                     Ok(Some(snapshot)) => funding_snapshots.push(snapshot),
                     Ok(None) => {}
                     Err(error) => {
@@ -883,31 +1273,158 @@ impl AppState {
                 },
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
-            let signals = response.items;
+            let signals = self.filter_contract_whale_emissions(response.items);
             let _ =
                 persist_contract_whale_signals_nonblocking(store.clone(), signals.clone()).await;
-            for signal in signals {
-                let outcome =
-                    notify_contract_whale_discord(&settings, &signal, store.clone()).await;
-                self.record_scan_log(
-                    if outcome.sent { "info" } else { "debug" },
-                    if outcome.sent {
-                        cwm_log_events::DISCORD_SENT
-                    } else {
-                        cwm_log_events::DISCORD_SKIPPED
-                    },
-                    format!(
-                        "{} discord {} for {}: {}",
-                        CWM_LOG_PREFIX,
-                        if outcome.sent { "sent" } else { "skipped" },
-                        signal.symbol,
-                        outcome.reason
-                    ),
-                    Some(signal.symbol.clone()),
-                    Some(signal.id.clone()),
+            if contract_whale_discord_outbox_enabled() {
+                let cooldown_store = global_contract_whale_discord_cooldown_store();
+                let now = crate::normalizers::trade::now_ms();
+                let queued = signals
+                    .iter()
+                    .filter(|signal| {
+                        let decision = evaluate_contract_whale_discord_gate(
+                            &settings,
+                            signal,
+                            cooldown_store,
+                            now,
+                        );
+                        self.record_scan_log(
+                            if decision.allowed { "info" } else { "debug" },
+                            if decision.allowed {
+                                cwm_log_events::DISCORD_ELIGIBLE
+                            } else {
+                                cwm_log_events::DISCORD_SKIPPED
+                            },
+                            format!(
+                                "{} discord {} for {}: {}",
+                                CWM_LOG_PREFIX,
+                                if decision.allowed {
+                                    "queued"
+                                } else {
+                                    "skipped"
+                                },
+                                signal.symbol,
+                                decision.reason
+                            ),
+                            Some(signal.symbol.clone()),
+                            Some(signal.id.clone()),
+                        );
+                        decision.allowed
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if let Some(store) = store.clone() {
+                    if !queued.is_empty() {
+                        let queued_count = queued.len();
+                        match tokio::task::spawn_blocking(move || {
+                            store.enqueue_contract_whale_discord_outbox(&queued, now)
+                        })
+                        .await
+                        {
+                            Ok(Ok(inserted)) => tracing::info!(
+                                target: CWM_LOG_TARGET,
+                                event = cwm_log_events::DISCORD_ELIGIBLE,
+                                queued = inserted,
+                                eligible = queued_count,
+                                "{} discord outbox queued eligible signals",
+                                CWM_LOG_PREFIX
+                            ),
+                            Ok(Err(error)) => tracing::warn!(
+                                target: CWM_LOG_TARGET,
+                                event = cwm_log_events::ERROR,
+                                error = %error,
+                                "{} discord outbox enqueue failed",
+                                CWM_LOG_PREFIX
+                            ),
+                            Err(error) => tracing::warn!(
+                                target: CWM_LOG_TARGET,
+                                event = cwm_log_events::ERROR,
+                                error = %error,
+                                "{} discord outbox enqueue task failed",
+                                CWM_LOG_PREFIX
+                            ),
+                        }
+                    }
+                }
+            } else {
+                for signal in signals {
+                    let outcome =
+                        notify_contract_whale_discord(&settings, &signal, store.clone()).await;
+                    self.record_scan_log(
+                        if outcome.sent { "info" } else { "debug" },
+                        if outcome.sent {
+                            cwm_log_events::DISCORD_SENT
+                        } else {
+                            cwm_log_events::DISCORD_SKIPPED
+                        },
+                        format!(
+                            "{} discord {} for {}: {}",
+                            CWM_LOG_PREFIX,
+                            if outcome.sent { "sent" } else { "skipped" },
+                            signal.symbol,
+                            outcome.reason
+                        ),
+                        Some(signal.symbol.clone()),
+                        Some(signal.id.clone()),
+                    );
+                }
+            }
+        }
+    }
+
+    fn filter_contract_whale_emissions(
+        &self,
+        signals: Vec<crate::contract_whale_monitor::types::ContractWhaleSignal>,
+    ) -> Vec<crate::contract_whale_monitor::types::ContractWhaleSignal> {
+        let now = crate::normalizers::trade::now_ms();
+        let emission_config = contract_whale_runtime_config().emission;
+        let mut watermarks = self.inner.cwm_emission_watermarks.write();
+        let mut emitted = Vec::with_capacity(signals.len());
+        for signal in signals {
+            let key = emission_key(&signal);
+            if should_emit(&signal, watermarks.get(&key), now, &emission_config) {
+                watermarks.insert(key, fingerprint(&signal, now));
+                emitted.push(signal);
+            } else {
+                tracing::debug!(
+                    target: CWM_LOG_TARGET,
+                    event = "cwm.producer.emission_suppressed",
+                    signal_id = signal.id.as_str(),
+                    symbol = signal.symbol.as_str(),
+                    window_sec = signal.window_sec,
+                    "{} contract whale near-duplicate signal suppressed",
+                    CWM_LOG_PREFIX
                 );
             }
         }
+        let watermark_snapshot = (!emitted.is_empty()).then(|| watermarks.clone());
+        drop(watermarks);
+        if let (Some(store), Some(watermarks)) = (self.contract_whale_store(), watermark_snapshot) {
+            tokio::spawn(async move {
+                match tokio::task::spawn_blocking(move || {
+                    store.upsert_contract_whale_emission_watermarks(&watermarks)
+                })
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        event = cwm_log_events::ERROR,
+                        error = %error,
+                        "{} emission watermark persist failed",
+                        CWM_LOG_PREFIX
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        event = cwm_log_events::ERROR,
+                        error = %error,
+                        "{} emission watermark persist task failed",
+                        CWM_LOG_PREFIX
+                    ),
+                }
+            });
+        }
+        emitted
     }
 
     async fn flush_live_contract_flow_buckets_for_symbol(
@@ -1202,6 +1719,47 @@ impl AppState {
         self.inner.contract_whale_store.clone()
     }
 
+    pub fn contract_whale_runtime_diagnostics(&self) -> ContractWhaleRuntimeDiagnostics {
+        let last_started_at = self
+            .inner
+            .cwm_producer_last_started_at
+            .load(Ordering::SeqCst);
+        let last_completed_at = self
+            .inner
+            .cwm_producer_last_completed_at
+            .load(Ordering::SeqCst);
+        let last_duration_ms = self
+            .inner
+            .cwm_producer_last_duration_ms
+            .load(Ordering::SeqCst);
+        let queue = self
+            .contract_whale_store()
+            .and_then(|store| {
+                store
+                    .contract_whale_discord_outbox_stats(crate::normalizers::trade::now_ms())
+                    .ok()
+            })
+            .unwrap_or_default();
+        ContractWhaleRuntimeDiagnostics {
+            producer_loop: ContractWhaleProducerLoopDiagnostics {
+                last_started_at: (last_started_at > 0).then_some(last_started_at),
+                last_completed_at: (last_completed_at > 0).then_some(last_completed_at),
+                last_duration_ms: (last_duration_ms > 0).then_some(last_duration_ms),
+                overlap_skipped: self
+                    .inner
+                    .cwm_producer_overlap_skipped
+                    .load(Ordering::SeqCst),
+                missed_tick_policy: "skip",
+            },
+            discord_queue: ContractWhaleDiscordQueueDiagnostics {
+                pending: queue.pending,
+                retrying: queue.retrying,
+                failed: queue.failed,
+                oldest_pending_age_sec: queue.oldest_pending_age_sec,
+            },
+        }
+    }
+
     pub fn cached_final_events_v2(&self, key: &str) -> Option<(i64, FinalEventsV2Response)> {
         self.inner
             .final_events_v2_cache
@@ -1363,6 +1921,40 @@ fn contract_whale_auto_push_interval() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+fn contract_whale_discord_outbox_enabled() -> bool {
+    std::env::var("CONTRACT_WHALE_DISCORD_OUTBOX_ENABLED")
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(true)
+}
+
+fn contract_whale_outcome_calibration_enabled() -> bool {
+    std::env::var("CONTRACT_WHALE_OUTCOME_CALIBRATION_ENABLED")
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(true)
+}
+
+fn is_contract_whale_discord_retryable(reason: &str) -> bool {
+    matches!(reason, "send_failed")
+}
+
+fn contract_whale_discord_retry_delay_ms(signal_id: &str, attempts: usize) -> i64 {
+    let exponential_ms = 1_000_i64.saturating_mul(1_i64 << attempts.min(5));
+    let jitter_ms = signal_id.bytes().fold(0_u64, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as u64)
+    }) % 401;
+    exponential_ms.saturating_add(jitter_ms as i64 - 200)
+}
+
 fn contract_whale_market_context_poll_interval() -> std::time::Duration {
     let ms = std::env::var("CONTRACT_WHALE_MARKET_CONTEXT_POLL_INTERVAL_MS")
         .ok()
@@ -1379,15 +1971,6 @@ fn enabled_contract_whale_symbols() -> Vec<String> {
         .filter(|(_, symbol_config)| symbol_config.enabled)
         .map(|(symbol, _)| symbol.trim().to_ascii_uppercase())
         .collect()
-}
-
-fn okx_contract_value_base(symbol: &str) -> f64 {
-    match symbol.trim().to_ascii_uppercase().as_str() {
-        "BTC" => 0.01,
-        "ETH" => 0.1,
-        "SOL" => 10.0,
-        _ => 1.0,
-    }
 }
 
 fn contract_flow_initial_lookback_ms() -> i64 {

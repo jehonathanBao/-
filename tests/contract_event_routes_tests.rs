@@ -16,7 +16,10 @@ use btc_toxic_flow_monitor_rs::{
         config::reset_contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
         normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
-        types::{ContractExchange, ContractFlowBucket, ContractOiSnapshot, ContractWhaleSignal},
+        types::{
+            ContractExchange, ContractFlowBucket, ContractOiSnapshot, ContractWhaleMarketType,
+            ContractWhaleSignal, ContractWhaleSourceRole,
+        },
     },
     storage::contract_whale_repo::ContractWhaleRepo,
     types::{
@@ -157,32 +160,67 @@ async fn contract_events_hide_btc_sub_500_volume_rows_with_explicit_reason() {
 }
 
 #[tokio::test]
-async fn final_events_v2_uses_lifecycle_accumulated_volume_for_btc_display_gate() {
+async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate() {
     let config = test_config(temp_sqlite_path("final-events-lifecycle-volume-gate"));
     let state = AppState::new(config);
     let store = state.contract_whale_store().expect("contract whale store");
     let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
 
     let mut first = base_signal("lifecycle-first", now - 5 * 60 * 1000 - 15_000);
-    first.total_volume_btc = 260.0;
-    first.net_volume_btc = 220.0;
-    first.total_volume = 260.0;
-    first.net_volume = 220.0;
-    first.total_notional_usd = 18_200_000.0;
-    first.dominance = 220.0 / 260.0;
+    first.total_volume_btc = 600.0;
+    first.net_volume_btc = 520.0;
+    first.total_volume = 600.0;
+    first.net_volume = 520.0;
+    first.total_notional_usd = 42_000_000.0;
+    first.dominance = 520.0 / 600.0;
     first.price_move_pct = Some(0.10);
 
     let mut second = base_signal("lifecycle-second", now - 5 * 60 * 1000);
-    second.total_volume_btc = 260.0;
-    second.net_volume_btc = 210.0;
-    second.total_volume = 260.0;
-    second.net_volume = 210.0;
-    second.total_notional_usd = 18_200_000.0;
-    second.dominance = 210.0 / 260.0;
+    second.total_volume_btc = 600.0;
+    second.net_volume_btc = 510.0;
+    second.total_volume = 600.0;
+    second.net_volume = 510.0;
+    second.total_notional_usd = 42_000_000.0;
+    second.dominance = 510.0 / 600.0;
     second.price_move_pct = Some(0.09);
 
     store.upsert_contract_whale_signal(&first).unwrap();
     store.upsert_contract_whale_signal(&second).unwrap();
+    let flow_start = first.ts - (first.window_sec as i64 * 1000);
+    store
+        .upsert_contract_flow_buckets(&[
+            ContractFlowBucket {
+                ts_bucket: flow_start + 1_000,
+                exchange: "binance".to_string(),
+                symbol: "BTC".to_string(),
+                market_type: ContractWhaleMarketType::Perp,
+                source_role: ContractWhaleSourceRole::Primary,
+                product_id: Some("BTCUSDT".to_string()),
+                buy_volume_btc: 300.0,
+                sell_volume_btc: 0.0,
+                buy_notional_usd: 21_000_000.0,
+                sell_notional_usd: 0.0,
+                trade_count: 1,
+                max_single_trade_btc: 300.0,
+                vwap: Some(70_000.0),
+            },
+            ContractFlowBucket {
+                ts_bucket: second.ts,
+                exchange: "binance".to_string(),
+                symbol: "BTC".to_string(),
+                market_type: ContractWhaleMarketType::Perp,
+                source_role: ContractWhaleSourceRole::Primary,
+                product_id: Some("BTCUSDT".to_string()),
+                buy_volume_btc: 400.0,
+                sell_volume_btc: 0.0,
+                buy_notional_usd: 28_000_000.0,
+                sell_notional_usd: 0.0,
+                trade_count: 1,
+                max_single_trade_btc: 400.0,
+                vwap: Some(70_000.0),
+            },
+        ])
+        .unwrap();
 
     let app = router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -211,8 +249,49 @@ async fn final_events_v2_uses_lifecycle_accumulated_volume_for_btc_display_gate(
         .chain(payload["closed"].as_array().expect("closed array").iter())
         .collect::<Vec<_>>();
     assert_eq!(items.len(), 1, "payload={payload}");
-    assert_eq!(items[0]["displayVolumeLabel"], "生命周期累计流量 BTC");
-    assert_eq!(items[0]["displayVolumeBtc"], 520.0);
+    assert_eq!(items[0]["displayVolumeLabel"], "事件真实换手 BTC");
+    assert_eq!(items[0]["displayVolumeBtc"], 700.0);
+    assert_eq!(
+        items[0]["sourceSignal"]["eventLifecycle"]["uniqueTurnoverBtc"],
+        700.0
+    );
+    assert_eq!(
+        items[0]["sourceSignal"]["eventLifecycle"]["uniqueTurnoverAvailable"],
+        true
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_events_close_stale_lifecycle_events_against_live_clock() {
+    let config = test_config(temp_sqlite_path("contract-event-live-clock"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let stale = base_signal("stale-lifecycle", now - 121_000);
+    store.upsert_contract_whale_signal(&stale).unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20&include_hidden=true"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    assert_eq!(payload["items"][0]["status"], "closed");
 
     server.abort();
 }
@@ -347,7 +426,7 @@ async fn contract_events_mark_missing_oi_snapshots_as_unavailable() {
     assert_eq!(item["oiContextLabel"], "OI 不可用");
     assert!(item["oiDeltaPct"].is_null());
     assert_eq!(item["oiAvailable"], false);
-    assert_eq!(item["oiReason"], "no_oi_snapshot_in_window");
+    assert_eq!(item["oiReason"], "no_consistent_oi_sources");
 
     server.abort();
 }
@@ -456,7 +535,13 @@ async fn final_events_v2_include_resolved_oi_context_fields() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload: serde_json::Value = response.json().await.expect("final events v2 json");
-    let item = payload["active"][0].clone();
+    let item = payload["active"]
+        .as_array()
+        .expect("active events")
+        .iter()
+        .chain(payload["closed"].as_array().expect("closed events").iter())
+        .next()
+        .expect("final event");
     assert_eq!(item["oiContext"], "new_long_build");
     assert_eq!(item["oiContextLabel"], "新多开仓");
     assert_eq!(item["oiDeltaPct"], 0.42);
@@ -546,8 +631,8 @@ async fn contract_events_debug_counts_reports_filter_chain_and_projection_counts
     );
     assert_eq!(payload["visibility"]["hiddenReasons"]["badQuality"], 1);
     assert_eq!(payload["latest"]["latestCount"], 2);
-    assert_eq!(payload["finalEventsV2"]["activeCount"], 1);
-    assert_eq!(payload["finalEventsV2"]["closedCount"], 0);
+    assert_eq!(payload["finalEventsV2"]["activeCount"], 0);
+    assert_eq!(payload["finalEventsV2"]["closedCount"], 1);
     assert!(payload["latestVsHistory"].is_array());
     assert!(payload["finalEventsProjection"].is_object());
 
