@@ -1,5 +1,6 @@
 use super::{
     config::BinanceAltContractRuntimeConfig,
+    context::context_for_window,
     discord::{evaluate_alt_contract_discord_gate, AltContractDiscordCooldownStore},
     impact::{impact_s_ready, score_alt_impact},
     lme::score_signal_microstructure,
@@ -55,6 +56,8 @@ pub fn detect_alt_contract_signal_with_context(
     if stats.total_notional_usd <= 0.0 || stats.dominance < 0.45 {
         return None;
     }
+    let selected_context = context_for_window(context, stats.window_sec);
+    let context = &selected_context;
     let score = score_alt_contract_signal(stats, context, config);
     let market_tier = config.classify_market_tier(&stats.product_id);
     let alt_impact_score = score_alt_impact(stats, context, market_tier);
@@ -737,6 +740,10 @@ fn classify_signal_type(
         && context
             .liquidation_notional_usd
             .is_some_and(|notional| notional >= 5_000_000.0)
+        && (context.liquidation_count >= 2
+            || context
+                .liquidation_notional_usd
+                .is_some_and(|notional| notional >= 20_000_000.0))
     {
         return AltContractSignalType::LiquidationCascade;
     }

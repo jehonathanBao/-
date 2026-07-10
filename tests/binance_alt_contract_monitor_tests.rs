@@ -260,7 +260,13 @@ fn service_context_updates_enrich_generated_signal() {
         ),
         "liquidation context should avoid direct main-force wording"
     );
-    assert_eq!(signal.oi_change_1m_base, Some(250_000.0));
+    if signal.window_sec == 60 {
+        assert_eq!(signal.oi_change_1m_base, Some(250_000.0));
+    } else {
+        assert_eq!(signal.window_sec, 15);
+        assert!(signal.oi_change_1m_base.is_none());
+        assert!(signal.oi_change_5m_base.is_none());
+    }
     assert_eq!(signal.funding_rate, Some(0.00021));
     assert_eq!(signal.liquidation_notional_usd, Some(1_000_000.0));
     assert!(signal.force_order_snapshot);

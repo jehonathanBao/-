@@ -5,7 +5,9 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
         reset_binance_alt_contract_runtime_config, set_binance_alt_contract_runtime_config,
         BinanceAltContractRuntimeConfig,
     },
+    context::context_for_window,
     service::BinanceAltContractService,
+    types::{AltContractContext, OiPeriodDelta},
 };
 
 fn guard() -> MutexGuard<'static, ()> {
@@ -80,4 +82,40 @@ fn stale_oi_periods_are_explicitly_unavailable() {
     );
 
     reset_binance_alt_contract_runtime_config();
+}
+
+#[test]
+fn window_context_uses_only_the_matching_oi_period() {
+    let context = AltContractContext {
+        oi_change_1m: OiPeriodDelta {
+            period_sec: 60,
+            delta: Some(10.0),
+            delta_pct: Some(10.0),
+            available: true,
+            ..OiPeriodDelta::default()
+        },
+        oi_change_5m: OiPeriodDelta {
+            period_sec: 300,
+            delta: Some(30.0),
+            delta_pct: Some(30.0),
+            available: true,
+            ..OiPeriodDelta::default()
+        },
+        ..AltContractContext::default()
+    };
+
+    let short = context_for_window(&context, 15);
+    assert!(short.oi_change_1m_base.is_none());
+    assert!(short.oi_change_5m_base.is_none());
+    assert_eq!(short.oi_change_pct, None);
+
+    let one_minute = context_for_window(&context, 60);
+    assert_eq!(one_minute.oi_change_1m_base, Some(10.0));
+    assert!(one_minute.oi_change_5m_base.is_none());
+    assert_eq!(one_minute.oi_change_pct, Some(10.0));
+
+    let five_minutes = context_for_window(&context, 300);
+    assert!(five_minutes.oi_change_1m_base.is_none());
+    assert_eq!(five_minutes.oi_change_5m_base, Some(30.0));
+    assert_eq!(five_minutes.oi_change_pct, Some(30.0));
 }

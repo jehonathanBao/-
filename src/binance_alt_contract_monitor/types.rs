@@ -220,6 +220,10 @@ pub struct AltContractContext {
     pub ticker_price_change_24h_pct: Option<f64>,
     pub ticker_updated_at: Option<i64>,
     pub liquidation_notional_usd: Option<f64>,
+    #[serde(default)]
+    pub liquidation_count: usize,
+    #[serde(default)]
+    pub dominant_liquidation_side: LiquidationSide,
     pub liquidation_suspected: bool,
     pub price_move_1m_pct: Option<f64>,
     pub force_order_snapshot: bool,

@@ -614,6 +614,8 @@ impl BinanceAltContractService {
         );
         let context = state.contexts.entry(event.product_id.clone()).or_default();
         context.liquidation_notional_usd = Some(summary.liquidation_total_usd);
+        context.liquidation_count = summary.liquidation_count;
+        context.dominant_liquidation_side = summary.dominant_liquidation_side;
         context.liquidation_suspected = true;
         context.force_order_snapshot = true;
         state.liquidation_seen_at.insert(event.product_id, event.ts);
@@ -1253,6 +1255,8 @@ impl BinanceAltContractService {
             .unwrap_or(true);
         if liquidation_stale {
             context.liquidation_notional_usd = None;
+            context.liquidation_count = 0;
+            context.dominant_liquidation_side = LiquidationSide::Unknown;
             context.liquidation_suspected = false;
             context.force_order_snapshot = false;
         }
