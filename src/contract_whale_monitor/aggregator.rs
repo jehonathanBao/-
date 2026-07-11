@@ -379,10 +379,22 @@ pub fn market_context_from_snapshots(
         _ => None,
     };
     let latest_funding = average_latest_funding_before(funding_snapshots, symbol, now_ts);
+    let symbol_oi_snapshots = oi_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.symbol.eq_ignore_ascii_case(symbol))
+        .collect::<Vec<_>>();
+    let ct_val_available = symbol_oi_snapshots
+        .iter()
+        .all(|snapshot| snapshot.ct_val_available);
+    let evidence_reason = symbol_oi_snapshots
+        .iter()
+        .find_map(|snapshot| snapshot.evidence_degraded_reason.clone());
 
     ContractWhaleMarketContext {
         context_expected: true,
-        ct_val_available: true,
+        ct_val_available,
+        evidence_degraded: evidence_reason.is_some() || !ct_val_available,
+        evidence_reason,
         oi_available: latest_oi.is_some(),
         funding_available: latest_funding.is_some(),
         oi_change_1m_btc,

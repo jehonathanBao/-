@@ -40,6 +40,7 @@ pub struct MtfofeLayerInput {
     pub oi_change_pct: f64,
     pub funding_rate: f64,
     pub liquidation_ratio: f64,
+    pub altcoin_control_score: f64,
     pub volume_spike_multiple: f64,
     pub data_quality: f64,
 }
@@ -54,6 +55,7 @@ impl MtfofeLayerInput {
             oi_change_pct: 0.0,
             funding_rate: 0.0,
             liquidation_ratio: 0.0,
+            altcoin_control_score: 0.0,
             volume_spike_multiple: 0.0,
             data_quality: 0.0,
         }
@@ -118,10 +120,10 @@ pub struct MtfofeBreakdownResponse {
 
 pub fn analyze_mtf_orderflow_fusion(input: &MtfofeInput) -> MtfofeStateResponse {
     let layers = vec![
-        analyze_layer(&input.micro_5s),
-        analyze_layer(&input.flow_60s),
-        analyze_layer(&input.structure_5m),
-        analyze_layer(&input.regime_1h),
+        analyze_layer(&input.micro_5s, input.market_domain),
+        analyze_layer(&input.flow_60s, input.market_domain),
+        analyze_layer(&input.structure_5m, input.market_domain),
+        analyze_layer(&input.regime_1h, input.market_domain),
     ];
     let weights = BTreeMap::from([
         ("5s".to_string(), 0.15),
@@ -164,7 +166,11 @@ pub fn analyze_mtf_orderflow_fusion(input: &MtfofeInput) -> MtfofeStateResponse 
     signals.sort();
     signals.dedup();
 
-    let regime = final_regime(&layers, input.liquidation_cascade_probability);
+    let regime = final_regime(
+        &layers,
+        input.liquidation_cascade_probability,
+        conflict_score,
+    );
     let decision = final_decision(confidence, conflict_score, &bias);
     let timeframe_alignment = layers
         .iter()
@@ -217,7 +223,7 @@ impl From<MtfofeStateResponse> for MtfofeBreakdownResponse {
     }
 }
 
-fn analyze_layer(input: &MtfofeLayerInput) -> MtfofeTimeframeState {
+fn analyze_layer(input: &MtfofeLayerInput, _domain: MarketDomain) -> MtfofeTimeframeState {
     let total_volume = (input.buy_volume + input.sell_volume).max(0.0);
     let flow_delta = if total_volume > f64::EPSILON {
         (input.buy_volume - input.sell_volume) / total_volume
@@ -292,7 +298,6 @@ fn analyze_layer(input: &MtfofeLayerInput) -> MtfofeTimeframeState {
         ),
         ("data_quality".to_string(), round4(input.data_quality)),
     ]);
-
     MtfofeTimeframeState {
         timeframe: input.timeframe.clone(),
         alignment: alignment.to_string(),
@@ -344,7 +349,11 @@ fn final_bias(weighted_score: f64, confidence: f64, conflict_score: f64) -> Stri
     .to_string()
 }
 
-fn final_regime(layers: &[MtfofeTimeframeState], liquidation_cascade_probability: f64) -> String {
+fn final_regime(
+    layers: &[MtfofeTimeframeState],
+    liquidation_cascade_probability: f64,
+    _conflict_score: f64,
+) -> String {
     if liquidation_cascade_probability >= 0.70
         || layers
             .iter()
@@ -458,6 +467,7 @@ mod tests {
             oi_change_pct: 0.45,
             funding_rate: 0.0001,
             liquidation_ratio: 0.08,
+            altcoin_control_score: 0.10,
             volume_spike_multiple: 2.2,
             data_quality: 0.9,
         }
@@ -472,6 +482,7 @@ mod tests {
             oi_change_pct: -0.35,
             funding_rate: -0.0001,
             liquidation_ratio: 0.10,
+            altcoin_control_score: 0.12,
             volume_spike_multiple: 2.5,
             data_quality: 0.9,
         }

@@ -292,6 +292,10 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxAgeSec: numberOrNull(response.data?.maxAgeSec ?? response.data?.max_age_sec),
       staleCount: numberOrNull(response.data?.staleCount ?? response.data?.stale_count),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
+      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
+      degraded: Boolean(response.data?.degraded),
+      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
+      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
@@ -304,6 +308,10 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxAgeSec: null,
       staleCount: null,
       timeline: null,
+      dataState: "degraded",
+      degraded: true,
+      errorCode: "latest_unavailable",
+      lastKnownDataAvailable: true,
       meta: null,
       error: "latest_unavailable",
     };
@@ -381,10 +389,23 @@ export async function fetchContractWhaleHistory(filters = {}) {
         .map((item) => normalizeContractWhaleSignal(item, requestedSymbol))
         .filter(isVisibleContractWhaleSignal),
       meta: normalizeResponseMeta(response.data?.meta),
+      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
+      degraded: Boolean(response.data?.degraded),
+      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
+      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
       error: null,
     };
   } catch {
-    return { summary: fallbackSummary(filters.symbol || "BTC"), items: [], meta: null, error: "history_unavailable" };
+    return {
+      summary: fallbackSummary(filters.symbol || "BTC"),
+      items: [],
+      meta: null,
+      dataState: "degraded",
+      degraded: true,
+      errorCode: "history_unavailable",
+      lastKnownDataAvailable: true,
+      error: "history_unavailable",
+    };
   }
 }
 
@@ -443,6 +464,10 @@ export async function fetchContractEvents(filters = {}) {
       cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
       cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
+      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
+      degraded: Boolean(response.data?.degraded),
+      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
+      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
       error: null,
     };
   } catch {
@@ -461,6 +486,10 @@ export async function fetchContractEvents(filters = {}) {
       cacheAgeSec: null,
       cacheTtlSec: null,
       timeline: null,
+      dataState: "degraded",
+      degraded: true,
+      errorCode: "contract_events_unavailable",
+      lastKnownDataAvailable: true,
       error: "contract_events_unavailable",
     };
   }
@@ -600,6 +629,10 @@ export async function fetchFinalEventsV2(filters = {}) {
       cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       projectionLagSec: numberOrNull(response.data?.projectionLagSec ?? response.data?.projection_lag_sec),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
+      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
+      degraded: Boolean(response.data?.degraded),
+      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
+      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
       error: null,
     };
   } catch {
@@ -618,6 +651,10 @@ export async function fetchFinalEventsV2(filters = {}) {
       cacheTtlSec: null,
       projectionLagSec: null,
       timeline: null,
+      dataState: "degraded",
+      degraded: true,
+      errorCode: "final_events_v2_unavailable",
+      lastKnownDataAvailable: true,
       error: "final_events_v2_unavailable",
     };
   }
@@ -1309,6 +1346,7 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
 }
 
 export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
+  const classification = item?.classificationV2 || item?.classification_v2 || {};
   const totalVolumeBtc = numberOrNull(item.totalVolume) ?? numberOrNull(item.totalVolumeBtc) ?? 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   const activeSources = normalizeActiveSources(item.activeSources);
@@ -1350,12 +1388,28 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     flowDirection: item.flowDirection || item.flow_direction || "unknown",
     priceResponseTypeV2:
       item.priceResponseTypeV2 || item.price_response_type_v2 || item.priceResponseType || "no_clear_response",
-    oiContext: item.oiContext || item.oi_context || "oi_unavailable",
-    oiContextLabel: item.oiContextLabel || item.oi_context_label || "OI 不可用",
-    oiDelta: numberOrNull(item.oiDelta ?? item.oi_delta),
-    oiDeltaPct: numberOrNull(item.oiDeltaPct ?? item.oi_delta_pct),
-    oiAvailable: Boolean(item.oiAvailable ?? item.oi_available),
-    oiReason: item.oiReason || item.oi_reason || "oi_unavailable",
+    oiContext: item.oiContext || item.oi_context || classification.oiContext || classification.oi_context || "oi_unavailable",
+    oiContextLabel: item.oiContextLabel || item.oi_context_label || classification.oiContextLabel || classification.oi_context_label || "OI 不可用",
+    oiDelta: numberOrNull(item.oiDelta ?? item.oi_delta ?? classification.oiDelta ?? classification.oi_delta),
+    oiDeltaPct: numberOrNull(item.oiDeltaPct ?? item.oi_delta_pct ?? classification.oiDeltaPct ?? classification.oi_delta_pct),
+    oiAvailable: Boolean(item.oiAvailable ?? item.oi_available ?? classification.oiAvailable ?? classification.oi_available),
+    oiReason: item.oiReason || item.oi_reason || classification.oiReason || classification.oi_reason || "oi_unavailable",
+    oiConsistentSources: normalizeStringArray(
+      item.oiConsistentSources ?? item.oi_consistent_sources ?? classification.oiConsistentSources ?? classification.oi_consistent_sources,
+    ),
+    oiExcludedSources: normalizeStringArray(
+      item.oiExcludedSources ?? item.oi_excluded_sources ?? classification.oiExcludedSources ?? classification.oi_excluded_sources,
+    ),
+    oiSourceCoverageChanged: Boolean(
+      item.oiSourceCoverageChanged ?? item.oi_source_coverage_changed ?? classification.oiSourceCoverageChanged ?? classification.oi_source_coverage_changed,
+    ),
+    oiCrossExchangeConsensus:
+      item.oiCrossExchangeConsensus ?? item.oi_cross_exchange_consensus ?? classification.oiCrossExchangeConsensus ?? classification.oi_cross_exchange_consensus ?? null,
+    oiEvidenceDegraded: Boolean(
+      item.oiEvidenceDegraded ?? item.oi_evidence_degraded ?? classification.oiEvidenceDegraded ?? classification.oi_evidence_degraded,
+    ),
+    oiEvidenceReason:
+      item.oiEvidenceReason || item.oi_evidence_reason || classification.oiEvidenceReason || classification.oi_evidence_reason || null,
     intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
     isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
     classificationVersion: item.classificationVersion || item.classification_version || "",
@@ -1501,7 +1555,42 @@ function normalizeEventLifecycle(value) {
     status: status === "closed" ? "closed" : "active",
     volumeAccumulated: numberOrNull(source.volumeAccumulated) || 0,
     oiAccumulated: numberOrNull(source.oiAccumulated) || 0,
+    latestWindowVolumeBtc: numberOrNull(source.latestWindowVolumeBtc ?? source.latest_window_volume_btc),
+    peakWindowVolumeBtc: numberOrNull(source.peakWindowVolumeBtc ?? source.peak_window_volume_btc),
+    uniqueTurnoverBtc: numberOrNull(source.uniqueTurnoverBtc ?? source.unique_turnover_btc),
+    uniqueTurnoverAvailable: Boolean(source.uniqueTurnoverAvailable ?? source.unique_turnover_available),
+    uniqueTurnoverReason: source.uniqueTurnoverReason || source.unique_turnover_reason || null,
+    netOiDeltaBtc: numberOrNull(source.netOiDeltaBtc ?? source.net_oi_delta_btc),
+    peakAbsOiDeltaBtc: numberOrNull(source.peakAbsOiDeltaBtc ?? source.peak_abs_oi_delta_btc),
+    latestSnapshotTs: numberOrNull(source.latestSnapshotTs ?? source.latest_snapshot_ts),
+    peakSnapshotTs: numberOrNull(source.peakSnapshotTs ?? source.peak_snapshot_ts),
+    displaySnapshotKind: source.displaySnapshotKind || source.display_snapshot_kind || "peak",
+    latestSnapshot: normalizeLifecycleSnapshot(source.latestSnapshot ?? source.latest_snapshot),
+    peakSnapshot: normalizeLifecycleSnapshot(source.peakSnapshot ?? source.peak_snapshot),
     updateCount: Math.max(1, Math.round(numberOrNull(source.updateCount) || 1)),
+  };
+}
+
+function normalizeLifecycleSnapshot(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    ts: numberOrNull(value.ts),
+    windowSec: Math.max(0, Math.round(numberOrNull(value.windowSec ?? value.window_sec) || 0)),
+    signalType: value.signalType ?? value.signal_type ?? null,
+    direction: value.direction ?? null,
+    severity: value.severity ?? null,
+    score: numberOrNull(value.score),
+    totalVolumeBtc: numberOrNull(value.totalVolumeBtc ?? value.total_volume_btc),
+    netVolumeBtc: numberOrNull(value.netVolumeBtc ?? value.net_volume_btc),
+    totalNotionalUsd: numberOrNull(value.totalNotionalUsd ?? value.total_notional_usd),
+    orderPriceUsd: numberOrNull(value.orderPriceUsd ?? value.order_price_usd),
+    priceMovePct: numberOrNull(value.priceMovePct ?? value.price_move_pct),
+    displaySignalType: value.displaySignalType ?? value.display_signal_type ?? "",
+    structureInterpretation: value.structureInterpretation ?? value.structure_interpretation ?? null,
+    classificationVersion: value.classificationVersion ?? value.classification_version ?? "",
+    oiDeltaPct: numberOrNull(value.oiDeltaPct ?? value.oi_delta_pct),
+    oiContext: value.oiContext ?? value.oi_context ?? null,
+    evidenceDegraded: Boolean(value.evidenceDegraded ?? value.evidence_degraded),
   };
 }
 

@@ -6,7 +6,7 @@ use axum::{
 
 use crate::{
     api::contract_whale_routes::{
-        build_contract_whale_history_response, decorate_contract_whale_oi_contexts,
+        build_contract_whale_history_response_with_clock, decorate_contract_whale_oi_contexts,
         parse_history_query, ContractWhaleQuery,
     },
     app::AppState,
@@ -45,11 +45,15 @@ fn final_event_response_for_query(
     let history_query = parse_history_query(&query)?;
     let symbol_for_filter = history_query.symbol.as_deref().unwrap_or("all").to_string();
     let config = state.config().contract_whale_monitor;
-    let items = state
-        .contract_whale_store()
-        .and_then(|store| store.query_contract_whale_signals(&history_query).ok())
-        .unwrap_or_default();
-    let mut contract_response = build_contract_whale_history_response(
+    let store = state.contract_whale_store().ok_or_else(|| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "contract whale store unavailable"
+        ))
+    })?;
+    let items = store
+        .query_contract_whale_signals(&history_query)
+        .map_err(|error| crate::api::contract_event_routes::internal_error(error))?;
+    let mut contract_response = build_contract_whale_history_response_with_clock(
         items,
         &symbol_for_filter,
         history_query.limit,
@@ -57,9 +61,11 @@ fn final_event_response_for_query(
         config.enabled,
         config.dry_run,
         None,
+        crate::contract_whale_monitor::event_lifecycle::ContractWhaleLifecycleClock::Live {
+            now_ms: crate::normalizers::trade::now_ms(),
+        },
     );
-    if let Some(store) = state.contract_whale_store() {
-        decorate_contract_whale_oi_contexts(&store, &mut contract_response.items);
-    }
+    let oi_diagnostics = decorate_contract_whale_oi_contexts(&store, &mut contract_response.items);
+    state.record_contract_whale_oi_resolver_diagnostics(oi_diagnostics);
     Ok(build_final_event_store_response_from_contract_whale_response(&contract_response))
 }

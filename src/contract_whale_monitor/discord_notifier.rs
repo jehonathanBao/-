@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::{
     contract_whale_monitor::{
+        config::contract_whale_runtime_config,
         discord::should_push_contract_whale_discord,
         discord_gate::classify_contract_whale_signal_semantic,
         log_events,
@@ -24,7 +25,6 @@ use crate::{
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_MAX_ATTEMPTS: usize = 2;
 const DEFAULT_COOLDOWN_SEC: i64 = 30;
 
 static GLOBAL_COOLDOWN_STORE: OnceLock<ContractWhaleDiscordCooldownStore> = OnceLock::new();
@@ -41,6 +41,7 @@ pub struct ContractWhaleDiscordSettings {
 
 impl ContractWhaleDiscordSettings {
     pub fn from_env(dry_run: bool) -> Self {
+        let configured_max_attempts = contract_whale_runtime_config().discord_outbox.max_attempts;
         Self {
             enabled: env_bool("CONTRACT_WHALE_DISCORD_ENABLED", true),
             dry_run,
@@ -53,8 +54,11 @@ impl ContractWhaleDiscordSettings {
                         .filter(|value| !value.trim().is_empty())
                 }),
             timeout_ms: env_u64("CONTRACT_WHALE_DISCORD_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
-            max_attempts: env_usize("CONTRACT_WHALE_DISCORD_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)
-                .clamp(1, 3),
+            max_attempts: env_usize(
+                "CONTRACT_WHALE_DISCORD_MAX_ATTEMPTS",
+                configured_max_attempts.max(1),
+            )
+            .clamp(1, 6),
             cooldown_sec: env_i64("CONTRACT_WHALE_DISCORD_COOLDOWN_SEC", DEFAULT_COOLDOWN_SEC)
                 .clamp(30, 3600),
         }

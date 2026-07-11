@@ -38,30 +38,12 @@ export async function fetchMarketRegime(symbol = DEFAULT_SYMBOL) {
   );
 }
 
-export async function fetchManipulationAssessment(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
-    "/api/manipulation/latest",
-    { symbol },
-    (payload) => normalizeManipulation(payload, symbol),
-    fallbackManipulation(symbol),
-  );
-}
-
 export async function fetchBtcStructure(symbol = DEFAULT_SYMBOL) {
   return fetchWithFallback(
     "/api/btc/structure",
     { symbol },
     (payload) => normalizeBtcStructure(payload, symbol),
     fallbackBtcStructure(symbol),
-  );
-}
-
-export async function fetchMarketSignalAssessment(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
-    "/api/signal/latest",
-    { symbol },
-    (payload) => normalizeMarketSignal(payload, symbol),
-    fallbackMarketSignal(symbol),
   );
 }
 
@@ -131,17 +113,6 @@ export function normalizeRegime(payload = {}, requestedSymbol = DEFAULT_SYMBOL) 
   };
 }
 
-export function normalizeManipulation(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
-  return {
-    symbol: normalizeSymbol(payload.symbol || requestedSymbol),
-    score: clamp01(payload.score),
-    signals: normalizeStringArray(payload.signals),
-    metrics: normalizeMetricMap(payload.metrics),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
-  };
-}
-
 export function normalizeBtcStructure(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
   return {
     symbol: normalizeSymbol(payload.symbol || requestedSymbol),
@@ -152,23 +123,6 @@ export function normalizeBtcStructure(payload = {}, requestedSymbol = DEFAULT_SY
     liquidationCascadeProbability: clamp01(payload.liquidationCascadeProbability),
     gammaPressure: clamp01(payload.gammaPressure),
     signals: normalizeStringArray(payload.signals),
-    metrics: normalizeMetricMap(payload.metrics),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
-  };
-}
-
-export function normalizeMarketSignal(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
-  return {
-    symbol: normalizeSymbol(payload.symbol || requestedSymbol),
-    regime: String(payload.regime || "ACCUMULATION").toUpperCase(),
-    confidence: clamp01(payload.confidence),
-    manipulationScore: clamp01(payload.manipulationScore),
-    directionBias: String(payload.directionBias || "NEUTRAL").toUpperCase(),
-    signals: normalizeStringArray(payload.signals),
-    adjustedSignalStrength: clamp01(payload.adjustedSignalStrength),
-    allowedSignalFamily: payload.allowedSignalFamily || "monitor_only",
-    riskNote: payload.riskNote || "read-only market structure output",
     metrics: normalizeMetricMap(payload.metrics),
     readOnly: payload.readOnly !== false,
     runtimeModified: Boolean(payload.runtimeModified),
@@ -236,16 +190,8 @@ function fallbackRegime(symbol) {
   return normalizeRegime({ symbol, regime: "ACCUMULATION", directionBias: "NEUTRAL", readOnly: true }, symbol);
 }
 
-function fallbackManipulation(symbol) {
-  return normalizeManipulation({ symbol, signals: [], readOnly: true }, symbol);
-}
-
 function fallbackBtcStructure(symbol) {
   return normalizeBtcStructure({ symbol, signals: [], readOnly: true }, symbol);
-}
-
-function fallbackMarketSignal(symbol) {
-  return normalizeMarketSignal({ symbol, regime: "ACCUMULATION", directionBias: "NEUTRAL", readOnly: true }, symbol);
 }
 
 function normalizeSymbol(value) {

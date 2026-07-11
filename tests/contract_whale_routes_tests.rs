@@ -108,7 +108,29 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
         windows: BTreeMap::from([("15000".to_string(), high_conviction_window())]),
     };
 
-    let response = build_contract_whale_response(&flow_state, "BTC", 50, Some("high"), true, true);
+    let response = build_contract_whale_response_with_runtime_and_baselines(
+        &flow_state,
+        "BTC",
+        50,
+        Some("high"),
+        true,
+        true,
+        ContractWhaleResponseRuntime {
+            venue_health: None,
+            baselines: &BTreeMap::from([(
+                15,
+                ContractWhaleQualityBaseline {
+                    dynamic_multiple: Some(5.5),
+                    dynamic_baseline_btc: Some(490.0),
+                    dynamic_threshold_level: "high".to_string(),
+                    percentile_level: Some(99.0),
+                },
+            )]),
+            liquidations: &BTreeMap::new(),
+            market_context: &ContractWhaleMarketContext::default(),
+            booted_at_ms: None,
+        },
+    );
 
     assert_eq!(response.items.len(), 1);
     assert_eq!(response.items[0].severity, ContractWhaleSeverity::High);
@@ -339,6 +361,8 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
     let market_context = ContractWhaleMarketContext {
         context_expected: true,
         ct_val_available: true,
+        evidence_degraded: false,
+        evidence_reason: None,
         oi_available: true,
         funding_available: true,
         oi_change_1m_btc: Some(250.0),

@@ -133,6 +133,8 @@ fn oi_context_aligns_before_and_after_snapshots_per_exchange() {
                 symbol: "BTC".to_string(),
                 oi_btc: 1_000.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: event_ts - 1_000,
@@ -140,6 +142,8 @@ fn oi_context_aligns_before_and_after_snapshots_per_exchange() {
                 symbol: "BTC".to_string(),
                 oi_btc: 1_100.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: start_ts - 500,
@@ -147,6 +151,8 @@ fn oi_context_aligns_before_and_after_snapshots_per_exchange() {
                 symbol: "BTC".to_string(),
                 oi_btc: 2_000.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: event_ts - 500,
@@ -154,6 +160,8 @@ fn oi_context_aligns_before_and_after_snapshots_per_exchange() {
                 symbol: "BTC".to_string(),
                 oi_btc: 2_200.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
         ])
         .unwrap();
@@ -297,6 +305,38 @@ async fn contract_whale_signal_nonblocking_batch_persists_multiple_signals() {
     assert_eq!(rows.len(), 2);
     assert!(ids.contains(&first.id.as_str()));
     assert!(ids.contains(&second.id.as_str()));
+}
+
+#[test]
+fn contract_whale_signal_and_discord_outbox_share_one_write_transaction() {
+    let store = temp_store("contract-whale-signal-outbox-transaction");
+    let signal = sample_s_signal();
+
+    let (written, queued) = store
+        .upsert_contract_whale_signals_with_outbox(
+            std::slice::from_ref(&signal),
+            std::slice::from_ref(&signal),
+            signal.ts,
+        )
+        .unwrap();
+
+    assert_eq!(written, 1);
+    assert_eq!(queued, 1);
+    assert_eq!(
+        store
+            .query_contract_whale_signals(&ContractWhaleSignalQuery {
+                symbol: Some("BTC".to_string()),
+                limit: 10,
+                ..ContractWhaleSignalQuery::default()
+            })
+            .unwrap()
+            .len(),
+        1
+    );
+    let stats = store
+        .contract_whale_discord_outbox_stats(signal.ts)
+        .unwrap();
+    assert_eq!(stats.pending, 1);
 }
 
 #[test]
@@ -660,6 +700,8 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100.0,
                 oi_notional_usd: Some(7_000_000.0),
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: now - 1_000,
@@ -667,6 +709,8 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
                 symbol: "BTC".to_string(),
                 oi_btc: 150.0,
                 oi_notional_usd: Some(10_500_000.0),
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
         ])
         .unwrap();

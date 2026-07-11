@@ -1,0 +1,7 @@
+worktree_dir: ../worktrees
+copy:
+  - .trellis/.developer
+  - .env.example
+verify:
+  - cargo check
+  - npm --prefix toxic-order-monitor run build

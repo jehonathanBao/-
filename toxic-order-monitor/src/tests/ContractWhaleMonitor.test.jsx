@@ -1329,6 +1329,12 @@ describe("ContractWhaleMonitor", () => {
             status: "active",
             startTime: 1_700_000_020_000,
             lastUpdateTime: 1_700_000_020_000,
+            latestWindowVolumeBtc: 400,
+            peakWindowVolumeBtc: 577,
+            uniqueTurnoverBtc: 510,
+            uniqueTurnoverAvailable: true,
+            netOiDeltaBtc: -12,
+            peakAbsOiDeltaBtc: 18,
             volumeAccumulated: 577,
             updateCount: 1,
           },
@@ -1396,6 +1402,12 @@ describe("ContractWhaleMonitor", () => {
             status: "active",
             startTime: 1_700_000_020_000,
             lastUpdateTime: 1_700_000_020_000,
+            latestWindowVolumeBtc: 400,
+            peakWindowVolumeBtc: 577,
+            uniqueTurnoverBtc: 510,
+            uniqueTurnoverAvailable: true,
+            netOiDeltaBtc: -12,
+            peakAbsOiDeltaBtc: 18,
             volumeAccumulated: 577,
             updateCount: 1,
           },
@@ -1426,6 +1438,8 @@ describe("ContractWhaleMonitor", () => {
     expect(
       screen.getAllByTitle(/OI 标签用于解释该窗口内未平仓量变化：/).length,
     ).toBeGreaterThan(0);
+    expect(screen.getAllByText(/峰值 OI/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/净 OI/).length).toBeGreaterThan(0);
   });
 
   it("renders notional inline after the symbol in the historical events market column", async () => {

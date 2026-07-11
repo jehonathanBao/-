@@ -890,6 +890,12 @@ fn build_contract_whale_terminal_live_or_persisted_response(
                     "{} latest query failed",
                     CWM_LOG_PREFIX
                 );
+                let mut degraded_response = live_response;
+                degraded_response.meta = Some(ContractWhaleResponseMeta {
+                    reason: Some("latest_history_query_failed".to_string()),
+                    ..ContractWhaleResponseMeta::default()
+                });
+                return degraded_response;
             }
         }
     }
@@ -983,7 +989,7 @@ pub async fn contract_whale_history_route(
     if let Some(store) = state.contract_whale_store() {
         match store.query_contract_whale_signals(&history_query) {
             Ok(items) => {
-                let mut response = build_contract_whale_history_response(
+                let mut response = build_contract_whale_history_response_with_clock(
                     items,
                     &symbol_for_filter,
                     history_query.limit,
@@ -991,6 +997,7 @@ pub async fn contract_whale_history_route(
                     config.enabled,
                     config.dry_run,
                     None,
+                    ContractWhaleLifecycleClock::Live { now_ms: now_ms() },
                 );
                 enrich_contract_whale_response_with_state(
                     &mut response,
@@ -1006,20 +1013,13 @@ pub async fn contract_whale_history_route(
                     "{} history query failed",
                     CWM_LOG_PREFIX
                 );
+                return Err(crate::api::contract_event_routes::internal_error(error));
             }
         }
     }
-    let mut response = build_contract_whale_history_response(
-        Vec::new(),
-        &symbol_for_filter,
-        history_query.limit,
-        None,
-        config.enabled,
-        config.dry_run,
-        None,
-    );
-    enrich_contract_whale_response_with_state(&mut response, &state, &symbol_for_filter);
-    Ok(Json(serde_json::json!(response)))
+    Err(crate::api::contract_event_routes::internal_error(
+        anyhow::anyhow!("contract whale store unavailable"),
+    ))
 }
 
 fn enrich_contract_whale_response_with_state(
@@ -1028,7 +1028,8 @@ fn enrich_contract_whale_response_with_state(
     symbol: &str,
 ) {
     if let Some(store) = state.contract_whale_store() {
-        decorate_contract_whale_oi_contexts(&store, &mut response.items);
+        let diagnostics = decorate_contract_whale_oi_contexts(&store, &mut response.items);
+        state.record_contract_whale_oi_resolver_diagnostics(diagnostics);
     }
     let flow_state = state.flow_state_for_symbol(symbol);
     let current_market_price = current_market_price_from_flow_state(&flow_state, symbol);
@@ -1046,24 +1047,31 @@ fn enrich_contract_whale_response_with_state(
 pub(crate) fn decorate_contract_whale_oi_contexts(
     store: &SqliteStore,
     items: &mut [ContractWhaleSignal],
-) {
+) -> crate::app::ContractWhaleOiResolverDiagnostics {
     let runtime_config = contract_whale_runtime_config();
     if !runtime_config.classification.oi_batch_resolver_enabled {
+        let mut diagnostics = crate::app::ContractWhaleOiResolverDiagnostics {
+            query_mode: "per_event_legacy".to_string(),
+            ..Default::default()
+        };
         for signal in items.iter_mut() {
-            let resolved = match store.find_oi_context_for_event(
+            let (window, resolved) = match store.find_oi_context_for_event(
                 &signal.symbol,
                 signal.ts,
                 signal.window_sec as i64,
                 runtime_config.classification.oi_lookup_max_gap_seconds,
             ) {
-                Ok(window) => resolve_contract_whale_oi_context_from_window(
-                    signal.classification_v2.structure_interpretation,
-                    signal.classification_v2.flow_direction,
-                    signal.classification_v2.price_response_type_v2,
-                    signal.price_move_pct,
-                    Some(&window),
-                    &runtime_config,
-                ),
+                Ok(window) => {
+                    let resolved = resolve_contract_whale_oi_context_from_window(
+                        signal.classification_v2.structure_interpretation,
+                        signal.classification_v2.flow_direction,
+                        signal.classification_v2.price_response_type_v2,
+                        signal.price_move_pct,
+                        Some(&window),
+                        &runtime_config,
+                    );
+                    (Some(window), resolved)
+                }
                 Err(error) => {
                     tracing::warn!(
                         target: CWM_LOG_TARGET,
@@ -1073,13 +1081,22 @@ pub(crate) fn decorate_contract_whale_oi_contexts(
                         "{} oi legacy context query failed",
                         CWM_LOG_PREFIX
                     );
-                    unavailable_oi_context("oi_query_failed")
+                    (None, unavailable_oi_context("oi_query_failed"))
                 }
             };
             apply_resolved_oi_context(signal, resolved);
+            apply_oi_window_evidence(signal, window.as_ref());
+            if signal.classification_v2.oi_consistent_sources.len()
+                > diagnostics.consistent_source_count
+            {
+                diagnostics.consistent_source_count =
+                    signal.classification_v2.oi_consistent_sources.len();
+            }
+            diagnostics.coverage_changed |= signal.classification_v2.oi_source_coverage_changed;
         }
-        return;
+        return diagnostics;
     }
+    let mut diagnostics = crate::app::ContractWhaleOiResolverDiagnostics::default();
     let max_gap_ms = runtime_config
         .classification
         .oi_lookup_max_gap_seconds
@@ -1120,28 +1137,41 @@ pub(crate) fn decorate_contract_whale_oi_contexts(
 
     for signal in items.iter_mut() {
         let symbol = signal.symbol.to_ascii_uppercase();
-        let resolved = if failed_symbols.contains_key(&symbol) {
-            unavailable_oi_context("oi_query_failed")
+        let oi_window = if failed_symbols.contains_key(&symbol) {
+            None
         } else {
-            let window = snapshots_by_symbol.get(&symbol).map(|snapshots| {
+            snapshots_by_symbol.get(&symbol).map(|snapshots| {
                 resolve_oi_window_from_snapshots(
                     snapshots,
                     lifecycle_start_ts(signal),
                     lifecycle_end_ts(signal),
                     runtime_config.classification.oi_lookup_max_gap_seconds,
                 )
-            });
+            })
+        };
+        let resolved = if failed_symbols.contains_key(&symbol) {
+            unavailable_oi_context("oi_query_failed")
+        } else {
             resolve_contract_whale_oi_context_from_window(
                 signal.classification_v2.structure_interpretation,
                 signal.classification_v2.flow_direction,
                 signal.classification_v2.price_response_type_v2,
                 signal.price_move_pct,
-                window.as_ref(),
+                oi_window.as_ref(),
                 &runtime_config,
             )
         };
         apply_resolved_oi_context(signal, resolved);
+        apply_oi_window_evidence(signal, oi_window.as_ref());
+        if signal.classification_v2.oi_consistent_sources.len()
+            > diagnostics.consistent_source_count
+        {
+            diagnostics.consistent_source_count =
+                signal.classification_v2.oi_consistent_sources.len();
+        }
+        diagnostics.coverage_changed |= signal.classification_v2.oi_source_coverage_changed;
     }
+    diagnostics
 }
 
 fn lifecycle_start_ts(signal: &ContractWhaleSignal) -> i64 {
@@ -1171,6 +1201,53 @@ fn apply_resolved_oi_context(
     signal.classification_v2.oi_delta_pct = resolved.oi_delta_pct;
     signal.classification_v2.oi_available = resolved.oi_available;
     signal.classification_v2.oi_reason = resolved.oi_reason;
+}
+
+fn apply_oi_window_evidence(
+    signal: &mut ContractWhaleSignal,
+    window: Option<&crate::contract_whale_monitor::types::ContractWhaleOiWindowContext>,
+) {
+    let Some(window) = window else {
+        signal.classification_v2.oi_consistent_sources.clear();
+        signal.classification_v2.oi_excluded_sources.clear();
+        signal.classification_v2.oi_source_coverage_changed = false;
+        signal.classification_v2.oi_cross_exchange_consensus = None;
+        signal.classification_v2.oi_evidence_degraded = true;
+        signal.classification_v2.oi_evidence_reason = Some("oi_query_failed".to_string());
+        return;
+    };
+    signal.classification_v2.oi_consistent_sources = window.consistent_sources.clone();
+    signal.classification_v2.oi_excluded_sources = window.excluded_sources.clone();
+    signal.classification_v2.oi_source_coverage_changed = window.source_coverage_changed;
+    signal.classification_v2.oi_cross_exchange_consensus = window.cross_exchange_consensus;
+    signal.classification_v2.oi_evidence_degraded = window.evidence_degraded;
+    signal.classification_v2.oi_evidence_reason = window
+        .evidence_reason
+        .clone()
+        .or_else(|| window.reason.clone());
+    if signal.classification_v2.oi_evidence_degraded {
+        signal.classification_v2.evidence.evidence_degraded = true;
+        if let Some(reason) = signal.classification_v2.oi_evidence_reason.clone() {
+            if !signal
+                .classification_v2
+                .evidence
+                .degradation_reasons
+                .contains(&reason)
+            {
+                signal
+                    .classification_v2
+                    .evidence
+                    .degradation_reasons
+                    .push(reason);
+            }
+            signal.classification_v2.evidence.evidence_reason = signal
+                .classification_v2
+                .evidence
+                .degradation_reasons
+                .first()
+                .cloned();
+        }
+    }
 }
 
 fn unavailable_oi_context(reason: &str) -> ContractWhaleResolvedOiContext {
@@ -1743,18 +1820,18 @@ pub async fn contract_whale_latency_debug_route(
     let now = now_ms();
     let timeline = build_contract_whale_timeline_response(&state, &symbol, &range, 100)?;
 
-    let latest_rows = state
-        .contract_whale_store()
-        .and_then(|store| {
-            store
-                .query_contract_whale_signals(&ContractWhaleSignalQuery {
-                    symbol: Some(symbol.clone()),
-                    limit: 50,
-                    ..ContractWhaleSignalQuery::default()
-                })
-                .ok()
+    let store = state.contract_whale_store().ok_or_else(|| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "contract whale store unavailable"
+        ))
+    })?;
+    let latest_rows = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some(symbol.clone()),
+            limit: 50,
+            ..ContractWhaleSignalQuery::default()
         })
-        .unwrap_or_default();
+        .map_err(crate::api::contract_event_routes::internal_error)?;
     let latest_debug = build_pipeline_latest_debug(&latest_rows, stale_after_ts, Some(&range), now);
     let latest_max_ts = latest_debug.items.iter().map(|item| item.ts).max();
     let latest_age_sec = latest_max_ts
@@ -1887,28 +1964,63 @@ fn contract_whale_pipeline_debug_for_query(
         };
     };
 
-    let raw_flow_buckets = store
-        .list_contract_flow_buckets_between(&symbol, from_ts, now)
-        .unwrap_or_default();
-    let liquidation_buckets = store
+    let mut query_errors = Vec::new();
+    let raw_flow_buckets = match store.list_contract_flow_buckets_between(&symbol, from_ts, now) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline raw flow query failed", CWM_LOG_PREFIX);
+            query_errors.push("raw_flow_query_failed".to_string());
+            Vec::new()
+        }
+    };
+    let liquidation_buckets = match store
         .list_contract_liquidation_buckets_between(&symbol, from_ts, now)
-        .unwrap_or_default();
-    let oi_snapshots = store
-        .list_contract_oi_snapshots_between(&symbol, from_ts, now)
-        .unwrap_or_default();
-    let funding_snapshots = store
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline liquidation query failed", CWM_LOG_PREFIX);
+            query_errors.push("liquidation_query_failed".to_string());
+            Vec::new()
+        }
+    };
+    let oi_snapshots = match store.list_contract_oi_snapshots_between(&symbol, from_ts, now) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline oi query failed", CWM_LOG_PREFIX);
+            query_errors.push("oi_query_failed".to_string());
+            Vec::new()
+        }
+    };
+    let funding_snapshots = match store
         .list_contract_funding_snapshots_between(&symbol, from_ts, now)
-        .unwrap_or_default();
-    let history_rows = store
-        .query_contract_whale_signals(&history_query)
-        .unwrap_or_default();
-    let latest_rows = store
-        .query_contract_whale_signals(&ContractWhaleSignalQuery {
-            symbol: Some(symbol.clone()),
-            limit: 10,
-            ..ContractWhaleSignalQuery::default()
-        })
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline funding query failed", CWM_LOG_PREFIX);
+            query_errors.push("funding_query_failed".to_string());
+            Vec::new()
+        }
+    };
+    let history_rows = match store.query_contract_whale_signals(&history_query) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline history query failed", CWM_LOG_PREFIX);
+            query_errors.push("history_query_failed".to_string());
+            Vec::new()
+        }
+    };
+    let latest_rows = match store.query_contract_whale_signals(&ContractWhaleSignalQuery {
+        symbol: Some(symbol.clone()),
+        limit: 10,
+        ..ContractWhaleSignalQuery::default()
+    }) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} pipeline latest query failed", CWM_LOG_PREFIX);
+            query_errors.push("latest_query_failed".to_string());
+            Vec::new()
+        }
+    };
 
     let raw_flow = summarize_pipeline_raw_flow(&raw_flow_buckets);
     let latest = build_pipeline_latest_debug(&latest_rows, Some(from_ts), Some(&range), now);
@@ -1952,7 +2064,7 @@ fn contract_whale_pipeline_debug_for_query(
         },
         latest,
         runtime: state.contract_whale_runtime_diagnostics(),
-        error: None,
+        error: query_errors.into_iter().next(),
     }
 }
 
@@ -2004,8 +2116,18 @@ fn contract_whale_raw_flow_debug_for_query(
     let raw_trade_ingest = build_raw_trade_ingest_debug(&venue_health);
     let normalizer = build_raw_flow_normalizer_debug(&symbol, &app_requested_symbol);
     let aggregator = build_raw_flow_aggregator_debug(&state.flow_state_for_symbol(&symbol));
-    let contract_flow_1s =
-        query_raw_flow_persistence_debug(&store, &symbol, from_ts, now).unwrap_or_default();
+    let (contract_flow_1s, query_error) = match query_raw_flow_persistence_debug(
+        &store, &symbol, from_ts, now,
+    ) {
+        Ok(value) => (value, None),
+        Err(error) => {
+            tracing::warn!(target: CWM_LOG_TARGET, symbol = %symbol, error = %error, "{} raw flow persistence debug query failed", CWM_LOG_PREFIX);
+            (
+                RawFlowPersistenceDebug::default(),
+                Some("raw_flow_persistence_query_failed".to_string()),
+            )
+        }
+    };
     let diagnosis = build_raw_flow_diagnosis(
         &config,
         &raw_trade_ingest,
@@ -2039,7 +2161,7 @@ fn contract_whale_raw_flow_debug_for_query(
         aggregator,
         contract_flow_1s,
         diagnosis,
-        error: None,
+        error: query_error,
     }
 }
 
@@ -2788,6 +2910,25 @@ fn with_latest_stale_annotations(
     {
         *items = annotated_items;
     }
+    let query_degraded = value
+        .get("meta")
+        .and_then(|meta| meta.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|reason| reason.contains("query_failed"));
+    value["dataState"] = serde_json::json!(if query_degraded {
+        "degraded"
+    } else if latest_debug.latest_count == 0 {
+        "empty"
+    } else {
+        "fresh"
+    });
+    value["degraded"] = serde_json::json!(query_degraded);
+    if query_degraded {
+        value["errorCode"] = serde_json::json!("contract_latest_query_failed");
+        value["errorMessage"] = serde_json::json!("最新合约事件查询暂时不可用");
+        value["lastKnownDataAvailable"] = serde_json::json!(latest_debug.latest_count > 0);
+    }
+    value["servedAt"] = serde_json::json!(now);
     let max_ts = latest_debug.items.iter().map(|item| item.ts).max();
     value["serverTime"] = serde_json::json!(now);
     value["maxTs"] = max_ts
@@ -3105,7 +3246,7 @@ fn metric_label(value: &str) -> String {
 }
 
 pub fn build_contract_whale_history_response(
-    mut items: Vec<ContractWhaleSignal>,
+    items: Vec<ContractWhaleSignal>,
     symbol: &str,
     limit: usize,
     severity: Option<&str>,
@@ -3113,7 +3254,37 @@ pub fn build_contract_whale_history_response(
     dry_run: bool,
     meta: Option<ContractWhaleResponseMeta>,
 ) -> ContractWhaleLatestResponse {
-    let now = now_ms();
+    let replay_now_ms = items
+        .iter()
+        .map(|item| item.ts)
+        .max()
+        .unwrap_or_else(now_ms);
+    build_contract_whale_history_response_with_clock(
+        items,
+        symbol,
+        limit,
+        severity,
+        enabled,
+        dry_run,
+        meta,
+        ContractWhaleLifecycleClock::Replay { replay_now_ms },
+    )
+}
+
+pub fn build_contract_whale_history_response_with_clock(
+    mut items: Vec<ContractWhaleSignal>,
+    symbol: &str,
+    limit: usize,
+    severity: Option<&str>,
+    enabled: bool,
+    dry_run: bool,
+    meta: Option<ContractWhaleResponseMeta>,
+    clock: ContractWhaleLifecycleClock,
+) -> ContractWhaleLatestResponse {
+    let now = match clock {
+        ContractWhaleLifecycleClock::Live { now_ms } => now_ms,
+        ContractWhaleLifecycleClock::Replay { replay_now_ms } => replay_now_ms,
+    };
     let filter = response_filter(symbol, enabled, dry_run);
     if !enabled {
         return ContractWhaleLatestResponse {
@@ -3139,10 +3310,7 @@ pub fn build_contract_whale_history_response(
             .toxic_order
             .max_price_deviation_pct,
     );
-    items = apply_contract_whale_event_lifecycle(
-        items,
-        ContractWhaleLifecycleClock::Live { now_ms: now },
-    );
+    items = apply_contract_whale_event_lifecycle(items, clock);
     let lifecycle_events = items.len();
     items = apply_contract_whale_event_quality_filter(items);
     apply_contract_whale_display_volume_filter(&mut items);

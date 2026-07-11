@@ -438,7 +438,7 @@ function LiquidationCascadePage() {
           <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Liquidation Cascade Predictor</p>
           <h2 className="mt-2 text-2xl font-bold text-white">强平瀑布预测</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            独立展示杠杆集中、流动性缺口、市场状态与操控风险，用于观察潜在强平瀑布窗口。
+            独立展示杠杆集中、流动性缺口和市场状态，用于观察潜在强平瀑布窗口。
           </p>
         </div>
         <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">

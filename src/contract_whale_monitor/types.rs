@@ -165,6 +165,10 @@ pub struct ContractOiSnapshot {
     pub symbol: String,
     pub oi_btc: f64,
     pub oi_notional_usd: Option<f64>,
+    #[serde(default = "default_true")]
+    pub ct_val_available: bool,
+    #[serde(default)]
+    pub evidence_degraded_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -194,6 +198,10 @@ pub struct ContractWhaleMarketContext {
     #[serde(default)]
     pub ct_val_available: bool,
     #[serde(default)]
+    pub evidence_degraded: bool,
+    #[serde(default)]
+    pub evidence_reason: Option<String>,
+    #[serde(default)]
     pub oi_available: bool,
     #[serde(default)]
     pub funding_available: bool,
@@ -216,6 +224,8 @@ impl Default for ContractWhaleMarketContext {
         Self {
             context_expected: false,
             ct_val_available: true,
+            evidence_degraded: false,
+            evidence_reason: None,
             oi_available: false,
             funding_available: false,
             oi_change_1m_btc: None,
@@ -720,6 +730,18 @@ pub struct ContractWhaleClassificationV2 {
     #[serde(default)]
     pub oi_reason: Option<String>,
     #[serde(default)]
+    pub oi_consistent_sources: Vec<String>,
+    #[serde(default)]
+    pub oi_excluded_sources: Vec<String>,
+    #[serde(default)]
+    pub oi_source_coverage_changed: bool,
+    #[serde(default)]
+    pub oi_cross_exchange_consensus: Option<bool>,
+    #[serde(default)]
+    pub oi_evidence_degraded: bool,
+    #[serde(default)]
+    pub oi_evidence_reason: Option<String>,
+    #[serde(default)]
     pub intent_confidence: u8,
     #[serde(default)]
     pub is_strong_main_force_intent: bool,
@@ -753,6 +775,12 @@ impl Default for ContractWhaleClassificationV2 {
             oi_delta_pct: None,
             oi_available: false,
             oi_reason: None,
+            oi_consistent_sources: Vec::new(),
+            oi_excluded_sources: Vec::new(),
+            oi_source_coverage_changed: false,
+            oi_cross_exchange_consensus: None,
+            oi_evidence_degraded: false,
+            oi_evidence_reason: None,
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: String::new(),
@@ -1137,6 +1165,36 @@ pub enum ContractWhaleEventStatus {
     Closed,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleSignalSnapshot {
+    pub ts: i64,
+    pub window_sec: u64,
+    pub signal_type: ContractWhaleSignalType,
+    pub direction: ContractWhaleDirection,
+    pub severity: ContractWhaleSeverity,
+    pub score: u8,
+    pub total_volume_btc: f64,
+    pub net_volume_btc: f64,
+    pub total_notional_usd: f64,
+    #[serde(default)]
+    pub order_price_usd: Option<f64>,
+    #[serde(default)]
+    pub price_move_pct: Option<f64>,
+    #[serde(default)]
+    pub display_signal_type: String,
+    #[serde(default)]
+    pub structure_interpretation: ContractWhaleStructureInterpretation,
+    #[serde(default)]
+    pub classification_version: String,
+    #[serde(default)]
+    pub oi_delta_pct: Option<f64>,
+    #[serde(default)]
+    pub oi_context: ContractWhaleOiContextTag,
+    #[serde(default)]
+    pub evidence_degraded: bool,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleEventLifecycle {
@@ -1168,6 +1226,10 @@ pub struct ContractWhaleEventLifecycle {
     pub peak_snapshot_ts: i64,
     #[serde(default)]
     pub display_snapshot_kind: String,
+    #[serde(default)]
+    pub latest_snapshot: Option<ContractWhaleSignalSnapshot>,
+    #[serde(default)]
+    pub peak_snapshot: Option<ContractWhaleSignalSnapshot>,
     #[serde(default)]
     pub volume_accumulated: f64,
     #[serde(default)]
@@ -1349,6 +1411,31 @@ pub struct ContractWhaleSignal {
     pub merged_from: Vec<String>,
 }
 
+impl ContractWhaleSignalSnapshot {
+    pub fn from_signal(signal: &ContractWhaleSignal) -> Self {
+        Self {
+            ts: signal.ts,
+            window_sec: signal.window_sec,
+            signal_type: signal.signal_type,
+            direction: signal.direction,
+            severity: signal.severity,
+            score: signal.score,
+            total_volume_btc: signal.total_volume_btc,
+            net_volume_btc: signal.net_volume_btc,
+            total_notional_usd: signal.total_notional_usd,
+            order_price_usd: signal.order_price_usd,
+            price_move_pct: signal.price_move_pct,
+            display_signal_type: signal.classification_v2.display_signal_type.clone(),
+            structure_interpretation: signal.classification_v2.structure_interpretation,
+            classification_version: signal.classification_v2.classification_version.clone(),
+            oi_delta_pct: signal.classification_v2.oi_delta_pct,
+            oi_context: signal.classification_v2.oi_context,
+            evidence_degraded: signal.classification_v2.evidence.evidence_degraded
+                || signal.classification_v2.oi_evidence_degraded,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleEmissionFingerprint {
@@ -1364,6 +1451,10 @@ pub struct ContractWhaleEmissionFingerprint {
 
 fn default_threshold_profile() -> String {
     "three_exchange".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

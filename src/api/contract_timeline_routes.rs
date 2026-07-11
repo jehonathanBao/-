@@ -181,20 +181,20 @@ pub fn build_contract_whale_timeline_response(
     limit: usize,
 ) -> Result<ContractWhaleTimelineResponse, (StatusCode, Json<serde_json::Value>)> {
     let now = now_ms();
-    let latest_rows = state
-        .contract_whale_store()
-        .and_then(|store| {
-            store
-                .query_contract_whale_signals(
-                    &crate::storage::contract_whale_repo::ContractWhaleSignalQuery {
-                        symbol: Some(symbol.to_string()),
-                        limit: limit.max(1),
-                        ..crate::storage::contract_whale_repo::ContractWhaleSignalQuery::default()
-                    },
-                )
-                .ok()
-        })
-        .unwrap_or_default();
+    let store = state.contract_whale_store().ok_or_else(|| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "contract whale store unavailable"
+        ))
+    })?;
+    let latest_rows = store
+        .query_contract_whale_signals(
+            &crate::storage::contract_whale_repo::ContractWhaleSignalQuery {
+                symbol: Some(symbol.to_string()),
+                limit: limit.max(1),
+                ..crate::storage::contract_whale_repo::ContractWhaleSignalQuery::default()
+            },
+        )
+        .map_err(crate::api::contract_event_routes::internal_error)?;
     let latest_max_ts = latest_rows.iter().map(|signal| signal.ts).max();
 
     let history = contract_event_page_for_query(

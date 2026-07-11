@@ -14,7 +14,7 @@ use crate::{
         },
     },
     liquidation_cascade_predictor::{analyze_liquidation_cascade, input_from_runtime_state},
-    market_domain::classify_market_domain,
+    market_domain::MarketDomain,
     market_regime_engine::normalize_market_symbol,
     multi_timeframe_orderflow_fusion::{
         analyze_mtf_orderflow_fusion, MtfofeBreakdownResponse, MtfofeDecisionResponse, MtfofeInput,
@@ -57,7 +57,7 @@ fn build_latest_fusion_input(state: &AppState, requested_symbol: Option<&str>) -
     let symbol = requested_symbol
         .map(normalize_market_symbol)
         .unwrap_or_else(|| normalize_market_symbol(&state.config().symbol));
-    let market_domain = classify_market_domain(&symbol);
+    let market_domain = MarketDomain::BtcStructure;
     let now = now_ms();
     let latest_signal = latest_contract_signal(state, &symbol);
     let lcp_input = input_from_runtime_state(
@@ -186,6 +186,7 @@ fn build_layer(
         oi_change_pct,
         funding_rate,
         liquidation_ratio,
+        altcoin_control_score: 0.0,
         volume_spike_multiple,
         data_quality,
     }
@@ -210,6 +211,7 @@ fn fallback_layer(
         layer.funding_rate = signal.funding_rate.unwrap_or(0.0);
         layer.liquidation_ratio = signal.liquidation_ratio.unwrap_or(0.0);
         layer.volume_spike_multiple = signal.dynamic_multiple.unwrap_or(0.0);
+        layer.altcoin_control_score = 0.0;
         layer.data_quality = signal.data_quality as f64 / 100.0;
     }
     layer

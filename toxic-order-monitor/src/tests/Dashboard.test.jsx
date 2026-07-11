@@ -97,25 +97,6 @@ vi.mock("../api/liquidationCascade.js", () => ({
       error: null,
     }),
   ),
-  fetchManipulationAssessment: vi.fn(() =>
-    Promise.resolve({ data: { symbol: "BTCUSDT", score: 0.64, signals: ["FAKE_BREAKOUT"] }, error: null }),
-  ),
-  fetchMarketSignalAssessment: vi.fn(() =>
-    Promise.resolve({
-      data: {
-        symbol: "BTCUSDT",
-        regime: "LIQUIDATION",
-        confidence: 0.74,
-        manipulationScore: 0.64,
-        directionBias: "SHORT",
-        signals: ["LIQUIDITY_VOID"],
-        adjustedSignalStrength: 0.58,
-        allowedSignalFamily: "mean_reversion_only",
-        riskNote: "liquidation regime active",
-      },
-      error: null,
-    }),
-  ),
 }));
 
 vi.mock("../api/usageGuide.js", () => ({
@@ -263,6 +244,8 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByRole("link", { name: "BTC/ETH 合约监控" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "山寨合约异常" })).toHaveAttribute("href", "/alt-contract-monitor");
+    expect(screen.getByRole("link", { name: "新币合约监控" })).toHaveAttribute("href", "/new-token-watch");
     expect(screen.getByRole("link", { name: "BTC 现货监控" })).toHaveAttribute("href", "/spot-monitor/btc");
     expect(screen.getByRole("link", { name: "ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor/eth");
     expect(screen.queryByRole("link", { name: "BTC/ETH 现货监控" })).not.toBeInTheDocument();
@@ -273,14 +256,6 @@ describe("Dashboard interactions", () => {
     expect(screen.getAllByText("主力合约监控未启用").length).toBeGreaterThan(0);
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Medium Risk Candidates/ })).not.toBeInTheDocument();
-  });
-
-  it("does not expose the removed altcoin manipulation feature", async () => {
-    renderDashboard("/dashboard");
-
-    expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "山寨合约异常" })).toHaveAttribute("href", "/alt-contract-monitor");
-    expect(screen.getByRole("link", { name: "新币合约监控" })).toHaveAttribute("href", "/new-token-watch");
   });
 
   it("opens the ETH contract monitor as an isolated mainstream route", async () => {
@@ -301,9 +276,16 @@ describe("Dashboard interactions", () => {
     expect(await screen.findByText("IMMINENT")).toBeInTheDocument();
     expect(screen.getAllByText("82%").length).toBeGreaterThan(0);
     expect(screen.getByText("2.5% - 5%")).toBeInTheDocument();
-    expect(screen.getAllByText("FUNDING_STRESS").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("BTC_STRUCTURE_ONLY").length).toBeGreaterThan(0);
     expect(screen.queryByText("mean_reversion_only")).not.toBeInTheDocument();
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
+  });
+
+  it("does not expose the removed altcoin manipulation page", () => {
+    renderDashboard("/dashboard");
+
+    expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
+    expect(screen.queryByText("妖币控盘监控")).not.toBeInTheDocument();
   });
 
   it("keeps dashboard and BTC spot monitor route working", async () => {

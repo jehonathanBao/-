@@ -8,12 +8,12 @@ use super::{
     discord_gate::discord_gate,
     types::{
         ContractFlowBucket, ContractWhaleEventLifecycle, ContractWhaleEventStatus,
-        ContractWhaleSignal,
+        ContractWhaleSignal, ContractWhaleSignalSnapshot,
     },
 };
 
-const EVENT_UPDATE_WINDOW_MS: i64 = 30_000;
-const EVENT_CLOSE_AFTER_MS: i64 = 120_000;
+const DEFAULT_EVENT_UPDATE_WINDOW_MS: i64 = 30_000;
+const DEFAULT_EVENT_CLOSE_AFTER_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractWhaleLifecycleClock {
@@ -56,7 +56,7 @@ pub fn apply_contract_whale_event_lifecycle(
     let reference_now_ms = clock.reference_now_ms();
     for event in events.iter_mut() {
         if reference_now_ms.saturating_sub(event.event_lifecycle.last_update_time)
-            > EVENT_CLOSE_AFTER_MS
+            > lifecycle_close_after_ms()
         {
             event.event_lifecycle.status = ContractWhaleEventStatus::Closed;
         } else {
@@ -73,6 +73,17 @@ pub fn enrich_lifecycle_unique_turnover(
     buckets: &[ContractFlowBucket],
     failed_symbols: &BTreeSet<String>,
 ) {
+    if !contract_whale_runtime_config()
+        .lifecycle
+        .unique_turnover_enabled
+    {
+        for event in events {
+            event.event_lifecycle.unique_turnover_btc = None;
+            event.event_lifecycle.unique_turnover_available = false;
+            event.event_lifecycle.unique_turnover_reason = Some("feature_disabled".to_string());
+        }
+        return;
+    }
     for event in events {
         let symbol = event.symbol.to_ascii_uppercase();
         if failed_symbols.contains(&symbol) {
@@ -129,7 +140,7 @@ fn same_lifecycle_event(existing: &ContractWhaleSignal, next: &ContractWhaleSign
         && next
             .ts
             .saturating_sub(existing.event_lifecycle.last_update_time)
-            <= EVENT_UPDATE_WINDOW_MS
+            <= lifecycle_update_window_ms()
         && next.ts >= existing.event_lifecycle.last_update_time
 }
 
@@ -149,6 +160,8 @@ fn start_lifecycle_event(mut signal: ContractWhaleSignal) -> ContractWhaleSignal
         latest_snapshot_ts: signal.ts,
         peak_snapshot_ts: signal.ts,
         display_snapshot_kind: "peak".to_string(),
+        latest_snapshot: Some(ContractWhaleSignalSnapshot::from_signal(&signal)),
+        peak_snapshot: Some(ContractWhaleSignalSnapshot::from_signal(&signal)),
         volume_accumulated: signal.total_volume_btc,
         oi_accumulated: oi_delta_abs(&signal),
         update_count: signal.merged_from.len().saturating_add(1),
@@ -186,6 +199,7 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
         .peak_abs_oi_delta_btc
         .unwrap_or_default();
     existing.event_lifecycle.latest_snapshot_ts = next.ts;
+    existing.event_lifecycle.latest_snapshot = Some(ContractWhaleSignalSnapshot::from_signal(next));
     if !suppress_medium_refresh {
         existing.event_lifecycle.update_count = existing
             .event_lifecycle
@@ -196,6 +210,8 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
     if replace_snapshot {
         replace_snapshot_fields(existing, next);
         existing.event_lifecycle.peak_snapshot_ts = next.ts;
+        existing.event_lifecycle.peak_snapshot =
+            Some(ContractWhaleSignalSnapshot::from_signal(next));
     }
 
     existing.total_volume = existing.total_volume_btc;
@@ -239,7 +255,7 @@ fn repeated_medium_refresh(existing: &ContractWhaleSignal, next: &ContractWhaleS
         && next
             .ts
             .saturating_sub(existing.event_lifecycle.last_update_time)
-            <= EVENT_UPDATE_WINDOW_MS
+            <= lifecycle_update_window_ms()
 }
 
 fn snapshot_is_better(candidate: &ContractWhaleSignal, current: &ContractWhaleSignal) -> bool {
@@ -326,6 +342,7 @@ fn replace_snapshot_fields(existing: &mut ContractWhaleSignal, next: &ContractWh
     existing.liquidation_force = next.liquidation_force.clone();
     existing.market_driver = next.market_driver.clone();
     existing.event_quality = next.event_quality.clone();
+    existing.classification_v2 = next.classification_v2.clone();
     existing.read_only = next.read_only;
     existing.analysis_only = next.analysis_only;
     existing.execution_enabled = next.execution_enabled;
@@ -362,6 +379,24 @@ fn dominance(net_abs: f64, total: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+fn lifecycle_update_window_ms() -> i64 {
+    contract_whale_runtime_config()
+        .lifecycle
+        .update_window_seconds
+        .max(1)
+        .saturating_mul(1_000)
+        .max(DEFAULT_EVENT_UPDATE_WINDOW_MS.min(1_000))
+}
+
+fn lifecycle_close_after_ms() -> i64 {
+    contract_whale_runtime_config()
+        .lifecycle
+        .close_after_seconds
+        .max(1)
+        .saturating_mul(1_000)
+        .max(DEFAULT_EVENT_CLOSE_AFTER_MS.min(1_000))
 }
 fn push_unique(values: &mut Vec<String>, value: String) {
     if value.is_empty() || values.iter().any(|existing| existing == &value) {

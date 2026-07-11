@@ -31,6 +31,12 @@ pub fn classify_contract_whale_signal_v2(
             oi_delta_pct: oi.oi_delta_pct,
             oi_available: oi.oi_available,
             oi_reason: oi.oi_reason,
+            oi_consistent_sources: Vec::new(),
+            oi_excluded_sources: Vec::new(),
+            oi_source_coverage_changed: false,
+            oi_cross_exchange_consensus: None,
+            oi_evidence_degraded: stats.market_context.evidence_degraded,
+            oi_evidence_reason: stats.market_context.evidence_reason.clone(),
             intent_confidence: 0,
             is_strong_main_force_intent: false,
             classification_version: "v2_disabled_legacy_compat".to_string(),
@@ -186,6 +192,12 @@ pub fn classify_contract_whale_signal_v2(
         oi_delta_pct: oi.oi_delta_pct,
         oi_available: oi.oi_available,
         oi_reason: oi.oi_reason,
+        oi_consistent_sources: Vec::new(),
+        oi_excluded_sources: Vec::new(),
+        oi_source_coverage_changed: false,
+        oi_cross_exchange_consensus: None,
+        oi_evidence_degraded: stats.market_context.evidence_degraded,
+        oi_evidence_reason: stats.market_context.evidence_reason.clone(),
         intent_confidence: intent_confidence(
             stats,
             same_direction_follow,
@@ -262,6 +274,15 @@ fn evidence_summary(
                 "micro_volatility_insufficient_samples"
             }
             .to_string(),
+        );
+    }
+    if stats.market_context.evidence_degraded {
+        degradation_reasons.push(
+            stats
+                .market_context
+                .evidence_reason
+                .clone()
+                .unwrap_or_else(|| "market_context_evidence_degraded".to_string()),
         );
     }
     ContractWhaleEvidenceSummary {

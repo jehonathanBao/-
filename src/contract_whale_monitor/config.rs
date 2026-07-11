@@ -39,7 +39,11 @@ pub struct ContractWhaleRuntimeConfig {
     pub classification: ContractWhaleClassificationConfig,
     pub toxic_order: ContractWhaleToxicOrderConfig,
     pub discord: ContractWhaleDiscordGateConfig,
+    pub producer: ContractWhaleProducerConfig,
+    pub discord_outbox: ContractWhaleDiscordOutboxConfig,
     pub emission: ContractWhaleEmissionConfig,
+    pub lifecycle: ContractWhaleLifecycleConfig,
+    pub okx_instruments: ContractWhaleOkxInstrumentConfig,
     pub symbols: BTreeMap<String, ContractWhaleSymbolConfig>,
     pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
@@ -492,7 +496,11 @@ impl Default for ContractWhaleRuntimeConfig {
             classification: ContractWhaleClassificationConfig::default(),
             toxic_order: ContractWhaleToxicOrderConfig::default(),
             discord: ContractWhaleDiscordGateConfig::default(),
+            producer: ContractWhaleProducerConfig::default(),
+            discord_outbox: ContractWhaleDiscordOutboxConfig::default(),
             emission: ContractWhaleEmissionConfig::default(),
+            lifecycle: ContractWhaleLifecycleConfig::default(),
+            okx_instruments: ContractWhaleOkxInstrumentConfig::default(),
             symbols,
             threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
@@ -966,6 +974,91 @@ pub struct ContractWhaleEmissionConfig {
     pub force_refresh_seconds: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ContractWhaleProducerConfig {
+    pub interval_ms: u64,
+    pub skip_missed_ticks: bool,
+    pub prevent_overlap: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleDiscordOutboxConfig {
+    pub enabled: bool,
+    pub poll_interval_ms: u64,
+    pub batch_size: usize,
+    pub max_attempts: usize,
+    pub base_retry_seconds: i64,
+    pub max_retry_seconds: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleLifecycleConfig {
+    pub update_window_seconds: i64,
+    pub close_after_seconds: i64,
+    pub unique_turnover_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleOkxInstrumentConfig {
+    pub metadata_enabled: bool,
+    pub refresh_minutes: i64,
+    pub fallback_quality_penalty: u8,
+    pub fallback_ct_val_base: BTreeMap<String, f64>,
+}
+
+impl Default for ContractWhaleOkxInstrumentConfig {
+    fn default() -> Self {
+        Self {
+            metadata_enabled: true,
+            refresh_minutes: 60,
+            fallback_quality_penalty: 10,
+            fallback_ct_val_base: BTreeMap::new(),
+        }
+    }
+}
+
+impl ContractWhaleOkxInstrumentConfig {
+    pub fn fallback_ct_val_base(&self, symbol: &str) -> Option<f64> {
+        self.fallback_ct_val_base
+            .get(&normalize_symbol(symbol))
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+    }
+}
+
+impl Default for ContractWhaleLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            update_window_seconds: 30,
+            close_after_seconds: 120,
+            unique_turnover_enabled: true,
+        }
+    }
+}
+
+impl Default for ContractWhaleProducerConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: 2_000,
+            skip_missed_ticks: true,
+            prevent_overlap: true,
+        }
+    }
+}
+
+impl Default for ContractWhaleDiscordOutboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_ms: 1_000,
+            batch_size: 20,
+            max_attempts: 6,
+            base_retry_seconds: 2,
+            max_retry_seconds: 300,
+        }
+    }
+}
+
 impl Default for ContractWhaleEmissionConfig {
     fn default() -> Self {
         Self {
@@ -1192,11 +1285,141 @@ pub fn load_contract_whale_runtime_config_from_settings(
         classification: load_classification_config(settings),
         toxic_order: load_toxic_order_config(settings),
         discord: load_discord_gate_config(settings),
+        producer: load_producer_config(settings),
+        discord_outbox: load_discord_outbox_config(settings),
         emission: load_emission_config(settings),
+        lifecycle: load_lifecycle_config(settings),
+        okx_instruments: load_okx_instrument_config(settings),
         data_quality: load_data_quality_config(settings),
         symbols: load_symbol_configs(settings),
         threshold_profiles: load_threshold_profiles(settings),
         retention: load_retention_config(settings),
+    }
+}
+
+fn load_producer_config(settings: &::config::Config) -> ContractWhaleProducerConfig {
+    let defaults = ContractWhaleProducerConfig::default();
+    ContractWhaleProducerConfig {
+        interval_ms: u64_setting(
+            settings,
+            "CONTRACT_WHALE_AUTO_PUSH_INTERVAL_MS",
+            "contract_whale_monitor.producer.interval_ms",
+            defaults.interval_ms,
+        )
+        .clamp(1_000, 60_000),
+        skip_missed_ticks: bool_setting(
+            settings,
+            "CONTRACT_WHALE_PRODUCER_SKIP_MISSED_TICKS",
+            "contract_whale_monitor.producer.skip_missed_ticks",
+            defaults.skip_missed_ticks,
+        ),
+        prevent_overlap: bool_setting(
+            settings,
+            "CONTRACT_WHALE_PRODUCER_PREVENT_OVERLAP",
+            "contract_whale_monitor.producer.prevent_overlap",
+            defaults.prevent_overlap,
+        ),
+    }
+}
+
+fn load_discord_outbox_config(settings: &::config::Config) -> ContractWhaleDiscordOutboxConfig {
+    let defaults = ContractWhaleDiscordOutboxConfig::default();
+    ContractWhaleDiscordOutboxConfig {
+        enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_DISCORD_OUTBOX_ENABLED",
+            "contract_whale_monitor.discord_outbox.enabled",
+            defaults.enabled,
+        ),
+        poll_interval_ms: u64_setting(
+            settings,
+            "CONTRACT_WHALE_DISCORD_OUTBOX_POLL_INTERVAL_MS",
+            "contract_whale_monitor.discord_outbox.poll_interval_ms",
+            defaults.poll_interval_ms,
+        )
+        .clamp(100, 60_000),
+        batch_size: usize_setting_with_env(
+            settings,
+            "CONTRACT_WHALE_DISCORD_OUTBOX_BATCH_SIZE",
+            "contract_whale_monitor.discord_outbox.batch_size",
+            defaults.batch_size,
+        )
+        .clamp(1, 100),
+        max_attempts: usize_setting_with_env(
+            settings,
+            "CONTRACT_WHALE_DISCORD_MAX_ATTEMPTS",
+            "contract_whale_monitor.discord_outbox.max_attempts",
+            defaults.max_attempts,
+        )
+        .clamp(1, 6),
+        base_retry_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.discord_outbox.base_retry_seconds",
+            defaults.base_retry_seconds,
+        )
+        .clamp(1, 60),
+        max_retry_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.discord_outbox.max_retry_seconds",
+            defaults.max_retry_seconds,
+        )
+        .clamp(1, 3_600),
+    }
+}
+
+fn load_okx_instrument_config(settings: &::config::Config) -> ContractWhaleOkxInstrumentConfig {
+    let defaults = ContractWhaleOkxInstrumentConfig::default();
+    let fallback_ct_val_base = settings
+        .get::<BTreeMap<String, f64>>("contract_whale_monitor.okx_instruments.fallback_ct_val_base")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(symbol, value)| (normalize_symbol(&symbol), value))
+        .filter(|(_, value)| value.is_finite() && *value > 0.0)
+        .collect();
+    ContractWhaleOkxInstrumentConfig {
+        metadata_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_OKX_METADATA_ENABLED",
+            "contract_whale_monitor.okx_instruments.metadata_enabled",
+            defaults.metadata_enabled,
+        ),
+        refresh_minutes: i64_setting(
+            settings,
+            "contract_whale_monitor.okx_instruments.refresh_minutes",
+            defaults.refresh_minutes,
+        )
+        .clamp(1, 1_440),
+        fallback_quality_penalty: u8_setting(
+            settings,
+            "contract_whale_monitor.okx_instruments.fallback_quality_penalty",
+            defaults.fallback_quality_penalty,
+        )
+        .min(100),
+        fallback_ct_val_base,
+    }
+}
+
+fn load_lifecycle_config(settings: &::config::Config) -> ContractWhaleLifecycleConfig {
+    let defaults = ContractWhaleLifecycleConfig::default();
+    ContractWhaleLifecycleConfig {
+        update_window_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.lifecycle.update_window_seconds",
+            defaults.update_window_seconds,
+        )
+        .clamp(1, 300),
+        close_after_seconds: i64_setting(
+            settings,
+            "contract_whale_monitor.lifecycle.close_after_seconds",
+            defaults.close_after_seconds,
+        )
+        .clamp(1, 3_600),
+        unique_turnover_enabled: bool_setting(
+            settings,
+            "CONTRACT_WHALE_UNIQUE_TURNOVER_ENABLED",
+            "contract_whale_monitor.lifecycle.unique_turnover_enabled",
+            defaults.unique_turnover_enabled,
+        ),
     }
 }
 
@@ -1963,6 +2186,40 @@ fn usize_setting(settings: &::config::Config, path: &str, default: usize) -> usi
         Ok(value) if value > 0 => value as usize,
         Ok(value) => {
             warn_invalid(path, value, default);
+            default
+        }
+        Err(_) => default,
+    }
+}
+
+fn usize_setting_with_env(
+    settings: &::config::Config,
+    env_key: &str,
+    path: &str,
+    default: usize,
+) -> usize {
+    if let Ok(value) = std::env::var(env_key) {
+        if let Ok(parsed) = value.parse::<usize>() {
+            return parsed;
+        }
+        warn_invalid(path, value, default);
+        return default;
+    }
+    usize_setting(settings, path, default)
+}
+
+fn u64_setting(settings: &::config::Config, env_key: &str, toml_key: &str, default: u64) -> u64 {
+    if let Ok(value) = std::env::var(env_key) {
+        if let Ok(parsed) = value.parse::<u64>() {
+            return parsed;
+        }
+        warn_invalid(toml_key, value, default);
+        return default;
+    }
+    match settings.get_int(toml_key) {
+        Ok(value) if value >= 0 => value as u64,
+        Ok(value) => {
+            warn_invalid(toml_key, value, default);
             default
         }
         Err(_) => default,

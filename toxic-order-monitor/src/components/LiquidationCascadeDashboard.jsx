@@ -3,6 +3,7 @@ import {
   fetchLiquidationCascade,
   fetchLiquidationLeverageMap,
   fetchLiquidationLiquidityGap,
+  fetchBtcStructure,
   fetchMarketRegime,
 } from "../api/liquidationCascade.js";
 
@@ -31,33 +32,44 @@ export default function LiquidationCascadeDashboard() {
     leverageMap: null,
     liquidityGap: null,
     regime: null,
+    domainState: null,
     loading: true,
     error: null,
   });
 
+  const isBtcSymbol = symbol.startsWith("BTC");
+
   const load = useCallback(async () => {
-    const [cascade, leverageMap, liquidityGap, regime] =
-      await Promise.all([
-        fetchLiquidationCascade(symbol),
-        fetchLiquidationLeverageMap(symbol),
-        fetchLiquidationLiquidityGap(symbol),
-        fetchMarketRegime(symbol),
-      ]);
+    const domainRequest = isBtcSymbol
+      ? fetchBtcStructure(symbol)
+      : Promise.resolve({ data: null, error: null });
+    const regimeRequest = isBtcSymbol
+      ? Promise.resolve({ data: null, error: null })
+      : fetchMarketRegime(symbol);
+    const [cascade, leverageMap, liquidityGap, regime, domainState] = await Promise.all([
+      fetchLiquidationCascade(symbol),
+      fetchLiquidationLeverageMap(symbol),
+      fetchLiquidationLiquidityGap(symbol),
+      regimeRequest,
+      domainRequest,
+    ]);
 
     setState({
       cascade: cascade.data,
       leverageMap: leverageMap.data,
       liquidityGap: liquidityGap.data,
       regime: regime.data,
+      domainState: domainState.data,
       loading: false,
       error:
         cascade.error ||
         leverageMap.error ||
         liquidityGap.error ||
         regime.error ||
+        domainState.error ||
         null,
     });
-  }, [symbol]);
+  }, [isBtcSymbol, symbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +99,7 @@ export default function LiquidationCascadeDashboard() {
   const leverageMap = state.leverageMap;
   const liquidityGap = state.liquidityGap;
   const regime = state.regime;
+  const domainState = state.domainState;
 
   const heatmap = useMemo(
     () => [...(leverageMap?.heatmap || [])].sort((left, right) => right.intensity - left.intensity),
@@ -188,42 +201,32 @@ export default function LiquidationCascadeDashboard() {
             <div className="grid gap-3 sm:grid-cols-2">
               <MetricCard
                 label="Regime"
-                value={regime?.regime || "-"}
+                value={(isBtcSymbol ? domainState?.regime : regime?.regime) || "-"}
                 tone="cyan"
               />
               <MetricCard
                 label="方向偏置"
                 value={
-                  directionLabel[regime?.directionBias] ||
-                  regime?.directionBias ||
+                  directionLabel[isBtcSymbol ? domainState?.bias : regime?.directionBias] ||
+                  (isBtcSymbol ? domainState?.bias : regime?.directionBias) ||
                   "-"
                 }
                 tone="slate"
               />
               <MetricCard
                 label="置信度"
-                value={percent(regime?.confidence)}
+                value={percent(isBtcSymbol ? domainState?.confidence : regime?.confidence)}
                 tone="emerald"
               />
-              <MetricCard
-                label="数据质量"
-                value={percent(regime?.metrics?.dataQuality)}
-                tone="orange"
-              />
+              {isBtcSymbol ? (
+                <MetricCard label="结构强度" value={percent(domainState?.structureScore)} tone="orange" />
+              ) : null}
             </div>
             <div className="mt-4">
               <TagList
-                items={regime?.signals || []}
+                items={[...(regime?.signals || []), ...(domainState?.signals || [])]}
                 empty="暂无市场状态标签"
               />
-            </div>
-          </Panel>
-
-          <Panel title="信号压缩">
-            <div className="space-y-3 text-sm">
-              <Line label="允许信号族" value="monitor_only" />
-              <Line label="状态置信度" value={percent(regime?.confidence)} />
-              <Line label="风险说明" value="只读市场状态输出，不包含专用操控评分。" />
             </div>
           </Panel>
 
