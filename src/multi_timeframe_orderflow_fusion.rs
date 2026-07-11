@@ -40,7 +40,6 @@ pub struct MtfofeLayerInput {
     pub oi_change_pct: f64,
     pub funding_rate: f64,
     pub liquidation_ratio: f64,
-    pub altcoin_control_score: f64,
     pub volume_spike_multiple: f64,
     pub data_quality: f64,
 }
@@ -55,7 +54,6 @@ impl MtfofeLayerInput {
             oi_change_pct: 0.0,
             funding_rate: 0.0,
             liquidation_ratio: 0.0,
-            altcoin_control_score: 0.0,
             volume_spike_multiple: 0.0,
             data_quality: 0.0,
         }
@@ -120,10 +118,10 @@ pub struct MtfofeBreakdownResponse {
 
 pub fn analyze_mtf_orderflow_fusion(input: &MtfofeInput) -> MtfofeStateResponse {
     let layers = vec![
-        analyze_layer(&input.micro_5s, input.market_domain),
-        analyze_layer(&input.flow_60s, input.market_domain),
-        analyze_layer(&input.structure_5m, input.market_domain),
-        analyze_layer(&input.regime_1h, input.market_domain),
+        analyze_layer(&input.micro_5s),
+        analyze_layer(&input.flow_60s),
+        analyze_layer(&input.structure_5m),
+        analyze_layer(&input.regime_1h),
     ];
     let weights = BTreeMap::from([
         ("5s".to_string(), 0.15),
@@ -166,12 +164,7 @@ pub fn analyze_mtf_orderflow_fusion(input: &MtfofeInput) -> MtfofeStateResponse 
     signals.sort();
     signals.dedup();
 
-    let regime = final_regime(
-        &layers,
-        input.liquidation_cascade_probability,
-        conflict_score,
-        input.market_domain,
-    );
+    let regime = final_regime(&layers, input.liquidation_cascade_probability);
     let decision = final_decision(confidence, conflict_score, &bias);
     let timeframe_alignment = layers
         .iter()
@@ -224,7 +217,7 @@ impl From<MtfofeStateResponse> for MtfofeBreakdownResponse {
     }
 }
 
-fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimeframeState {
+fn analyze_layer(input: &MtfofeLayerInput) -> MtfofeTimeframeState {
     let total_volume = (input.buy_volume + input.sell_volume).max(0.0);
     let flow_delta = if total_volume > f64::EPSILON {
         (input.buy_volume - input.sell_volume) / total_volume
@@ -235,12 +228,7 @@ fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimefr
     let oi_score = (input.oi_change_pct / 2.0).clamp(-1.0, 1.0);
     let funding_penalty = (input.funding_rate.abs() / 0.001).clamp(0.0, 1.0);
     let liquidation_penalty = input.liquidation_ratio.clamp(0.0, 1.0);
-    let altcoin_control_penalty = match domain {
-        MarketDomain::BtcStructure => 0.0,
-        MarketDomain::AltcoinManipulation => input.altcoin_control_score.clamp(0.0, 1.0),
-    };
     let score = (flow_delta * 0.45 + price_score * 0.20 + oi_score * 0.20
-        - altcoin_control_penalty * 0.10
         - liquidation_penalty * 0.05
         - funding_penalty * 0.05)
         .clamp(-1.0, 1.0);
@@ -249,19 +237,13 @@ fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimefr
     if input.volume_spike_multiple >= 3.0 {
         signals.push("BURST_VOLUME".to_string());
     }
-    if domain == MarketDomain::AltcoinManipulation && input.altcoin_control_score >= 0.50 {
-        signals.push("FAKE_BREAKOUT_OR_MANIPULATION".to_string());
-    }
     if input.funding_rate.abs() > 0.0005 {
         signals.push("FUNDING_EXTREME".to_string());
     }
     if input.oi_change_pct.abs() >= 0.35
         && input.price_change_pct.signum() != input.oi_change_pct.signum()
     {
-        signals.push(match domain {
-            MarketDomain::BtcStructure => "OI_STRUCTURE_SHIFT".to_string(),
-            MarketDomain::AltcoinManipulation => "OI_DIVERGENCE".to_string(),
-        });
+        signals.push("OI_STRUCTURE_SHIFT".to_string());
     }
     if input.liquidation_ratio >= 0.30 {
         signals.push("LIQUIDATION_CLUSTER".to_string());
@@ -281,8 +263,6 @@ fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimefr
     };
     let regime = if input.liquidation_ratio >= 0.30 {
         "LIQUIDATION"
-    } else if domain == MarketDomain::AltcoinManipulation && input.altcoin_control_score >= 0.50 {
-        "MANIPULATION"
     } else if score <= -0.20 {
         "DISTRIBUTION"
     } else {
@@ -292,7 +272,7 @@ fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimefr
         + input.volume_spike_multiple.min(5.0) / 5.0 * 0.20
         + input.data_quality.clamp(0.0, 1.0) * 0.35)
         .clamp(0.0, 1.0);
-    let mut metrics = BTreeMap::from([
+    let metrics = BTreeMap::from([
         ("buy_volume".to_string(), round4(input.buy_volume)),
         ("sell_volume".to_string(), round4(input.sell_volume)),
         ("flow_delta".to_string(), round4(flow_delta)),
@@ -312,12 +292,6 @@ fn analyze_layer(input: &MtfofeLayerInput, domain: MarketDomain) -> MtfofeTimefr
         ),
         ("data_quality".to_string(), round4(input.data_quality)),
     ]);
-    if domain == MarketDomain::AltcoinManipulation {
-        metrics.insert(
-            "manipulation_score".to_string(),
-            round4(input.altcoin_control_score),
-        );
-    }
 
     MtfofeTimeframeState {
         timeframe: input.timeframe.clone(),
@@ -370,26 +344,13 @@ fn final_bias(weighted_score: f64, confidence: f64, conflict_score: f64) -> Stri
     .to_string()
 }
 
-fn final_regime(
-    layers: &[MtfofeTimeframeState],
-    liquidation_cascade_probability: f64,
-    conflict_score: f64,
-    domain: MarketDomain,
-) -> String {
+fn final_regime(layers: &[MtfofeTimeframeState], liquidation_cascade_probability: f64) -> String {
     if liquidation_cascade_probability >= 0.70
         || layers
             .iter()
             .any(|layer| layer.regime == "LIQUIDATION" && layer.confidence >= 0.45)
     {
         return "LIQUIDATION".to_string();
-    }
-    if domain == MarketDomain::AltcoinManipulation
-        && (conflict_score >= 0.70
-            || layers
-                .iter()
-                .any(|layer| layer.regime == "MANIPULATION" && layer.confidence >= 0.45))
-    {
-        return "MANIPULATION".to_string();
     }
     let weighted = layers.iter().map(|layer| layer.score).sum::<f64>() / layers.len().max(1) as f64;
     if weighted <= -0.20 {
@@ -488,51 +449,6 @@ mod tests {
             .any(|signal| signal == "LIQUIDATION_DOWN"));
     }
 
-    #[test]
-    fn btc_domain_ignores_altcoin_control_score() {
-        let mut input = MtfofeInput::default();
-        input.market_domain = MarketDomain::BtcStructure;
-        input.micro_5s = btc_layer_with_alt_control("5s");
-        input.flow_60s = btc_layer_with_alt_control("60s");
-        input.structure_5m = btc_layer_with_alt_control("5m");
-        input.regime_1h = btc_layer_with_alt_control("1h");
-
-        let output = analyze_mtf_orderflow_fusion(&input);
-
-        assert_ne!(output.regime, "MANIPULATION");
-        assert!(!output
-            .signals
-            .iter()
-            .any(|signal| signal.contains("MANIPULATION") || signal.contains("FAKE_BREAKOUT")));
-        assert!(output
-            .layers
-            .iter()
-            .all(|layer| !layer.metrics.contains_key("manipulation_score")));
-    }
-
-    #[test]
-    fn altcoin_domain_retains_manipulation_detection() {
-        let mut input = MtfofeInput::default();
-        input.symbol = "ASTER".to_string();
-        input.market_domain = MarketDomain::AltcoinManipulation;
-        input.micro_5s = btc_layer_with_alt_control("5s");
-        input.flow_60s = btc_layer_with_alt_control("60s");
-        input.structure_5m = btc_layer_with_alt_control("5m");
-        input.regime_1h = btc_layer_with_alt_control("1h");
-
-        let output = analyze_mtf_orderflow_fusion(&input);
-
-        assert_eq!(output.regime, "MANIPULATION");
-        assert!(output
-            .signals
-            .iter()
-            .any(|signal| signal == "FAKE_BREAKOUT_OR_MANIPULATION"));
-        assert!(output
-            .layers
-            .iter()
-            .all(|layer| layer.metrics.contains_key("manipulation_score")));
-    }
-
     fn bullish_layer(timeframe: &str) -> MtfofeLayerInput {
         MtfofeLayerInput {
             timeframe: timeframe.to_string(),
@@ -542,7 +458,6 @@ mod tests {
             oi_change_pct: 0.45,
             funding_rate: 0.0001,
             liquidation_ratio: 0.08,
-            altcoin_control_score: 0.10,
             volume_spike_multiple: 2.2,
             data_quality: 0.9,
         }
@@ -557,23 +472,7 @@ mod tests {
             oi_change_pct: -0.35,
             funding_rate: -0.0001,
             liquidation_ratio: 0.10,
-            altcoin_control_score: 0.12,
             volume_spike_multiple: 2.5,
-            data_quality: 0.9,
-        }
-    }
-
-    fn btc_layer_with_alt_control(timeframe: &str) -> MtfofeLayerInput {
-        MtfofeLayerInput {
-            timeframe: timeframe.to_string(),
-            buy_volume: 620.0,
-            sell_volume: 590.0,
-            price_change_pct: 0.03,
-            oi_change_pct: -0.60,
-            funding_rate: 0.0002,
-            liquidation_ratio: 0.05,
-            altcoin_control_score: 0.95,
-            volume_spike_multiple: 4.0,
             data_quality: 0.9,
         }
     }

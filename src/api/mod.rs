@@ -1,5 +1,4 @@
 pub mod active_trade_toxicity_routes;
-pub mod altcoin_routes;
 pub mod binance_alt_contract_routes;
 pub mod btc_structure_routes;
 pub mod calibration_routes;

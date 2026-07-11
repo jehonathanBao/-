@@ -1,5 +1,4 @@
 pub mod alerts;
-pub mod altcoin_manipulation_engine;
 pub mod api;
 pub mod app;
 pub mod binance_alt_contract_monitor;

@@ -56,24 +56,6 @@ export async function fetchBtcStructure(symbol = DEFAULT_SYMBOL) {
   );
 }
 
-export async function fetchAltcoinManipulation(symbol) {
-  return fetchWithFallback(
-    "/api/altcoin/manipulation",
-    { symbol },
-    (payload) => normalizeAltcoinManipulation(payload, symbol),
-    fallbackAltcoinManipulation(symbol),
-  );
-}
-
-export async function fetchAltcoinSignals(symbol) {
-  return fetchWithFallback(
-    "/api/altcoin/signals",
-    { symbol },
-    (payload) => normalizeAltcoinManipulation(payload, symbol),
-    fallbackAltcoinManipulation(symbol),
-  );
-}
-
 export async function fetchMarketSignalAssessment(symbol = DEFAULT_SYMBOL) {
   return fetchWithFallback(
     "/api/signal/latest",
@@ -176,26 +158,6 @@ export function normalizeBtcStructure(payload = {}, requestedSymbol = DEFAULT_SY
   };
 }
 
-export function normalizeAltcoinManipulation(payload = {}, requestedSymbol = "ETHUSDT") {
-  return {
-    symbol: normalizeSymbol(payload.symbol || requestedSymbol),
-    regime: String(payload.regime || "ACCUMULATION").toUpperCase(),
-    bias: String(payload.bias || "NEUTRAL").toUpperCase(),
-    confidence: clamp01(payload.confidence),
-    manipulationScore: clamp01(payload.manipulationScore),
-    oiSignalScore: clamp01(payload.oiSignalScore),
-    volumeSignalScore: clamp01(payload.volumeSignalScore),
-    fundingSignalScore: clamp01(payload.fundingSignalScore),
-    priceSignalScore: clamp01(payload.priceSignalScore),
-    pumpDumpScore: clamp01(payload.pumpDumpScore),
-    signals: normalizeStringArray(payload.signals),
-    riskTags: normalizeStringArray(payload.riskTags),
-    metrics: normalizeMetricMap(payload.metrics),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
-  };
-}
-
 export function normalizeMarketSignal(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
   return {
     symbol: normalizeSymbol(payload.symbol || requestedSymbol),
@@ -280,10 +242,6 @@ function fallbackManipulation(symbol) {
 
 function fallbackBtcStructure(symbol) {
   return normalizeBtcStructure({ symbol, signals: [], readOnly: true }, symbol);
-}
-
-function fallbackAltcoinManipulation(symbol) {
-  return normalizeAltcoinManipulation({ symbol, signals: [], readOnly: true }, symbol);
 }
 
 function fallbackMarketSignal(symbol) {
