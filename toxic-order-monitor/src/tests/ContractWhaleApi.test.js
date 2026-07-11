@@ -31,6 +31,72 @@ describe("contract whale api", () => {
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
 
+  it("preserves lifecycle snapshot semantics and OI evidence coverage", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "signal-1",
+      ts: 1_700_000_015_000,
+      symbol: "BTC",
+      windowSec: 15,
+      totalVolumeBtc: 900,
+      netVolumeBtc: 700,
+      classificationV2: {
+        oiConsistentSources: ["binance", "okx"],
+        oiExcludedSources: ["bitfinex:snapshot_gap_too_large"],
+        oiSourceCoverageChanged: true,
+        oiCrossExchangeConsensus: false,
+        oiEvidenceDegraded: true,
+        oiEvidenceReason: "oi_cross_exchange_conflict",
+      },
+      eventLifecycle: {
+        latestWindowVolumeBtc: 600,
+        peakWindowVolumeBtc: 900,
+        uniqueTurnoverBtc: 720,
+        uniqueTurnoverAvailable: true,
+        latestSnapshotTs: 1_700_000_015_000,
+        peakSnapshotTs: 1_700_000_010_000,
+        displaySnapshotKind: "peak",
+        latestSnapshot: {
+          ts: 1_700_000_015_000,
+          totalVolumeBtc: 600,
+          score: 80,
+        },
+        peakSnapshot: {
+          ts: 1_700_000_010_000,
+          totalVolumeBtc: 900,
+          score: 90,
+        },
+      },
+    });
+
+    expect(signal.eventLifecycle).toMatchObject({
+      latestWindowVolumeBtc: 600,
+      peakWindowVolumeBtc: 900,
+      uniqueTurnoverBtc: 720,
+      uniqueTurnoverAvailable: true,
+      latestSnapshotTs: 1_700_000_015_000,
+      peakSnapshotTs: 1_700_000_010_000,
+      displaySnapshotKind: "peak",
+      latestSnapshot: expect.objectContaining({
+        ts: 1_700_000_015_000,
+        totalVolumeBtc: 600,
+        score: 80,
+      }),
+      peakSnapshot: expect.objectContaining({
+        ts: 1_700_000_010_000,
+        totalVolumeBtc: 900,
+        score: 90,
+      }),
+    });
+    expect(signal).toMatchObject({
+      oiConsistentSources: ["binance", "okx"],
+      oiExcludedSources: ["bitfinex:snapshot_gap_too_large"],
+      oiSourceCoverageChanged: true,
+      oiCrossExchangeConsensus: false,
+      oiEvidenceDegraded: true,
+      oiEvidenceReason: "oi_cross_exchange_conflict",
+    });
+  });
+
   it("maps latest contract whale response into dashboard shape", async () => {
     axios.get.mockResolvedValueOnce({
       data: {

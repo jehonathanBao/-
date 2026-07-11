@@ -123,24 +123,25 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     const refreshLatest = async () => {
       const payload = await fetchContractWhaleLatest(50, filters.symbol);
+      const unavailable = payload.error || payload.dataState === "degraded";
       let shouldRefreshHistory = false;
       updateState((previous) => {
         shouldRefreshHistory =
-          !payload.error &&
+          !unavailable &&
           Number.isFinite(payload.maxTs) &&
           Number(payload.maxTs) > Number(previous.latestMaxTs || 0);
         return {
           ...previous,
           loading: false,
-          summary: payload.error ? previous.summary : payload.summary,
-          items: payload.error ? previous.items : payload.items,
-          latestServerTime: payload.error ? previous.latestServerTime : payload.serverTime,
-          latestMaxTs: payload.error ? previous.latestMaxTs : payload.maxTs,
-          latestMaxAgeSec: payload.error ? previous.latestMaxAgeSec : payload.maxAgeSec,
-          latestStaleCount: payload.error ? previous.latestStaleCount : payload.staleCount,
-          latestTimeline: payload.error ? previous.latestTimeline : payload.timeline,
-          meta: payload.error ? previous.meta : (payload.meta || previous.meta),
-          error: payload.error || null,
+          summary: unavailable ? previous.summary : payload.summary,
+          items: unavailable ? previous.items : payload.items,
+          latestServerTime: unavailable ? previous.latestServerTime : payload.serverTime,
+          latestMaxTs: unavailable ? previous.latestMaxTs : payload.maxTs,
+          latestMaxAgeSec: unavailable ? previous.latestMaxAgeSec : payload.maxAgeSec,
+          latestStaleCount: unavailable ? previous.latestStaleCount : payload.staleCount,
+          latestTimeline: unavailable ? previous.latestTimeline : payload.timeline,
+          meta: unavailable ? previous.meta : (payload.meta || previous.meta),
+          error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "latest_degraded" : null),
         };
       });
       if (shouldRefreshHistory) {
@@ -150,26 +151,28 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     const refreshContractEvents = async (limit = 50) => {
       const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
+      const unavailable = payload.error || payload.dataState === "degraded";
       let shouldRefreshFinalEvents = false;
       updateState((previous) => {
         shouldRefreshFinalEvents =
-          !payload.error &&
+          !unavailable &&
           Number.isFinite(payload.maxEventTs) &&
           Number(payload.maxEventTs) > Number(previous.contractEventsMaxEventTs || 0);
         return {
           ...previous,
           loading: false,
-          contractEvents: payload.error ? previous.contractEvents : payload.items,
-          contractEventsCursor: payload.error ? previous.contractEventsCursor : payload.nextCursor,
-          contractEventsHasMore: payload.error ? previous.contractEventsHasMore : payload.hasMore,
-          contractEventsServerTime: payload.error ? previous.contractEventsServerTime : payload.serverTime,
-          contractEventsLastEventTs: payload.error ? previous.contractEventsLastEventTs : payload.lastEventTs,
-          contractEventsMaxEventTs: payload.error ? previous.contractEventsMaxEventTs : payload.maxEventTs,
-          contractEventsHistoryLagSec: payload.error ? previous.contractEventsHistoryLagSec : payload.historyLagSec,
-          contractEventsLatestLagSec: payload.error ? previous.contractEventsLatestLagSec : payload.latestLagSec,
-          contractEventsCacheAgeSec: payload.error ? previous.contractEventsCacheAgeSec : payload.cacheAgeSec,
-          contractEventsCacheTtlSec: payload.error ? previous.contractEventsCacheTtlSec : payload.cacheTtlSec,
-          contractEventsTimeline: payload.error ? previous.contractEventsTimeline : payload.timeline,
+          contractEvents: unavailable ? previous.contractEvents : payload.items,
+          contractEventsCursor: unavailable ? previous.contractEventsCursor : payload.nextCursor,
+          contractEventsHasMore: unavailable ? previous.contractEventsHasMore : payload.hasMore,
+          contractEventsServerTime: unavailable ? previous.contractEventsServerTime : payload.serverTime,
+          contractEventsLastEventTs: unavailable ? previous.contractEventsLastEventTs : payload.lastEventTs,
+          contractEventsMaxEventTs: unavailable ? previous.contractEventsMaxEventTs : payload.maxEventTs,
+          contractEventsHistoryLagSec: unavailable ? previous.contractEventsHistoryLagSec : payload.historyLagSec,
+          contractEventsLatestLagSec: unavailable ? previous.contractEventsLatestLagSec : payload.latestLagSec,
+          contractEventsCacheAgeSec: unavailable ? previous.contractEventsCacheAgeSec : payload.cacheAgeSec,
+          contractEventsCacheTtlSec: unavailable ? previous.contractEventsCacheTtlSec : payload.cacheTtlSec,
+          contractEventsTimeline: unavailable ? previous.contractEventsTimeline : payload.timeline,
+          error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "contract_events_degraded" : previous.error),
         };
       });
       if (shouldRefreshFinalEvents) {
@@ -213,22 +216,24 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     const refreshFinalEvents = async (limit = 30) => {
       const payload = await fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit });
+      const unavailable = payload.error || payload.dataState === "degraded";
       updateState((previous) => ({
         ...previous,
         loading: false,
-        finalEvents: payload.error
+        finalEvents: unavailable
           ? previous.finalEvents
           : { active: payload.active, closed: payload.closed },
-        finalEventsCursor: payload.error ? previous.finalEventsCursor : payload.nextCursor,
-        finalEventsHasMore: payload.error ? previous.finalEventsHasMore : payload.hasMore,
-        finalEventsServerTime: payload.error ? previous.finalEventsServerTime : payload.serverTime,
-        finalEventsLastEventTs: payload.error ? previous.finalEventsLastEventTs : payload.lastEventTs,
-        finalEventsMaxEventTs: payload.error ? previous.finalEventsMaxEventTs : payload.maxEventTs,
-        finalEventsGeneratedAt: payload.error ? previous.finalEventsGeneratedAt : payload.generatedAt,
-        finalEventsProjectionLagSec: payload.error ? previous.finalEventsProjectionLagSec : payload.projectionLagSec,
-        finalEventsCacheAgeSec: payload.error ? previous.finalEventsCacheAgeSec : payload.cacheAgeSec,
-        finalEventsCacheTtlSec: payload.error ? previous.finalEventsCacheTtlSec : payload.cacheTtlSec,
-        finalEventsTimeline: payload.error ? previous.finalEventsTimeline : payload.timeline,
+        finalEventsCursor: unavailable ? previous.finalEventsCursor : payload.nextCursor,
+        finalEventsHasMore: unavailable ? previous.finalEventsHasMore : payload.hasMore,
+        finalEventsServerTime: unavailable ? previous.finalEventsServerTime : payload.serverTime,
+        finalEventsLastEventTs: unavailable ? previous.finalEventsLastEventTs : payload.lastEventTs,
+        finalEventsMaxEventTs: unavailable ? previous.finalEventsMaxEventTs : payload.maxEventTs,
+        finalEventsGeneratedAt: unavailable ? previous.finalEventsGeneratedAt : payload.generatedAt,
+        finalEventsProjectionLagSec: unavailable ? previous.finalEventsProjectionLagSec : payload.projectionLagSec,
+        finalEventsCacheAgeSec: unavailable ? previous.finalEventsCacheAgeSec : payload.cacheAgeSec,
+        finalEventsCacheTtlSec: unavailable ? previous.finalEventsCacheTtlSec : payload.cacheTtlSec,
+        finalEventsTimeline: unavailable ? previous.finalEventsTimeline : payload.timeline,
+        error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "final_events_degraded" : previous.error),
       }));
     };
 
@@ -2010,7 +2015,9 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             </Cell>
             <Cell>{eventQualityBadge(item)}</Cell>
             <Cell>{impactNormalizationBadge(item)}</Cell>
-            <Cell>{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, item.symbol)}</Cell>
+            <Cell>
+              <LifecycleVolumeCell item={item} volumeLabel={volumeLabel} />
+            </Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
             <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
             <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
@@ -2025,7 +2032,14 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
             <Cell>{marketDriverLabel(item.marketDriver?.primaryDriver)}</Cell>
             <Cell>{liquidationStatus(item)}</Cell>
             <Cell>{liquidationDriverLabel(item.liquidationForce?.primaryDriver)}</Cell>
-            <Cell>{oiStatus(item)}</Cell>
+            <Cell>
+              <LifecycleOiCell item={item} />
+              {oiEvidenceSummary(item) ? (
+                <span className="mt-1 block text-[10px] text-amber-300" title={oiEvidenceSummary(item)}>
+                  {oiEvidenceSummary(item)}
+                </span>
+              ) : null}
+            </Cell>
             <Cell>{fundingStatus(item)}</Cell>
             <Cell>{discordStatus(item)}</Cell>
             <Cell>
@@ -2045,6 +2059,51 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
         ))}
       </tbody>
     </table>
+  );
+}
+
+function LifecycleVolumeCell({ item, volumeLabel }) {
+  const lifecycle = item?.eventLifecycle || {};
+  const hasLifecycleStats =
+    lifecycle.latestWindowVolumeBtc !== null && lifecycle.latestWindowVolumeBtc !== undefined
+    || lifecycle.peakWindowVolumeBtc !== null && lifecycle.peakWindowVolumeBtc !== undefined
+    || lifecycle.uniqueTurnoverBtc !== null && lifecycle.uniqueTurnoverBtc !== undefined;
+  if (!hasLifecycleStats) {
+    return formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, item.symbol);
+  }
+  return (
+    <span className="block min-w-[150px]" title={`${volumeLabel} · 生命周期窗口统计`}>
+      <span className="block text-slate-200">
+        最新 {formatOptionalBaseVolume(lifecycle.latestWindowVolumeBtc, item.symbol)}
+      </span>
+      <span className="block text-slate-400">
+        峰值 {formatOptionalBaseVolume(lifecycle.peakWindowVolumeBtc, item.symbol)}
+      </span>
+      <span className="block text-cyan-300">
+        {lifecycle.uniqueTurnoverAvailable && lifecycle.uniqueTurnoverBtc !== null
+          ? `真实换手 ${formatOptionalBaseVolume(lifecycle.uniqueTurnoverBtc, item.symbol)}`
+          : "真实换手 N/A · 峰值窗口为回退"}
+      </span>
+    </span>
+  );
+}
+
+function LifecycleOiCell({ item }) {
+  const lifecycle = item?.eventLifecycle || {};
+  const hasLifecycleOi =
+    lifecycle.netOiDeltaBtc !== null && lifecycle.netOiDeltaBtc !== undefined
+    || lifecycle.peakAbsOiDeltaBtc !== null && lifecycle.peakAbsOiDeltaBtc !== undefined;
+  if (!hasLifecycleOi) return <span className="block">{oiStatus(item)}</span>;
+  return (
+    <span className="block min-w-[140px]">
+      <span className="block">{oiStatus(item)}</span>
+      <span className="block text-[10px] text-slate-400">
+        净 OI {formatSignedBaseVolume(lifecycle.netOiDeltaBtc, item.symbol)}
+      </span>
+      <span className="block text-[10px] text-cyan-300">
+        峰值 OI {formatSignedBaseVolume(lifecycle.peakAbsOiDeltaBtc, item.symbol)}
+      </span>
+    </span>
   );
 }
 
@@ -3350,6 +3409,19 @@ function formatOiContextSummary(item) {
   }
   const sign = deltaPct > 0 ? "+" : "";
   return `${label || "OI 不确认"} ${sign}${deltaPct.toFixed(2)}%`;
+}
+
+function oiEvidenceSummary(item) {
+  const consistent = Array.isArray(item?.oiConsistentSources) ? item.oiConsistentSources : [];
+  const excluded = Array.isArray(item?.oiExcludedSources) ? item.oiExcludedSources : [];
+  const parts = [];
+  if (consistent.length) parts.push(`覆盖 ${consistent.join("+")}`);
+  if (item?.oiCrossExchangeConsensus === true) parts.push("跨所共识");
+  if (item?.oiCrossExchangeConsensus === false) parts.push("跨所冲突");
+  if (item?.oiSourceCoverageChanged) parts.push("来源变化");
+  if (item?.oiEvidenceDegraded) parts.push(item?.oiEvidenceReason || "证据降级");
+  if (excluded.length) parts.push(`排除 ${excluded.length}`);
+  return parts.join(" · ");
 }
 
 function flowDirectionLabel(value) {

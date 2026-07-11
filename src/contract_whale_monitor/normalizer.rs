@@ -495,6 +495,8 @@ fn build_oi_snapshot_with_notional(
         symbol: normalize_contract_symbol(symbol.as_ref()),
         oi_btc: oi_base,
         oi_notional_usd,
+        ct_val_available: true,
+        evidence_degraded_reason: None,
     })
 }
 

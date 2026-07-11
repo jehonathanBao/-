@@ -149,6 +149,18 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "threshold_profile",
         "TEXT NOT NULL DEFAULT 'three_exchange'",
     )?;
+    ensure_column(
+        conn,
+        "contract_oi_snapshots",
+        "ct_val_available",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(
+        conn,
+        "contract_oi_snapshots",
+        "evidence_degraded_reason",
+        "TEXT",
+    )?;
     ensure_contract_flow_market_type_primary_key(conn)?;
     Ok(())
 }

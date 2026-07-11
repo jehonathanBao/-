@@ -996,7 +996,11 @@ fn effective_data_quality(
         quality = quality.saturating_sub(penalty_to_u8(config.scoring.penalties.warmup_period));
     }
     if stats.market_context.context_expected && !stats.market_context.ct_val_available {
-        quality = quality.saturating_sub(config.data_quality.ct_val_missing_penalty);
+        let ct_val_penalty = config
+            .data_quality
+            .ct_val_missing_penalty
+            .max(config.okx_instruments.fallback_quality_penalty);
+        quality = quality.saturating_sub(ct_val_penalty);
         quality = quality.min(config.data_quality.min_discord_quality.saturating_sub(1));
     }
     if stats.price_jump_anomaly {

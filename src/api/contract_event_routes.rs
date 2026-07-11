@@ -83,6 +83,10 @@ pub struct ContractEventItem {
 #[serde(rename_all = "camelCase")]
 pub struct ContractEventPage {
     pub items: Vec<ContractEventItem>,
+    pub data_state: String,
+    pub degraded: bool,
+    pub error_code: Option<String>,
+    pub last_known_data_available: bool,
     pub next_cursor: Option<String>,
     pub has_more: bool,
     pub limit: usize,
@@ -103,6 +107,10 @@ pub struct ContractEventPage {
 pub struct FinalEventsV2Response {
     pub active: Vec<FinalEvent>,
     pub closed: Vec<FinalEvent>,
+    pub data_state: String,
+    pub degraded: bool,
+    pub error_code: Option<String>,
+    pub last_known_data_available: bool,
     pub next_cursor: Option<String>,
     pub has_more: bool,
     pub limit: usize,
@@ -308,6 +316,7 @@ pub(crate) fn contract_event_page_for_query(
     let raw_items = store
         .query_contract_whale_signals(&history_query)
         .map_err(internal_error)?;
+    let raw_count = raw_items.len();
     let has_more = raw_items.len() > requested_limit;
     let sliced_items = raw_items
         .into_iter()
@@ -382,6 +391,14 @@ pub(crate) fn contract_event_page_for_query(
 
     Ok(ContractEventPage {
         items,
+        data_state: if raw_count == 0 {
+            "empty".to_string()
+        } else {
+            "fresh".to_string()
+        },
+        degraded: false,
+        error_code: None,
+        last_known_data_available: raw_count > 0,
         next_cursor,
         has_more,
         limit: requested_limit,
@@ -479,6 +496,14 @@ pub(crate) fn final_events_v2_for_query(
     let response = FinalEventsV2Response {
         active,
         closed,
+        data_state: if max_event_ts.is_some() {
+            "fresh".to_string()
+        } else {
+            "empty".to_string()
+        },
+        degraded: false,
+        error_code: None,
+        last_known_data_available: max_event_ts.is_some(),
         next_cursor,
         has_more,
         limit: requested_limit,
@@ -1149,13 +1174,19 @@ fn query_older_than(
     )
 }
 
-fn internal_error(error: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+pub(crate) fn internal_error(error: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
     tracing::warn!(error = %error, "contract_event_route_failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(serde_json::json!({
             "error": "internal_error",
             "reason": "contract_event_route_failed",
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": "contract_history_query_failed",
+            "errorMessage": "历史事件查询暂时不可用",
+            "servedAt": crate::normalizers::trade::now_ms(),
+            "lastKnownDataAvailable": true,
             "readOnly": true,
             "executionEnabled": false,
         })),

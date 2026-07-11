@@ -351,6 +351,8 @@ async fn contract_events_include_resolved_oi_context_fields() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_000.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: signal.ts,
@@ -358,6 +360,8 @@ async fn contract_events_include_resolved_oi_context_fields() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_420.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
         ])
         .unwrap();
@@ -448,6 +452,8 @@ async fn contract_events_mark_far_oi_snapshots_as_unavailable() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_000.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: signal.ts - 91_000,
@@ -455,6 +461,8 @@ async fn contract_events_mark_far_oi_snapshots_as_unavailable() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_420.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
         ])
         .unwrap();
@@ -504,6 +512,8 @@ async fn final_events_v2_include_resolved_oi_context_fields() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_000.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
             ContractOiSnapshot {
                 ts: signal.ts,
@@ -511,6 +521,8 @@ async fn final_events_v2_include_resolved_oi_context_fields() {
                 symbol: "BTC".to_string(),
                 oi_btc: 100_420.0,
                 oi_notional_usd: None,
+                ct_val_available: true,
+                evidence_degraded_reason: None,
             },
         ])
         .unwrap();
@@ -592,6 +604,43 @@ async fn contract_whale_timeline_route_reports_single_canonical_event_clock() {
     assert!(payload["views"]["latest"]["driftVsCanonicalSec"]
         .as_i64()
         .is_some());
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_timeline_reports_degraded_when_latest_query_fails() {
+    let state = seeded_contract_event_state();
+    let store = state.contract_whale_store().expect("contract whale store");
+    store
+        .with_connection(|conn| {
+            conn.execute("DROP TABLE contract_whale_signals", [])?;
+            Ok(())
+        })
+        .expect("drop signal table");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-whale/timeline?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("timeline response");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let payload: serde_json::Value = response.json().await.expect("timeline error json");
+    assert_eq!(payload["dataState"], "degraded");
+    assert_eq!(payload["errorCode"], "contract_history_query_failed");
+    assert_eq!(payload["lastKnownDataAvailable"], true);
 
     server.abort();
 }
@@ -1013,6 +1062,46 @@ async fn contract_whale_pipeline_debug_reports_zero_history_and_stale_latest_for
         payload["latest"]["items"][0]["staleReason"],
         "older_than_24h"
     );
+    assert_eq!(
+        payload["runtime"]["oiResolver"]["queryMode"],
+        "batch_per_exchange"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_pipeline_debug_reports_history_query_failure_instead_of_empty_history() {
+    let state = seeded_pipeline_debug_state();
+    let store = state.contract_whale_store().expect("contract whale store");
+    store
+        .with_connection(|conn| {
+            conn.execute("DROP TABLE contract_whale_signals", [])?;
+            Ok(())
+        })
+        .expect("drop signal table");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-whale/pipeline-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("pipeline debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("pipeline debug json");
+    assert_eq!(payload["history"]["contractWhaleSignalsRows"], 0);
+    assert_eq!(payload["error"], "history_query_failed");
 
     server.abort();
 }
@@ -1117,6 +1206,42 @@ async fn contract_whale_raw_flow_debug_reports_persisted_btc_flow_when_rows_exis
     assert_eq!(payload["contractFlow1s"]["exactSymbolRows"], 2);
     assert_eq!(payload["diagnosis"]["primaryReason"], "raw_flow_present");
     assert_eq!(payload["diagnosis"]["status"], "raw_flow_available");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn contract_whale_raw_flow_debug_reports_persistence_query_failure() {
+    let state = seeded_raw_flow_debug_state("BTC-PERP");
+    let store = state.contract_whale_store().expect("contract whale store");
+    store
+        .with_connection(|conn| {
+            conn.execute("DROP TABLE contract_flow_1s", [])?;
+            Ok(())
+        })
+        .expect("drop flow table");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-whale/raw-flow-debug?symbol=BTC&range=24h"
+        ))
+        .send()
+        .await
+        .expect("raw flow debug response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("raw flow debug json");
+    assert_eq!(payload["contractFlow1s"]["exactSymbolRows"], 0);
+    assert_eq!(payload["error"], "raw_flow_persistence_query_failed");
 
     server.abort();
 }

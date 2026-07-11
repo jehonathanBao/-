@@ -735,6 +735,8 @@ mod tests {
                 latest_snapshot_ts: 1_700_000_015_000,
                 peak_snapshot_ts: 1_700_000_015_000,
                 display_snapshot_kind: "peak".to_string(),
+                latest_snapshot: None,
+                peak_snapshot: None,
                 volume_accumulated: 4_280.0,
                 oi_accumulated: 0.0,
                 update_count: 3,

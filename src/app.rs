@@ -102,6 +102,7 @@ pub struct AppState {
 pub struct ContractWhaleRuntimeDiagnostics {
     pub producer_loop: ContractWhaleProducerLoopDiagnostics,
     pub discord_queue: ContractWhaleDiscordQueueDiagnostics,
+    pub oi_resolver: ContractWhaleOiResolverDiagnostics,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -123,6 +124,24 @@ pub struct ContractWhaleDiscordQueueDiagnostics {
     pub oldest_pending_age_sec: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleOiResolverDiagnostics {
+    pub query_mode: String,
+    pub consistent_source_count: usize,
+    pub coverage_changed: bool,
+}
+
+impl Default for ContractWhaleOiResolverDiagnostics {
+    fn default() -> Self {
+        Self {
+            query_mode: "batch_per_exchange".to_string(),
+            consistent_source_count: 0,
+            coverage_changed: false,
+        }
+    }
+}
+
 struct AppStateInner {
     config: AppConfig,
     booted_at_ms: i64,
@@ -138,6 +157,7 @@ struct AppStateInner {
     cwm_producer_last_completed_at: AtomicI64,
     cwm_producer_last_duration_ms: AtomicI64,
     cwm_producer_overlap_skipped: AtomicU64,
+    cwm_oi_resolver_diagnostics: Arc<RwLock<ContractWhaleOiResolverDiagnostics>>,
     cwm_emission_watermarks:
         Arc<RwLock<std::collections::BTreeMap<String, ContractWhaleEmissionFingerprint>>>,
     scan_log: ScanLogStore,
@@ -427,6 +447,9 @@ impl AppState {
                 cwm_producer_last_completed_at: AtomicI64::new(0),
                 cwm_producer_last_duration_ms: AtomicI64::new(0),
                 cwm_producer_overlap_skipped: AtomicU64::new(0),
+                cwm_oi_resolver_diagnostics: Arc::new(RwLock::new(
+                    ContractWhaleOiResolverDiagnostics::default(),
+                )),
                 cwm_emission_watermarks: Arc::new(RwLock::new(cwm_emission_watermarks)),
                 scan_log,
                 market_data_bus: bus,
@@ -699,6 +722,7 @@ impl AppState {
         let state = self.clone();
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(discord_auto_push_interval());
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 state.evaluate_discord_auto_push_once().await;
@@ -723,14 +747,18 @@ impl AppState {
         let state = self.clone();
         let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(contract_whale_auto_push_interval());
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            if contract_whale_producer_skip_missed_ticks() {
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
             loop {
                 interval.tick().await;
-                if state
-                    .inner
-                    .cwm_producer_running
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
+                let prevent_overlap = contract_whale_producer_prevent_overlap();
+                if prevent_overlap
+                    && state
+                        .inner
+                        .cwm_producer_running
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
                 {
                     state
                         .inner
@@ -756,10 +784,12 @@ impl AppState {
                     CWM_LOG_PREFIX
                 );
                 state.evaluate_contract_whale_auto_push_once().await;
-                state
-                    .inner
-                    .cwm_producer_running
-                    .store(false, Ordering::SeqCst);
+                if prevent_overlap {
+                    state
+                        .inner
+                        .cwm_producer_running
+                        .store(false, Ordering::SeqCst);
+                }
                 let completed_at = crate::normalizers::trade::now_ms();
                 state
                     .inner
@@ -800,8 +830,10 @@ impl AppState {
         }
         let state = self.clone();
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut interval = tokio::time::interval(contract_whale_discord_outbox_poll_interval());
+            if contract_whale_discord_outbox_skip_missed_ticks() {
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
             loop {
                 interval.tick().await;
                 state.process_contract_whale_discord_outbox_once().await;
@@ -823,7 +855,10 @@ impl AppState {
         let now = crate::normalizers::trade::now_ms();
         let claimed_store = store.clone();
         let claimed = match tokio::task::spawn_blocking(move || {
-            claimed_store.claim_contract_whale_discord_outbox(20, now)
+            claimed_store.claim_contract_whale_discord_outbox(
+                contract_whale_discord_outbox_batch_size(),
+                now,
+            )
         })
         .await
         {
@@ -1024,7 +1059,7 @@ impl AppState {
     }
 
     async fn poll_contract_whale_market_context_once(&self, client: &reqwest::Client) {
-        let runtime_config = contract_whale_runtime_config();
+        let runtime_config = Arc::new(contract_whale_runtime_config());
         let store = self.contract_whale_store();
         if store.is_none() {
             return;
@@ -1039,7 +1074,9 @@ impl AppState {
         let mut funding_snapshots = Vec::<ContractFundingSnapshot>::new();
         let fallback_ts = crate::normalizers::trade::now_ms();
 
-        for symbol in symbols {
+        let symbol_results = futures_util::future::join_all(symbols.into_iter().map(|symbol| {
+            let runtime_config = runtime_config.clone();
+            async move {
             let binance_oi = async {
                 if runtime_config
                     .exchanges
@@ -1079,23 +1116,40 @@ impl AppState {
                     .okx
                     .market_enabled(ContractWhaleMarketType::Oi)
                 {
-                    match collector_okx::fetch_okx_contract_value_base(client, &symbol).await {
-                        Ok(Some(ct_val_base)) => {
-                            collector_okx::fetch_okx_open_interest_snapshot_for_symbol(
-                                client,
-                                &symbol,
-                                ct_val_base,
-                            )
-                            .await
+                    let fallback_ct_val =
+                        runtime_config.okx_instruments.fallback_ct_val_base(&symbol);
+                    match collector_okx::resolve_okx_contract_value_with_cache(
+                        client,
+                        &symbol,
+                        runtime_config.okx_instruments.metadata_enabled,
+                        runtime_config.okx_instruments.refresh_minutes,
+                        fallback_ct_val,
+                    )
+                    .await
+                    {
+                        Ok(resolution) if resolution.ct_val_base.is_some() => {
+                            let mut snapshot =
+                                collector_okx::fetch_okx_open_interest_snapshot_for_symbol(
+                                    client,
+                                    &symbol,
+                                    resolution.ct_val_base.unwrap_or_default(),
+                                )
+                                .await?;
+                            if let Some(snapshot) = snapshot.as_mut() {
+                                snapshot.ct_val_available = resolution.ct_val_available;
+                                snapshot.evidence_degraded_reason = resolution.reason.clone();
+                            }
+                            Ok(snapshot)
                         }
-                        Ok(None) => {
+                        Ok(resolution) => {
                             tracing::warn!(
                                 target: CWM_LOG_TARGET,
                                 event = cwm_log_events::ERROR,
                                 symbol = symbol.as_str(),
                                 exchange = "okx",
                                 context = "ct_val",
-                                "{} OKX instrument metadata missing ctVal; OI snapshot skipped",
+                                reason = ?resolution.reason,
+                                "{} OKX instrument metadata unavailable and no configured fallback; OI snapshot skipped",
                                 CWM_LOG_PREFIX
                             );
                             Ok(None)
@@ -1120,6 +1174,12 @@ impl AppState {
             let (binance_oi, binance_funding, okx_oi, okx_funding) =
                 tokio::join!(binance_oi, binance_funding, okx_oi, okx_funding);
 
+                (symbol, (binance_oi, binance_funding, okx_oi, okx_funding))
+            }
+        }))
+        .await;
+
+        for (symbol, (binance_oi, binance_funding, okx_oi, okx_funding)) in symbol_results {
             if runtime_config
                 .exchanges
                 .binance
@@ -1275,8 +1335,6 @@ impl AppState {
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
             let signals = self.filter_contract_whale_emissions(response.items);
-            let _ =
-                persist_contract_whale_signals_nonblocking(store.clone(), signals.clone()).await;
             if contract_whale_discord_outbox_enabled() {
                 let cooldown_store = global_contract_whale_discord_cooldown_store();
                 let now = crate::normalizers::trade::now_ms();
@@ -1315,39 +1373,44 @@ impl AppState {
                     .cloned()
                     .collect::<Vec<_>>();
                 if let Some(store) = store.clone() {
-                    if !queued.is_empty() {
-                        let queued_count = queued.len();
-                        match tokio::task::spawn_blocking(move || {
-                            store.enqueue_contract_whale_discord_outbox(&queued, now)
-                        })
-                        .await
-                        {
-                            Ok(Ok(inserted)) => tracing::info!(
-                                target: CWM_LOG_TARGET,
-                                event = cwm_log_events::DISCORD_ELIGIBLE,
-                                queued = inserted,
-                                eligible = queued_count,
-                                "{} discord outbox queued eligible signals",
-                                CWM_LOG_PREFIX
-                            ),
-                            Ok(Err(error)) => tracing::warn!(
-                                target: CWM_LOG_TARGET,
-                                event = cwm_log_events::ERROR,
-                                error = %error,
-                                "{} discord outbox enqueue failed",
-                                CWM_LOG_PREFIX
-                            ),
-                            Err(error) => tracing::warn!(
-                                target: CWM_LOG_TARGET,
-                                event = cwm_log_events::ERROR,
-                                error = %error,
-                                "{} discord outbox enqueue task failed",
-                                CWM_LOG_PREFIX
-                            ),
-                        }
+                    let signal_count = signals.len();
+                    let queued_count = queued.len();
+                    let transaction_result = tokio::task::spawn_blocking(move || {
+                        store.upsert_contract_whale_signals_with_outbox(&signals, &queued, now)
+                    })
+                    .await;
+                    match transaction_result {
+                        Ok(Ok((written, inserted))) => tracing::info!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::DISCORD_ELIGIBLE,
+                            signal_count,
+                            written,
+                            queued = inserted,
+                            eligible = queued_count,
+                            "{} signal and discord outbox transaction committed",
+                            CWM_LOG_PREFIX
+                        ),
+                        Ok(Err(error)) => tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            error = %error,
+                            "{} signal and discord outbox transaction failed",
+                            CWM_LOG_PREFIX
+                        ),
+                        Err(error) => tracing::warn!(
+                            target: CWM_LOG_TARGET,
+                            event = cwm_log_events::ERROR,
+                            error = %error,
+                            "{} signal and discord outbox transaction task failed",
+                            CWM_LOG_PREFIX
+                        ),
                     }
+                } else {
+                    let _ = persist_contract_whale_signals_nonblocking(None, signals).await;
                 }
             } else {
+                let _ = persist_contract_whale_signals_nonblocking(store.clone(), signals.clone())
+                    .await;
                 for signal in signals {
                     let outcome =
                         notify_contract_whale_discord(&settings, &signal, store.clone()).await;
@@ -1758,7 +1821,15 @@ impl AppState {
                 failed: queue.failed,
                 oldest_pending_age_sec: queue.oldest_pending_age_sec,
             },
+            oi_resolver: self.inner.cwm_oi_resolver_diagnostics.read().clone(),
         }
+    }
+
+    pub fn record_contract_whale_oi_resolver_diagnostics(
+        &self,
+        diagnostics: ContractWhaleOiResolverDiagnostics,
+    ) {
+        *self.inner.cwm_oi_resolver_diagnostics.write() = diagnostics;
     }
 
     pub fn cached_final_events_v2(&self, key: &str) -> Option<(i64, FinalEventsV2Response)> {
@@ -1914,23 +1985,70 @@ fn discord_auto_push_interval() -> std::time::Duration {
 }
 
 fn contract_whale_auto_push_interval() -> std::time::Duration {
+    let configured = contract_whale_runtime_config().producer.interval_ms;
     let ms = std::env::var("CONTRACT_WHALE_AUTO_PUSH_INTERVAL_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| (1_000..=60_000).contains(value))
-        .unwrap_or(2_000);
+        .unwrap_or(configured.clamp(1_000, 60_000));
     std::time::Duration::from_millis(ms)
 }
 
 fn contract_whale_discord_outbox_enabled() -> bool {
-    std::env::var("CONTRACT_WHALE_DISCORD_OUTBOX_ENABLED")
+    env_bool_setting(
+        "CONTRACT_WHALE_DISCORD_OUTBOX_ENABLED",
+        contract_whale_runtime_config().discord_outbox.enabled,
+    )
+}
+
+fn contract_whale_discord_outbox_poll_interval() -> std::time::Duration {
+    let configured = contract_whale_runtime_config()
+        .discord_outbox
+        .poll_interval_ms;
+    let ms = std::env::var("CONTRACT_WHALE_DISCORD_OUTBOX_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (100..=60_000).contains(value))
+        .unwrap_or(configured.clamp(100, 60_000));
+    std::time::Duration::from_millis(ms)
+}
+
+fn contract_whale_discord_outbox_batch_size() -> usize {
+    let configured = contract_whale_runtime_config().discord_outbox.batch_size;
+    std::env::var("CONTRACT_WHALE_DISCORD_OUTBOX_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=100).contains(value))
+        .unwrap_or(configured.clamp(1, 100))
+}
+
+fn contract_whale_discord_outbox_skip_missed_ticks() -> bool {
+    env_bool_setting("CONTRACT_WHALE_DISCORD_OUTBOX_SKIP_MISSED_TICKS", true)
+}
+
+fn contract_whale_producer_prevent_overlap() -> bool {
+    env_bool_setting(
+        "CONTRACT_WHALE_PRODUCER_PREVENT_OVERLAP",
+        contract_whale_runtime_config().producer.prevent_overlap,
+    )
+}
+
+fn contract_whale_producer_skip_missed_ticks() -> bool {
+    env_bool_setting(
+        "CONTRACT_WHALE_PRODUCER_SKIP_MISSED_TICKS",
+        contract_whale_runtime_config().producer.skip_missed_ticks,
+    )
+}
+
+fn env_bool_setting(name: &str, default: bool) -> bool {
+    std::env::var(name)
         .ok()
         .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Some(true),
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
-        .unwrap_or(true)
+        .unwrap_or(default)
 }
 
 fn contract_whale_outcome_calibration_enabled() -> bool {
@@ -1949,11 +2067,25 @@ fn is_contract_whale_discord_retryable(reason: &str) -> bool {
 }
 
 fn contract_whale_discord_retry_delay_ms(signal_id: &str, attempts: usize) -> i64 {
-    let exponential_ms = 1_000_i64.saturating_mul(1_i64 << attempts.min(5));
+    let outbox_config = contract_whale_runtime_config().discord_outbox;
+    let base_retry_ms = outbox_config
+        .base_retry_seconds
+        .max(1)
+        .saturating_mul(1_000);
+    let max_retry_ms = outbox_config
+        .max_retry_seconds
+        .max(outbox_config.base_retry_seconds)
+        .saturating_mul(1_000);
+    let exponential_ms = base_retry_ms
+        .saturating_mul(1_i64 << attempts.min(8))
+        .min(max_retry_ms);
+    let jitter_range = (exponential_ms / 5).max(1);
     let jitter_ms = signal_id.bytes().fold(0_u64, |hash, byte| {
         hash.wrapping_mul(31).wrapping_add(byte as u64)
-    }) % 401;
-    exponential_ms.saturating_add(jitter_ms as i64 - 200)
+    }) % (jitter_range as u64 * 2 + 1);
+    exponential_ms
+        .saturating_add(jitter_ms as i64 - jitter_range)
+        .clamp(1_000, max_retry_ms)
 }
 
 fn contract_whale_market_context_poll_interval() -> std::time::Duration {

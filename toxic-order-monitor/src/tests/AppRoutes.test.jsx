@@ -34,6 +34,12 @@ describe("App asset routes", () => {
 
     expect(await screen.findByTestId("current-path")).toHaveTextContent("/contract-whale/btc");
   });
+
+  it("does not register the removed altcoin manipulation route", async () => {
+    renderApp("/altcoin-manipulation");
+
+    expect(await screen.findByTestId("current-path")).toHaveTextContent("/");
+  });
 });
 
 function renderApp(path) {

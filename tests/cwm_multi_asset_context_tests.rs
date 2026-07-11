@@ -6,7 +6,7 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
         normalize_binance_open_interest_json_for_symbol, normalize_okx_funding_rate_json_for_inst,
         normalize_okx_open_interest_json_for_inst,
     },
-    types::ContractLiquidationBucket,
+    types::{ContractExchange, ContractLiquidationBucket, ContractOiSnapshot},
 };
 
 #[test]
@@ -185,6 +185,29 @@ fn alt_missing_context_degrades_without_btc_fallback() {
     assert_eq!(context_v2.funding_rate, None);
     assert!(context_v2.oi_stale);
     assert!(context_v2.funding_stale);
+}
+
+#[test]
+fn market_context_marks_okx_ctval_fallback_as_degraded_evidence() {
+    let now = 1_700_000_300_000;
+    let snapshots = vec![ContractOiSnapshot {
+        ts: now,
+        exchange: ContractExchange::Okx,
+        symbol: "ETH".to_string(),
+        oi_btc: 100.0,
+        oi_notional_usd: Some(300_000.0),
+        ct_val_available: false,
+        evidence_degraded_reason: Some("okx_metadata_fallback".to_string()),
+    }];
+
+    let context = market_context_from_snapshots(&snapshots, &[], "ETH", now);
+
+    assert!(!context.ct_val_available);
+    assert!(context.evidence_degraded);
+    assert_eq!(
+        context.evidence_reason.as_deref(),
+        Some("okx_metadata_fallback")
+    );
 }
 
 #[test]

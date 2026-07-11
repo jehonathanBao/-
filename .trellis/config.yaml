@@ -1,0 +1,27 @@
+project:
+  name: toxic-order-monitor-rs
+  product_file: PRODUCT.md
+  platforms:
+    - codex
+  packages:
+    - backend
+    - frontend
+    - ops
+  default_task_type: fullstack
+
+boundaries:
+  read_only_default: true
+  auto_trading: forbidden
+  destructive_ops_require_user_intent: true
+  server_sync_requires_explicit_request: true
+
+validation:
+  backend:
+    - cargo check
+  frontend:
+    - npm --prefix toxic-order-monitor run build
+
+paths:
+  frontend_root: toxic-order-monitor
+  backend_root: src
+  docs_root: docs

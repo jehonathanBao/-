@@ -11,7 +11,6 @@ export default function App() {
       <Route path="/contract-whale" element={<Navigate to="/contract-whale/btc" replace />} />
       <Route path="/contract-whale/:symbol" element={<MainstreamAssetRoute basePath="/contract-whale" />} />
       <Route path="/liquidation-cascade" element={<Dashboard />} />
-      <Route path="/altcoin-manipulation" element={<Dashboard />} />
       <Route path="/alt-contract-monitor" element={<Dashboard />} />
       <Route path="/new-token-watch" element={<Dashboard />} />
       <Route path="/spot-monitor" element={<Navigate to="/spot-monitor/btc" replace />} />

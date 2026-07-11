@@ -182,6 +182,55 @@ ct_val_missing_penalty = 20
 flow_1s_days = 14
 signals_days = 365
 
+[contract_whale_monitor.lifecycle]
+update_window_seconds = 30
+close_after_seconds = 120
+unique_turnover_enabled = true
+
+[contract_whale_monitor.emission]
+enabled = true
+score_delta_min = 5
+volume_delta_ratio_min = 0.10
+force_refresh_seconds = 15
+
+[contract_whale_monitor.classification]
+oi_context_enabled = true
+oi_batch_resolver_enabled = true
+oi_consensus_guard_enabled = true
+evidence_fail_closed_enabled = true
+oi_lookup_max_gap_seconds = 90
+
+[contract_whale_monitor.classification.volatility]
+enabled = true
+min_samples = 60
+ewma_alpha = 0.08
+no_follow_multiplier = 0.20
+follow_multiplier = 0.35
+strong_follow_multiplier = 0.60
+max_staleness_seconds = 30
+
+[contract_whale_monitor.producer]
+interval_ms = 2000
+skip_missed_ticks = true
+prevent_overlap = true
+
+[contract_whale_monitor.discord_outbox]
+enabled = true
+poll_interval_ms = 1000
+batch_size = 20
+max_attempts = 6
+base_retry_seconds = 2
+max_retry_seconds = 300
+
+[contract_whale_monitor.okx_instruments]
+metadata_enabled = true
+refresh_minutes = 60
+fallback_quality_penalty = 10
+# Explicit fallback only; every fallback snapshot is marked evidence-degraded.
+[contract_whale_monitor.okx_instruments.fallback_ct_val_base]
+BTC = 0.01
+ETH = 0.1
+
 [contract_whale_monitor.threshold_profiles.binance_bitfinex]
 active_contract_sources = ["binance", "bitfinex"]
 

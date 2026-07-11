@@ -161,6 +161,12 @@ pub trait ContractWhaleRepo {
         &self,
         signals: &[ContractWhaleSignal],
     ) -> anyhow::Result<usize>;
+    fn upsert_contract_whale_signals_with_outbox(
+        &self,
+        signals: &[ContractWhaleSignal],
+        outbox_signals: &[ContractWhaleSignal],
+        now_ms: i64,
+    ) -> anyhow::Result<(usize, usize)>;
     fn list_contract_whale_signals(
         &self,
         symbol: &str,
@@ -500,11 +506,14 @@ impl ContractWhaleRepo for SqliteStore {
                 let mut stmt = tx.prepare(
                     r#"
                     INSERT INTO contract_oi_snapshots (
-                      ts, exchange, symbol, oi_btc, oi_notional_usd, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                      ts, exchange, symbol, oi_btc, oi_notional_usd,
+                      ct_val_available, evidence_degraded_reason, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                     ON CONFLICT(ts, exchange, symbol) DO UPDATE SET
                       oi_btc = excluded.oi_btc,
                       oi_notional_usd = excluded.oi_notional_usd,
+                      ct_val_available = excluded.ct_val_available,
+                      evidence_degraded_reason = excluded.evidence_degraded_reason,
                       created_at = excluded.created_at
                     "#,
                 )?;
@@ -516,6 +525,8 @@ impl ContractWhaleRepo for SqliteStore {
                         snapshot.symbol,
                         snapshot.oi_btc,
                         snapshot.oi_notional_usd,
+                        snapshot.ct_val_available,
+                        snapshot.evidence_degraded_reason,
                         now,
                     ])
                     .context("failed to upsert contract oi snapshot")?;
@@ -536,7 +547,8 @@ impl ContractWhaleRepo for SqliteStore {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT ts, exchange, symbol, oi_btc, oi_notional_usd
+                SELECT ts, exchange, symbol, oi_btc, oi_notional_usd,
+                       ct_val_available, evidence_degraded_reason
                 FROM contract_oi_snapshots
                 WHERE symbol = ?1
                   AND ts >= ?2
@@ -551,6 +563,8 @@ impl ContractWhaleRepo for SqliteStore {
                     symbol: row.get(2)?,
                     oi_btc: row.get(3)?,
                     oi_notional_usd: row.get(4)?,
+                    ct_val_available: row.get::<_, i64>(5)? != 0,
+                    evidence_degraded_reason: row.get(6)?,
                 })
             })?;
             let mut snapshots = Vec::new();
@@ -583,7 +597,8 @@ impl ContractWhaleRepo for SqliteStore {
         let snapshots = self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT ts, exchange, symbol, oi_btc, oi_notional_usd
+                SELECT ts, exchange, symbol, oi_btc, oi_notional_usd,
+                       ct_val_available, evidence_degraded_reason
                 FROM contract_oi_snapshots
                 WHERE symbol = ?1
                   AND ts >= ?2
@@ -600,6 +615,8 @@ impl ContractWhaleRepo for SqliteStore {
                         symbol: row.get(2)?,
                         oi_btc: row.get(3)?,
                         oi_notional_usd: row.get(4)?,
+                        ct_val_available: row.get::<_, i64>(5)? != 0,
+                        evidence_degraded_reason: row.get(6)?,
                     })
                 },
             )?;
@@ -703,92 +720,49 @@ impl ContractWhaleRepo for SqliteStore {
         }
         self.with_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let mut stmt = tx.prepare(
-                r#"
-                INSERT INTO contract_whale_signals (
-                  signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
-                  total_volume_btc, net_volume_btc, total_notional_usd, dominance,
-                  price_start, price_end, price_move_pct, main_exchange, market_type,
-                  source_role, exchanges_json, active_sources_json, threshold_profile,
-                  dynamic_multiple, data_quality, discord_eligible, discord_sent,
-                  discord_sent_at, payload_json, created_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                          NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
-                ON CONFLICT(signal_id) DO UPDATE SET
-                  ts = excluded.ts,
-                  symbol = excluded.symbol,
-                  window_sec = excluded.window_sec,
-                  signal_type = excluded.signal_type,
-                  direction = excluded.direction,
-                  severity = excluded.severity,
-                  score = excluded.score,
-                  total_volume_btc = excluded.total_volume_btc,
-                  net_volume_btc = excluded.net_volume_btc,
-                  total_notional_usd = excluded.total_notional_usd,
-                  dominance = excluded.dominance,
-                  price_move_pct = excluded.price_move_pct,
-                  main_exchange = excluded.main_exchange,
-                  market_type = excluded.market_type,
-                  source_role = excluded.source_role,
-                  exchanges_json = excluded.exchanges_json,
-                  active_sources_json = excluded.active_sources_json,
-                  threshold_profile = excluded.threshold_profile,
-                  dynamic_multiple = excluded.dynamic_multiple,
-                  data_quality = excluded.data_quality,
-                  discord_eligible = excluded.discord_eligible,
-                  discord_sent = excluded.discord_sent,
-                  discord_sent_at = excluded.discord_sent_at,
-                  payload_json = excluded.payload_json,
-                  created_at = excluded.created_at
-                "#,
+            let written = upsert_contract_whale_signals_in_transaction(
+                &tx,
+                signals,
+                crate::normalizers::trade::now_ms(),
             )?;
-            let now = crate::normalizers::trade::now_ms();
-            let mut written = 0;
-            for signal in signals {
-                let signal_type = enum_value(signal.signal_type)?;
-                let direction = enum_value(signal.direction)?;
-                let severity = enum_value(signal.severity)?;
-                let market_type = enum_value(signal.market_type)?;
-                let source_role = enum_value(signal.source_role)?;
-                let exchanges_json = serde_json::to_string(&signal.exchanges)?;
-                let active_sources_json = serde_json::to_string(&signal.active_sources)?;
-                let payload_json = serde_json::to_string(signal)?;
-                stmt.execute(
-                    params![
-                        signal.id,
-                        signal.ts,
-                        signal.symbol,
-                        signal.window_sec as i64,
-                        signal_type,
-                        direction,
-                        severity,
-                        signal.score as i64,
-                        signal.total_volume_btc,
-                        signal.net_volume_btc,
-                        signal.total_notional_usd,
-                        signal.dominance,
-                        signal.price_move_pct,
-                        signal.main_exchange,
-                        market_type,
-                        source_role,
-                        exchanges_json,
-                        active_sources_json,
-                        signal.threshold_profile,
-                        signal.dynamic_multiple,
-                        signal.data_quality as i64,
-                        bool_to_int(signal.discord_eligible),
-                        bool_to_int(signal.discord_sent),
-                        signal.discord_sent_at,
-                        payload_json,
-                        now,
-                    ],
-                )
-                .context("failed to upsert contract whale signal")?;
-                written += 1;
-            }
-            drop(stmt);
             tx.commit()?;
             Ok(written)
+        })
+    }
+
+    fn upsert_contract_whale_signals_with_outbox(
+        &self,
+        signals: &[ContractWhaleSignal],
+        outbox_signals: &[ContractWhaleSignal],
+        now_ms: i64,
+    ) -> anyhow::Result<(usize, usize)> {
+        if signals.is_empty() && outbox_signals.is_empty() {
+            return Ok((0, 0));
+        }
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let written = upsert_contract_whale_signals_in_transaction(&tx, signals, now_ms)?;
+            let mut outbox_stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_discord_outbox (
+                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
+                ON CONFLICT(signal_id) DO NOTHING
+                "#,
+            )?;
+            let mut queued = 0;
+            for signal in outbox_signals {
+                queued += outbox_stmt.execute(params![
+                    signal.id,
+                    signal.symbol,
+                    serde_json::to_string(signal)?,
+                    now_ms,
+                    now_ms,
+                ])?;
+            }
+            drop(outbox_stmt);
+            tx.commit()?;
+            Ok((written, queued))
         })
     }
 
@@ -1703,6 +1677,8 @@ pub fn resolve_oi_window_from_snapshots(
     let mut after_sources = Vec::new();
     let mut oi_before = 0.0;
     let mut oi_after = 0.0;
+    let mut metadata_degraded = false;
+    let mut metadata_degraded_reason = None;
 
     for (exchange, snapshots) in snapshots_by_exchange.iter_mut() {
         snapshots.sort_by_key(|snapshot| snapshot.ts);
@@ -1736,6 +1712,14 @@ pub fn resolve_oi_window_from_snapshots(
         if !before.oi_btc.is_finite() || before.oi_btc <= 0.0 || !after.oi_btc.is_finite() {
             excluded_sources.push(format!("{exchange_key}:invalid_oi_value"));
             continue;
+        }
+        if !before.ct_val_available || !after.ct_val_available {
+            metadata_degraded = true;
+            metadata_degraded_reason = before
+                .evidence_degraded_reason
+                .clone()
+                .or_else(|| after.evidence_degraded_reason.clone())
+                .or_else(|| Some("ct_val_unavailable".to_string()));
         }
 
         let oi_delta_btc = after.oi_btc - before.oi_btc;
@@ -1789,8 +1773,10 @@ pub fn resolve_oi_window_from_snapshots(
         let negative = directional.len().saturating_sub(positive);
         Some(positive * 3 >= directional.len() * 2 || negative * 3 >= directional.len() * 2)
     };
-    let evidence_degraded = exchanges.len() == 1 || source_coverage_changed;
-    let evidence_reason = if exchanges.len() == 1 {
+    let evidence_degraded = exchanges.len() == 1 || source_coverage_changed || metadata_degraded;
+    let evidence_reason = if metadata_degraded {
+        metadata_degraded_reason
+    } else if exchanges.len() == 1 {
         Some("single_consistent_oi_source".to_string())
     } else if source_coverage_changed {
         Some("oi_source_coverage_changed".to_string())
@@ -1826,6 +1812,97 @@ fn enum_value<T: serde::Serialize>(value: T) -> anyhow::Result<String> {
         .as_str()
         .unwrap_or("unknown")
         .to_string())
+}
+
+fn upsert_contract_whale_signals_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    signals: &[ContractWhaleSignal],
+    now: i64,
+) -> anyhow::Result<usize> {
+    if signals.is_empty() {
+        return Ok(0);
+    }
+    let mut stmt = tx.prepare(
+        r#"
+        INSERT INTO contract_whale_signals (
+          signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
+          total_volume_btc, net_volume_btc, total_notional_usd, dominance,
+          price_start, price_end, price_move_pct, main_exchange, market_type,
+          source_role, exchanges_json, active_sources_json, threshold_profile,
+          dynamic_multiple, data_quality, discord_eligible, discord_sent,
+          discord_sent_at, payload_json, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                  NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+        ON CONFLICT(signal_id) DO UPDATE SET
+          ts = excluded.ts,
+          symbol = excluded.symbol,
+          window_sec = excluded.window_sec,
+          signal_type = excluded.signal_type,
+          direction = excluded.direction,
+          severity = excluded.severity,
+          score = excluded.score,
+          total_volume_btc = excluded.total_volume_btc,
+          net_volume_btc = excluded.net_volume_btc,
+          total_notional_usd = excluded.total_notional_usd,
+          dominance = excluded.dominance,
+          price_move_pct = excluded.price_move_pct,
+          main_exchange = excluded.main_exchange,
+          market_type = excluded.market_type,
+          source_role = excluded.source_role,
+          exchanges_json = excluded.exchanges_json,
+          active_sources_json = excluded.active_sources_json,
+          threshold_profile = excluded.threshold_profile,
+          dynamic_multiple = excluded.dynamic_multiple,
+          data_quality = excluded.data_quality,
+          discord_eligible = excluded.discord_eligible,
+          discord_sent = excluded.discord_sent,
+          discord_sent_at = excluded.discord_sent_at,
+          payload_json = excluded.payload_json,
+          created_at = excluded.created_at
+        "#,
+    )?;
+    let mut written = 0;
+    for signal in signals {
+        let signal_type = enum_value(signal.signal_type)?;
+        let direction = enum_value(signal.direction)?;
+        let severity = enum_value(signal.severity)?;
+        let market_type = enum_value(signal.market_type)?;
+        let source_role = enum_value(signal.source_role)?;
+        let exchanges_json = serde_json::to_string(&signal.exchanges)?;
+        let active_sources_json = serde_json::to_string(&signal.active_sources)?;
+        let payload_json = serde_json::to_string(signal)?;
+        stmt.execute(params![
+            signal.id,
+            signal.ts,
+            signal.symbol,
+            signal.window_sec as i64,
+            signal_type,
+            direction,
+            severity,
+            signal.score as i64,
+            signal.total_volume_btc,
+            signal.net_volume_btc,
+            signal.total_notional_usd,
+            signal.dominance,
+            signal.price_move_pct,
+            signal.main_exchange,
+            market_type,
+            source_role,
+            exchanges_json,
+            active_sources_json,
+            signal.threshold_profile,
+            signal.dynamic_multiple,
+            signal.data_quality as i64,
+            bool_to_int(signal.discord_eligible),
+            bool_to_int(signal.discord_sent),
+            signal.discord_sent_at,
+            payload_json,
+            now,
+        ])
+        .context("failed to upsert contract whale signal")?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 fn exchange_from_key(value: &str) -> ContractExchange {

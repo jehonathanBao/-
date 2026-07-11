@@ -211,6 +211,8 @@ pub const MIGRATIONS: &[&str] = &[
       symbol TEXT NOT NULL,
       oi_btc REAL NOT NULL,
       oi_notional_usd REAL,
+      ct_val_available INTEGER NOT NULL DEFAULT 1,
+      evidence_degraded_reason TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       PRIMARY KEY (ts, exchange, symbol)
     );

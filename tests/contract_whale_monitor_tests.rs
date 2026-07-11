@@ -41,6 +41,20 @@ fn three_exchange_config() -> ContractWhaleRuntimeConfig {
 }
 
 #[test]
+fn reliability_runtime_defaults_are_explicit_and_conservative() {
+    let config = ContractWhaleRuntimeConfig::default();
+    assert_eq!(config.producer.interval_ms, 2_000);
+    assert!(config.producer.skip_missed_ticks);
+    assert!(config.producer.prevent_overlap);
+    assert!(config.discord_outbox.enabled);
+    assert_eq!(config.discord_outbox.poll_interval_ms, 1_000);
+    assert_eq!(config.discord_outbox.batch_size, 20);
+    assert_eq!(config.discord_outbox.max_attempts, 6);
+    assert_eq!(config.discord_outbox.base_retry_seconds, 2);
+    assert_eq!(config.discord_outbox.max_retry_seconds, 300);
+}
+
+#[test]
 fn normalizers_unify_contract_trade_units_to_btc_and_usd() {
     let binance = normalize_binance_agg_trade(1_700_000_000_000, 70_000.0, 2.5, false)
         .expect("binance trade");
@@ -1443,6 +1457,10 @@ fn lifecycle_keeps_peak_snapshot_separate_from_latest_update() {
     assert_eq!(lifecycle["latestSnapshotTs"], latest.ts);
     assert_eq!(lifecycle["peakSnapshotTs"], peak.ts);
     assert_eq!(lifecycle["displaySnapshotKind"], "peak");
+    assert_eq!(lifecycle["latestSnapshot"]["ts"], latest.ts);
+    assert_eq!(lifecycle["latestSnapshot"]["totalVolumeBtc"], 600.0);
+    assert_eq!(lifecycle["peakSnapshot"]["ts"], peak.ts);
+    assert_eq!(lifecycle["peakSnapshot"]["totalVolumeBtc"], 1_000.0);
 }
 
 #[test]
@@ -1690,6 +1708,8 @@ fn detector_marks_liquidation_suspected_and_reduces_master_confidence() {
     stats.market_context = ContractWhaleMarketContext {
         context_expected: true,
         ct_val_available: true,
+        evidence_degraded: false,
+        evidence_reason: None,
         oi_available: true,
         funding_available: true,
         oi_change_1m_btc: Some(-400.0),

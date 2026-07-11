@@ -85,46 +85,6 @@ vi.mock("../api/liquidationCascade.js", () => ({
       error: null,
     }),
   ),
-  fetchAltcoinManipulation: vi.fn(() =>
-    Promise.resolve({
-      data: {
-        symbol: "ASTER",
-        regime: "MANIPULATION",
-        bias: "SHORT",
-        confidence: 0.72,
-        manipulationScore: 0.81,
-        pumpDumpScore: 0.64,
-        signals: ["FAKE_BREAKOUT"],
-        metrics: {},
-      },
-      error: null,
-    }),
-  ),
-  fetchAltcoinSignals: vi.fn((symbol = "ASTERUSDT") => {
-    const baseSymbol = String(symbol).replace(/USDT$/i, "").toUpperCase();
-    const isZec = baseSymbol === "ZEC";
-    return Promise.resolve({
-      data: {
-        symbol: baseSymbol,
-        regime: isZec ? "MANIPULATION_MEDIUM" : "MANIPULATION_HIGH",
-        bias: isZec ? "NEUTRAL" : "SHORT",
-        confidence: isZec ? 0.61 : 0.72,
-        manipulationScore: isZec ? 0.58 : 0.81,
-        oiSignalScore: isZec ? 0.44 : 0.76,
-        volumeSignalScore: isZec ? 0.63 : 0.69,
-        fundingSignalScore: isZec ? 0.31 : 0.55,
-        priceSignalScore: isZec ? 0.57 : 0.61,
-        pumpDumpScore: isZec ? 0.52 : 0.64,
-        signals: ["OI_DIVERGENCE", `${baseSymbol}_FLOW_SIGNAL`],
-        riskTags: ["PUMP_RISK"],
-        metrics: {
-          oi_signal_score: isZec ? 0.44 : 0.76,
-          volume_signal_score: isZec ? 0.63 : 0.69,
-        },
-      },
-      error: null,
-    });
-  }),
   fetchMarketRegime: vi.fn(() =>
     Promise.resolve({
       data: {
@@ -133,25 +93,6 @@ vi.mock("../api/liquidationCascade.js", () => ({
         confidence: 0.76,
         directionBias: "SHORT",
         signals: ["FUNDING_STRESS"],
-      },
-      error: null,
-    }),
-  ),
-  fetchManipulationAssessment: vi.fn(() =>
-    Promise.resolve({ data: { symbol: "BTCUSDT", score: 0.64, signals: ["FAKE_BREAKOUT"] }, error: null }),
-  ),
-  fetchMarketSignalAssessment: vi.fn(() =>
-    Promise.resolve({
-      data: {
-        symbol: "BTCUSDT",
-        regime: "LIQUIDATION",
-        confidence: 0.74,
-        manipulationScore: 0.64,
-        directionBias: "SHORT",
-        signals: ["LIQUIDITY_VOID"],
-        adjustedSignalStrength: 0.58,
-        allowedSignalFamily: "mean_reversion_only",
-        riskNote: "liquidation regime active",
       },
       error: null,
     }),
@@ -302,7 +243,9 @@ describe("Dashboard interactions", () => {
     expect(screen.getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("href", "/contract-whale/eth");
     expect(screen.queryByRole("link", { name: "BTC/ETH 合约监控" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
+    expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "山寨合约异常" })).toHaveAttribute("href", "/alt-contract-monitor");
+    expect(screen.getByRole("link", { name: "新币合约监控" })).toHaveAttribute("href", "/new-token-watch");
     expect(screen.getByRole("link", { name: "BTC 现货监控" })).toHaveAttribute("href", "/spot-monitor/btc");
     expect(screen.getByRole("link", { name: "ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor/eth");
     expect(screen.queryByRole("link", { name: "BTC/ETH 现货监控" })).not.toBeInTheDocument();
@@ -338,29 +281,11 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
   });
 
-  it("opens the standalone altcoin manipulation monitor route", async () => {
-    renderDashboard("/altcoin-manipulation");
+  it("does not expose the removed altcoin manipulation page", () => {
+    renderDashboard("/dashboard");
 
-    expect(screen.getByRole("link", { name: "妖币控盘监控" })).toHaveAttribute("href", "/altcoin-manipulation");
-    expect((await screen.findAllByText("妖币控盘监控")).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText("MANIPULATION_HIGH")).length).toBeGreaterThan(0);
-    expect(screen.getByText("OI_DIVERGENCE")).toBeInTheDocument();
-    expect(screen.getByText("PUMP_RISK")).toBeInTheDocument();
-    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
-  });
-
-  it("adds several altcoin manipulation symbols and renders them together", async () => {
-    const user = userEvent.setup();
-    renderDashboard("/altcoin-manipulation");
-
-    await screen.findByText("ASTER");
-    await user.type(screen.getByLabelText("山寨合约 symbols"), "JTOUSDT ZECUSDT");
-    await user.click(screen.getByRole("button", { name: "加入监控" }));
-
-    expect(await screen.findByText("JTO")).toBeInTheDocument();
-    expect(await screen.findByText("ZEC")).toBeInTheDocument();
-    expect(screen.getByText("MANIPULATION_MEDIUM")).toBeInTheDocument();
-    expect(screen.getByText("3 / 50")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
+    expect(screen.queryByText("妖币控盘监控")).not.toBeInTheDocument();
   });
 
   it("keeps dashboard and BTC spot monitor route working", async () => {
