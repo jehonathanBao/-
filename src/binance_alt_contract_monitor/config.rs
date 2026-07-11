@@ -4,6 +4,7 @@ use std::{
     sync::{OnceLock, RwLock},
 };
 
+use super::scheduler::FairSchedulerConfig;
 use super::types::{
     AltContractDisplayThresholds, AltContractMarketTier, AltContractSeverity,
     AltContractSymbolTier, AltContractTierThresholds,
@@ -23,6 +24,9 @@ pub struct BinanceAltContractRuntimeConfig {
     pub dynamic: BinanceAltDynamicConfig,
     pub data_quality: BinanceAltDataQualityConfig,
     pub detector: BinanceAltDetectorConfig,
+    pub flow_state: BinanceAltFlowStateConfig,
+    pub scheduler: FairSchedulerConfig,
+    pub universe: BinanceAltUniverseSupervisorConfig,
     pub oi_scheduler: BinanceAltOiSchedulerConfig,
     pub oi: BinanceAltOiConfig,
     pub self_learning: BinanceAltSelfLearningConfig,
@@ -160,6 +164,9 @@ impl Default for BinanceAltContractRuntimeConfig {
             dynamic: BinanceAltDynamicConfig::default(),
             data_quality: BinanceAltDataQualityConfig::default(),
             detector: BinanceAltDetectorConfig::default(),
+            flow_state: BinanceAltFlowStateConfig::default(),
+            scheduler: FairSchedulerConfig::default(),
+            universe: BinanceAltUniverseSupervisorConfig::default(),
             oi_scheduler: BinanceAltOiSchedulerConfig::default(),
             oi: BinanceAltOiConfig::default(),
             self_learning: BinanceAltSelfLearningConfig::default(),
@@ -284,6 +291,36 @@ pub struct BinanceAltDetectorConfig {
     pub max_global_full_scoring_per_sec: u64,
     pub max_burst_full_scoring: u64,
     pub burst_window_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltFlowStateConfig {
+    pub per_symbol_enabled: bool,
+    pub bucket_retention_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltUniverseSupervisorConfig {
+    pub refresh_seconds: u64,
+    pub dynamic_reconcile_enabled: bool,
+}
+
+impl Default for BinanceAltUniverseSupervisorConfig {
+    fn default() -> Self {
+        Self {
+            refresh_seconds: 300,
+            dynamic_reconcile_enabled: true,
+        }
+    }
+}
+
+impl Default for BinanceAltFlowStateConfig {
+    fn default() -> Self {
+        Self {
+            per_symbol_enabled: true,
+            bucket_retention_seconds: 3_900,
+        }
+    }
 }
 
 impl Default for BinanceAltDetectorConfig {
@@ -796,6 +833,71 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.detector.burst_window_ms",
                 fallback.detector.burst_window_ms,
             ),
+        },
+        flow_state: BinanceAltFlowStateConfig {
+            per_symbol_enabled: settings
+                .get_bool("binance_alt_contract_monitor.flow_state.per_symbol_enabled")
+                .unwrap_or(fallback.flow_state.per_symbol_enabled),
+            bucket_retention_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.flow_state.bucket_retention_seconds",
+                fallback.flow_state.bucket_retention_seconds,
+            ),
+        },
+        scheduler: FairSchedulerConfig {
+            enabled: settings
+                .get_bool("binance_alt_contract_monitor.scheduler.enabled")
+                .unwrap_or(fallback.scheduler.enabled),
+            full_scores_per_second: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.full_scores_per_second",
+                fallback.scheduler.full_scores_per_second,
+            ),
+            max_scores_per_symbol_per_second: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.max_scores_per_symbol_per_second",
+                fallback.scheduler.max_scores_per_symbol_per_second,
+            ),
+            candidate_max_age_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.candidate_max_age_seconds",
+                fallback.scheduler.candidate_max_age_seconds,
+            ),
+            tier_a_b_share: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.tier_a_b_share",
+                fallback.scheduler.tier_a_b_share,
+            ),
+            tier_c_share: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.tier_c_share",
+                fallback.scheduler.tier_c_share,
+            ),
+            tier_d_e_share: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.tier_d_e_share",
+                fallback.scheduler.tier_d_e_share,
+            ),
+            liquidation_priority_bonus: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.liquidation_priority_bonus",
+                fallback.scheduler.liquidation_priority_bonus,
+            ),
+            ageing_points_per_second: f64_setting(
+                settings,
+                "binance_alt_contract_monitor.scheduler.ageing_points_per_second",
+                fallback.scheduler.ageing_points_per_second,
+            ),
+        },
+        universe: BinanceAltUniverseSupervisorConfig {
+            refresh_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.universe.refresh_seconds",
+                fallback.universe.refresh_seconds,
+            ),
+            dynamic_reconcile_enabled: settings
+                .get_bool("binance_alt_contract_monitor.universe.dynamic_reconcile_enabled")
+                .unwrap_or(fallback.universe.dynamic_reconcile_enabled),
         },
         oi_scheduler: BinanceAltOiSchedulerConfig {
             enabled: settings

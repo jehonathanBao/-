@@ -1,5 +1,11 @@
 use std::collections::BTreeMap;
 
+pub const SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 50.0;
+
+pub fn is_permanent_spot_whale_signal(net_volume_base: f64) -> bool {
+    net_volume_base.abs() > SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -188,6 +194,8 @@ pub struct SpotWhaleSignal {
     pub discord_sent: bool,
     pub discord_sent_at: Option<i64>,
     pub discord_reason: String,
+    #[serde(default)]
+    pub is_permanent: bool,
     pub final_result: String,
     pub read_only: bool,
     pub analysis_only: bool,
@@ -234,6 +242,9 @@ pub struct SpotWhaleLatestResponse {
     pub summary: SpotWhaleSummary,
     pub items: Vec<SpotWhaleSignal>,
     pub limit: usize,
+    pub offset: usize,
+    pub total: usize,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -25,6 +25,7 @@ pub struct BinanceAltContractApiQuery {
     pub liquidation_driven: Option<String>,
     pub tier: Option<String>,
     pub min_build_score: Option<String>,
+    pub cursor: Option<String>,
 }
 
 pub async fn binance_alt_contract_summary_route(
@@ -62,6 +63,7 @@ pub async fn binance_alt_contract_history_route(
     let liquidation_filter = query.liquidation_driven.or(query.liquidation);
     let liquidation = parse_optional_bool(liquidation_filter.as_deref())?;
     let min_build_score = parse_optional_u8(query.min_build_score.as_deref(), "min_build_score")?;
+    let cursor_ts = parse_optional_i64(query.cursor.as_deref(), "cursor")?;
     Ok(Json(serde_json::json!(state
         .binance_alt_contract_service()
         .history(BinanceAltContractQuery {
@@ -79,8 +81,39 @@ pub async fn binance_alt_contract_history_route(
                 .tier
                 .filter(|value| !value.eq_ignore_ascii_case("all")),
             min_build_score,
+            cursor_ts,
             limit: Some(limit),
         }))))
+}
+
+pub async fn binance_alt_contract_ranked_route(
+    State(state): State<AppState>,
+    Query(query): Query<BinanceAltContractApiQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_optional_symbol(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref())?;
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .ranked(symbol.as_deref(), limit))))
+}
+
+pub async fn binance_alt_contract_top_impact_route(
+    State(state): State<AppState>,
+    Query(query): Query<BinanceAltContractApiQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_optional_symbol(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref())?;
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .top_impact(symbol.as_deref(), limit))))
+}
+
+pub async fn binance_alt_contract_outcome_summary_route(
+    State(state): State<AppState>,
+) -> ApiJsonResult {
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .outcome_summary())))
 }
 
 pub async fn binance_alt_contract_runtime_debug_route(
@@ -117,6 +150,8 @@ pub async fn binance_alt_contract_runtime_debug_route(
             "active": diagnostics.active_symbol_count,
             "connectedShards": diagnostics.connected_shards,
             "totalShards": diagnostics.total_shards,
+            "symbolCoverageRatio": diagnostics.symbol_coverage_ratio,
+            "missingSymbols": diagnostics.missing_symbols,
             "lastRefreshAt": diagnostics.universe_last_refreshed_at,
             "refreshAgeSec": diagnostics.universe_refresh_age_sec,
         },
@@ -128,6 +163,7 @@ pub async fn binance_alt_contract_runtime_debug_route(
         "persistence": {
             "queueDepth": diagnostics.persistence_queue_depth,
             "oldestPendingAgeMs": diagnostics.oldest_persistence_age_ms,
+            "droppedTotal": diagnostics.persistence_dropped_total,
         },
         "buffers": {
             "tradeBufferTotal": diagnostics.trade_buffer_total,
@@ -193,6 +229,26 @@ fn parse_optional_u8(
             .parse::<u8>()
             .map(Some)
             .map_err(|_| bad_request("invalid_numeric_filter", &format!("{name} must be 0-100"))),
+    }
+}
+
+fn parse_optional_i64(
+    value: Option<&str>,
+    name: &str,
+) -> Result<Option<i64>, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .map(Some)
+            .ok_or_else(|| {
+                bad_request(
+                    "invalid_cursor",
+                    &format!("{name} must be a unix timestamp"),
+                )
+            }),
     }
 }
 

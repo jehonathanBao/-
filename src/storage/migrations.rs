@@ -1,5 +1,53 @@
 pub const MIGRATIONS: &[&str] = &[
     r#"
+    CREATE TABLE IF NOT EXISTS alt_contract_signals (
+      signal_id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      signal_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      direction TEXT,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alt_contract_signals_product_ts
+      ON alt_contract_signals(product_id, ts DESC);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS alt_contract_signal_outcomes (
+      signal_id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      signal_ts INTEGER NOT NULL,
+      window_sec INTEGER NOT NULL,
+      signal_type TEXT NOT NULL,
+      anomaly_severity TEXT NOT NULL,
+      structure_confidence TEXT NOT NULL,
+      exposure_tier TEXT NOT NULL,
+      ais_score REAL NOT NULL,
+      abnormal_score REAL NOT NULL,
+      build_score REAL NOT NULL,
+      regime TEXT NOT NULL,
+      oi_context TEXT NOT NULL,
+      liquidation_context TEXT NOT NULL,
+      entry_price REAL,
+      markout_5m_bps REAL,
+      markout_15m_bps REAL,
+      markout_1h_bps REAL,
+      mfe_1h_bps REAL,
+      mae_1h_bps REAL,
+      follow_through_5m INTEGER,
+      follow_through_15m INTEGER,
+      follow_through_1h INTEGER,
+      evaluated_5m_at INTEGER,
+      evaluated_15m_at INTEGER,
+      evaluated_1h_at INTEGER,
+      outcome_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alt_contract_signal_outcomes_product_ts
+      ON alt_contract_signal_outcomes(product_id, signal_ts DESC);
+    "#,
+    r#"
     CREATE TABLE IF NOT EXISTS toxic_events (
       id TEXT PRIMARY KEY,
       ts INTEGER NOT NULL,

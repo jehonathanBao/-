@@ -18,8 +18,9 @@ use super::{
     types::{
         AltContractContext, AltContractDirection, AltContractGradeCondition,
         AltContractImpactScore, AltContractScoreBreakdown, AltContractSeverity, AltContractSignal,
-        AltContractSignalType, AltContractSourceSnapshot, AltContractSymbolTier,
-        AltContractWindowConfirmation, AltContractWindowStats,
+        AltContractSignalType, AltContractSourceSnapshot, AltContractStructureConfidence,
+        AltContractSymbolTier, AltContractWindowConfirmation, AltContractWindowStats,
+        AltSignalAssessment,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -175,6 +176,7 @@ pub fn detect_alt_contract_signal_with_context(
         signal_type,
         direction,
         severity,
+        assessment: assess_signal(stats, context, severity, main_force_confidence),
         abnormal_score: score.abnormal_score,
         build_score: score.build_score,
         master_capital_strength,
@@ -273,6 +275,13 @@ pub fn detect_alt_contract_signal_with_context(
     };
     let exposure_decision = evaluate_exposure_gate(&signal, warmup);
     apply_semantic_boundary(&mut signal, exposure_decision);
+    signal.assessment.exposure_tier = if signal.semantic.exposure_allowed {
+        super::types::AltContractExposureTier::Alert
+    } else if signal.severity.rank() >= AltContractSeverity::High.rank() {
+        super::types::AltContractExposureTier::Highlight
+    } else {
+        super::types::AltContractExposureTier::Observe
+    };
     if tier_e_discord_guard(&signal, config) {
         signal.discord_eligible = false;
         signal.discord_would_send = false;
@@ -334,6 +343,50 @@ pub fn detect_alt_contract_signal_with_context(
         LOG_PREFIX
     );
     Some(signal)
+}
+
+fn assess_signal(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+    severity: AltContractSeverity,
+    main_force_confidence: f64,
+) -> AltSignalAssessment {
+    let structure_confidence = if main_force_confidence >= 80.0
+        && !context.liquidation_suspected
+        && context
+            .oi_change_1m_base
+            .or(context.oi_change_5m_base)
+            .is_some()
+    {
+        AltContractStructureConfidence::High
+    } else if main_force_confidence >= 55.0 {
+        AltContractStructureConfidence::Medium
+    } else {
+        AltContractStructureConfidence::Low
+    };
+    let mut evidence_degraded_reasons = Vec::new();
+    if context
+        .oi_change_1m_base
+        .or(context.oi_change_5m_base)
+        .is_none()
+    {
+        evidence_degraded_reasons.push("oi_missing".to_string());
+    }
+    if context.ticker_quote_volume_24h_usd.is_none() {
+        evidence_degraded_reasons.push("ticker_missing".to_string());
+    }
+    if stats.dynamic_multiple.is_none() {
+        evidence_degraded_reasons.push("dynamic_baseline_unavailable".to_string());
+    }
+    if stats.data_quality < 80 {
+        evidence_degraded_reasons.push("data_quality_degraded".to_string());
+    }
+    AltSignalAssessment {
+        anomaly_severity: severity,
+        structure_confidence,
+        exposure_tier: super::types::AltContractExposureTier::Observe,
+        evidence_degraded_reasons,
+    }
 }
 
 pub fn evaluate_discord_for_signal_with_store(

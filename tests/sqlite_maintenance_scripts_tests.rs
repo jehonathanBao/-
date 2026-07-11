@@ -12,20 +12,17 @@ fn find_bash() -> Option<PathBuf> {
         "/bin/bash",
         "/usr/bin/bash",
     ];
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|candidate| {
-            if candidate.as_os_str() == "bash" {
-                Command::new("bash")
-                    .arg("--version")
-                    .output()
-                    .map(|output| output.status.success())
-                    .unwrap_or(false)
-            } else {
-                candidate.exists()
-            }
-        })
+    candidates.iter().map(PathBuf::from).find(|candidate| {
+        if candidate.as_os_str() == "bash" {
+            Command::new("bash")
+                .arg("--version")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        } else {
+            candidate.exists()
+        }
+    })
 }
 
 fn repo_root() -> PathBuf {
@@ -114,7 +111,10 @@ fn sqlite_safe_batch_delete_refuses_non_p0_tables() {
 
     assert!(!output.status.success(), "script unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Refuse to clean non-P0 table"), "stderr={stderr}");
+    assert!(
+        stderr.contains("Refuse to clean non-P0 table"),
+        "stderr={stderr}"
+    );
 
     let _ = fs::remove_file(db_path);
 }
@@ -137,10 +137,20 @@ fn sqlite_safe_batch_delete_dry_run_reports_rows_without_mutating() {
         ],
     );
 
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("initial_deletable_rows=2"), "stdout={stdout}");
-    assert!(stdout.contains("DRY_RUN enabled. No deletion executed."), "stdout={stdout}");
+    assert!(
+        stdout.contains("initial_deletable_rows=2"),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("DRY_RUN enabled. No deletion executed."),
+        "stdout={stdout}"
+    );
 
     let conn = Connection::open(&db_path).expect("open sqlite temp db");
     let remaining: i64 = conn
@@ -175,10 +185,20 @@ fn sqlite_safe_batch_delete_executes_batched_deletes_for_epoch_ms_tables() {
         ],
     );
 
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("batch=1 deleted=1 remaining=1 total_deleted=1"), "stdout={stdout}");
-    assert!(stdout.contains("completed batches=1 total_deleted=1"), "stdout={stdout}");
+    assert!(
+        stdout.contains("batch=1 deleted=1 remaining=1 total_deleted=1"),
+        "stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("completed batches=1 total_deleted=1"),
+        "stdout={stdout}"
+    );
 
     let conn = Connection::open(&db_path).expect("open sqlite temp db");
     let stale_remaining: i64 = conn

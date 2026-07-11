@@ -173,6 +173,18 @@ pub fn router(state: AppState) -> Router {
             get(binance_alt_contract_routes::binance_alt_contract_latest_route),
         )
         .route(
+            "/api/binance-alt-contract/ranked",
+            get(binance_alt_contract_routes::binance_alt_contract_ranked_route),
+        )
+        .route(
+            "/api/binance-alt-contract/top-impact",
+            get(binance_alt_contract_routes::binance_alt_contract_top_impact_route),
+        )
+        .route(
+            "/api/binance-alt-contract/outcome-summary",
+            get(binance_alt_contract_routes::binance_alt_contract_outcome_summary_route),
+        )
+        .route(
             "/api/binance-alt-contract/history",
             get(binance_alt_contract_routes::binance_alt_contract_history_route),
         )

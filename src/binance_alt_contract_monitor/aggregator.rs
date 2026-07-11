@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, collections::VecDeque};
 use super::{
     config::BinanceAltContractRuntimeConfig,
     context::context_data_quality_penalty,
+    flow_state::PerSymbolFlowBook,
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
         AltContractSymbolMeta, AltContractTrade, AltContractTradeSide, AltContractTrend60s,
@@ -12,6 +13,7 @@ use super::{
 
 pub fn rolling_window_stats(
     trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     meta: &AltContractSymbolMeta,
     window_sec: u64,
     now: i64,
@@ -32,7 +34,7 @@ pub fn rolling_window_stats(
     window_trades.sort_by_key(|trade| trade.ts);
     Some(stats_from_trades(
         &window_trades,
-        trades,
+        flow_book,
         meta,
         window_sec,
         now,
@@ -45,7 +47,7 @@ pub fn rolling_window_stats(
 #[allow(clippy::too_many_arguments)]
 pub fn stats_from_trades(
     window_trades: &[AltContractTrade],
-    all_trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     meta: &AltContractSymbolMeta,
     window_sec: u64,
     now: i64,
@@ -90,13 +92,14 @@ pub fn stats_from_trades(
         .iter()
         .max_by(|left, right| left.total_volume_base.total_cmp(&right.total_volume_base))
         .map(|item| item.exchange.clone());
-    let dynamic_multiple = if config.dynamic.enabled {
+    let dynamic_multiple = if config.dynamic.enabled && config.flow_state.per_symbol_enabled {
         dynamic_multiple(
-            all_trades,
+            flow_book,
             &meta.product_id,
             window_sec,
             now,
             total_notional_usd,
+            config.dynamic.lookback_minutes,
             config.dynamic.min_samples,
         )
     } else {
@@ -202,26 +205,22 @@ fn exchange_contributions(trades: &[AltContractTrade]) -> Vec<AltContractExchang
 }
 
 fn dynamic_multiple(
-    trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     product_id: &str,
     window_sec: u64,
     now: i64,
-    current_notional_usd: f64,
+    _current_notional_usd: f64,
+    lookback_minutes: u64,
     min_samples: usize,
 ) -> Option<f64> {
-    let window_ms = i64::try_from(window_sec).ok()?.saturating_mul(1000);
-    let lookback_start = now.saturating_sub(3_600_000);
-    let current_start = now.saturating_sub(window_ms);
-    let mut buckets: BTreeMap<i64, f64> = BTreeMap::new();
-    for trade in trades.iter().filter(|trade| {
-        trade.product_id == product_id && trade.ts >= lookback_start && trade.ts < current_start
-    }) {
-        let bucket = (trade.ts - lookback_start) / window_ms;
-        *buckets.entry(bucket).or_insert(0.0) += trade.notional_usd;
-    }
-    if buckets.len() < min_samples {
-        return None;
-    }
-    let average = buckets.values().sum::<f64>() / buckets.len() as f64;
-    (average > 0.0).then_some(current_notional_usd / average)
+    flow_book
+        .baseline(
+            product_id,
+            window_sec,
+            now,
+            lookback_minutes.saturating_mul(60),
+            min_samples,
+        )
+        .filter(|baseline| baseline.available)
+        .map(|baseline| baseline.dynamic_multiple)
 }

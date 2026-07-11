@@ -59,6 +59,39 @@ impl AltContractSeverity {
     }
 }
 
+impl Default for AltContractSeverity {
+    fn default() -> Self {
+        Self::Calm
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AltContractStructureConfidence {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AltContractExposureTier {
+    #[default]
+    Observe,
+    Highlight,
+    Alert,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltSignalAssessment {
+    pub anomaly_severity: AltContractSeverity,
+    pub structure_confidence: AltContractStructureConfidence,
+    pub exposure_tier: AltContractExposureTier,
+    pub evidence_degraded_reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AltContractSemanticLayer {
@@ -113,6 +146,12 @@ pub enum AltContractSymbolTier {
     C,
     D,
     E,
+}
+
+impl Default for AltContractSymbolTier {
+    fn default() -> Self {
+        Self::E
+    }
 }
 
 #[derive(
@@ -608,6 +647,51 @@ pub struct AltContractSignalOutcomeRecord {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AltContractSignalOutcome {
+    pub signal_id: String,
+    pub product_id: String,
+    pub tier: AltContractSymbolTier,
+    pub signal_ts: i64,
+    pub window_sec: u64,
+    pub signal_type: String,
+    pub anomaly_severity: AltContractSeverity,
+    pub structure_confidence: AltContractStructureConfidence,
+    pub exposure_tier: AltContractExposureTier,
+    pub ais_score: f64,
+    pub abnormal_score: u8,
+    pub build_score: u8,
+    pub regime: String,
+    pub oi_context: String,
+    pub liquidation_context: String,
+    pub entry_price: Option<f64>,
+    pub markout_5m_bps: Option<f64>,
+    pub markout_15m_bps: Option<f64>,
+    pub markout_1h_bps: Option<f64>,
+    pub mfe_1h_bps: Option<f64>,
+    pub mae_1h_bps: Option<f64>,
+    pub follow_through_5m: Option<bool>,
+    pub follow_through_15m: Option<bool>,
+    pub follow_through_1h: Option<bool>,
+    pub evaluated_5m_at: Option<i64>,
+    pub evaluated_15m_at: Option<i64>,
+    pub evaluated_1h_at: Option<i64>,
+    pub outcome_version: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractOutcomeSummary {
+    pub sample_count: usize,
+    pub insufficient_samples: bool,
+    pub min_samples_for_reporting: usize,
+    pub follow_through_rate: Option<f64>,
+    pub median_markout_bps: Option<f64>,
+    pub median_mfe_bps: Option<f64>,
+    pub median_mae_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AltContractLearningErrorReport {
     pub error_type: String,
     pub severity: String,
@@ -789,6 +873,8 @@ pub struct AltContractSignal {
     pub signal_type: AltContractSignalType,
     pub direction: AltContractDirection,
     pub severity: AltContractSeverity,
+    #[serde(default)]
+    pub assessment: AltSignalAssessment,
     pub abnormal_score: u8,
     pub build_score: u8,
     #[serde(default)]
@@ -988,6 +1074,8 @@ pub struct BacmRuntimeDiagnostics {
     pub active_symbol_count: usize,
     pub connected_shards: usize,
     pub total_shards: usize,
+    pub symbol_coverage_ratio: f64,
+    pub missing_symbols: Vec<String>,
     pub trade_buffer_total: usize,
     pub per_symbol_state_count: usize,
     pub light_candidates_total: u64,
@@ -995,8 +1083,14 @@ pub struct BacmRuntimeDiagnostics {
     pub full_score_skipped_budget_total: u64,
     pub persistence_queue_depth: usize,
     pub oldest_persistence_age_ms: Option<u64>,
+    pub persistence_dropped_total: u64,
     pub universe_last_refreshed_at: Option<i64>,
     pub universe_refresh_age_sec: Option<u64>,
+    pub scheduler_scored_by_tier: BTreeMap<String, u64>,
+    pub scheduler_skipped_by_tier: BTreeMap<String, u64>,
+    pub scheduler_oldest_candidate_age_ms: Option<i64>,
+    pub scheduler_per_symbol_score_count: BTreeMap<String, u64>,
+    pub scheduler_starved_candidate_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]

@@ -118,6 +118,25 @@ max_global_full_scoring_per_sec = 8
 max_burst_full_scoring = 3
 burst_window_ms = 1000
 
+[binance_alt_contract_monitor.flow_state]
+per_symbol_enabled = true
+bucket_retention_seconds = 3900
+
+[binance_alt_contract_monitor.scheduler]
+enabled = true
+full_scores_per_second = 60
+max_scores_per_symbol_per_second = 3
+candidate_max_age_seconds = 10
+tier_a_b_share = 0.40
+tier_c_share = 0.30
+tier_d_e_share = 0.30
+liquidation_priority_bonus = 20
+ageing_points_per_second = 2
+
+[binance_alt_contract_monitor.universe]
+refresh_seconds = 300
+dynamic_reconcile_enabled = true
+
 [binance_alt_contract_monitor.oi_scheduler]
 enabled = true
 all_symbols_interval_sec = 600

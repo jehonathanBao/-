@@ -12,7 +12,7 @@ use btc_toxic_flow_monitor_rs::{
             normalize_binance_spot_trade, normalize_bitfinex_trade_value,
             normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
         },
-        service::SpotWhaleService,
+        service::{SpotWhaleQuery, SpotWhaleService},
         types::{
             SpotExchange, SpotExchangeContribution, SpotTrade, SpotTradeSide, SpotWhaleSeverity,
             SpotWhaleSignalType, SpotWhaleWindowStats,
@@ -211,9 +211,9 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
         detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
     let cutoff_ts = base.ts + 10_000;
 
-    let old_protected = signal_with_net(&base, "old-protected-negative-250", -20_000, -250.0);
-    let old_weak = signal_with_net(&base, "old-weak-150", -19_000, 150.0);
-    let recent_weak = signal_with_net(&base, "recent-weak-100", 20_000, 100.0);
+    let old_protected = signal_with_net(&base, "old-protected-negative-60", -20_000, -60.0);
+    let old_weak = signal_with_net(&base, "old-weak-30", -19_000, 30.0);
+    let recent_weak = signal_with_net(&base, "recent-weak-40", 20_000, 40.0);
 
     store.upsert_spot_whale_signal(&old_protected).unwrap();
     store.upsert_spot_whale_signal(&old_weak).unwrap();
@@ -241,6 +241,79 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
     assert!(ids.contains(&old_protected.id.as_str()));
     assert!(ids.contains(&recent_weak.id.as_str()));
     assert!(!ids.contains(&old_weak.id.as_str()));
+}
+
+#[test]
+fn spot_whale_service_history_supports_offset_and_reports_has_more() {
+    let store = temp_store("spot-whale-history-pagination");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+
+    let first = signal_with_net(&base, "page-1", 1_000, 30.0);
+    let second = signal_with_net(&base, "page-2", 2_000, 40.0);
+    let third = signal_with_net(&base, "page-3", 3_000, 60.0);
+    let fourth = signal_with_net(&base, "page-4", 4_000, -80.0);
+
+    store.upsert_spot_whale_signal(&first).unwrap();
+    store.upsert_spot_whale_signal(&second).unwrap();
+    store.upsert_spot_whale_signal(&third).unwrap();
+    store.upsert_spot_whale_signal(&fourth).unwrap();
+
+    let service = SpotWhaleService::new(true, true, third.ts + 60_000, Some(store));
+    let history = service.history(SpotWhaleQuery {
+        symbol: Some("BTC".to_string()),
+        limit: Some(2),
+        offset: Some(1),
+        ..SpotWhaleQuery::default()
+    });
+
+    assert_eq!(history.offset, 1);
+    assert_eq!(history.limit, 2);
+    assert_eq!(history.total, 4);
+    assert!(history.has_more);
+    let ids = history
+        .items
+        .iter()
+        .map(|signal| signal.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![third.id.as_str(), second.id.as_str()]);
+}
+
+#[test]
+fn spot_whale_history_filters_by_time_range_and_permanent_only() {
+    let store = temp_store("spot-whale-history-time-range");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+
+    let older_non_permanent = signal_with_net(&base, "older-non-permanent", -20_000, 30.0);
+    let in_range_permanent = signal_with_net(&base, "in-range-permanent", -5_000, -70.0);
+    let newer_non_permanent = signal_with_net(&base, "newer-non-permanent", 20_000, 20.0);
+
+    store
+        .upsert_spot_whale_signal(&older_non_permanent)
+        .unwrap();
+    store.upsert_spot_whale_signal(&in_range_permanent).unwrap();
+    store
+        .upsert_spot_whale_signal(&newer_non_permanent)
+        .unwrap();
+
+    let service = SpotWhaleService::new(true, true, base.ts + 60_000, Some(store));
+    let history = service.history(SpotWhaleQuery {
+        symbol: Some("BTC".to_string()),
+        from_ts: Some(base.ts - 10_000),
+        to_ts: Some(base.ts + 10_000),
+        permanent_only: Some(true),
+        limit: Some(10),
+        ..SpotWhaleQuery::default()
+    });
+
+    assert_eq!(history.total, 1);
+    assert!(!history.has_more);
+    assert_eq!(history.items.len(), 1);
+    assert_eq!(history.items[0].id, in_range_permanent.id);
+    assert!(history.items[0].is_permanent);
 }
 
 #[test]

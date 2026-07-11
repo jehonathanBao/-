@@ -19,6 +19,7 @@ pub mod mcg;
 pub mod mcss;
 pub mod regime;
 pub mod scc;
+pub mod scheduler;
 pub mod scoring;
 pub mod semantic;
 pub mod service;
