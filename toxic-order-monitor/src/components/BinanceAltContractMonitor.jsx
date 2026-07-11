@@ -855,6 +855,7 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="市场共振" value={marketWideText(signal)} />
           <Detail label="清算上下文" value={`${liquidationContextText(signal)} · ${liquidationSideLabel(signal.dominantLiquidationSide)} · ${signal.liquidationCount || 0} 笔`} />
           <Detail label="证据降级" value={signal.assessment?.evidenceDegradedReasons?.join(" / ") || "无"} wide />
+          <Detail label="证据状态" value={evidenceStateSummary(signal.assessment?.evidenceState)} wide />
           <Detail label="对外展示层" value={signal.semantic?.exposureAllowed ? "通过受控展示" : "仅解释层"} />
           <Detail label="Discord Gate 类型" value={discordAlertKindLabel(signal.discordAlertKind)} />
           <Detail label="Discord 名义额门槛" value={formatUsd(signal.discordMinNotionalUsd)} />
@@ -2103,9 +2104,22 @@ function formatImpactRatio(value) {
   return `${(number * 100).toFixed(number >= 0.01 ? 2 : 3)}%`;
 }
 
+function evidenceStateSummary(value) {
+  if (!value || typeof value !== "object") return "未提供";
+  const items = Object.entries(value)
+    .slice(0, 8)
+    .map(([key, state]) => {
+      const stateKey = typeof state === "string" ? state : Object.keys(state || {})[0] || "unknown";
+      return `${key}:${stateKey}`;
+    });
+  return items.length ? items.join(" · ") : "未提供";
+}
+
 function impactReferenceLabel(value) {
   return {
     ticker_quote_volume_24h: "24h 成交量",
+    local_rolling_24h: "本地 24h 流量",
+    historical_baseline: "历史基准",
     synthetic_tier_volume_proxy: "Tier 代理参考",
     unavailable: "无参考源",
   }[String(value || "unavailable").toLowerCase()] || value || "无参考源";

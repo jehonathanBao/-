@@ -152,6 +152,7 @@ export function normalizeAltContractSignal(item) {
       evidenceDegradedReasons: Array.isArray(item.assessment?.evidenceDegradedReasons)
         ? item.assessment.evidenceDegradedReasons
         : [],
+      evidenceState: item.assessment?.evidenceState || {},
     },
     abnormalScore: numberOrNull(item.abnormalScore) || 0,
     buildScore: numberOrNull(item.buildScore) || 0,
