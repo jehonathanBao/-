@@ -67,7 +67,12 @@ pub fn score_liquidity_microstructure(
     let depth_imbalance = depth_imbalance(input);
     let depth_drop = depth_drop(input);
     let spread_widen = spread_widen_ratio(input);
-    let spoofing_penalty = spoofing_score(input);
+    let orderbook_evidence_available = has_orderbook_evidence(input);
+    let spoofing_penalty = if orderbook_evidence_available {
+        spoofing_score(input)
+    } else {
+        0.0
+    };
     let absorption_strength = absorption_score(input, total_flow, directional_strength);
     let order_flow_pressure = order_flow_pressure_score(input, directional_strength);
     let imbalance_score = (depth_imbalance.abs() * 100.0).clamp(0.0, 100.0);
@@ -99,6 +104,12 @@ pub fn score_liquidity_microstructure(
     );
 
     AltContractLiquidityMicrostructure {
+        evidence_mode: if orderbook_evidence_available {
+            "orderbook".to_string()
+        } else {
+            "flow_only".to_string()
+        },
+        orderbook_evidence_available,
         lms_score: round2(lms_score),
         behavior,
         market_control,
@@ -122,6 +133,19 @@ pub fn score_liquidity_microstructure(
         read_only: true,
         direct_discord_gate: false,
     }
+}
+
+fn has_orderbook_evidence(input: &LiquidityMicrostructureInput) -> bool {
+    input.bid_depth_1pct_usd.is_some()
+        || input.ask_depth_1pct_usd.is_some()
+        || input.previous_bid_depth_1pct_usd.is_some()
+        || input.previous_ask_depth_1pct_usd.is_some()
+        || input.spread_bps.is_some()
+        || input.previous_spread_bps.is_some()
+        || input.large_order_add_usd.is_some()
+        || input.large_order_cancel_usd.is_some()
+        || input.large_order_executed_usd.is_some()
+        || input.replenishment_ratio.is_some()
 }
 
 fn order_flow_pressure_score(

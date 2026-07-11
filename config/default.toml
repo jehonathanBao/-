@@ -465,6 +465,29 @@ candidate_ttl_sec = 600
 max_oi_requests_per_sec = 2
 immediate_fetch_on_candidate = true
 
+[binance_alt_contract_monitor.self_learning]
+mode = "disabled"
+min_samples = 100
+
+[binance_alt_contract_monitor.liquidation]
+retention_seconds = 600
+deduplicate = true
+
+[binance_alt_contract_monitor.impact]
+require_reliable_reference = true
+ticker_max_age_seconds = 120
+absolute_floor_required = true
+
+[binance_alt_contract_monitor.outcomes]
+enabled = true
+min_samples_for_reporting = 100
+
+[binance_alt_contract_monitor.lifecycle]
+tier_a_b_merge_seconds = 180
+tier_c_merge_seconds = 120
+tier_d_e_merge_seconds = 60
+liquidation_merge_seconds = 90
+
 [binance_alt_contract_monitor.storage]
 persist_all_1s = false
 persist_all_1m = true
@@ -473,6 +496,10 @@ hot_1s_retention_hours = 24
 flow_1m_retention_days = 7
 signals_retention_days = 7
 cleanup_interval_sec = 3600
+queue_capacity = 10000
+batch_size = 100
+flush_interval_ms = 500
+jsonl_archive_enabled = false
 
 [binance_alt_contract_monitor.display]
 min_notional_usd = 150000

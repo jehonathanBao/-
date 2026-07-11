@@ -2,7 +2,7 @@ use super::{
     config::BinanceAltContractRuntimeConfig,
     context::context_for_window,
     discord::{evaluate_alt_contract_discord_gate, AltContractDiscordCooldownStore},
-    impact::{impact_s_ready, score_alt_impact},
+    impact::impact_s_ready,
     lme::score_signal_microstructure,
     mcg::build_market_control_graph,
     mcss::score_master_capital_strength,
@@ -20,7 +20,7 @@ use super::{
         AltContractImpactScore, AltContractScoreBreakdown, AltContractSeverity, AltContractSignal,
         AltContractSignalType, AltContractSourceSnapshot, AltContractStructureConfidence,
         AltContractSymbolTier, AltContractWindowConfirmation, AltContractWindowStats,
-        AltSignalAssessment,
+        AltEvidenceDimension, AltSignalAssessment, ModelEvidenceDeclaration,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -61,7 +61,8 @@ pub fn detect_alt_contract_signal_with_context(
     let context = &selected_context;
     let score = score_alt_contract_signal(stats, context, config);
     let market_tier = config.classify_market_tier(&stats.product_id);
-    let alt_impact_score = score_alt_impact(stats, context, market_tier);
+    let alt_impact_score =
+        super::impact::score_alt_impact_with_config(stats, context, market_tier, &config.impact);
     let liquidity_microstructure = score_signal_microstructure(stats, context);
     let evidence = evidence_for(
         stats,
@@ -231,6 +232,11 @@ pub fn detect_alt_contract_signal_with_context(
         depth_1pct_usd: None,
         flow_to_depth_ratio: None,
         event_id: None,
+        event_start_ts: None,
+        event_status: "unassigned".to_string(),
+        event_close_reason: None,
+        event_latest_signal_id: None,
+        event_peak_signal_id: None,
         event_signal_count: 0,
         event_peak_abnormal_score: score.abnormal_score,
         event_peak_build_score: score.build_score,
@@ -381,11 +387,66 @@ fn assess_signal(
     if stats.data_quality < 80 {
         evidence_degraded_reasons.push("data_quality_degraded".to_string());
     }
+    if context.funding_rate.is_none() {
+        evidence_degraded_reasons.push("funding_missing".to_string());
+    }
+    let mut evidence_dimensions = Vec::new();
+    if stats.total_volume_base > 0.0 {
+        evidence_dimensions.push(AltEvidenceDimension::Flow);
+    }
+    if stats.price_move_pct.is_some() {
+        evidence_dimensions.push(AltEvidenceDimension::Price);
+    }
+    if context.oi_change_1m.available || context.oi_change_5m.available {
+        evidence_dimensions.push(AltEvidenceDimension::Oi);
+    }
+    if context.liquidation_count > 0 || context.force_order_snapshot {
+        evidence_dimensions.push(AltEvidenceDimension::Liquidation);
+    }
+    if context.funding_rate.is_some() {
+        evidence_dimensions.push(AltEvidenceDimension::Funding);
+    }
+    let model_evidence_declarations = vec![
+        ModelEvidenceDeclaration {
+            model: "BACM".to_string(),
+            dimensions: vec![AltEvidenceDimension::Flow, AltEvidenceDimension::Price],
+        },
+        ModelEvidenceDeclaration {
+            model: "MCSS".to_string(),
+            dimensions: vec![
+                AltEvidenceDimension::Flow,
+                AltEvidenceDimension::Price,
+                AltEvidenceDimension::Oi,
+                AltEvidenceDimension::Liquidation,
+                AltEvidenceDimension::Funding,
+            ],
+        },
+        ModelEvidenceDeclaration {
+            model: "LME".to_string(),
+            dimensions: vec![AltEvidenceDimension::Flow, AltEvidenceDimension::Orderbook],
+        },
+    ];
+    let declared_dimension_count = model_evidence_declarations
+        .iter()
+        .map(|declaration| declaration.dimensions.len())
+        .sum::<usize>();
+    let correlation_discount = if declared_dimension_count == 0 {
+        0.0
+    } else {
+        ((declared_dimension_count.saturating_sub(evidence_dimensions.len())) as f64
+            / declared_dimension_count as f64
+            * 0.25)
+            .clamp(0.0, 0.25)
+    };
     AltSignalAssessment {
         anomaly_severity: severity,
         structure_confidence,
         exposure_tier: super::types::AltContractExposureTier::Observe,
         evidence_degraded_reasons,
+        independent_dimension_count: evidence_dimensions.len(),
+        correlation_discount,
+        evidence_dimensions,
+        model_evidence_declarations,
     }
 }
 

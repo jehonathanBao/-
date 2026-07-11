@@ -265,6 +265,7 @@ fn main_force_signal(tier: AltContractSymbolTier) -> AltContractSignal {
         funding_rate: Some(0.0),
         persistence_windows: 3,
         ticker_quote_volume_24h_usd: Some(1_500_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         ..AltContractContext::default()
     };
     let mut signal = detect_alt_contract_signal_with_context(
@@ -309,6 +310,7 @@ fn extreme_signal(tier: AltContractSymbolTier) -> AltContractSignal {
         funding_rate: Some(0.0),
         persistence_windows: 1,
         ticker_quote_volume_24h_usd: Some(250_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         ..AltContractContext::default()
     };
     let mut signal = detect_alt_contract_signal_with_context(

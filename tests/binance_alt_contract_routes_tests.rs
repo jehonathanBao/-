@@ -9,7 +9,7 @@ use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::{
         enable_binance_alt_contract_symbol_for_watch, reset_binance_alt_contract_runtime_config,
         set_binance_alt_contract_runtime_config, BinanceAltContractRuntimeConfig,
-        BinanceAltDataQualityConfig, BinanceAltDiscordConfig,
+        BinanceAltDataQualityConfig, BinanceAltDiscordConfig, BinanceAltStorageConfig,
     },
     detector::detect_alt_contract_signal,
     service::{BinanceAltContractQuery, BinanceAltContractService},
@@ -49,6 +49,10 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
             ..BinanceAltDataQualityConfig::default()
         },
         persistence_path: path.clone(),
+        storage: btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::config::BinanceAltStorageConfig {
+            jsonl_archive_enabled: true,
+            ..BinanceAltStorageConfig::default()
+        },
         ..BinanceAltContractRuntimeConfig::default()
     };
     set_binance_alt_contract_runtime_config(config.clone());
@@ -64,6 +68,7 @@ fn service_latest_history_and_persistence_restore_bacm_signals() {
             funding_rate: Some(0.001),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &config,
@@ -153,6 +158,10 @@ fn service_prunes_bacm_signal_cache_to_seven_days_and_compacts_persistence() {
             ..BinanceAltDataQualityConfig::default()
         },
         persistence_path: path.clone(),
+        storage: btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::config::BinanceAltStorageConfig {
+            jsonl_archive_enabled: true,
+            ..BinanceAltStorageConfig::default()
+        },
         ..BinanceAltContractRuntimeConfig::default()
     };
     config.storage.signals_retention_days = 7;
@@ -166,6 +175,7 @@ fn service_prunes_bacm_signal_cache_to_seven_days_and_compacts_persistence() {
         oi_change_pct: Some(1.5),
         persistence_windows: 3,
         ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+        ticker_updated_at: Some(unix_ms() - 10_000),
         ..AltContractContext::default()
     };
     let mut recent_window = stats("SOL", AltContractDirection::Buy);
@@ -232,6 +242,10 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
             ..BinanceAltDataQualityConfig::default()
         },
         persistence_path: path.clone(),
+        storage: btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::config::BinanceAltStorageConfig {
+            jsonl_archive_enabled: true,
+            ..BinanceAltStorageConfig::default()
+        },
         ..BinanceAltContractRuntimeConfig::default()
     };
     set_binance_alt_contract_runtime_config(config.clone());
@@ -244,6 +258,7 @@ fn service_filters_low_notional_signals_from_frontend_lists() {
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &config,
@@ -289,6 +304,10 @@ fn service_filters_new_signals_by_alt_impact_and_keeps_legacy_threshold_fallback
             ..BinanceAltDataQualityConfig::default()
         },
         persistence_path: path.clone(),
+        storage: BinanceAltStorageConfig {
+            jsonl_archive_enabled: true,
+            ..BinanceAltStorageConfig::default()
+        },
         ..BinanceAltContractRuntimeConfig::default()
     };
     set_binance_alt_contract_runtime_config(config.clone());
@@ -301,6 +320,7 @@ fn service_filters_new_signals_by_alt_impact_and_keeps_legacy_threshold_fallback
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &config,
@@ -368,6 +388,7 @@ fn bacm_views_keep_latest_ranked_impact_and_cursor_ordering_separate() {
         oi_change_pct: Some(1.5),
         persistence_windows: 3,
         ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+        ticker_updated_at: Some(unix_ms() - 10_000),
         ..AltContractContext::default()
     };
     let base =
@@ -445,6 +466,7 @@ async fn bacm_sqlite_worker_persists_without_jsonl_realtime_writes() {
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &config,
@@ -469,6 +491,11 @@ async fn bacm_sqlite_worker_persists_without_jsonl_realtime_writes() {
         .expect("read persisted signals")
         .iter()
         .any(|item| item.id == id));
+    assert!(store
+        .load_alt_contract_events(10)
+        .expect("read persisted events")
+        .iter()
+        .any(|event| event.latest_signal_id.as_deref() == Some(id.as_str())));
     service.stop();
     let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();
@@ -545,6 +572,7 @@ fn watch_activation_after_disabled_boot_is_visible_in_alt_contract_summary_and_l
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(90_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &updated_config,
@@ -577,6 +605,10 @@ fn disabled_service_does_not_restore_or_return_persisted_bacm_signals() {
             ..BinanceAltDataQualityConfig::default()
         },
         persistence_path: path.clone(),
+        storage: BinanceAltStorageConfig {
+            jsonl_archive_enabled: true,
+            ..BinanceAltStorageConfig::default()
+        },
         ..BinanceAltContractRuntimeConfig::default()
     };
     set_binance_alt_contract_runtime_config(enabled_config.clone());
@@ -589,6 +621,7 @@ fn disabled_service_does_not_restore_or_return_persisted_bacm_signals() {
             oi_change_pct: Some(1.5),
             persistence_windows: 3,
             ticker_quote_volume_24h_usd: Some(3_000_000_000.0),
+            ticker_updated_at: Some(unix_ms() - 10_000),
             ..AltContractContext::default()
         },
         &enabled_config,

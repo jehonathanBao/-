@@ -564,15 +564,22 @@ function AmiosOsCard({ report }) {
 
 function SmllLearningCard({ report }) {
   const item = report || {};
+  const legacyRealOutcome = item.learningMode == null && item.accuracyAvailable !== false;
+  const realOutcomeAvailable =
+    (item.learningMode === "real_outcome" && item.accuracyAvailable === true) || legacyRealOutcome;
   const weights = item.suggestedWeights || {};
   const drift = item.driftReport || {};
   const updates = Array.isArray(item.calibrationUpdates) ? item.calibrationUpdates : [];
   const errors = Array.isArray(item.errorReports) ? item.errorReports : [];
   const rows = [
     ["样本", `${item.sampleSize || 0}/${item.minSamplesForUpdate || 3}`],
-    ["准确率", formatPercentNumber(item.accuracyRate)],
-    ["错误", item.wrongCount || 0],
-    ["中性", item.neutralCount || 0],
+    ...(realOutcomeAvailable
+      ? [
+          ["准确率", formatPercentNumber(item.accuracyRate)],
+          ["错误", item.wrongCount || 0],
+          ["中性", item.neutralCount || 0],
+        ]
+      : [["一致性", formatPercentNumber(item.learningScore)], ["结果评估", "未启用"]]),
     ["OI 权重", formatWeight(weights.oiWeight)],
     ["价格权重", formatWeight(weights.priceWeight)],
     ["清算权重", formatWeight(weights.liquidationWeight)],
@@ -584,7 +591,7 @@ function SmllLearningCard({ report }) {
         <div>
           <p className="console-label text-sky-300">SMLL Self-Learning Loop</p>
           <p className="mt-1 text-sm font-bold text-white">
-            自学习 {formatAuditScore(item.learningScore)} · {smllStatusLabel(item.status)}
+            {legacyRealOutcome ? "自学习" : realOutcomeAvailable ? "真实结果校准" : "启发式审计"} {formatAuditScore(item.learningScore)} · {smllStatusLabel(item.status)}
           </p>
         </div>
         <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 font-semibold text-sky-100">
@@ -599,7 +606,7 @@ function SmllLearningCard({ report }) {
           </div>
         ))}
       </div>
-      {errors.length || updates.length ? (
+      {realOutcomeAvailable && (errors.length || updates.length) ? (
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           {errors.length ? (
             <div className="rounded-lg border border-yellow-400/20 bg-yellow-400/10 p-3 text-yellow-100">
@@ -618,9 +625,13 @@ function SmllLearningCard({ report }) {
             </div>
           ) : null}
         </div>
-      ) : (
+      ) : realOutcomeAvailable ? (
         <p className="mt-3 text-slate-500">
           自学习层只记录结果、归因错误并给出延迟校准建议；不会自动修改当前阈值、权重、信号或 Discord gate。
+        </p>
+      ) : (
+        <p className="mt-3 text-slate-500">
+          当前仅做启发式一致性审计；真实未来价格结果尚未启用，因此不展示准确率、胜率或校准建议。
         </p>
       )}
     </div>
@@ -782,9 +793,12 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="语义层" value={semanticLayerLabel(signal.semantic?.layer)} />
           <Detail label="语义标签" value={signal.semantic?.label || "contract_anomaly"} />
           <Detail label="观测强度" value={semanticIntensityLabel(signal.semantic?.intensityLabel)} />
+          <Detail label="异常等级" value={signal.assessment?.anomalySeverity || signal.severity} />
+          <Detail label="结构置信度" value={signal.assessment?.structureConfidence || "low"} />
+          <Detail label="曝光等级" value={signal.assessment?.exposureTier || "observe"} />
           <Detail label="内部异常评分" value={`${signal.abnormalScore}/100`} />
           <Detail label="内部结构评分" value={`${signal.buildScore}/100`} />
-          <Detail label="结构置信度" value={`${Math.round(Number(signal.mainForceConfidence || 0))}/100`} />
+          <Detail label="结构评分" value={`${Math.round(Number(signal.mainForceConfidence || 0))}/100`} />
           <Detail label="证据数量" value={`${signal.evidenceCount || 0} 项`} />
           <Detail label="后续验证" value={postSignalStatusLabel(signal.postSignalStatus)} />
           <Detail label="Signal VWAP" value={formatPrice(signal.signalVwap)} />
@@ -833,11 +847,14 @@ function AltSignalDetail({ signal, summary, onClose }) {
           <Detail label="S 成交量门槛" value={formatBase(signal.sGradeVolumeThresholdBase, signal.symbol)} />
           <Detail label="S 条件" value={signal.sGradeEligible ? "全部满足" : "未全部满足"} />
           <Detail label="OI 变化" value={formatSignedBase(signal.oiChange1mBase ?? signal.oiChange5mBase, signal.symbol)} />
-          <Detail label="OI 质量" value={`${oiQualityLabel(signal.oiQuality)}${signal.oiFreshnessSec == null ? "" : ` · ${signal.oiFreshnessSec}s`}`} />
+          <Detail label="OI 1m" value={`${formatPercent(signal.oiChange1mPct)} · ${signal.oiFreshnessSec == null ? "无 freshness" : `${signal.oiFreshnessSec}s`}`} />
+          <Detail label="OI 5m" value={formatPercent(signal.oiChange5mPct)} />
+          <Detail label="OI 质量" value={oiQualityLabel(signal.oiQuality)} />
           <Detail label="Funding" value={signal.fundingRate == null ? "N/A" : `${(signal.fundingRate * 100).toFixed(4)}%`} />
           <Detail label="Funding 拥挤" value={fundingCrowdingLabel(signal.fundingCrowding)} />
           <Detail label="市场共振" value={marketWideText(signal)} />
-          <Detail label="清算上下文" value={liquidationContextText(signal)} />
+          <Detail label="清算上下文" value={`${liquidationContextText(signal)} · ${liquidationSideLabel(signal.dominantLiquidationSide)} · ${signal.liquidationCount || 0} 笔`} />
+          <Detail label="证据降级" value={signal.assessment?.evidenceDegradedReasons?.join(" / ") || "无"} wide />
           <Detail label="对外展示层" value={signal.semantic?.exposureAllowed ? "通过受控展示" : "仅解释层"} />
           <Detail label="Discord Gate 类型" value={discordAlertKindLabel(signal.discordAlertKind)} />
           <Detail label="Discord 名义额门槛" value={formatUsd(signal.discordMinNotionalUsd)} />
@@ -1034,6 +1051,9 @@ function LiquidityMicrostructureCard({ microstructure }) {
   return (
     <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4">
       <p className="text-xs uppercase tracking-[0.22em] text-emerald-300">Liquidity Microstructure</p>
+      <p className="mt-1 text-[11px] text-emerald-100">
+        证据模式：{lme.orderbookEvidenceAvailable ? "真实盘口" : "仅成交流"}
+      </p>
       <div className="mt-3 flex items-end justify-between gap-3">
         <div>
           <p className="text-2xl font-bold text-white">{formatLms(lme.lmsScore)}</p>
@@ -1071,7 +1091,9 @@ function LiquidityMicrostructureCard({ microstructure }) {
         </div>
       ) : null}
       <p className="mt-3 text-xs leading-5 text-slate-400">
-        LME 只解释盘口微观结构，例如扫单、吸收、撤单和虚假流动性；它不会直接触发 Discord，也不代表交易执行建议。
+        {lme.orderbookEvidenceAvailable
+          ? "LME 只解释盘口微观结构，当前结合真实盘口证据分析扫单、吸收和流动性变化；它不会直接触发 Discord。"
+          : "LME 只解释盘口微观结构；当前只有成交流，不确认 spoofing、盘口补单或真实盘口操纵。"}
       </p>
     </div>
   );
@@ -1514,13 +1536,15 @@ function fallbackSummary() {
         criticalIssues: [],
       },
       smllReport: {
-        enabled: true,
+        enabled: false,
+        learningMode: "disabled",
+        accuracyAvailable: false,
         protectedRealtime: true,
-        status: "collecting_outcomes",
+        status: "disabled",
         learningScore: 0,
         sampleSize: 0,
         minSamplesForUpdate: 3,
-        accuracyRate: 100,
+        accuracyRate: 0,
         wrongCount: 0,
         neutralCount: 0,
         outcomeRecords: [],
@@ -1598,6 +1622,8 @@ function smafIssueLabel(value) {
 
 function smllStatusLabel(value) {
   return {
+    disabled: "未启用真实结果",
+    heuristic_audit: "启发式一致性",
     collecting_outcomes: "收集结果中",
     stable_learning: "稳定学习",
     calibration_suggested: "建议校准",
@@ -1621,6 +1647,18 @@ function formatWeight(value) {
 
 function formatPercentNumber(value) {
   return `${Math.round(Number(value || 0))}%`;
+}
+
+function formatPercent(value) {
+  return value == null ? "N/A" : `${Number(value).toFixed(3)}%`;
+}
+
+function liquidationSideLabel(value) {
+  return {
+    longLiquidation: "多头清算",
+    shortLiquidation: "空头清算",
+    unknown: "方向不明",
+  }[String(value || "unknown")] || "方向不明";
 }
 
 function atcaStatusLabel(value) {

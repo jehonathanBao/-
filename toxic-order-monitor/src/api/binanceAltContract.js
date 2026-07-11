@@ -145,6 +145,14 @@ export function normalizeAltContractSignal(item) {
     signalType: item.signalType || "unclear_contract_anomaly",
     direction: item.direction || "neutral",
     severity: item.severity || "high",
+    assessment: {
+      anomalySeverity: item.assessment?.anomalySeverity || item.severity || "calm",
+      structureConfidence: item.assessment?.structureConfidence || "low",
+      exposureTier: item.assessment?.exposureTier || "observe",
+      evidenceDegradedReasons: Array.isArray(item.assessment?.evidenceDegradedReasons)
+        ? item.assessment.evidenceDegradedReasons
+        : [],
+    },
     abnormalScore: numberOrNull(item.abnormalScore) || 0,
     buildScore: numberOrNull(item.buildScore) || 0,
     masterCapitalStrength: normalizeMasterCapitalStrength(item.masterCapitalStrength),
@@ -170,9 +178,14 @@ export function normalizeAltContractSignal(item) {
     dynamicMultiple: numberOrNull(item.dynamicMultiple),
     oiChange1mBase: numberOrNull(item.oiChange1mBase),
     oiChange5mBase: numberOrNull(item.oiChange5mBase),
+    oiChange1mPct: numberOrNull(item.oiChange1mPct),
+    oiChange5mPct: numberOrNull(item.oiChange5mPct),
+    oiFreshnessSec: numberOrNull(item.oiFreshnessSec),
     oiChangePct: numberOrNull(item.oiChangePct),
     fundingRate: numberOrNull(item.fundingRate),
     liquidationNotionalUsd: numberOrNull(item.liquidationNotionalUsd),
+    liquidationCount: numberOrNull(item.liquidationCount) || 0,
+    dominantLiquidationSide: item.dominantLiquidationSide || "unknown",
     liquidationSuspected: Boolean(item.liquidationSuspected),
     forceOrderSnapshot: Boolean(item.forceOrderSnapshot),
     mainExchange: item.mainExchange || "binance",
@@ -321,8 +334,10 @@ function normalizeSmafReport(report) {
 function defaultSmllReport() {
   return {
     enabled: true,
+    learningMode: "disabled",
+    accuracyAvailable: false,
     protectedRealtime: true,
-    status: "collecting_outcomes",
+    status: "disabled",
     learningScore: 0,
     sampleSize: 0,
     minSamplesForUpdate: 3,
@@ -351,8 +366,11 @@ function defaultSmllReport() {
 function normalizeSmllReport(report) {
   const fallback = defaultSmllReport();
   const source = report && typeof report === "object" ? report : {};
+  const legacyOutcomeShape = source.learningMode == null && source.accuracyAvailable == null;
   return {
     enabled: source.enabled !== false,
+    learningMode: legacyOutcomeShape ? "real_outcome" : source.learningMode || fallback.learningMode,
+    accuracyAvailable: legacyOutcomeShape || source.accuracyAvailable === true,
     protectedRealtime: source.protectedRealtime !== false,
     status: source.status || fallback.status,
     learningScore: numberOrNull(source.learningScore) ?? fallback.learningScore,
@@ -687,6 +705,8 @@ function normalizeSemanticBoundary(value) {
 function normalizeLiquidityMicrostructure(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
+    evidenceMode: source.evidenceMode || "flow_only",
+    orderbookEvidenceAvailable: Boolean(source.orderbookEvidenceAvailable),
     lmsScore: numberOrNull(source.lmsScore) || 0,
     behavior: source.behavior || "OrdinaryFlow",
     marketControl: source.marketControl || "no_clear_control",

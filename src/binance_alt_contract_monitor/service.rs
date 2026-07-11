@@ -29,30 +29,30 @@ use super::{
     impact::{impact_displayable, is_legacy_impact_score},
     scheduler::{AltCandidatePriority, FairScoringScheduler},
     smaf::{audit_smart_money_system, SmafAuditInput},
-    smll::audit_self_learning_loop_with_mode,
+    smll::audit_self_learning_loop_with_outcomes,
     symbol_universe::{meta_from_product_id, tier_for_quote_volume},
     types::{
         AltContractAllMarketContextStatus, AltContractContext, AltContractDryRunStats,
-        AltContractExchange, AltContractExchangeStatus, AltContractLatestResponse,
-        AltContractOutcomeSummary, AltContractSeverity, AltContractSignal,
-        AltContractSignalOutcome, AltContractSummary, AltContractSymbolMeta, AltContractSymbolTier,
-        AltContractSymbolUniverseSummary, AltContractTrade, AltContractTradeSide,
+        AltContractEventRecord, AltContractExchange, AltContractExchangeStatus,
+        AltContractLatestResponse, AltContractOutcomeSummary, AltContractSeverity,
+        AltContractSignal, AltContractSignalOutcome, AltContractSummary, AltContractSymbolMeta,
+        AltContractSymbolTier, AltContractSymbolUniverseSummary, AltContractTrade,
         AltContractWindowStats, AltLiquidationEvent, AltLiquidationWindow, BacmRuntimeDiagnostics,
         LiquidationSide,
     },
     LOG_PREFIX, LOG_TARGET,
 };
 
-const MAX_TRADES: usize = 200_000;
+// Per-symbol trades are retained only for the short-lived detector windows.
+// Cross-symbol ranking and breadth use PerSymbolFlowBook buckets instead.
+const MAX_TRADES: usize = 20_000;
 const MAX_SIGNALS: usize = 1_000;
 const TRADE_RETENTION_MS: i64 = 3_600_000;
 const DUPLICATE_WINDOW_MS: i64 = 10_000;
 const OI_RETENTION_MS: i64 = 10 * 60_000;
 const LIQUIDATION_CONTEXT_TTL_MS: i64 = 60_000;
 const SUMMARY_MONITORED_SYMBOL_LIMIT: usize = 12;
-const PERSISTENCE_QUEUE_CAPACITY: usize = 10_000;
-const PERSISTENCE_BATCH_SIZE: usize = 100;
-const PERSISTENCE_FLUSH_INTERVAL_MS: u64 = 250;
+const PERSISTENCE_MAX_RETRIES: u32 = 3;
 
 #[derive(Clone)]
 pub struct BinanceAltContractService {
@@ -111,12 +111,22 @@ struct BinanceAltContractState {
 enum PersistenceCommand {
     InsertSignal(AltContractSignal),
     UpdateOutcome(AltContractSignalOutcome),
+    UpsertEvent(AltContractEventRecord),
 }
 
 #[derive(Debug, Clone)]
 struct AltContractEventState {
     id: String,
+    start_ts: i64,
     updated_at: i64,
+    tier: AltContractSymbolTier,
+    signal_type: String,
+    direction: String,
+    liquidation_driven: bool,
+    status: String,
+    close_reason: Option<String>,
+    latest_signal_id: String,
+    peak_signal_id: String,
     peak_abnormal_score: u8,
     peak_build_score: u8,
     signal_count: u32,
@@ -134,6 +144,20 @@ pub struct BinanceAltContractQuery {
     pub min_build_score: Option<u8>,
     pub cursor_ts: Option<i64>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AltContractOutcomeFilter {
+    pub symbol: Option<String>,
+    pub tier: Option<String>,
+    pub window_sec: Option<u64>,
+    pub signal_type: Option<String>,
+    pub severity: Option<String>,
+    pub ais_min: Option<f64>,
+    pub ais_max: Option<f64>,
+    pub regime: Option<String>,
+    pub oi_context: Option<String>,
+    pub time_of_day_utc: Option<u8>,
 }
 
 impl BinanceAltContractService {
@@ -179,6 +203,19 @@ impl BinanceAltContractService {
             .into_iter()
             .map(|outcome| (outcome.signal_id.clone(), outcome))
             .collect();
+        let restored_events = store
+            .as_ref()
+            .and_then(|store| store.load_alt_contract_events(MAX_SIGNALS).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|event| {
+                let key = format!(
+                    "{}:{}:{}",
+                    event.product_id, event.direction, event.signal_type
+                );
+                (key, event_state_from_record(event))
+            })
+            .collect();
         Self {
             enabled,
             dry_run,
@@ -216,7 +253,7 @@ impl BinanceAltContractService {
                 symbol_shards: BTreeMap::new(),
                 total_shards: 0,
                 universe_last_refreshed_at: None,
-                events: BTreeMap::new(),
+                events: restored_events,
                 outcomes: restored_outcomes,
                 last_oi_poll_at: None,
                 last_force_order_at: None,
@@ -512,7 +549,7 @@ impl BinanceAltContractService {
             config.oi.min_5m_history_seconds,
             config.oi.max_snapshot_gap_seconds,
         );
-        let context = state.contexts.entry(product_id).or_default();
+        let context = state.contexts.entry(product_id.clone()).or_default();
         context.oi_change_1m_base = change_1m.delta;
         context.oi_change_5m_base = change_5m.delta;
         context.oi_change_pct = change_1m.delta_pct;
@@ -532,7 +569,7 @@ impl BinanceAltContractService {
         };
         let product_id = product_id_for_symbol(product_id);
         let mut state = self.state.write();
-        let context = state.contexts.entry(product_id).or_default();
+        let context = state.contexts.entry(product_id.clone()).or_default();
         context.funding_rate = Some(funding_rate);
         context.funding_bias = Some(if funding_rate > 0.0001 {
             "long".to_string()
@@ -551,11 +588,10 @@ impl BinanceAltContractService {
         funding_rate: Option<f64>,
     ) {
         let product_id = product_id_for_symbol(product_id);
+        let mark_price = mark_price_usd.filter(|value| value.is_finite() && *value > 0.0);
         let mut state = self.state.write();
-        let context = state.contexts.entry(product_id).or_default();
-        if let Some(mark_price_usd) =
-            mark_price_usd.filter(|value| value.is_finite() && *value > 0.0)
-        {
+        let context = state.contexts.entry(product_id.clone()).or_default();
+        if let Some(mark_price_usd) = mark_price {
             context.mark_price_usd = Some(mark_price_usd);
             context.mark_price_updated_at = Some(ts);
         }
@@ -571,6 +607,10 @@ impl BinanceAltContractService {
         }
         state.last_mark_price_at = Some(ts);
         state.mark_price_stream_connected = true;
+        drop(state);
+        if let Some(mark_price) = mark_price {
+            self.update_outcomes_with_price(&product_id, mark_price, ts);
+        }
     }
 
     pub fn update_ticker_context(
@@ -827,14 +867,23 @@ impl BinanceAltContractService {
             .filter(|signal| now.saturating_sub(signal.ts) <= 60 * 60_000)
             .filter(|signal| signal.discord_would_send)
             .count();
-        let health_status = health_status(enabled, &exchanges);
+        let health_status = health_status(
+            enabled,
+            &exchanges,
+            state.total_shards,
+            state
+                .shard_connected
+                .values()
+                .filter(|connected| **connected)
+                .count(),
+        );
         let dry_run_stats = dry_run_stats(signals, now);
         let last_trade_at = exchanges
             .values()
             .filter_map(|status| status.last_trade_at)
             .max();
         let top_active_symbols = if enabled {
-            top_active_symbols(&state.trades_by_product, now)
+            top_active_symbols(&state.flow_book, now)
         } else {
             Vec::new()
         };
@@ -868,8 +917,22 @@ impl BinanceAltContractService {
             last_ticker_at: state.last_ticker_at,
             errors1h,
         });
-        let smll_report =
-            audit_self_learning_loop_with_mode(&config.self_learning.mode, now, signals);
+        let mut smll_report = audit_self_learning_loop_with_outcomes(
+            &config.self_learning.mode,
+            now,
+            signals,
+            &state.outcomes,
+        );
+        smll_report.min_samples_for_update = config.self_learning.min_samples_for_update;
+        if smll_report.learning_mode == "real_outcome"
+            && smll_report.sample_size < smll_report.min_samples_for_update
+        {
+            smll_report.accuracy_available = false;
+            smll_report.accuracy_rate = 0.0;
+            smll_report.reason = "insufficient_samples_for_reporting".to_string();
+            smll_report.status = "collecting_outcomes".to_string();
+            smll_report.calibration_updates.clear();
+        }
         let atca_report =
             run_trading_cognition_agent(now, &state.signals, &smaf_report, &smll_report);
         let amios_report =
@@ -1066,14 +1129,23 @@ impl BinanceAltContractService {
         self.signals_for_view(symbol, limit, sort_top_impact_signals)
     }
 
-    pub fn outcome_summary(&self) -> AltContractOutcomeSummary {
-        let min_samples_for_reporting = 100;
+    pub fn outcome_summary(&self, filter: AltContractOutcomeFilter) -> AltContractOutcomeSummary {
+        let config = binance_alt_contract_runtime_config();
+        let min_samples_for_reporting = config.outcomes.min_samples_for_reporting;
+        if !config.outcomes.enabled {
+            return AltContractOutcomeSummary {
+                insufficient_samples: true,
+                min_samples_for_reporting,
+                ..AltContractOutcomeSummary::default()
+            };
+        }
         let outcomes = self
             .state
             .read()
             .outcomes
             .values()
             .cloned()
+            .filter(|outcome| outcome_matches_filter(outcome, &filter))
             .collect::<Vec<_>>();
         let completed = outcomes
             .iter()
@@ -1147,12 +1219,18 @@ impl BinanceAltContractService {
     }
 
     fn insert_signal(&self, mut signal: AltContractSignal) -> bool {
+        let config = binance_alt_contract_runtime_config();
         let mut state = self.state.write();
         if state.seen_signal_ids.contains(&signal.id) || duplicate_recent(&state.signals, &signal) {
             return false;
         }
-        merge_event_state(&mut state, &mut signal);
+        merge_event_state(&mut state, &mut signal, &config);
         let outcome = outcome_from_signal(&signal);
+        let event_record = signal
+            .event_id
+            .as_ref()
+            .and_then(|event_id| state.events.values().find(|event| &event.id == event_id))
+            .map(|event| event_record_from_state(event, &signal.product_id));
         state.seen_signal_ids.insert(signal.id.clone());
         state.signals.push_back(signal.clone());
         state.outcomes.insert(signal.id.clone(), outcome.clone());
@@ -1165,6 +1243,9 @@ impl BinanceAltContractService {
         drop(state);
         self.persist_signal(&signal);
         self.persist_outcome(&outcome);
+        if let Some(event) = event_record.as_ref() {
+            self.persist_event(event);
+        }
         true
     }
 
@@ -1246,6 +1327,31 @@ impl BinanceAltContractService {
             .outcomes
             .values()
             .filter(|outcome| outcome.product_id == trade.product_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        drop(state);
+        for outcome in persisted {
+            self.persist_outcome(&outcome);
+        }
+    }
+
+    fn update_outcomes_with_price(&self, product_id: &str, price: f64, ts: i64) {
+        let mut state = self.state.write();
+        let updates = state
+            .signals
+            .iter()
+            .filter(|signal| signal.product_id == product_id)
+            .map(|signal| (signal.id.clone(), signal.direction))
+            .collect::<Vec<_>>();
+        for (signal_id, direction) in updates {
+            if let Some(outcome) = state.outcomes.get_mut(&signal_id) {
+                update_outcome_with_price(outcome, direction, price, ts);
+            }
+        }
+        let persisted = state
+            .outcomes
+            .values()
+            .filter(|outcome| outcome.product_id == product_id)
             .cloned()
             .collect::<Vec<_>>();
         drop(state);
@@ -1403,26 +1509,15 @@ impl BinanceAltContractService {
         }
         let config = binance_alt_contract_runtime_config();
         let state = self.state.read();
-        let monitored_count = if state.symbol_metas.is_empty() {
-            config.enabled_symbols().len()
-        } else {
-            state.symbol_metas.len()
-        }
-        .max(1);
-        let start = now.saturating_sub(3 * 60_000);
         let mut by_symbol = BTreeMap::<String, (f64, f64, f64)>::new();
-        for (symbol, trades) in &state.trades_by_product {
-            let entry = by_symbol.entry(symbol.clone()).or_default();
-            for trade in trades
-                .iter()
-                .filter(|trade| trade.ts >= start && trade.ts <= now)
-            {
-                match trade.side {
-                    AltContractTradeSide::Buy => entry.0 += trade.notional_usd,
-                    AltContractTradeSide::Sell => entry.1 += trade.notional_usd,
-                }
-                entry.2 += trade.notional_usd;
-            }
+        for symbol in state.flow_book.symbols() {
+            let Some(window) = state.flow_book.window(symbol, 180, now) else {
+                continue;
+            };
+            let entry = by_symbol.entry(symbol.to_string()).or_default();
+            entry.0 = window.buy_notional_usd;
+            entry.1 = window.sell_notional_usd;
+            entry.2 = window.total_notional_usd;
         }
         let same_direction = by_symbol
             .iter()
@@ -1442,7 +1537,8 @@ impl BinanceAltContractService {
             })
             .map(|(symbol, (_, _, total))| (symbol.clone(), *total))
             .collect::<Vec<_>>();
-        let ratio = same_direction.len() as f64 / monitored_count as f64;
+        let active_symbol_count = by_symbol.len().max(1);
+        let ratio = same_direction.len() as f64 / active_symbol_count as f64;
         let mut ranked = same_direction;
         ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
         let current_product = product_id_for_symbol(product_id);
@@ -1541,51 +1637,43 @@ impl BinanceAltContractService {
             }
             return;
         }
-        let _guard = self.persistence_lock.lock();
-        if let Some(parent) = self.persistence_path.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "{} failed to create persistence dir: {error}",
-                    LOG_PREFIX
-                );
-                return;
-            }
+        let config = binance_alt_contract_runtime_config();
+        if !config.storage.jsonl_archive_enabled {
+            return;
         }
+        let path = self.persistence_path.clone();
+        let persistence_lock = self.persistence_lock.clone();
+        let signal_id = signal.id.clone();
         let payload = match serde_json::to_string(signal) {
             Ok(payload) => payload,
             Err(error) => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    signal_id = signal.id.as_str(),
-                    "{} failed to serialize signal: {error}",
-                    LOG_PREFIX
-                );
+                tracing::warn!(target: LOG_TARGET, signal_id, "{} failed to serialize JSONL archive: {error}", LOG_PREFIX);
                 return;
             }
         };
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.persistence_path)
-        {
-            Ok(mut file) => {
-                if let Err(error) = writeln!(file, "{payload}") {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        signal_id = signal.id.as_str(),
-                        "{} failed to write signal: {error}",
-                        LOG_PREFIX
-                    );
+        let write_archive = move || {
+            let _guard = persistence_lock.lock();
+            if let Some(parent) = path.parent() {
+                if let Err(error) = fs::create_dir_all(parent) {
+                    tracing::warn!(target: LOG_TARGET, "{} failed to create JSONL archive dir: {error}", LOG_PREFIX);
+                    return;
                 }
             }
-            Err(error) => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "{} failed to open persistence file: {error}",
-                    LOG_PREFIX
-                );
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(mut file) => {
+                    if let Err(error) = writeln!(file, "{payload}") {
+                        tracing::warn!(target: LOG_TARGET, signal_id, "{} failed to write JSONL archive: {error}", LOG_PREFIX);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, "{} failed to open JSONL archive: {error}", LOG_PREFIX);
+                }
             }
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(write_archive);
+        } else {
+            write_archive();
         }
     }
 
@@ -1614,6 +1702,31 @@ impl BinanceAltContractService {
         }
     }
 
+    fn persist_event(&self, event: &AltContractEventRecord) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        if let Some(tx) = self.persistence_tx.read().as_ref() {
+            match tx.try_send(PersistenceCommand::UpsertEvent(event.clone())) {
+                Ok(()) => {
+                    let mut state = self.state.write();
+                    state.persistence_queue_depth = state.persistence_queue_depth.saturating_add(1);
+                    state
+                        .oldest_persistence_enqueued_at
+                        .get_or_insert_with(now_ms);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    self.record_persistence_drop(event.event_id.as_str(), "full");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    self.record_persistence_drop(event.event_id.as_str(), "closed");
+                }
+            }
+        } else if let Err(error) = store.upsert_alt_contract_event(event) {
+            tracing::warn!(target: LOG_TARGET, event_id = event.event_id.as_str(), "{} failed to persist BACM event before worker start: {error}", LOG_PREFIX);
+        }
+    }
+
     fn start_persistence_worker(&self) {
         let Some(store) = self.store.clone() else {
             return;
@@ -1621,15 +1734,19 @@ impl BinanceAltContractService {
         if self.persistence_tx.read().is_some() {
             return;
         }
-        let (tx, mut rx) = mpsc::channel::<PersistenceCommand>(PERSISTENCE_QUEUE_CAPACITY);
+        let runtime_config = binance_alt_contract_runtime_config();
+        let queue_capacity = runtime_config.storage.queue_capacity.max(1);
+        let batch_size = runtime_config.storage.batch_size.max(1);
+        let flush_interval_ms = runtime_config.storage.flush_interval_ms.max(1);
+        let (tx, mut rx) = mpsc::channel::<PersistenceCommand>(queue_capacity);
         *self.persistence_tx.write() = Some(tx);
         let state = self.state.clone();
         self.tasks.write().push(tokio::spawn(async move {
             while let Some(first_command) = rx.recv().await {
                 let mut batch = vec![first_command];
                 let flush_at = tokio::time::Instant::now()
-                    + Duration::from_millis(PERSISTENCE_FLUSH_INTERVAL_MS);
-                while batch.len() < PERSISTENCE_BATCH_SIZE {
+                    + Duration::from_millis(flush_interval_ms);
+                while batch.len() < batch_size {
                     tokio::select! {
                         next = rx.recv() => match next {
                             Some(command) => batch.push(command),
@@ -1640,31 +1757,61 @@ impl BinanceAltContractService {
                 }
                 let batch_len = batch.len();
                 let store = store.clone();
-                match tokio::task::spawn_blocking(move || {
-                    let signals = batch
-                        .iter()
-                        .filter_map(|command| match command {
-                            PersistenceCommand::InsertSignal(signal) => Some(signal.clone()),
-                            PersistenceCommand::UpdateOutcome(_) => None,
-                        })
-                        .collect::<Vec<_>>();
-                    store.upsert_alt_contract_signals(&signals)?;
-                    for outcome in batch.iter().filter_map(|command| match command {
-                        PersistenceCommand::InsertSignal(_) => None,
-                        PersistenceCommand::UpdateOutcome(outcome) => Some(outcome),
-                    }) {
-                        store.upsert_alt_contract_outcome(outcome)?;
-                    }
-                    Ok::<(), anyhow::Error>(())
-                })
-                    .await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::warn!(target: LOG_TARGET, "{} failed to persist BACM signal asynchronously: {error}", LOG_PREFIX);
-                    }
-                    Err(error) => {
-                        tracing::warn!(target: LOG_TARGET, "{} BACM persistence worker failed: {error}", LOG_PREFIX);
+                let mut attempt = 0_u32;
+                loop {
+                    let batch_for_write = batch.clone();
+                    let store_for_write = store.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let signals = batch_for_write
+                            .iter()
+                            .filter_map(|command| match command {
+                                PersistenceCommand::InsertSignal(signal) => Some(signal.clone()),
+                                PersistenceCommand::UpdateOutcome(_) | PersistenceCommand::UpsertEvent(_) => None,
+                            })
+                            .collect::<Vec<_>>();
+                        store_for_write.upsert_alt_contract_signals(&signals)?;
+                        for event in batch_for_write.iter().filter_map(|command| match command {
+                            PersistenceCommand::UpsertEvent(event) => Some(event),
+                            _ => None,
+                        }) {
+                            store_for_write.upsert_alt_contract_event(event)?;
+                        }
+                        for outcome in batch_for_write.iter().filter_map(|command| match command {
+                            PersistenceCommand::InsertSignal(_) | PersistenceCommand::UpsertEvent(_) => None,
+                            PersistenceCommand::UpdateOutcome(outcome) => Some(outcome),
+                        }) {
+                            store_for_write.upsert_alt_contract_outcome(outcome)?;
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => break,
+                        Ok(Err(error)) if attempt < PERSISTENCE_MAX_RETRIES => {
+                            attempt = attempt.saturating_add(1);
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                attempt,
+                                "{} BACM persistence batch failed; retrying: {error}",
+                                LOG_PREFIX
+                            );
+                            tokio::time::sleep(Duration::from_millis(
+                                25_u64.saturating_mul(1_u64 << attempt.min(5)),
+                            ))
+                            .await;
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(target: LOG_TARGET, "{} failed to persist BACM signal asynchronously after retries: {error}", LOG_PREFIX);
+                            break;
+                        }
+                        Err(error) if attempt < PERSISTENCE_MAX_RETRIES => {
+                            attempt = attempt.saturating_add(1);
+                            tracing::warn!(target: LOG_TARGET, attempt, "{} BACM persistence worker join failed; retrying: {error}", LOG_PREFIX);
+                        }
+                        Err(error) => {
+                            tracing::warn!(target: LOG_TARGET, "{} BACM persistence worker failed after retries: {error}", LOG_PREFIX);
+                            break;
+                        }
                     }
                 }
                 let mut state = state.write();
@@ -2022,11 +2169,15 @@ fn price_response_key(signal: &AltContractSignal) -> i8 {
     }
 }
 
-fn merge_event_state(state: &mut BinanceAltContractState, signal: &mut AltContractSignal) {
+fn merge_event_state(
+    state: &mut BinanceAltContractState,
+    signal: &mut AltContractSignal,
+    config: &super::config::BinanceAltContractRuntimeConfig,
+) {
     let now = signal.ts;
-    state
-        .events
-        .retain(|_, event| now.saturating_sub(event.updated_at) <= 15 * 60_000);
+    state.events.retain(|_, event| {
+        now.saturating_sub(event.updated_at) <= lifecycle_window_ms(event, config)
+    });
     let event_key = format!(
         "{}:{:?}:{:?}",
         signal.product_id, signal.direction, signal.signal_type
@@ -2039,19 +2190,106 @@ fn merge_event_state(state: &mut BinanceAltContractState, signal: &mut AltContra
                 "bacm-event:{}:{:?}:{:?}:{}",
                 signal.product_id, signal.direction, signal.signal_type, signal.ts
             ),
+            start_ts: signal.ts,
             updated_at: signal.ts,
+            tier: signal.tier,
+            signal_type: format!("{:?}", signal.signal_type),
+            direction: format!("{:?}", signal.direction),
+            liquidation_driven: signal.liquidation_suspected,
+            status: "active".to_string(),
+            close_reason: None,
+            latest_signal_id: signal.id.clone(),
+            peak_signal_id: signal.id.clone(),
             peak_abnormal_score: signal.abnormal_score,
             peak_build_score: signal.build_score,
             signal_count: 0,
         });
+    event.start_ts = event.start_ts.min(signal.ts);
     event.updated_at = signal.ts;
+    event.latest_signal_id = signal.id.clone();
+    event.liquidation_driven |= signal.liquidation_suspected;
+    if signal.abnormal_score >= event.peak_abnormal_score
+        && signal.build_score >= event.peak_build_score
+    {
+        event.peak_signal_id = signal.id.clone();
+    }
+    event.status = "active".to_string();
+    event.close_reason = None;
     event.peak_abnormal_score = event.peak_abnormal_score.max(signal.abnormal_score);
     event.peak_build_score = event.peak_build_score.max(signal.build_score);
     event.signal_count = event.signal_count.saturating_add(1);
     signal.event_id = Some(event.id.clone());
+    signal.event_start_ts = Some(event.start_ts);
+    signal.event_status = event.status.clone();
+    signal.event_close_reason = event.close_reason.clone();
+    signal.event_latest_signal_id = Some(event.latest_signal_id.clone());
+    signal.event_peak_signal_id = Some(event.peak_signal_id.clone());
     signal.event_signal_count = event.signal_count;
     signal.event_peak_abnormal_score = event.peak_abnormal_score;
     signal.event_peak_build_score = event.peak_build_score;
+}
+
+fn event_state_from_record(record: AltContractEventRecord) -> AltContractEventState {
+    AltContractEventState {
+        id: record.event_id,
+        start_ts: record.start_ts,
+        updated_at: record.last_update_ts,
+        tier: record.tier,
+        signal_type: record.signal_type,
+        direction: record.direction,
+        liquidation_driven: record.liquidation_driven,
+        status: record.status,
+        close_reason: None,
+        latest_signal_id: record.latest_signal_id.unwrap_or_default(),
+        peak_signal_id: record.peak_signal_id.unwrap_or_default(),
+        peak_abnormal_score: record.peak_abnormal_score,
+        peak_build_score: record.peak_build_score,
+        signal_count: record.signal_count,
+    }
+}
+
+fn event_record_from_state(
+    event: &AltContractEventState,
+    product_id: &str,
+) -> AltContractEventRecord {
+    AltContractEventRecord {
+        event_id: event.id.clone(),
+        product_id: product_id.to_string(),
+        signal_type: event.signal_type.clone(),
+        direction: event.direction.clone(),
+        tier: event.tier,
+        liquidation_driven: event.liquidation_driven,
+        start_ts: event.start_ts,
+        last_update_ts: event.updated_at,
+        status: event.status.clone(),
+        latest_signal_id: Some(event.latest_signal_id.clone()),
+        peak_signal_id: Some(event.peak_signal_id.clone()),
+        signal_count: event.signal_count,
+        peak_abnormal_score: event.peak_abnormal_score,
+        peak_build_score: event.peak_build_score,
+    }
+}
+
+fn lifecycle_window_ms(
+    event: &AltContractEventState,
+    config: &super::config::BinanceAltContractRuntimeConfig,
+) -> i64 {
+    let seconds = if event.liquidation_driven {
+        config.lifecycle.liquidation_merge_seconds
+    } else {
+        match event.tier {
+            AltContractSymbolTier::A | AltContractSymbolTier::B => {
+                config.lifecycle.tier_a_b_merge_seconds
+            }
+            AltContractSymbolTier::C => config.lifecycle.tier_c_merge_seconds,
+            AltContractSymbolTier::D | AltContractSymbolTier::E => {
+                config.lifecycle.tier_d_e_merge_seconds
+            }
+        }
+    };
+    i64::try_from(seconds.max(1))
+        .unwrap_or(i64::MAX / 1_000)
+        .saturating_mul(1_000)
 }
 
 fn prune_trades(trades: &mut VecDeque<AltContractTrade>, now: i64) {
@@ -2298,12 +2536,21 @@ fn status_from_severity(severity: AltContractSeverity) -> &'static str {
     }
 }
 
-fn health_status(enabled: bool, exchanges: &BTreeMap<String, AltContractExchangeStatus>) -> String {
+fn health_status(
+    enabled: bool,
+    exchanges: &BTreeMap<String, AltContractExchangeStatus>,
+    total_shards: usize,
+    connected_shards: usize,
+) -> String {
     if !enabled {
         return "disabled".to_string();
     }
     let connected = exchanges.values().filter(|status| status.connected).count();
-    if connected >= 1 {
+    if connected == 0 || (total_shards > 0 && connected_shards == 0) {
+        "unhealthy".to_string()
+    } else if total_shards > 0 && connected_shards < total_shards {
+        "degraded".to_string()
+    } else if connected >= 1 {
         "healthy".to_string()
     } else {
         "unhealthy".to_string()
@@ -2316,6 +2563,7 @@ fn health_reason(enabled: bool, health_status: &str) -> &'static str {
     } else {
         match health_status {
             "healthy" => "binance_alt_recent",
+            "degraded" => "binance_alt_partial_shard_coverage",
             "unhealthy" => "binance_alt_stale_or_disconnected",
             _ => "binance_alt_status_unknown",
         }
@@ -2429,19 +2677,15 @@ fn dry_run_window_stats(
     }
 }
 
-fn top_active_symbols(
-    trades_by_product: &BTreeMap<String, VecDeque<AltContractTrade>>,
-    now: i64,
-) -> Vec<String> {
+fn top_active_symbols(flow_book: &PerSymbolFlowBook, now: i64) -> Vec<String> {
     let mut by_symbol = BTreeMap::<String, f64>::new();
-    for (product_id, trades) in trades_by_product {
-        let notional_usd = trades
-            .iter()
-            .filter(|trade| now.saturating_sub(trade.ts) <= 15 * 60_000)
-            .map(|trade| trade.notional_usd)
-            .sum::<f64>();
+    for product_id in flow_book.symbols() {
+        let notional_usd = flow_book
+            .window(product_id, 15 * 60, now)
+            .map(|window| window.total_notional_usd)
+            .unwrap_or_default();
         if notional_usd > 0.0 {
-            by_symbol.insert(product_id.clone(), notional_usd);
+            by_symbol.insert(product_id.to_string(), notional_usd);
         }
     }
     let mut items = by_symbol.into_iter().collect::<Vec<_>>();
@@ -2645,6 +2889,71 @@ fn median_optional(values: impl Iterator<Item = f64>) -> Option<f64> {
     })
 }
 
+fn outcome_matches_filter(
+    outcome: &AltContractSignalOutcome,
+    filter: &AltContractOutcomeFilter,
+) -> bool {
+    if filter
+        .symbol
+        .as_deref()
+        .is_some_and(|symbol| outcome.product_id != product_id_for_symbol(symbol))
+    {
+        return false;
+    }
+    if filter.tier.as_deref().is_some_and(|tier| {
+        compact_filter_value(&format!("{:?}", outcome.tier)) != compact_filter_value(tier)
+    }) {
+        return false;
+    }
+    if filter
+        .window_sec
+        .is_some_and(|window_sec| outcome.window_sec != window_sec)
+    {
+        return false;
+    }
+    if filter.signal_type.as_deref().is_some_and(|signal_type| {
+        compact_filter_value(&outcome.signal_type) != compact_filter_value(signal_type)
+    }) {
+        return false;
+    }
+    if filter.severity.as_deref().is_some_and(|severity| {
+        compact_filter_value(&format!("{:?}", outcome.anomaly_severity))
+            != compact_filter_value(severity)
+    }) {
+        return false;
+    }
+    if filter
+        .ais_min
+        .is_some_and(|ais_min| outcome.ais_score < ais_min)
+        || filter
+            .ais_max
+            .is_some_and(|ais_max| outcome.ais_score > ais_max)
+    {
+        return false;
+    }
+    if filter
+        .regime
+        .as_deref()
+        .is_some_and(|regime| !outcome.regime.eq_ignore_ascii_case(regime))
+    {
+        return false;
+    }
+    if filter
+        .oi_context
+        .as_deref()
+        .is_some_and(|oi_context| !outcome.oi_context.eq_ignore_ascii_case(oi_context))
+    {
+        return false;
+    }
+    if filter.time_of_day_utc.is_some_and(|expected_hour| {
+        let actual_hour = ((outcome.signal_ts.div_euclid(3_600_000) % 24) + 24) % 24;
+        actual_hour as u8 != expected_hour
+    }) {
+        return false;
+    }
+    true
+}
+
 fn sort_ranked_signals(items: &mut [AltContractSignal]) {
     items.sort_by(|left, right| {
         composite_signal_score(right)
@@ -2674,7 +2983,12 @@ fn display_signal(
     config: &super::config::BinanceAltContractRuntimeConfig,
 ) -> bool {
     if !is_legacy_impact_score(&signal.alt_impact_score) {
-        return impact_displayable(&signal.alt_impact_score);
+        let absolute_floor = signal
+            .display_threshold_usd
+            .max(config.display_threshold_for_product(&signal.product_id));
+        return impact_displayable(&signal.alt_impact_score)
+            && (!config.impact.absolute_floor_required
+                || signal.total_notional_usd >= absolute_floor);
     }
     let threshold =
         if signal.display_threshold_usd.is_finite() && signal.display_threshold_usd > 0.0 {

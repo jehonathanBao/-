@@ -50,6 +50,7 @@ fn true_long_build_requires_evidence_chain() {
         funding_rate: Some(0.0002),
         persistence_windows: 3,
         ticker_quote_volume_24h_usd: Some(2_000_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         ..AltContractContext::default()
     };
     let windows = vec![

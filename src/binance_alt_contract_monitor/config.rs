@@ -31,6 +31,9 @@ pub struct BinanceAltContractRuntimeConfig {
     pub oi: BinanceAltOiConfig,
     pub self_learning: BinanceAltSelfLearningConfig,
     pub liquidation: BinanceAltLiquidationConfig,
+    pub impact: BinanceAltImpactConfig,
+    pub outcomes: BinanceAltOutcomeConfig,
+    pub lifecycle: BinanceAltLifecycleConfig,
     pub storage: BinanceAltStorageConfig,
     pub display: BinanceAltDisplayConfig,
     pub market_classification: BinanceAltMarketClassificationConfig,
@@ -171,6 +174,9 @@ impl Default for BinanceAltContractRuntimeConfig {
             oi: BinanceAltOiConfig::default(),
             self_learning: BinanceAltSelfLearningConfig::default(),
             liquidation: BinanceAltLiquidationConfig::default(),
+            impact: BinanceAltImpactConfig::default(),
+            outcomes: BinanceAltOutcomeConfig::default(),
+            lifecycle: BinanceAltLifecycleConfig::default(),
             storage: BinanceAltStorageConfig::default(),
             display: BinanceAltDisplayConfig::default(),
             market_classification: BinanceAltMarketClassificationConfig::default(),
@@ -356,12 +362,64 @@ pub struct BinanceAltOiConfig {
 #[derive(Debug, Clone)]
 pub struct BinanceAltSelfLearningConfig {
     pub mode: String,
+    pub min_samples_for_update: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct BinanceAltLiquidationConfig {
     pub retention_seconds: u64,
     pub deduplicate: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltImpactConfig {
+    pub require_reliable_reference: bool,
+    pub ticker_max_age_seconds: u64,
+    pub absolute_floor_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltOutcomeConfig {
+    pub enabled: bool,
+    pub min_samples_for_reporting: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinanceAltLifecycleConfig {
+    pub tier_a_b_merge_seconds: u64,
+    pub tier_c_merge_seconds: u64,
+    pub tier_d_e_merge_seconds: u64,
+    pub liquidation_merge_seconds: u64,
+}
+
+impl Default for BinanceAltLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            tier_a_b_merge_seconds: 180,
+            tier_c_merge_seconds: 120,
+            tier_d_e_merge_seconds: 60,
+            liquidation_merge_seconds: 90,
+        }
+    }
+}
+
+impl Default for BinanceAltOutcomeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_samples_for_reporting: 100,
+        }
+    }
+}
+
+impl Default for BinanceAltImpactConfig {
+    fn default() -> Self {
+        Self {
+            require_reliable_reference: true,
+            ticker_max_age_seconds: 120,
+            absolute_floor_required: true,
+        }
+    }
 }
 
 impl Default for BinanceAltLiquidationConfig {
@@ -377,6 +435,7 @@ impl Default for BinanceAltSelfLearningConfig {
     fn default() -> Self {
         Self {
             mode: "disabled".to_string(),
+            min_samples_for_update: 100,
         }
     }
 }
@@ -413,6 +472,10 @@ pub struct BinanceAltStorageConfig {
     pub flow_1m_retention_days: u64,
     pub signals_retention_days: u64,
     pub cleanup_interval_sec: u64,
+    pub queue_capacity: usize,
+    pub batch_size: usize,
+    pub flush_interval_ms: u64,
+    pub jsonl_archive_enabled: bool,
 }
 
 impl Default for BinanceAltStorageConfig {
@@ -425,6 +488,10 @@ impl Default for BinanceAltStorageConfig {
             flow_1m_retention_days: 7,
             signals_retention_days: 7,
             cleanup_interval_sec: 3_600,
+            queue_capacity: 10_000,
+            batch_size: 100,
+            flush_interval_ms: 500,
+            jsonl_archive_enabled: false,
         }
     }
 }
@@ -950,6 +1017,11 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.self_learning.mode",
                 &fallback.self_learning.mode,
             ),
+            min_samples_for_update: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.self_learning.min_samples",
+                fallback.self_learning.min_samples_for_update,
+            ),
         },
         liquidation: BinanceAltLiquidationConfig {
             retention_seconds: u64_setting(
@@ -960,6 +1032,51 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
             deduplicate: settings
                 .get_bool("binance_alt_contract_monitor.liquidation.deduplicate")
                 .unwrap_or(fallback.liquidation.deduplicate),
+        },
+        impact: BinanceAltImpactConfig {
+            require_reliable_reference: settings
+                .get_bool("binance_alt_contract_monitor.impact.require_reliable_reference")
+                .unwrap_or(fallback.impact.require_reliable_reference),
+            ticker_max_age_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.impact.ticker_max_age_seconds",
+                fallback.impact.ticker_max_age_seconds,
+            ),
+            absolute_floor_required: settings
+                .get_bool("binance_alt_contract_monitor.impact.absolute_floor_required")
+                .unwrap_or(fallback.impact.absolute_floor_required),
+        },
+        outcomes: BinanceAltOutcomeConfig {
+            enabled: settings
+                .get_bool("binance_alt_contract_monitor.outcomes.enabled")
+                .unwrap_or(fallback.outcomes.enabled),
+            min_samples_for_reporting: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.outcomes.min_samples_for_reporting",
+                fallback.outcomes.min_samples_for_reporting,
+            ),
+        },
+        lifecycle: BinanceAltLifecycleConfig {
+            tier_a_b_merge_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.lifecycle.tier_a_b_merge_seconds",
+                fallback.lifecycle.tier_a_b_merge_seconds,
+            ),
+            tier_c_merge_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.lifecycle.tier_c_merge_seconds",
+                fallback.lifecycle.tier_c_merge_seconds,
+            ),
+            tier_d_e_merge_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.lifecycle.tier_d_e_merge_seconds",
+                fallback.lifecycle.tier_d_e_merge_seconds,
+            ),
+            liquidation_merge_seconds: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.lifecycle.liquidation_merge_seconds",
+                fallback.lifecycle.liquidation_merge_seconds,
+            ),
         },
         storage: BinanceAltStorageConfig {
             persist_all_1s: settings
@@ -995,6 +1112,24 @@ pub fn load_binance_alt_contract_runtime_config_from_settings(
                 "binance_alt_contract_monitor.storage.cleanup_interval_sec",
                 fallback.storage.cleanup_interval_sec,
             ),
+            queue_capacity: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.queue_capacity",
+                fallback.storage.queue_capacity,
+            ),
+            batch_size: usize_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.batch_size",
+                fallback.storage.batch_size,
+            ),
+            flush_interval_ms: u64_setting(
+                settings,
+                "binance_alt_contract_monitor.storage.flush_interval_ms",
+                fallback.storage.flush_interval_ms,
+            ),
+            jsonl_archive_enabled: settings
+                .get_bool("binance_alt_contract_monitor.storage.jsonl_archive_enabled")
+                .unwrap_or(fallback.storage.jsonl_archive_enabled),
         },
         display: BinanceAltDisplayConfig {
             min_notional_usd: nonnegative_f64_setting(

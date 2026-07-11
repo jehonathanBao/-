@@ -48,6 +48,25 @@ pub const MIGRATIONS: &[&str] = &[
       ON alt_contract_signal_outcomes(product_id, signal_ts DESC);
     "#,
     r#"
+    CREATE TABLE IF NOT EXISTS alt_contract_events (
+      event_id TEXT PRIMARY KEY,
+      product_id TEXT NOT NULL,
+      signal_type TEXT NOT NULL,
+      direction TEXT,
+      start_ts INTEGER NOT NULL,
+      last_update_ts INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      latest_signal_id TEXT,
+      peak_signal_id TEXT,
+      signal_count INTEGER NOT NULL,
+      peak_abnormal_score REAL,
+      peak_build_score REAL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alt_contract_events_product_ts
+      ON alt_contract_events(product_id, last_update_ts DESC);
+    "#,
+    r#"
     CREATE TABLE IF NOT EXISTS toxic_events (
       id TEXT PRIMARY KEY,
       ts INTEGER NOT NULL,

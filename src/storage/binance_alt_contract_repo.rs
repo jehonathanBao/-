@@ -2,7 +2,9 @@ use anyhow::Context;
 use rusqlite::params;
 
 use crate::{
-    binance_alt_contract_monitor::types::{AltContractSignal, AltContractSignalOutcome},
+    binance_alt_contract_monitor::types::{
+        AltContractEventRecord, AltContractSignal, AltContractSignalOutcome,
+    },
     storage::sqlite::SqliteStore,
 };
 
@@ -17,6 +19,9 @@ pub trait BinanceAltContractRepo {
         &self,
         limit: usize,
     ) -> anyhow::Result<Vec<AltContractSignalOutcome>>;
+    fn upsert_alt_contract_event(&self, event: &AltContractEventRecord) -> anyhow::Result<()>;
+    fn load_alt_contract_events(&self, limit: usize)
+        -> anyhow::Result<Vec<AltContractEventRecord>>;
 }
 
 impl BinanceAltContractRepo for SqliteStore {
@@ -177,6 +182,69 @@ impl BinanceAltContractRepo for SqliteStore {
             let rows = statement
                 .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| row.get::<_, String>(0))
                 .context("failed to load BACM outcomes")?;
+            Ok(rows
+                .filter_map(Result::ok)
+                .filter_map(|payload| serde_json::from_str(&payload).ok())
+                .collect())
+        })
+    }
+
+    fn upsert_alt_contract_event(&self, event: &AltContractEventRecord) -> anyhow::Result<()> {
+        let payload = serde_json::to_string(event).context("failed to serialize BACM event")?;
+        self.with_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO alt_contract_events (
+                  event_id, product_id, signal_type, direction, start_ts, last_update_ts,
+                  status, latest_signal_id, peak_signal_id, signal_count,
+                  peak_abnormal_score, peak_build_score, payload_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ON CONFLICT(event_id) DO UPDATE SET
+                  product_id = excluded.product_id,
+                  signal_type = excluded.signal_type,
+                  direction = excluded.direction,
+                  start_ts = excluded.start_ts,
+                  last_update_ts = excluded.last_update_ts,
+                  status = excluded.status,
+                  latest_signal_id = excluded.latest_signal_id,
+                  peak_signal_id = excluded.peak_signal_id,
+                  signal_count = excluded.signal_count,
+                  peak_abnormal_score = excluded.peak_abnormal_score,
+                  peak_build_score = excluded.peak_build_score,
+                  payload_json = excluded.payload_json
+                "#,
+                params![
+                    event.event_id,
+                    event.product_id,
+                    event.signal_type,
+                    event.direction,
+                    event.start_ts,
+                    event.last_update_ts,
+                    event.status,
+                    event.latest_signal_id,
+                    event.peak_signal_id,
+                    event.signal_count,
+                    event.peak_abnormal_score,
+                    event.peak_build_score,
+                    payload,
+                ],
+            )
+            .context("failed to upsert BACM event")?;
+            Ok(())
+        })
+    }
+
+    fn load_alt_contract_events(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<AltContractEventRecord>> {
+        self.with_connection(|conn| {
+            let mut statement = conn
+                .prepare("SELECT payload_json FROM alt_contract_events ORDER BY last_update_ts DESC LIMIT ?1")
+                .context("failed to prepare BACM event load")?;
+            let rows = statement
+                .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| row.get::<_, String>(0))
+                .context("failed to load BACM events")?;
             Ok(rows
                 .filter_map(Result::ok)
                 .filter_map(|payload| serde_json::from_str(&payload).ok())

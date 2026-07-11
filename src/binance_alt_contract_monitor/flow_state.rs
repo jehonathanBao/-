@@ -219,6 +219,10 @@ impl PerSymbolFlowBook {
     pub fn has_symbol(&self, product_id: &str) -> bool {
         self.states.contains_key(product_id)
     }
+
+    pub fn symbols(&self) -> impl Iterator<Item = &str> {
+        self.states.keys().map(String::as_str)
+    }
 }
 
 fn median(values: &[f64]) -> f64 {

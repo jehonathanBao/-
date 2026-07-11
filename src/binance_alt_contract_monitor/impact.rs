@@ -1,3 +1,4 @@
+use super::config::BinanceAltImpactConfig;
 use super::types::{
     AltContractContext, AltContractDirection, AltContractImpactScore, AltContractMarketTier,
     AltContractSymbolTier, AltContractWindowStats,
@@ -12,7 +13,22 @@ pub fn score_alt_impact(
     context: &AltContractContext,
     market_tier: AltContractMarketTier,
 ) -> AltContractImpactScore {
-    let (reference_volume_24h_usd, reference_source) = reference_volume_24h(stats, context);
+    score_alt_impact_with_config(
+        stats,
+        context,
+        market_tier,
+        &BinanceAltImpactConfig::default(),
+    )
+}
+
+pub fn score_alt_impact_with_config(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+    market_tier: AltContractMarketTier,
+    config: &BinanceAltImpactConfig,
+) -> AltContractImpactScore {
+    let (reference_volume_24h_usd, reference_source, reference_age_sec) =
+        reference_volume_24h_with_config(stats, context, config);
     let market_impact_ratio = reference_volume_24h_usd
         .filter(|value| *value > 0.0)
         .map(|reference| stats.total_notional_usd / reference)
@@ -40,10 +56,8 @@ pub fn score_alt_impact(
         discord_threshold: ALT_IMPACT_DISCORD_THRESHOLD,
         s_threshold: ALT_IMPACT_S_THRESHOLD,
         reference_volume_24h_usd: reference_volume_24h_usd.map(round2),
-        reference_age_sec: context
-            .ticker_updated_at
-            .map(|updated_at| stats.ts.saturating_sub(updated_at).max(0) as u64 / 1_000),
-        evidence_degraded: reference_volume_24h_usd.is_none(),
+        reference_age_sec,
+        evidence_degraded: reference_volume_24h_usd.is_none() && config.require_reliable_reference,
         reference_source,
         interpretation: interpretation(final_score),
     }
@@ -82,18 +96,49 @@ pub fn is_legacy_impact_score(score: &AltContractImpactScore) -> bool {
         && score.oi_confirmation <= 0.0
 }
 
-fn reference_volume_24h(
-    _stats: &AltContractWindowStats,
+fn reference_volume_24h_with_config(
+    stats: &AltContractWindowStats,
     context: &AltContractContext,
-) -> (Option<f64>, String) {
+    config: &BinanceAltImpactConfig,
+) -> (Option<f64>, String, Option<u64>) {
     if let Some(value) = context
         .ticker_quote_volume_24h_usd
         .filter(|value| value.is_finite() && *value > 0.0)
     {
-        return (Some(value), "ticker_quote_volume_24h".to_string());
+        let age_sec = context
+            .ticker_updated_at
+            .map(|updated_at| stats.ts.saturating_sub(updated_at).max(0) as u64 / 1_000);
+        let fresh = age_sec.is_some_and(|age| age <= config.ticker_max_age_seconds);
+        if fresh {
+            return (Some(value), "ticker_quote_volume_24h".to_string(), age_sec);
+        }
     }
 
-    (None, "unavailable".to_string())
+    if let Some(value) = context
+        .local_rolling_24h_notional_usd
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        let age_sec = context
+            .local_rolling_24h_updated_at
+            .map(|updated_at| stats.ts.saturating_sub(updated_at).max(0) as u64 / 1_000);
+        if age_sec.is_some_and(|age| age <= 24 * 60 * 60) {
+            return (Some(value), "local_rolling_24h".to_string(), age_sec);
+        }
+    }
+
+    if let Some(value) = context
+        .historical_baseline_notional_usd
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        let age_sec = context
+            .historical_baseline_updated_at
+            .map(|updated_at| stats.ts.saturating_sub(updated_at).max(0) as u64 / 1_000);
+        if age_sec.is_some_and(|age| age <= 24 * 60 * 60) {
+            return (Some(value), "historical_baseline".to_string(), age_sec);
+        }
+    }
+
+    (None, "unavailable".to_string(), None)
 }
 
 fn market_impact_score(ratio: f64, market_tier: AltContractMarketTier) -> f64 {

@@ -11,6 +11,7 @@ fn low_notional_without_relative_impact_stays_hidden() {
     let stats = stats("TINY", 50_000.0, 0.52, 1.2);
     let context = AltContractContext {
         ticker_quote_volume_24h_usd: Some(1_000_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         oi_change_pct: Some(0.1),
         ..AltContractContext::default()
     };
@@ -27,6 +28,7 @@ fn mid_notional_with_large_market_share_becomes_displayable() {
     let stats = stats("WIF", 200_000.0, 0.72, 6.5);
     let context = AltContractContext {
         ticker_quote_volume_24h_usd: Some(4_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         oi_change_pct: Some(1.4),
         ..AltContractContext::default()
     };
@@ -43,6 +45,7 @@ fn large_nominal_flow_can_still_be_noise_when_market_impact_is_low() {
     let stats = stats("BTC", 500_000.0, 0.54, 1.3);
     let context = AltContractContext {
         ticker_quote_volume_24h_usd: Some(500_000_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         oi_change_pct: Some(0.0),
         ..AltContractContext::default()
     };
@@ -59,6 +62,7 @@ fn s_grade_requires_extreme_relative_impact_not_just_high_direction() {
     let stats = stats("ALT", 250_000.0, 0.88, 7.0);
     let context = AltContractContext {
         ticker_quote_volume_24h_usd: Some(5_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         oi_change_1m_base: Some(25_000.0),
         oi_change_pct: Some(1.8),
         ..AltContractContext::default()
@@ -84,6 +88,40 @@ fn impact_without_a_reliable_reference_is_unavailable_and_not_displayable() {
     assert!(impact.evidence_degraded);
     assert!(!impact_displayable(&impact));
     assert!(!impact_discord_ready(&impact));
+}
+
+#[test]
+fn stale_ticker_does_not_become_a_reliable_impact_reference() {
+    let stats = stats("STALE", 9_000_000.0, 0.92, 12.0);
+    let context = AltContractContext {
+        ticker_quote_volume_24h_usd: Some(5_000_000.0),
+        ticker_updated_at: Some(stats.ts - 121_000),
+        ..AltContractContext::default()
+    };
+
+    let impact = score_alt_impact(&stats, &context, AltContractMarketTier::Alt);
+
+    assert_eq!(impact.reference_source, "unavailable");
+    assert!(impact.evidence_degraded);
+    assert!(!impact_displayable(&impact));
+}
+
+#[test]
+fn local_rolling_reference_is_used_before_historical_baseline() {
+    let stats = stats("LOCAL", 200_000.0, 0.72, 6.5);
+    let context = AltContractContext {
+        local_rolling_24h_notional_usd: Some(4_000_000.0),
+        local_rolling_24h_updated_at: Some(stats.ts - 10_000),
+        historical_baseline_notional_usd: Some(10_000_000.0),
+        historical_baseline_updated_at: Some(stats.ts - 10_000),
+        ..AltContractContext::default()
+    };
+
+    let impact = score_alt_impact(&stats, &context, AltContractMarketTier::Alt);
+
+    assert_eq!(impact.reference_source, "local_rolling_24h");
+    assert_eq!(impact.reference_volume_24h_usd, Some(4_000_000.0));
+    assert!(!impact.evidence_degraded);
 }
 
 fn stats(
