@@ -42,27 +42,23 @@ fn manager_add_remove_and_capacity_limit() {
         reconstruction.market_price_source,
         PriceSource::Reconstructed
     );
-    assert_eq!(reconstruction.analysis_price_source, PriceSource::Vwap);
+    assert_eq!(
+        reconstruction.analysis_price_source,
+        PriceSource::Reconstructed
+    );
     assert_eq!(reconstruction.current_price, reconstruction.market_price);
-    assert!(reconstruction.analysis_price > 0.0);
+    assert_eq!(reconstruction.analysis_price, 0.0);
+    assert!(reconstruction
+        .price_fallback_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("market_price")));
+    assert!(first
+        .last_signal
+        .evidence
+        .iter()
+        .any(|evidence| evidence == "no_contract_flow_observed"));
     assert!(reconstruction.price_fallback_reason.is_some());
     assert!(reconstruction.read_only);
-    assert!(reconstruction.cost_basis_low <= reconstruction.vwap_anchor);
-    assert!(reconstruction.vwap_anchor <= reconstruction.cost_basis_high);
-    assert!(!reconstruction.capital_timeline.phases.is_empty());
-    assert!(reconstruction.capital_timeline.total_duration_sec > 0);
-    assert!(!reconstruction.position_flow_curve.points.is_empty());
-    assert!(
-        reconstruction
-            .position_flow_curve
-            .accumulation_slope_usd_per_min
-            >= 0.0
-    );
-    assert!(reconstruction.liquidity_reaction_map.absorption_ratio >= 0.0);
-    assert!(reconstruction.market_dynamics.market_energy.score >= 0.0);
-    assert!(reconstruction.market_dynamics.market_energy.score <= 1.0);
-    assert!(!reconstruction.market_dynamics.transition_matrix.is_empty());
-    assert!(reconstruction.market_dynamics.state_vector.liquidity >= 0.0);
     assert!(reconstruction.market_dynamics.read_only);
     assert!(reconstruction.liquidity_force.read_only);
     assert_eq!(reconstruction.liquidity_force.liquidation_zones.len(), 2);
@@ -131,8 +127,6 @@ fn manager_add_remove_and_capacity_limit() {
         "analysis price must stay anchored to the market price, got {}",
         market_reconstruction.analysis_price
     );
-    assert!(market_reconstruction.cost_basis_low > 100.0);
-    assert!(market_reconstruction.cost_basis_high < 130.0);
     let small_market_reconstruction = manager
         .get_reconstruction_with_market(
             "ABCUSDT",
@@ -155,8 +149,6 @@ fn manager_add_remove_and_capacity_limit() {
         small_market_reconstruction.analysis_price < 1.0,
         "small-token analysis price must not fall back to the hash-derived mock price"
     );
-    assert!(small_market_reconstruction.cost_basis_low < 1.0);
-    assert!(small_market_reconstruction.cost_basis_high < 1.0);
     let small_market_chart = manager
         .get_chart_with_market(
             "ABCUSDT",
@@ -184,9 +176,9 @@ fn manager_add_remove_and_capacity_limit() {
     let chart = manager.get_chart("abc", "bad_tf").expect("chart response");
     assert_eq!(chart.timeframe, "15m");
     assert_eq!(chart.market_price_source, PriceSource::Reconstructed);
-    assert_eq!(chart.analysis_price_source, PriceSource::Vwap);
+    assert_eq!(chart.analysis_price_source, PriceSource::Reconstructed);
     assert!(chart.read_only);
-    assert!(!chart.points.is_empty());
+    assert!(chart.points.is_empty());
     let chart_4h = manager.get_chart("abc", "4h").expect("4h chart response");
     assert_eq!(chart_4h.timeframe, "4h");
 
@@ -240,6 +232,26 @@ fn manager_persists_selected_tokens_across_restart() {
     assert_eq!(symbols_after_remove, vec!["ASTERUSDT"]);
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn flow_only_reconstruction_returns_no_trade_decision_fields() {
+    let manager = TokenWatchManager::default();
+    manager.add_token("ASTERUSDT").expect("add symbol");
+
+    let reconstruction = manager
+        .get_reconstruction("ASTERUSDT", "15m")
+        .expect("flow-only reconstruction");
+    assert_eq!(reconstruction.evidence_mode, "flow_only");
+    assert!(!reconstruction.intent_assessment_available);
+    assert_eq!(
+        reconstruction.trading_decision.direction,
+        AdvisoryDirection::NoTrade
+    );
+    assert_eq!(
+        reconstruction.execution_strategy.direction,
+        AdvisoryDirection::NoTrade
+    );
 }
 
 #[test]

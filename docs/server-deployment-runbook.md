@@ -127,6 +127,23 @@ Keep the stream read-only:
 
 ## TOF-Lite Metrics
 
+## New-Token L2 Sessions
+
+`NEW_TOKEN_L2_ENABLED=false` is the safe default. When enabled, each
+operator-selected new-token symbol receives its own public Binance USD-M depth
+bookTicker, aggTrade, mark-price, and low-frequency open-interest context
+session. A session remains `flow_only` until a REST snapshot and at least one
+contiguous depth update have synchronized successfully.
+
+The runtime stores only compact per-second session metrics for seven days and
+delayed shadow outcomes for one year. It does not persist raw depth frames,
+identify participants, send Discord alerts, or expose an execution path. L2
+outcomes are exposed read-only at
+`GET /api/new-token-watch/outcomes?symbol=...`; they remain explicitly
+`shadowOnly=true`. New-token add/remove/restart and runtime diagnostics are
+operator-token protected; keep those endpoints off the public nginx token
+injection path.
+
 The backend augments signal inbox and WebSocket snapshots with TOF-lite aggregate
 metrics:
 

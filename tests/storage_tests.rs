@@ -297,6 +297,8 @@ fn runtime_retention_prunes_snapshot_and_event_tables() {
                 venue_health_retention_ms: 10_000,
                 vpin_buckets_retention_ms: 10_000,
                 replay_runs_retention_ms: 10_000,
+                new_token_l2_metrics_retention_ms: 10_000,
+                new_token_l2_outcomes_retention_ms: 10_000,
             },
         )
         .expect("prune runtime retention");
@@ -366,6 +368,8 @@ fn runtime_retention_skips_missing_table_and_keeps_other_tables() {
                 venue_health_retention_ms: 10_000,
                 vpin_buckets_retention_ms: 10_000,
                 replay_runs_retention_ms: 10_000,
+                new_token_l2_metrics_retention_ms: 10_000,
+                new_token_l2_outcomes_retention_ms: 10_000,
             },
         )
         .expect("prune runtime retention");

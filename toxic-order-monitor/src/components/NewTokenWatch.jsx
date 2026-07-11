@@ -115,7 +115,13 @@ export default function NewTokenWatch() {
   const handleWsMessage = useCallback(
     (event) => {
       try {
-        const snapshot = normalizeNewTokenWatchList(JSON.parse(event.data));
+        const payload = JSON.parse(event.data);
+        if (payload?.item) {
+          const streamed = normalizeNewTokenWatchList({ items: [payload.item] }).items[0];
+          setItems((current) => current.map((item) => (item.symbol === streamed.symbol ? streamed : item)));
+          return;
+        }
+        const snapshot = normalizeNewTokenWatchList(payload);
         syncItems(snapshot.items, snapshot.maxActiveTokens);
       } catch {
         // HTTP remains the fallback for malformed snapshot frames.
@@ -124,8 +130,11 @@ export default function NewTokenWatch() {
     [syncItems],
   );
 
-  const { status: wsStatus } = useReconnectingWebSocket("/ws/new-token-reconstruction", {
-    enabled: true,
+  const reconstructionWsPath = selectedSymbol
+    ? `/ws/new-token-reconstruction?symbol=${encodeURIComponent(selectedSymbol)}`
+    : "";
+  const { status: wsStatus } = useReconnectingWebSocket(reconstructionWsPath, {
+    enabled: Boolean(selectedSymbol),
     retryMs: 1500,
     maxRetryMs: 10000,
     onMessage: handleWsMessage,
@@ -211,14 +220,14 @@ export default function NewTokenWatch() {
         <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-3">
-              <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Smart Money Reconstruction</p>
+              <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">BINANCE USD-M FLOW + L2</p>
               <span className="rounded-full border border-cyan-400/35 bg-cyan-400/10 px-3 py-1 text-xs font-black text-cyan-100">
                 beta
               </span>
             </div>
-            <h3 className="mt-2 text-2xl font-black text-white">机构级智能资金终端</h3>
+            <h3 className="mt-2 text-2xl font-black text-white">新币合约流量与盘口观察</h3>
             <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-400">
-              不展示秒级跳动信号；按 5m / 15m / 1h / 4h 行为窗口重建主力仓位、成本区间、阶段迁移和出货风险。模块只读，不下单、不撤单、不操作资金。
+              默认仅展示公开成交流量。每个标的完成 Binance USD-M L2 快照与连续序列校验后，才显示盘口证据；系统不识别具体参与者，不输出交易指令。
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -228,6 +237,9 @@ export default function NewTokenWatch() {
             <MetricPill label="安全边界" value="只读" tone="cyan" />
           </div>
         </div>
+        <p className="mt-3 text-xs text-slate-500">
+          新增与移除监控需要 operator 权限；公网页面只展示已启用的只读观察会话。
+        </p>
 
         <div className="mt-5 grid gap-3 xl:grid-cols-[minmax(280px,1fr)_auto_auto_auto] xl:items-end">
           <form className="grid gap-3 sm:grid-cols-[1fr_auto]" onSubmit={handleAdd}>
@@ -340,43 +352,89 @@ function ReconstructionDashboard({ reconstruction, chart, item, loading }) {
   return (
     <div className="space-y-4">
       <MarketHeader reconstruction={reconstruction} loading={loading} />
-
-      <CapitalStructureOverview reconstruction={reconstruction} />
-
-      <StabilityLayerPanel item={item} reconstruction={reconstruction} />
-
-      <InstitutionalCompletionLayer reconstruction={reconstruction} />
-
-      <MarketDynamicsPanel reconstruction={reconstruction} />
-
-      <LiquidityForcePanel reconstruction={reconstruction} />
-
-      <TradingDecisionKernelPanel reconstruction={reconstruction} />
-
-      <ExecutionStrategyKernelPanel reconstruction={reconstruction} />
-
-      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.6fr)_380px]">
-        <StructureChart chart={chart} reconstruction={reconstruction} />
-        <SmartMoneyStructurePanel reconstruction={reconstruction} />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-3">
-        <PathPanel title="分批建仓路径" rows={reconstruction.accumulationPath} empty="暂无建仓路径确认" />
-        <LastNodePanel node={reconstruction.lastAccumulationNode} />
-        <PathPanel title="出货分布轨迹" rows={reconstruction.distributionPath} empty="暂无出货轨迹确认" />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-        <LiquidityFlowPanel reconstruction={reconstruction} />
-        <ShortTermOutlookPanel probabilities={reconstruction.shortTermBehaviorProbabilities} />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-3">
-        <CostDistributionCard reconstruction={reconstruction} />
-        <SmartLevelsCard levels={reconstruction.smartLevels} />
-        <PositionChangeCard chart={chart} />
-      </div>
+      <L2EvidencePanel item={item} reconstruction={reconstruction} />
+      <FlowObservationPanel item={item} reconstruction={reconstruction} />
+      <StructureChart chart={chart} reconstruction={reconstruction} />
     </div>
+  );
+}
+
+function L2EvidencePanel({ item, reconstruction }) {
+  const ready = reconstruction.orderbookEvidenceAvailable || item?.orderbookEvidenceAvailable;
+  const mode = reconstruction.evidenceMode || item?.evidenceMode || "flow_only";
+  const reason = reconstruction.intentReason || item?.intentReason || "l2_session_not_ready";
+  const book = reconstruction.l2Orderbook;
+  const intent = reconstruction.l2Intent;
+  const tradeFlow = reconstruction.l2TradeFlow;
+  const openInterest = reconstruction.l2OpenInterest;
+  const walls = reconstruction.l2WallEvidence || [];
+  return (
+    <section className="rounded-xl border border-cyan-400/25 bg-slate-950/70 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Evidence Boundary</p>
+          <h5 className="mt-1 text-lg font-black text-white">{ready ? "L2 盘口证据已就绪" : "流量观察模式"}</h5>
+        </div>
+        <span className={`rounded-full border px-3 py-1 text-xs font-black ${ready ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-100" : "border-amber-400/40 bg-amber-400/10 text-amber-100"}`}>
+          {mode === "l2_ready" ? "L2 READY" : "FLOW ONLY"}
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-slate-300">
+        {ready
+          ? "已获得公开订单簿连续序列，可展示概率性盘口压力；这不是对具体参与者、真实墙体或控盘方的确认。"
+          : <><span className="font-semibold text-amber-100">订单簿证据未就绪</span>。当前仅基于公开成交流量展示，不显示盘口意图、真实墙体、spoof 确认或交易建议。</>}
+      </p>
+      <p className="mt-2 text-xs text-slate-500">状态原因：{reason}</p>
+      {ready && book ? (
+        <>
+          <p className="mt-3 text-xs uppercase tracking-[0.18em] text-slate-500">
+            LISTING PHASE · {String(reconstruction.l2ListingPhase || "syncing").toUpperCase()}
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricStack label="SPREAD" value={`${Number(book.spreadBps || 0).toFixed(2)} bps`} detail="best bid / ask" />
+            <MetricStack label="TOP DEPTH IMBALANCE" value={percent((Number(book.imbalance || 0) + 1) / 2)} detail="public L2 depth proxy" />
+            <MetricStack label="VISIBLE PULL / ADD" value={Number(book.visibleCancelToAddRatio || 0).toFixed(2)} detail="visible-level change proxy" />
+            <MetricStack label="INTENT STATE" value={String(intent?.state || "unavailable").toUpperCase()} detail={intent?.reason || "awaiting confirmation"} />
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <MetricStack label="AGGRESSIVE BUY 15S" value={formatUsd(tradeFlow?.buyNotional15s || 0)} detail="Binance aggTrade taker flow" />
+            <MetricStack label="AGGRESSIVE SELL 15S" value={formatUsd(tradeFlow?.sellNotional15s || 0)} detail={tradeFlow?.reason || "awaiting aggTrade"} />
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <MetricStack label="OPEN INTEREST" value={openInterest?.available ? Number(openInterest.currentContracts || 0).toLocaleString(undefined, { maximumFractionDigits: 3 }) : "N/A"} detail={openInterest?.reason || "open interest unavailable"} />
+            <MetricStack label="OI DELTA 15S" value={openInterest?.available && openInterest.delta15sPct !== null ? `${openInterest.delta15sPct.toFixed(2)}%` : "N/A"} detail="symbol REST context" />
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Visible L2 Level Evidence</p>
+            {walls.length ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {walls.slice(0, 6).map((wall) => (
+                  <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300" key={`${wall.side}-${wall.price}-${wall.lifecycle}`}>
+                    {String(wall.side || "level").toUpperCase()} {formatPrice(wall.price)} · {wall.lifecycle || "visible"}
+                  </span>
+                ))}
+              </div>
+            ) : <p className="mt-2 text-xs text-slate-500">暂无持续可见的大额 L2 档位证据。</p>}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function FlowObservationPanel({ item, reconstruction }) {
+  const signal = item?.lastSignal || {};
+  const impact = signal.impactResponse || {};
+  return (
+    <section className="grid gap-3 rounded-xl border border-slate-700 bg-slate-950/70 p-4 sm:grid-cols-2 xl:grid-cols-4">
+      <MetricStack label="FLOW REGIME" value={String(signal.regime || "neutral").toUpperCase()} detail="public trade-flow classification" />
+      <MetricStack label="FLOW CONFIDENCE" value={percent(signal.confidence)} detail="flow evidence only" />
+      <MetricStack label="FLOW PERSISTENCE" value={percent(signal.flowPersistence)} detail="rolling observation" />
+      <MetricStack label="PRICE RESPONSE" value={percent(Number(impact.priceMovePct || 0) / 100)} detail={impact.classification || "unknown"} />
+      <p className="sm:col-span-2 xl:col-span-4 text-xs text-slate-500">
+        市场价 {formatPrice(reconstruction.marketPrice)} · 数据源 {String(reconstruction.marketPriceSource || "market_perp").toUpperCase()} · 不构成交易建议。
+      </p>
+    </section>
   );
 }
 
@@ -1825,5 +1883,7 @@ function errorMessage(error) {
   if (error === "max_active_tokens_reached") return "最多只能同时监控 50 个币。";
   if (error === "invalid_symbol") return "Symbol 格式无效。";
   if (error === "token_not_found") return "该 symbol 当前未在监控列表。";
+  if (error === "operator_token_required") return "该操作需要 operator 权限。";
+  if (error === "binance_usdm_contract_not_trading") return "该标的不是可交易的 Binance USD-M USDT 永续合约。";
   return error || "操作失败";
 }

@@ -1,6 +1,7 @@
 pub mod contract_whale_repo;
 pub mod main_force_events_repo;
 pub mod migrations;
+pub mod new_token_l2_repo;
 pub mod runtime_retention_repo;
 pub mod snapshot_service;
 pub mod snapshots_repo;

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::{intent::IntentAssessment, l2::OrderBookMetrics, walls::WallEvidence};
+
 pub const MAX_ACTIVE_TOKENS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +354,16 @@ pub struct SmartLevel {
 pub struct SmartMoneyReconstructionResponse {
     pub symbol: String,
     pub timeframe: String,
+    pub evidence_mode: String,
+    pub orderbook_evidence_available: bool,
+    pub intent_assessment_available: bool,
+    pub intent_reason: String,
+    pub l2_orderbook: Option<OrderBookMetrics>,
+    pub l2_intent: Option<IntentAssessment>,
+    pub l2_wall_evidence: Vec<WallEvidence>,
+    pub l2_trade_flow: Option<super::session::L2TradeFlowMetrics>,
+    pub l2_open_interest: Option<super::session::L2OpenInterestMetrics>,
+    pub l2_listing_phase: String,
     pub current_phase: CapitalPhase,
     pub current_price: f64,
     pub market_price: f64,
@@ -866,6 +878,7 @@ pub struct TokenChartMarker {
 pub struct SmartMoneyChartResponse {
     pub symbol: String,
     pub timeframe: String,
+    pub evidence_mode: String,
     pub market_price: f64,
     pub market_price_source: PriceSource,
     pub analysis_price: f64,
@@ -1130,6 +1143,10 @@ pub struct TokenWatchItem {
     pub symbol: String,
     pub added_at_ms: i64,
     pub stream_status: String,
+    pub evidence_mode: String,
+    pub orderbook_evidence_available: bool,
+    pub intent_assessment_available: bool,
+    pub intent_reason: String,
     pub last_signal: TokenFlowSignal,
     pub read_only: bool,
 }

@@ -48,9 +48,8 @@ pub use lhcs::{
 };
 pub use mff::{MarketForceField, MarketForceFieldEngine, MarketRegime};
 pub use new_token_watch::{
-    ContractFlowCollector, FlowActorRegime, NewTokenFlowEngine, NewTokenSignalAdapter,
-    SmartMoneyDecomposition, TokenFlowRegime, TokenFlowSignal, TokenWatchManager,
-    MAX_ACTIVE_TOKENS,
+    FlowActorRegime, NewTokenFlowEngine, NewTokenSignalAdapter, SmartMoneyDecomposition,
+    TokenFlowRegime, TokenFlowSignal, TokenWatchManager, MAX_ACTIVE_TOKENS,
 };
 pub use pipeline::{InferenceBus, ProductionFlowPipeline, RecordingProductionFlowPipeline};
 pub use runtime::{inference_loop, ExecutionRouter, FlowInferenceEngine};

@@ -492,6 +492,48 @@ async fn cors_does_not_allow_every_origin() {
     clear_operator_env();
 }
 
+#[tokio::test]
+async fn new_token_watch_runtime_and_mutations_require_operator_token_even_on_loopback() {
+    let _guard = ENV_LOCK.lock().await;
+    clear_operator_env();
+    std::env::set_var("OPERATOR_TOKEN", "new-token-test-token");
+    let (addr, server) = spawn_app(test_config("127.0.0.1")).await;
+
+    let debug_rejected = test_http_client()
+        .get(format!("http://{addr}/api/new-token-watch/runtime-debug"))
+        .send()
+        .await
+        .expect("debug rejection response");
+    assert_eq!(debug_rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let remove_rejected = test_http_client()
+        .post(format!("http://{addr}/api/new-token-watch/remove"))
+        .json(&serde_json::json!({ "symbol": "NOTWATCHEDUSDT" }))
+        .send()
+        .await
+        .expect("remove rejection response");
+    assert_eq!(remove_rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let restart_rejected = test_http_client()
+        .post(format!("http://{addr}/api/new-token-watch/restart"))
+        .json(&serde_json::json!({ "symbol": "NOTWATCHEDUSDT" }))
+        .send()
+        .await
+        .expect("restart rejection response");
+    assert_eq!(restart_rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let debug_allowed = test_http_client()
+        .get(format!("http://{addr}/api/new-token-watch/runtime-debug"))
+        .header("x-operator-api-token", "new-token-test-token")
+        .send()
+        .await
+        .expect("debug allowed response");
+    assert_eq!(debug_allowed.status(), reqwest::StatusCode::OK);
+
+    server.abort();
+    clear_operator_env();
+}
+
 async fn spawn_app(config: AppConfig) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let state = AppState::new(config);
     let app = router(state);

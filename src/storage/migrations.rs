@@ -335,4 +335,41 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_symbol_ts
       ON contract_whale_signals(symbol, ts DESC);
     "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS new_token_l2_metrics (
+      ts INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      readiness TEXT NOT NULL,
+      evidence_mode TEXT NOT NULL,
+      spread_bps REAL NOT NULL,
+      imbalance REAL NOT NULL,
+      visible_cancel_to_add_ratio REAL NOT NULL,
+      intent_state TEXT NOT NULL,
+      intent_confidence REAL NOT NULL,
+      intent_available INTEGER NOT NULL,
+      wall_count INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY (symbol, ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_new_token_l2_metrics_symbol_ts
+      ON new_token_l2_metrics(symbol, ts DESC);
+    CREATE TABLE IF NOT EXISTS new_token_l2_outcomes (
+      event_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      horizon_sec INTEGER NOT NULL,
+      intent_state TEXT NOT NULL,
+      entry_price REAL NOT NULL,
+      observed_price REAL NOT NULL,
+      price_move_bps REAL,
+      outcome_label TEXT NOT NULL,
+      shadow_only INTEGER NOT NULL,
+      discord_eligible INTEGER NOT NULL,
+      execution_enabled INTEGER NOT NULL,
+      outcome_reason TEXT NOT NULL,
+      PRIMARY KEY (event_id, horizon_sec)
+    );
+    CREATE INDEX IF NOT EXISTS idx_new_token_l2_outcomes_symbol_observed
+      ON new_token_l2_outcomes(symbol, observed_at DESC);
+    "#,
 ];

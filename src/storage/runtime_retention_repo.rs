@@ -18,6 +18,8 @@ pub struct RuntimeRetentionPolicy {
     pub venue_health_retention_ms: i64,
     pub vpin_buckets_retention_ms: i64,
     pub replay_runs_retention_ms: i64,
+    pub new_token_l2_metrics_retention_ms: i64,
+    pub new_token_l2_outcomes_retention_ms: i64,
 }
 
 impl Default for RuntimeRetentionPolicy {
@@ -29,6 +31,8 @@ impl Default for RuntimeRetentionPolicy {
             venue_health_retention_ms: 24 * HOUR_MS,
             vpin_buckets_retention_ms: 14 * DAY_MS,
             replay_runs_retention_ms: 30 * DAY_MS,
+            new_token_l2_metrics_retention_ms: 7 * DAY_MS,
+            new_token_l2_outcomes_retention_ms: 365 * DAY_MS,
         }
     }
 }
@@ -41,6 +45,8 @@ pub struct RuntimeRetentionPruneResult {
     pub venue_health_snapshots_deleted: usize,
     pub vpin_buckets_deleted: usize,
     pub replay_runs_deleted: usize,
+    pub new_token_l2_metrics_deleted: usize,
+    pub new_token_l2_outcomes_deleted: usize,
     pub table_results: Vec<RetentionTableResult>,
     pub wal_checkpoint: Option<WalCheckpointResult>,
 }
@@ -53,6 +59,8 @@ impl RuntimeRetentionPruneResult {
             || self.venue_health_snapshots_deleted > 0
             || self.vpin_buckets_deleted > 0
             || self.replay_runs_deleted > 0
+            || self.new_token_l2_metrics_deleted > 0
+            || self.new_token_l2_outcomes_deleted > 0
     }
 
     pub fn total_deleted(&self) -> usize {
@@ -62,6 +70,8 @@ impl RuntimeRetentionPruneResult {
             + self.venue_health_snapshots_deleted
             + self.vpin_buckets_deleted
             + self.replay_runs_deleted
+            + self.new_token_l2_metrics_deleted
+            + self.new_token_l2_outcomes_deleted
     }
 }
 
@@ -85,6 +95,10 @@ impl RuntimeRetentionRepo for SqliteStore {
         let venue_health_cutoff = retention_cutoff(now_ms, policy.venue_health_retention_ms);
         let vpin_buckets_cutoff = retention_cutoff(now_ms, policy.vpin_buckets_retention_ms);
         let replay_runs_cutoff = retention_cutoff(now_ms, policy.replay_runs_retention_ms);
+        let new_token_l2_metrics_cutoff =
+            retention_cutoff(now_ms, policy.new_token_l2_metrics_retention_ms);
+        let new_token_l2_outcomes_cutoff =
+            retention_cutoff(now_ms, policy.new_token_l2_outcomes_retention_ms);
 
         self.with_connection(|conn| {
             let mut result = RuntimeRetentionPruneResult::default();
@@ -134,6 +148,22 @@ impl RuntimeRetentionRepo for SqliteStore {
                 "finished_at",
                 "DELETE FROM replay_runs WHERE COALESCE(finished_at, started_at) < ?1",
                 replay_runs_cutoff,
+                &mut result.table_results,
+            )?;
+            result.new_token_l2_metrics_deleted = prune_table(
+                conn,
+                "new_token_l2_metrics",
+                "ts",
+                "DELETE FROM new_token_l2_metrics WHERE ts < ?1",
+                new_token_l2_metrics_cutoff,
+                &mut result.table_results,
+            )?;
+            result.new_token_l2_outcomes_deleted = prune_table(
+                conn,
+                "new_token_l2_outcomes",
+                "observed_at",
+                "DELETE FROM new_token_l2_outcomes WHERE observed_at < ?1",
+                new_token_l2_outcomes_cutoff,
                 &mut result.table_results,
             )?;
 

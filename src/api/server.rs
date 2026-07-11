@@ -205,6 +205,14 @@ pub fn router(state: AppState) -> Router {
             get(new_token_watch_routes::new_token_watch_chart_route),
         )
         .route(
+            "/api/new-token-watch/outcomes",
+            get(new_token_watch_routes::new_token_watch_outcomes_route),
+        )
+        .route(
+            "/api/new-token-watch/runtime-debug",
+            get(new_token_watch_routes::new_token_watch_runtime_debug_route),
+        )
+        .route(
             "/api/regime/latest",
             get(market_regime_routes::market_regime_latest_route),
         )
@@ -272,6 +280,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/new-token-watch/remove",
             axum::routing::post(new_token_watch_routes::new_token_watch_remove_route),
+        )
+        .route(
+            "/api/new-token-watch/restart",
+            axum::routing::post(new_token_watch_routes::new_token_watch_restart_route),
         )
         .route(
             "/ws/new-token-flow",
@@ -873,6 +885,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub async fn serve(config: AppConfig, state: AppState) -> anyhow::Result<()> {
+    crate::api::new_token_watch_routes::restore_new_token_l2_sessions(&state);
     let addr = SocketAddr::new(config.api_host, config.api_port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

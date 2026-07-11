@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    collector::ContractFlowCollector,
     engine::NewTokenFlowEngine,
     types::{
         BehaviorProbabilities, CapitalPhase, CapitalTimeline, CapitalTimelinePhase, ContractTick,
@@ -181,13 +180,12 @@ impl TokenWatchManager {
                 snapshot.price.is_finite() && snapshot.price > 0.0 && !snapshot.stale
             })
             .map(|snapshot| snapshot.price);
-        let ticks = ContractFlowCollector::deterministic_probe_ticks_with_price(
-            &item.symbol,
-            now as u64,
-            anchor_price,
-        );
-        item.last_signal = NewTokenFlowEngine::analyze_ticks(&item.symbol, &ticks);
-        item.stream_status = "read_only_probe".to_string();
+        // The legacy manager has no live per-symbol trade subscription. Do
+        // not manufacture probe ticks and present them as observed flow. The
+        // dedicated L2 runtime supplies public aggTrade evidence separately.
+        let _ = (now, anchor_price);
+        item.last_signal = NewTokenFlowEngine::analyze_ticks(&item.symbol, &[]);
+        item.stream_status = "awaiting_live_agg_trade".to_string();
         Ok(item.clone())
     }
 
@@ -289,13 +287,16 @@ fn persist_items(path: &Path, items: &[PersistedTokenWatchItem]) -> std::io::Res
     Ok(())
 }
 
-fn build_watch_item(symbol: &str, added_at_ms: i64, now: i64) -> TokenWatchItem {
-    let ticks = ContractFlowCollector::deterministic_probe_ticks(symbol, now as u64);
+fn build_watch_item(symbol: &str, added_at_ms: i64, _now: i64) -> TokenWatchItem {
     TokenWatchItem {
         symbol: symbol.to_string(),
         added_at_ms,
-        stream_status: "read_only_probe".to_string(),
-        last_signal: NewTokenFlowEngine::analyze_ticks(symbol, &ticks),
+        stream_status: "awaiting_live_agg_trade".to_string(),
+        evidence_mode: "flow_only".to_string(),
+        orderbook_evidence_available: false,
+        intent_assessment_available: false,
+        intent_reason: "l2_session_not_ready".to_string(),
+        last_signal: NewTokenFlowEngine::analyze_ticks(symbol, &[]),
         read_only: true,
     }
 }
@@ -311,8 +312,13 @@ fn build_reconstruction_response(
     let reconstruction = &signal.position_reconstruction;
     let cost = &capital.cost_basis;
     let position = &capital.estimated_position;
-    let analysis_price = analysis_price(item).max(0.0);
-    let market_snapshot = select_market_price(market_price, analysis_price);
+    let analysis_anchor = analysis_price(item).max(0.0);
+    let market_snapshot = select_market_price(market_price, analysis_anchor);
+    let analysis_price = if analysis_anchor > 0.0 {
+        analysis_anchor
+    } else {
+        market_snapshot.price
+    };
     let current_price = market_snapshot.price.max(0.0);
     let estimated_net_position_base = reconstruction
         .latent_position
@@ -344,29 +350,52 @@ fn build_reconstruction_response(
         &liquidity_reaction_map,
         &market_dynamics,
     );
-    let trading_decision = build_trading_decision(
-        item,
-        current_price,
-        &liquidity_reaction_map,
-        &market_dynamics,
-        &liquidity_force,
-    );
-    let execution_strategy = build_execution_strategy(
-        item,
-        &liquidity_reaction_map,
-        &market_dynamics,
-        &liquidity_force,
-        &trading_decision,
-    );
+    let (trading_decision, execution_strategy) =
+        if item.orderbook_evidence_available && item.intent_assessment_available {
+            let decision = build_trading_decision(
+                item,
+                current_price,
+                &liquidity_reaction_map,
+                &market_dynamics,
+                &liquidity_force,
+            );
+            let strategy = build_execution_strategy(
+                item,
+                &liquidity_reaction_map,
+                &market_dynamics,
+                &liquidity_force,
+                &decision,
+            );
+            (decision, strategy)
+        } else {
+            (
+                TradingDecisionKernel::default(),
+                ExecutionStrategyKernel::default(),
+            )
+        };
     SmartMoneyReconstructionResponse {
         symbol: item.symbol.clone(),
         timeframe: tf,
+        evidence_mode: item.evidence_mode.clone(),
+        orderbook_evidence_available: item.orderbook_evidence_available,
+        intent_assessment_available: item.intent_assessment_available,
+        intent_reason: item.intent_reason.clone(),
+        l2_orderbook: None,
+        l2_intent: None,
+        l2_wall_evidence: vec![],
+        l2_trade_flow: None,
+        l2_open_interest: None,
+        l2_listing_phase: "syncing".to_string(),
         current_phase: capital.phase,
         current_price,
         market_price: current_price,
         market_price_source: market_snapshot.source,
         analysis_price,
-        analysis_price_source: PriceSource::Vwap,
+        analysis_price_source: if analysis_anchor > 0.0 {
+            PriceSource::Vwap
+        } else {
+            market_snapshot.source
+        },
         price_fallback_reason: market_snapshot.fallback_reason.clone(),
         change_24h_pct: market_snapshot.change_24h_pct,
         volume_24h_usd: market_snapshot.volume_24h_usd,
@@ -410,8 +439,13 @@ fn build_chart_response(
     market_price: Option<MarketPriceSnapshot>,
 ) -> SmartMoneyChartResponse {
     let reconstruction = &item.last_signal.position_reconstruction;
-    let analysis_price = analysis_price(item).max(0.0);
-    let market_snapshot = select_market_price(market_price, analysis_price);
+    let analysis_anchor = analysis_price(item).max(0.0);
+    let market_snapshot = select_market_price(market_price, analysis_anchor);
+    let analysis_price = if analysis_anchor > 0.0 {
+        analysis_anchor
+    } else {
+        market_snapshot.price
+    };
     let mut previous_position = 0.0;
     let points = reconstruction
         .latent_position
@@ -431,10 +465,15 @@ fn build_chart_response(
     SmartMoneyChartResponse {
         symbol: item.symbol.clone(),
         timeframe: normalize_timeframe(timeframe),
+        evidence_mode: item.evidence_mode.clone(),
         market_price: market_snapshot.price,
         market_price_source: market_snapshot.source,
         analysis_price,
-        analysis_price_source: PriceSource::Vwap,
+        analysis_price_source: if analysis_anchor > 0.0 {
+            PriceSource::Vwap
+        } else {
+            market_snapshot.source
+        },
         points,
         phase_segments: build_phase_timeline(item),
         markers,

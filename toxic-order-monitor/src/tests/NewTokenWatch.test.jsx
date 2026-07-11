@@ -619,78 +619,22 @@ describe("NewTokenWatch", () => {
     vi.clearAllMocks();
   });
 
-  it("renders active token behavior signals", async () => {
+  it("renders a flow-only observation surface without unverified intent claims", async () => {
     const user = userEvent.setup();
     render(<NewTokenWatch />);
 
-    expect(await screen.findByText("机构级智能资金终端")).toBeInTheDocument();
+    expect(await screen.findByText("新币合约流量与盘口观察")).toBeInTheDocument();
     expect(screen.getByText("ABCUSDT")).toBeInTheDocument();
-    expect(await screen.findByText("成本结构与仓位状态")).toBeInTheDocument();
+    expect(await screen.findByText("流量观察模式")).toBeInTheDocument();
+    expect(screen.getByText(/订单簿证据未就绪/)).toBeInTheDocument();
     expect(screen.getByText("Market Price")).toBeInTheDocument();
     expect(screen.getByText("Price Source")).toBeInTheDocument();
     expect(screen.getAllByText("PERP").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Analysis price: \$1.94 · Source VWAP/)).toBeInTheDocument();
-    expect(screen.getByText("Capital Structure Overview")).toBeInTheDocument();
-    expect(screen.getByText("Capital Phase Bar")).toBeInTheDocument();
-    expect(screen.getByText("Timeframe Structure Stack")).toBeInTheDocument();
-    expect(screen.getByText("4h 宏观层")).toBeInTheDocument();
-    expect(screen.getByText("4h Macro Bias")).toBeInTheDocument();
-    expect(screen.getByText("Smart Money Structure Panel")).toBeInTheDocument();
-    expect(screen.getByText("System Lock Stability Layer")).toBeInTheDocument();
-    expect(screen.getByText("Signal Compression Stability")).toBeInTheDocument();
-    expect(screen.getByText("Regime Smoothing")).toBeInTheDocument();
-    expect(screen.getByText("Cost Basis Refinement")).toBeInTheDocument();
-    expect(screen.getByText("Institutional Completion Layer")).toBeInTheDocument();
-    expect(screen.getByText("Capital Timeline Layer")).toBeInTheDocument();
-    expect(screen.getByText("Position Flow Curve")).toBeInTheDocument();
-    expect(screen.getByText("Liquidity Reaction Map")).toBeInTheDocument();
-    expect(screen.getByText("Market Dynamics Engine")).toBeInTheDocument();
-    expect(screen.getByText("State Trajectory Curve")).toBeInTheDocument();
-    expect(screen.getByText("Market Energy")).toBeInTheDocument();
-    expect(screen.getByText("Velocity Indicator")).toBeInTheDocument();
-    expect(screen.getByText("Regime Transition Map")).toBeInTheDocument();
-    expect(screen.getByText("Liquidity Force Panel")).toBeInTheDocument();
-    expect(screen.getByText("Liquidation Zones")).toBeInTheDocument();
-    expect(screen.getByText("Stop-loss Cascade")).toBeInTheDocument();
-    expect(screen.getByText("Forced Flow Attribution")).toBeInTheDocument();
-    expect(screen.getByText("Price Impact Decomposition")).toBeInTheDocument();
-    expect(screen.getByText("Short Squeeze Zone")).toBeInTheDocument();
-    expect(screen.getAllByText("Liquidation Cascade").length).toBeGreaterThan(0);
-    expect(screen.getByText("Trading Decision Kernel")).toBeInTheDocument();
-    expect(screen.getAllByText("ENTRY").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("EXIT").length).toBeGreaterThan(0);
-    expect(screen.getByText("POSITION_SIZE")).toBeInTheDocument();
-    expect(screen.getByText("INVALIDATION")).toBeInTheDocument();
-    expect(screen.getByText("Execution Strategy Kernel")).toBeInTheDocument();
-    expect(screen.getByText("Market Force → Action Compiler")).toBeInTheDocument();
-    expect(screen.getByText("STOP / INVALIDATION")).toBeInTheDocument();
-    expect(screen.getByText("Liquidity Forcing")).toBeInTheDocument();
-    expect(screen.getByText("primary Liquidity Forcing 0.72")).toBeInTheDocument();
-    expect(screen.getByText("advisory only · no exchange execution")).toBeInTheDocument();
-    expect(screen.getAllByText("LONG").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Limit · Wait").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("34%").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("29%").length).toBeGreaterThan(0);
-    expect(screen.getByText("低波动吸收")).toBeInTheDocument();
-    expect(screen.getByText("+$1.2M")).toBeInTheDocument();
-    expect(screen.getByText("$320K/m")).toBeInTheDocument();
-    expect(screen.getAllByText("+$320K/m").length).toBeGreaterThan(0);
-    expect(screen.getByText("吸收主导")).toBeInTheDocument();
-    expect(screen.getByText("静默吸筹 → 拉升阶段")).toBeInTheDocument();
-    expect(screen.getByText("资金加速 + 流动性稳定")).toBeInTheDocument();
-    expect(screen.getByText("$1.93")).toBeInTheDocument();
-    expect(screen.getAllByText("静默吸筹").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$1.92 - $1.97").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/VWAP.*\$1.94/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$3.2M - $5.8M").length).toBeGreaterThan(0);
-    expect(screen.getByText("Liquidity + Flow Intelligence")).toBeInTheDocument();
-    expect(screen.getByText("Short Term Outlook")).toBeInTheDocument();
-    expect(screen.getByText("三状态低噪声展望")).toBeInTheDocument();
-    expect(screen.getByText("分批建仓路径")).toBeInTheDocument();
-    expect(screen.getByText("拉升前最后吸筹点")).toBeInTheDocument();
-    expect(screen.getByText("出货分布轨迹")).toBeInTheDocument();
-    expect(screen.getAllByText("$1.88 - $1.9").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("6m 42s · Abs 84% · Conf 84%").length).toBeGreaterThan(0);
+    expect(screen.getByText("FLOW REGIME")).toBeInTheDocument();
+    expect(screen.getByText("FLOW CONFIDENCE")).toBeInTheDocument();
+    expect(screen.queryByText("Trading Decision Kernel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Execution Strategy Kernel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Smart Money Structure Panel")).not.toBeInTheDocument();
     expect(fetchNewTokenReconstruction).toHaveBeenCalledWith("ABCUSDT", "15m");
     expect(fetchNewTokenChart).toHaveBeenCalledWith("ABCUSDT", "15m");
     expect(screen.getByText("1/50")).toBeInTheDocument();
@@ -720,5 +664,15 @@ describe("NewTokenWatch", () => {
     await waitFor(() => {
       expect(removeNewTokenWatch).toHaveBeenCalledWith("DEFUSDT");
     });
+  });
+
+  it("keeps flow-only watches out of L2 intent and trading-decision claims", async () => {
+    render(<NewTokenWatch />);
+
+    expect(await screen.findByText("流量观察模式")).toBeInTheDocument();
+    expect(screen.getByText(/订单簿证据未就绪/)).toBeInTheDocument();
+    expect(screen.queryByText("Trading Decision Kernel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Execution Strategy Kernel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Smart Money Structure Panel")).not.toBeInTheDocument();
   });
 });

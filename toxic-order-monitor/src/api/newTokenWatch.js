@@ -62,6 +62,10 @@ export function normalizeNewTokenWatchItem(item = {}) {
     symbol: String(item.symbol || signal.symbol || "").toUpperCase(),
     addedAtMs: Number(item.addedAtMs || 0),
     streamStatus: item.streamStatus || "unknown",
+    evidenceMode: item.evidenceMode || "flow_only",
+    orderbookEvidenceAvailable: Boolean(item.orderbookEvidenceAvailable),
+    intentAssessmentAvailable: Boolean(item.intentAssessmentAvailable),
+    intentReason: item.intentReason || "l2_session_not_ready",
     readOnly: item.readOnly !== false,
     lastSignal: {
       symbol: String(signal.symbol || item.symbol || "").toUpperCase(),
@@ -88,6 +92,16 @@ export function normalizeNewTokenReconstruction(payload = {}) {
   return {
     symbol: String(payload.symbol || "").toUpperCase(),
     timeframe: payload.timeframe || "15m",
+    evidenceMode: payload.evidenceMode || "flow_only",
+    orderbookEvidenceAvailable: Boolean(payload.orderbookEvidenceAvailable),
+    intentAssessmentAvailable: Boolean(payload.intentAssessmentAvailable),
+    intentReason: payload.intentReason || "l2_session_not_ready",
+    l2Orderbook: normalizeL2Orderbook(payload.l2Orderbook),
+    l2Intent: normalizeL2Intent(payload.l2Intent),
+    l2WallEvidence: Array.isArray(payload.l2WallEvidence) ? payload.l2WallEvidence : [],
+    l2TradeFlow: normalizeL2TradeFlow(payload.l2TradeFlow),
+    l2OpenInterest: normalizeL2OpenInterest(payload.l2OpenInterest),
+    l2ListingPhase: payload.l2ListingPhase || "syncing",
     currentPhase: payload.currentPhase || "neutral",
     currentPrice: Number(payload.currentPrice || 0),
     marketPrice: Number(payload.marketPrice ?? payload.currentPrice ?? 0),
@@ -166,6 +180,57 @@ export function normalizeNewTokenChart(payload = {}) {
 
 function optionalNumber(value) {
   return value === null || value === undefined ? null : Number(value);
+}
+
+function normalizeL2Orderbook(book) {
+  if (!book) return null;
+  return {
+    readiness: book.readiness || "unavailable",
+    spreadBps: Number(book.spreadBps || 0),
+    microprice: optionalNumber(book.microprice),
+    imbalance: Number(book.imbalance || 0),
+    topNBidQuantity: Number(book.topNBidQuantity || 0),
+    topNAskQuantity: Number(book.topNAskQuantity || 0),
+    visibleCancelToAddRatio: Number(book.visibleCancelToAddRatio || 0),
+    reason: book.reason || "orderbook_not_ready",
+  };
+}
+
+function normalizeL2Intent(intent) {
+  if (!intent) return null;
+  return {
+    state: intent.state || "unavailable",
+    confidence: Number(intent.confidence || 0),
+    intentAssessmentAvailable: Boolean(intent.intentAssessmentAvailable),
+    reason: intent.reason || "orderbook_not_ready",
+  };
+}
+
+function normalizeL2TradeFlow(flow) {
+  if (!flow) return null;
+  return {
+    buyNotional1s: Number(flow.buyNotional1s || 0),
+    sellNotional1s: Number(flow.sellNotional1s || 0),
+    buyNotional5s: Number(flow.buyNotional5s || 0),
+    sellNotional5s: Number(flow.sellNotional5s || 0),
+    buyNotional15s: Number(flow.buyNotional15s || 0),
+    sellNotional15s: Number(flow.sellNotional15s || 0),
+    buyNotional60s: Number(flow.buyNotional60s || 0),
+    sellNotional60s: Number(flow.sellNotional60s || 0),
+    markPrice: optionalNumber(flow.markPrice),
+    reason: flow.reason || "trade_flow_not_observed",
+  };
+}
+
+function normalizeL2OpenInterest(oi) {
+  if (!oi) return null;
+  return {
+    currentContracts: optionalNumber(oi.currentContracts),
+    delta15sPct: optionalNumber(oi.delta15sPct),
+    lastUpdateAtMs: optionalNumber(oi.lastUpdateAtMs),
+    available: Boolean(oi.available),
+    reason: oi.reason || "open_interest_not_observed",
+  };
 }
 
 function normalizeBehaviorProbabilities(probabilities = {}) {
