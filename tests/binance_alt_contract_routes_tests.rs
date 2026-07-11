@@ -495,7 +495,11 @@ async fn bacm_sqlite_worker_persists_without_jsonl_realtime_writes() {
         .load_alt_contract_events(10)
         .expect("read persisted events")
         .iter()
-        .any(|event| event.latest_signal_id.as_deref() == Some(id.as_str())));
+        .any(|event| {
+            event.latest_signal_id.as_deref() == Some(id.as_str())
+                && event.latest_snapshot.is_some()
+                && event.peak_snapshot.is_some()
+        }));
     service.stop();
     let _ = fs::remove_file(&path);
     reset_binance_alt_contract_runtime_config();
@@ -711,6 +715,7 @@ fn stats(symbol: &str, direction: AltContractDirection) -> AltContractWindowStat
         direction,
         trigger_price_usd: Some(12_000.0),
         price_move_pct: Some(1.0),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution {

@@ -37,8 +37,8 @@ use super::{
         AltContractLatestResponse, AltContractOutcomeSummary, AltContractSeverity,
         AltContractSignal, AltContractSignalOutcome, AltContractSummary, AltContractSymbolMeta,
         AltContractSymbolTier, AltContractSymbolUniverseSummary, AltContractTrade,
-        AltContractWindowStats, AltLiquidationEvent, AltLiquidationWindow, BacmRuntimeDiagnostics,
-        LiquidationSide,
+        AltContractWindowStats, AltLiquidationEvent, AltLiquidationWindow, AltSignalFingerprint,
+        BacmRuntimeDiagnostics, LiquidationSide,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -47,7 +47,9 @@ use super::{
 // Cross-symbol ranking and breadth use PerSymbolFlowBook buckets instead.
 const MAX_TRADES: usize = 20_000;
 const MAX_SIGNALS: usize = 1_000;
-const TRADE_RETENTION_MS: i64 = 3_600_000;
+// The flow book owns the 1h baseline. Raw trades are retained only for
+// detector-local exchange/price detail and the 15s/60s/300s windows.
+const TRADE_RETENTION_MS: i64 = 5 * 60_000;
 const DUPLICATE_WINDOW_MS: i64 = 10_000;
 const OI_RETENTION_MS: i64 = 10 * 60_000;
 const LIQUIDATION_CONTEXT_TTL_MS: i64 = 60_000;
@@ -130,6 +132,8 @@ struct AltContractEventState {
     peak_abnormal_score: u8,
     peak_build_score: u8,
     signal_count: u32,
+    latest_snapshot: Option<Box<AltContractSignal>>,
+    peak_snapshot: Option<Box<AltContractSignal>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -390,6 +394,31 @@ impl BinanceAltContractService {
         self.insert_signal(signal)
     }
 
+    pub fn insert_outcome_for_tests(&self, outcome: AltContractSignalOutcome) {
+        self.state
+            .write()
+            .outcomes
+            .insert(outcome.signal_id.clone(), outcome);
+    }
+
+    pub fn update_outcomes_for_tests(
+        &self,
+        product_id: &str,
+        direction: super::types::AltContractDirection,
+        price: f64,
+        ts: i64,
+    ) {
+        let product_id = product_id_for_symbol(product_id);
+        let mut state = self.state.write();
+        for outcome in state
+            .outcomes
+            .values_mut()
+            .filter(|outcome| outcome.product_id == product_id)
+        {
+            update_outcome_with_price(outcome, direction, price, ts);
+        }
+    }
+
     pub fn prune_expired_cache_for_tests(&self, now: i64) {
         self.prune_expired_cache(now);
     }
@@ -425,6 +454,29 @@ impl BinanceAltContractService {
             state
                 .symbol_shards
                 .insert(product_id_for_symbol(symbol), shard_id);
+        }
+    }
+
+    pub fn reconcile_shard_supervision(&self, shards: &[Vec<String>]) {
+        let mut state = self.state.write();
+        let active_ids = shards
+            .iter()
+            .enumerate()
+            .filter(|(_, symbols)| !symbols.is_empty())
+            .map(|(shard_id, _)| shard_id)
+            .collect::<BTreeSet<_>>();
+        state.total_shards = active_ids.len();
+        state
+            .shard_connected
+            .retain(|shard_id, _| active_ids.contains(shard_id));
+        state.symbol_shards.clear();
+        for (shard_id, symbols) in shards.iter().enumerate() {
+            state.shard_connected.entry(shard_id).or_insert(false);
+            for symbol in symbols {
+                state
+                    .symbol_shards
+                    .insert(product_id_for_symbol(symbol), shard_id);
+            }
         }
     }
 
@@ -774,13 +826,18 @@ impl BinanceAltContractService {
     pub fn mark_reconnecting(&self, exchange: AltContractExchange, error: Option<String>) {
         let mut state = self.state.write();
         let has_error = error.is_some();
+        let another_shard_is_connected = state.shard_connected.values().any(|connected| *connected);
         {
             let entry = state
                 .exchanges
                 .entry(exchange.as_key().to_string())
                 .or_insert_with(AltContractExchangeStatus::disconnected);
-            entry.connected = false;
-            entry.status = "reconnecting".to_string();
+            entry.connected = another_shard_is_connected;
+            entry.status = if another_shard_is_connected {
+                "degraded".to_string()
+            } else {
+                "reconnecting".to_string()
+            };
             entry.reconnect_count = entry.reconnect_count.saturating_add(1);
             entry.last_error = error.map(redact_error);
         }
@@ -798,13 +855,21 @@ impl BinanceAltContractService {
     ) {
         let mut state = self.state.write();
         let has_error = error.is_some();
+        let another_shard_is_connected = state.shard_connected.values().any(|connected| *connected);
         {
             let entry = state
                 .exchanges
                 .entry(exchange.as_key().to_string())
                 .or_insert_with(AltContractExchangeStatus::disconnected);
-            entry.status = status.to_string();
-            entry.connected = connected;
+            let partial_reconnect = !connected
+                && another_shard_is_connected
+                && matches!(status, "connecting" | "reconnecting");
+            entry.status = if partial_reconnect {
+                "degraded".to_string()
+            } else {
+                status.to_string()
+            };
+            entry.connected = connected || partial_reconnect;
             entry.last_error = error.map(redact_error);
         }
         if has_error {
@@ -2124,20 +2189,69 @@ fn duplicate_recent(signals: &VecDeque<AltContractSignal>, signal: &AltContractS
 }
 
 fn materially_equivalent_signal(existing: &AltContractSignal, signal: &AltContractSignal) -> bool {
-    score_delta_under(
-        existing.alt_impact_score.final_score,
-        signal.alt_impact_score.final_score,
-        5.0,
-    ) && relative_delta_under(existing.total_notional_usd, signal.total_notional_usd, 0.20)
-        && optional_relative_delta_under(existing.dynamic_multiple, signal.dynamic_multiple, 0.20)
-        && oi_context_key(existing) == oi_context_key(signal)
-        && price_response_key(existing) == price_response_key(signal)
-        && signal.liquidation_notional_usd.unwrap_or_default()
-            <= existing.liquidation_notional_usd.unwrap_or_default() * 1.20
+    let existing_fingerprint = signal_fingerprint(existing);
+    let signal_fingerprint = signal_fingerprint(signal);
+    existing_fingerprint.severity.rank() >= signal_fingerprint.severity.rank()
+        && optional_score_delta_under(
+            existing_fingerprint.ais_score,
+            signal_fingerprint.ais_score,
+            5.0,
+        )
+        && relative_delta_under(
+            existing_fingerprint.total_notional_usd,
+            signal_fingerprint.total_notional_usd,
+            0.20,
+        )
+        && relative_delta_under(
+            existing_fingerprint.dynamic_multiple,
+            signal_fingerprint.dynamic_multiple,
+            0.20,
+        )
+        && existing_fingerprint.oi_context == signal_fingerprint.oi_context
+        && existing_fingerprint.price_response == signal_fingerprint.price_response
+        && signal_fingerprint.liquidation_notional_usd
+            <= existing_fingerprint.liquidation_notional_usd * 1.20
+}
+
+fn signal_fingerprint(signal: &AltContractSignal) -> AltSignalFingerprint {
+    let price = signal.price_move_pct.unwrap_or_default();
+    let threshold = price_threshold_pct_from_signal(signal);
+    let price_response = if price >= threshold {
+        "follow_through"
+    } else if price <= -threshold {
+        "reversal"
+    } else {
+        "flat_or_absorbed"
+    };
+    AltSignalFingerprint {
+        severity: signal.severity,
+        ais_score: Some(signal.alt_impact_score.final_score),
+        total_notional_usd: signal.total_notional_usd,
+        dynamic_multiple: signal.dynamic_multiple.unwrap_or_default(),
+        oi_context: Some(format!("{}:{}", signal.oi_quality, oi_context_key(signal))),
+        price_response: price_response.to_string(),
+        liquidation_notional_usd: signal.liquidation_notional_usd.unwrap_or_default(),
+        ts: signal.ts,
+    }
+}
+
+fn price_threshold_pct_from_signal(signal: &AltContractSignal) -> f64 {
+    signal
+        .price_move_pct
+        .map(|value| value.abs().max(0.05))
+        .unwrap_or(0.05)
 }
 
 fn score_delta_under(left: f64, right: f64, max_delta: f64) -> bool {
     (left - right).abs() < max_delta
+}
+
+fn optional_score_delta_under(left: Option<f64>, right: Option<f64>, max_delta: f64) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => score_delta_under(left, right, max_delta),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn relative_delta_under(left: f64, right: f64, max_ratio: f64) -> bool {
@@ -2145,24 +2259,8 @@ fn relative_delta_under(left: f64, right: f64, max_ratio: f64) -> bool {
     ((right - left).abs() / baseline) < max_ratio
 }
 
-fn optional_relative_delta_under(left: Option<f64>, right: Option<f64>, max_ratio: f64) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => relative_delta_under(left, right, max_ratio),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
 fn oi_context_key(signal: &AltContractSignal) -> i8 {
     match signal.oi_change_pct.unwrap_or_default().partial_cmp(&0.0) {
-        Some(std::cmp::Ordering::Greater) => 1,
-        Some(std::cmp::Ordering::Less) => -1,
-        _ => 0,
-    }
-}
-
-fn price_response_key(signal: &AltContractSignal) -> i8 {
-    match signal.price_move_pct.unwrap_or_default().partial_cmp(&0.0) {
         Some(std::cmp::Ordering::Greater) => 1,
         Some(std::cmp::Ordering::Less) => -1,
         _ => 0,
@@ -2203,6 +2301,8 @@ fn merge_event_state(
             peak_abnormal_score: signal.abnormal_score,
             peak_build_score: signal.build_score,
             signal_count: 0,
+            latest_snapshot: Some(Box::new(signal.clone())),
+            peak_snapshot: Some(Box::new(signal.clone())),
         });
     event.start_ts = event.start_ts.min(signal.ts);
     event.updated_at = signal.ts;
@@ -2227,6 +2327,10 @@ fn merge_event_state(
     signal.event_signal_count = event.signal_count;
     signal.event_peak_abnormal_score = event.peak_abnormal_score;
     signal.event_peak_build_score = event.peak_build_score;
+    event.latest_snapshot = Some(Box::new(signal.clone()));
+    if event.peak_signal_id == signal.id {
+        event.peak_snapshot = Some(Box::new(signal.clone()));
+    }
 }
 
 fn event_state_from_record(record: AltContractEventRecord) -> AltContractEventState {
@@ -2245,6 +2349,8 @@ fn event_state_from_record(record: AltContractEventRecord) -> AltContractEventSt
         peak_abnormal_score: record.peak_abnormal_score,
         peak_build_score: record.peak_build_score,
         signal_count: record.signal_count,
+        latest_snapshot: record.latest_snapshot,
+        peak_snapshot: record.peak_snapshot,
     }
 }
 
@@ -2267,6 +2373,8 @@ fn event_record_from_state(
         signal_count: event.signal_count,
         peak_abnormal_score: event.peak_abnormal_score,
         peak_build_score: event.peak_build_score,
+        latest_snapshot: event.latest_snapshot.clone(),
+        peak_snapshot: event.peak_snapshot.clone(),
     }
 }
 
