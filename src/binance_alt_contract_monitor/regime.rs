@@ -14,7 +14,7 @@ pub fn classify_market_regime(
     market_context: &MarketImpulseContext,
 ) -> AltContractMarketRegime {
     let oi_trend = oi_trend(context);
-    let price_trend = price_trend(stats.price_move_pct);
+    let price_trend = price_trend(stats.price_move_pct, price_threshold_pct(stats));
     let efficiency_ratio = efficiency_ratio(stats);
     let oi_lag_index = oi_lag_index(context, stats.price_move_pct);
     let liquidation_ratio = liquidation_ratio(stats.total_notional_usd, context);
@@ -191,15 +191,19 @@ fn oi_trend(context: &AltContractContext) -> String {
     }
 }
 
-fn price_trend(price_move_pct: Option<f64>) -> String {
+pub fn price_threshold_pct(stats: &AltContractWindowStats) -> f64 {
+    stats.price_threshold_pct.unwrap_or(0.05).max(0.05)
+}
+
+fn price_trend(price_move_pct: Option<f64>, threshold_pct: f64) -> String {
     let move_pct = price_move_pct.unwrap_or(0.0);
     if move_pct >= 0.80 {
         "spike_up".to_string()
-    } else if move_pct >= 0.05 {
+    } else if move_pct >= threshold_pct {
         "slow_up".to_string()
     } else if move_pct <= -0.80 {
         "spike_down".to_string()
-    } else if move_pct <= -0.05 {
+    } else if move_pct <= -threshold_pct {
         "down".to_string()
     } else {
         "flat".to_string()
@@ -254,9 +258,10 @@ fn is_price_reversal(direction: AltContractDirection, price_move_pct: Option<f64
 
 fn is_price_absorption(stats: &AltContractWindowStats) -> bool {
     let price = stats.price_move_pct.unwrap_or(0.0);
+    let threshold = price_threshold_pct(stats);
     match stats.direction {
-        AltContractDirection::Sell => price > -0.05,
-        AltContractDirection::Buy => price < 0.05,
+        AltContractDirection::Sell => price > -threshold,
+        AltContractDirection::Buy => price < threshold,
         _ => false,
     }
 }

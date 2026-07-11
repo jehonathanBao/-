@@ -33,6 +33,19 @@ pub fn context_data_quality_penalty(context: &AltContractContext) -> u8 {
         penalty = penalty.saturating_add(5);
     }
     if context.oi_change_1m_base.is_none() && context.oi_change_5m_base.is_none() {
+        penalty = penalty.saturating_add(15);
+    }
+    if context
+        .ticker_quote_volume_24h_usd
+        .is_none_or(|_| context.ticker_updated_at.is_none())
+    {
+        penalty = penalty.saturating_add(10);
+    } else if context.ticker_updated_at.is_some_and(|updated_at| {
+        crate::normalizers::trade::now_ms().saturating_sub(updated_at) > 120_000
+    }) {
+        penalty = penalty.saturating_add(15);
+    }
+    if context.mark_price_usd.is_none() {
         penalty = penalty.saturating_add(5);
     }
     penalty

@@ -152,6 +152,7 @@ fn stats(
         direction,
         trigger_price_usd: Some(175.0),
         price_move_pct: Some(price_move_pct),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: Vec::new(),
@@ -201,6 +202,8 @@ fn microstructure(
         spoofing_penalty,
         explanation_tags: vec!["read_only_microstructure".to_string(), behavior.to_string()],
         interpretation: "test microstructure".to_string(),
+        evidence_mode: "orderbook".to_string(),
+        orderbook_evidence_available: spoofing_penalty > 0.0,
         read_only: true,
         direct_discord_gate: false,
     }

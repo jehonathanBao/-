@@ -6,7 +6,7 @@ use super::{
     lme::score_signal_microstructure,
     mcg::build_market_control_graph,
     mcss::score_master_capital_strength,
-    regime::classify_market_regime,
+    regime::{classify_market_regime, price_threshold_pct},
     scc::calibrate_signal_confidence,
     scoring::{
         funding_crowding_label, funding_crowding_penalty, score_alt_contract_signal,
@@ -16,11 +16,12 @@ use super::{
     smle::classify_smart_money_lifecycle,
     smp::predict_smart_money_next_stage,
     types::{
-        AltContractContext, AltContractDirection, AltContractGradeCondition,
-        AltContractImpactScore, AltContractScoreBreakdown, AltContractSeverity, AltContractSignal,
-        AltContractSignalType, AltContractSourceSnapshot, AltContractStructureConfidence,
-        AltContractSymbolTier, AltContractWindowConfirmation, AltContractWindowStats,
-        AltEvidenceDimension, AltSignalAssessment, ModelEvidenceDeclaration,
+        AltContractContext, AltContractDirection, AltContractEvidenceState,
+        AltContractGradeCondition, AltContractImpactScore, AltContractScoreBreakdown,
+        AltContractSeverity, AltContractSignal, AltContractSignalType, AltContractSourceSnapshot,
+        AltContractStructureConfidence, AltContractSymbolTier, AltContractWindowConfirmation,
+        AltContractWindowStats, AltEvidenceDimension, AltSignalAssessment, EvidenceState,
+        ModelEvidenceDeclaration,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -438,6 +439,48 @@ fn assess_signal(
             * 0.25)
             .clamp(0.0, 0.25)
     };
+    let evidence_state = AltContractEvidenceState {
+        trade_stream: if stats.total_volume_base > 0.0 {
+            EvidenceState::Available("aggregated_trade_flow".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        oi: if context.oi_change_1m.available || context.oi_change_5m.available {
+            if context.oi_change_1m.stale || context.oi_change_5m.stale {
+                EvidenceState::Stale
+            } else {
+                EvidenceState::Available("period_delta".to_string())
+            }
+        } else {
+            EvidenceState::Missing
+        },
+        funding: if context.funding_rate.is_some() {
+            EvidenceState::Available("funding_snapshot".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        ticker: evidence_freshness_state(
+            context.ticker_quote_volume_24h_usd,
+            context.ticker_updated_at,
+            stats.ts,
+        ),
+        mark_price: evidence_freshness_state(
+            context.mark_price_usd,
+            context.mark_price_updated_at,
+            stats.ts,
+        ),
+        liquidation: if context.liquidation_count > 0 || context.force_order_snapshot {
+            EvidenceState::Available("windowed_force_order".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        dynamic_baseline: if stats.dynamic_multiple.is_some() {
+            EvidenceState::Available("per_symbol_baseline".to_string())
+        } else {
+            EvidenceState::InsufficientSamples
+        },
+        market_breadth: EvidenceState::Partial,
+    };
     AltSignalAssessment {
         anomaly_severity: severity,
         structure_confidence,
@@ -447,6 +490,22 @@ fn assess_signal(
         correlation_discount,
         evidence_dimensions,
         model_evidence_declarations,
+        evidence_state,
+    }
+}
+
+fn evidence_freshness_state<T>(
+    value: Option<T>,
+    updated_at: Option<i64>,
+    now: i64,
+) -> EvidenceState<String> {
+    if value.is_none() {
+        return EvidenceState::Missing;
+    }
+    if updated_at.is_some_and(|timestamp| now.saturating_sub(timestamp) > 120_000) {
+        EvidenceState::Stale
+    } else {
+        EvidenceState::Available("snapshot".to_string())
     }
 }
 
@@ -712,13 +771,14 @@ fn evidence_for(
         .price_move_pct
         .or(context.price_move_1m_pct)
         .unwrap_or_default();
-    if (stats.direction == AltContractDirection::Buy && price_move > 0.05)
-        || (stats.direction == AltContractDirection::Sell && price_move < -0.05)
+    let price_threshold = price_threshold_pct(stats);
+    if (stats.direction == AltContractDirection::Buy && price_move > price_threshold)
+        || (stats.direction == AltContractDirection::Sell && price_move < -price_threshold)
     {
         tags.push("price_follow_through".to_string());
     }
-    if (stats.direction == AltContractDirection::Sell && price_move > -0.05)
-        || (stats.direction == AltContractDirection::Buy && price_move < 0.05)
+    if (stats.direction == AltContractDirection::Sell && price_move > -price_threshold)
+        || (stats.direction == AltContractDirection::Buy && price_move < price_threshold)
     {
         tags.push("price_absorption".to_string());
     }
@@ -850,6 +910,7 @@ fn classify_signal_type(
         .price_move_pct
         .or(context.price_move_1m_pct)
         .unwrap_or(0.0);
+    let price_threshold = price_threshold_pct(stats);
     if context.liquidation_suspected
         && context
             .liquidation_notional_usd
@@ -868,16 +929,20 @@ fn classify_signal_type(
         .or(context.oi_change_5m_base)
         .is_some_and(|change| change > 0.0);
     match stats.direction {
-        AltContractDirection::Buy if price_move < 0.05 && stats.dominance >= 0.60 => {
+        AltContractDirection::Buy if price_move < price_threshold && stats.dominance >= 0.60 => {
             AltContractSignalType::UpsideResistance
         }
-        AltContractDirection::Sell if price_move > -0.05 && stats.dominance >= 0.60 => {
+        AltContractDirection::Sell if price_move > -price_threshold && stats.dominance >= 0.60 => {
             AltContractSignalType::DownsideAbsorption
         }
-        AltContractDirection::Buy if strong_main_force_chain && oi_up && price_move >= -0.05 => {
+        AltContractDirection::Buy
+            if strong_main_force_chain && oi_up && price_move >= -price_threshold =>
+        {
             AltContractSignalType::MainForceLongBuild
         }
-        AltContractDirection::Sell if strong_main_force_chain && oi_up && price_move <= 0.05 => {
+        AltContractDirection::Sell
+            if strong_main_force_chain && oi_up && price_move <= price_threshold =>
+        {
             AltContractSignalType::MainForceShortBuild
         }
         AltContractDirection::Buy => AltContractSignalType::AbnormalPump,

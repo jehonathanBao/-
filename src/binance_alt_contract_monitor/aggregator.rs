@@ -88,6 +88,7 @@ pub fn stats_from_trades(
         .zip(last_price)
         .filter(|(first, _)| *first > 0.0)
         .map(|(first, last)| (last / first - 1.0) * 100.0);
+    let price_threshold_pct = adaptive_price_threshold_pct(window_trades);
     let main_exchange = exchanges
         .iter()
         .max_by(|left, right| left.total_volume_base.total_cmp(&right.total_volume_base))
@@ -130,6 +131,7 @@ pub fn stats_from_trades(
             last_price
         },
         price_move_pct,
+        price_threshold_pct,
         exchange_count: exchanges.len(),
         main_exchange,
         exchanges,
@@ -137,6 +139,26 @@ pub fn stats_from_trades(
         data_quality,
         startup_age_ms,
     }
+}
+
+pub fn adaptive_price_threshold_pct(window_trades: &[AltContractTrade]) -> Option<f64> {
+    let mut previous_price: Option<f64> = None;
+    let mut ewma_abs_return_pct: Option<f64> = None;
+    let mut samples = 0_usize;
+    for trade in window_trades {
+        if let Some(previous) = previous_price.filter(|price| *price > 0.0) {
+            let abs_return_pct = ((trade.price / previous - 1.0) * 100.0).abs();
+            if abs_return_pct.is_finite() {
+                ewma_abs_return_pct = Some(match ewma_abs_return_pct {
+                    Some(previous_ewma) => previous_ewma * 0.8 + abs_return_pct * 0.2,
+                    None => abs_return_pct,
+                });
+                samples = samples.saturating_add(1);
+            }
+        }
+        previous_price = Some(trade.price);
+    }
+    (samples >= 3).then(|| (ewma_abs_return_pct.unwrap_or(0.0) * 2.0).max(0.05))
 }
 
 pub fn trend_for_symbol(

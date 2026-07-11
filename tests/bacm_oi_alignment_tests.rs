@@ -141,6 +141,7 @@ fn stale_oi_cannot_make_an_s_grade_signal_eligible() {
         direction: AltContractDirection::Buy,
         trigger_price_usd: Some(20_000.0),
         price_move_pct: Some(1.2),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution::default()],

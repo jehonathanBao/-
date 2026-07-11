@@ -136,6 +136,21 @@ pub struct AltSignalAssessment {
     pub independent_dimension_count: usize,
     #[serde(default)]
     pub correlation_discount: f64,
+    #[serde(default)]
+    pub evidence_state: AltContractEvidenceState,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractEvidenceState {
+    pub trade_stream: EvidenceState<String>,
+    pub oi: EvidenceState<String>,
+    pub funding: EvidenceState<String>,
+    pub ticker: EvidenceState<String>,
+    pub mark_price: EvidenceState<String>,
+    pub liquidation: EvidenceState<String>,
+    pub dynamic_baseline: EvidenceState<String>,
+    pub market_breadth: EvidenceState<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -392,6 +407,8 @@ pub struct AltContractWindowStats {
     pub direction: AltContractDirection,
     pub trigger_price_usd: Option<f64>,
     pub price_move_pct: Option<f64>,
+    #[serde(default)]
+    pub price_threshold_pct: Option<f64>,
     pub exchange_count: usize,
     pub main_exchange: Option<String>,
     pub exchanges: Vec<AltContractExchangeContribution>,
@@ -767,6 +784,10 @@ pub struct AltContractEventRecord {
     pub signal_count: u32,
     pub peak_abnormal_score: u8,
     pub peak_build_score: u8,
+    #[serde(default)]
+    pub latest_snapshot: Option<Box<AltContractSignal>>,
+    #[serde(default)]
+    pub peak_snapshot: Option<Box<AltContractSignal>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -785,6 +806,19 @@ pub struct AltContractEventLifecycle {
     pub latest_snapshot: Option<Box<AltContractSignal>>,
     #[serde(default)]
     pub peak_snapshot: Option<Box<AltContractSignal>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltSignalFingerprint {
+    pub severity: AltContractSeverity,
+    pub ais_score: Option<f64>,
+    pub total_notional_usd: f64,
+    pub dynamic_multiple: f64,
+    pub oi_context: Option<String>,
+    pub price_response: String,
+    pub liquidation_notional_usd: f64,
+    pub ts: i64,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
