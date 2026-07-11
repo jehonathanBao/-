@@ -14,7 +14,7 @@ use crate::{
         },
     },
     liquidation_cascade_predictor::{analyze_liquidation_cascade, input_from_runtime_state},
-    market_domain::{classify_market_domain, MarketDomain},
+    market_domain::classify_market_domain,
     market_regime_engine::normalize_market_symbol,
     multi_timeframe_orderflow_fusion::{
         analyze_mtf_orderflow_fusion, MtfofeBreakdownResponse, MtfofeDecisionResponse, MtfofeInput,
@@ -83,7 +83,6 @@ fn build_latest_fusion_input(state: &AppState, requested_symbol: Option<&str>) -
             now,
             "5s",
             latest_signal.as_ref(),
-            market_domain,
         ),
         flow_60s: build_layer(
             state,
@@ -92,7 +91,6 @@ fn build_latest_fusion_input(state: &AppState, requested_symbol: Option<&str>) -
             now,
             "60s",
             latest_signal.as_ref(),
-            market_domain,
         ),
         structure_5m: build_layer(
             state,
@@ -101,7 +99,6 @@ fn build_latest_fusion_input(state: &AppState, requested_symbol: Option<&str>) -
             now,
             "5m",
             latest_signal.as_ref(),
-            market_domain,
         ),
         regime_1h: build_layer(
             state,
@@ -110,7 +107,6 @@ fn build_latest_fusion_input(state: &AppState, requested_symbol: Option<&str>) -
             now,
             "1h",
             latest_signal.as_ref(),
-            market_domain,
         ),
         liquidation_cascade_probability: cascade.cascade_probability,
         liquidation_cascade_direction: cascade.direction.as_key().to_string(),
@@ -137,10 +133,9 @@ fn build_layer(
     to_ts: i64,
     timeframe: &str,
     latest_signal: Option<&ContractWhaleSignal>,
-    market_domain: MarketDomain,
 ) -> MtfofeLayerInput {
     let Some(store) = state.contract_whale_store() else {
-        return fallback_layer(timeframe, latest_signal, market_domain);
+        return fallback_layer(timeframe, latest_signal);
     };
     let flow_buckets = store
         .list_contract_flow_buckets_between(symbol, from_ts, to_ts)
@@ -176,17 +171,6 @@ fn build_layer(
     )
     .or_else(|| latest_signal.and_then(|signal| signal.dynamic_multiple))
     .unwrap_or(0.0);
-    let altcoin_control_score = if market_domain == MarketDomain::AltcoinManipulation {
-        altcoin_control_proxy(
-            price_change_pct,
-            oi_change_pct,
-            funding_rate,
-            liquidation_ratio,
-            volume_spike_multiple,
-        )
-    } else {
-        0.0
-    };
     let data_quality = data_quality(
         &flow_buckets,
         context.oi_available,
@@ -202,7 +186,6 @@ fn build_layer(
         oi_change_pct,
         funding_rate,
         liquidation_ratio,
-        altcoin_control_score,
         volume_spike_multiple,
         data_quality,
     }
@@ -211,7 +194,6 @@ fn build_layer(
 fn fallback_layer(
     timeframe: &str,
     latest_signal: Option<&ContractWhaleSignal>,
-    market_domain: MarketDomain,
 ) -> MtfofeLayerInput {
     let mut layer = MtfofeLayerInput::new(timeframe);
     if let Some(signal) = latest_signal {
@@ -228,17 +210,6 @@ fn fallback_layer(
         layer.funding_rate = signal.funding_rate.unwrap_or(0.0);
         layer.liquidation_ratio = signal.liquidation_ratio.unwrap_or(0.0);
         layer.volume_spike_multiple = signal.dynamic_multiple.unwrap_or(0.0);
-        layer.altcoin_control_score = if market_domain == MarketDomain::AltcoinManipulation {
-            altcoin_control_proxy(
-                layer.price_change_pct,
-                layer.oi_change_pct,
-                layer.funding_rate,
-                layer.liquidation_ratio,
-                layer.volume_spike_multiple,
-            )
-        } else {
-            0.0
-        };
         layer.data_quality = signal.data_quality as f64 / 100.0;
     }
     layer
@@ -298,32 +269,6 @@ fn volume_spike_multiple(total_volume_btc: f64, duration_sec: f64) -> Option<f64
     }
     let volume_per_min = total_volume_btc / duration_sec.max(1.0) * 60.0;
     Some((volume_per_min / 500.0).clamp(0.0, 5.0))
-}
-
-fn altcoin_control_proxy(
-    price_change_pct: f64,
-    oi_change_pct: f64,
-    funding_rate: f64,
-    liquidation_ratio: f64,
-    volume_spike_multiple: f64,
-) -> f64 {
-    let mut score: f64 = 0.0;
-    if price_change_pct.signum() != oi_change_pct.signum()
-        && price_change_pct.abs() >= 0.05
-        && oi_change_pct.abs() >= 0.20
-    {
-        score += 0.30;
-    }
-    if volume_spike_multiple >= 3.0 && price_change_pct.abs() <= 0.12 {
-        score += 0.25;
-    }
-    if funding_rate.abs() > 0.0005 {
-        score += 0.20;
-    }
-    if liquidation_ratio >= 0.30 {
-        score += 0.25;
-    }
-    score.clamp(0.0, 1.0)
 }
 
 fn data_quality(

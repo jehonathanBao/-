@@ -3,11 +3,7 @@ import {
   fetchLiquidationCascade,
   fetchLiquidationLeverageMap,
   fetchLiquidationLiquidityGap,
-  fetchAltcoinManipulation,
-  fetchBtcStructure,
-  fetchManipulationAssessment,
   fetchMarketRegime,
-  fetchMarketSignalAssessment,
 } from "../api/liquidationCascade.js";
 
 const REFRESH_MS = 10_000;
@@ -35,35 +31,17 @@ export default function LiquidationCascadeDashboard() {
     leverageMap: null,
     liquidityGap: null,
     regime: null,
-    manipulation: null,
-    marketSignal: null,
-    domainState: null,
     loading: true,
     error: null,
   });
 
-  const isBtcSymbol = symbol.startsWith("BTC");
-
   const load = useCallback(async () => {
-    const domainRequest = isBtcSymbol ? fetchBtcStructure(symbol) : fetchAltcoinManipulation(symbol);
-    const regimeRequest = isBtcSymbol
-      ? Promise.resolve({ data: null, error: null })
-      : fetchMarketRegime(symbol);
-    const manipulationRequest = isBtcSymbol
-      ? Promise.resolve({ data: null, error: null })
-      : fetchManipulationAssessment(symbol);
-    const marketSignalRequest = isBtcSymbol
-      ? Promise.resolve({ data: null, error: null })
-      : fetchMarketSignalAssessment(symbol);
-    const [cascade, leverageMap, liquidityGap, regime, manipulation, marketSignal, domainState] =
+    const [cascade, leverageMap, liquidityGap, regime] =
       await Promise.all([
         fetchLiquidationCascade(symbol),
         fetchLiquidationLeverageMap(symbol),
         fetchLiquidationLiquidityGap(symbol),
-        regimeRequest,
-        manipulationRequest,
-        marketSignalRequest,
-        domainRequest,
+        fetchMarketRegime(symbol),
       ]);
 
     setState({
@@ -71,21 +49,15 @@ export default function LiquidationCascadeDashboard() {
       leverageMap: leverageMap.data,
       liquidityGap: liquidityGap.data,
       regime: regime.data,
-      manipulation: manipulation.data,
-      marketSignal: marketSignal.data,
-      domainState: domainState.data,
       loading: false,
       error:
         cascade.error ||
         leverageMap.error ||
         liquidityGap.error ||
         regime.error ||
-        manipulation.error ||
-        marketSignal.error ||
-        domainState.error ||
         null,
     });
-  }, [isBtcSymbol, symbol]);
+  }, [symbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,9 +87,6 @@ export default function LiquidationCascadeDashboard() {
   const leverageMap = state.leverageMap;
   const liquidityGap = state.liquidityGap;
   const regime = state.regime;
-  const manipulation = state.manipulation;
-  const marketSignal = state.marketSignal;
-  const domainState = state.domainState;
 
   const heatmap = useMemo(
     () => [...(leverageMap?.heatmap || [])].sort((left, right) => right.intensity - left.intensity),
@@ -219,49 +188,42 @@ export default function LiquidationCascadeDashboard() {
             <div className="grid gap-3 sm:grid-cols-2">
               <MetricCard
                 label="Regime"
-                value={(isBtcSymbol ? domainState?.regime : regime?.regime) || "-"}
+                value={regime?.regime || "-"}
                 tone="cyan"
               />
               <MetricCard
                 label="方向偏置"
                 value={
-                  directionLabel[isBtcSymbol ? domainState?.bias : regime?.directionBias] ||
-                  (isBtcSymbol ? domainState?.bias : regime?.directionBias) ||
+                  directionLabel[regime?.directionBias] ||
+                  regime?.directionBias ||
                   "-"
                 }
                 tone="slate"
               />
               <MetricCard
                 label="置信度"
-                value={percent(isBtcSymbol ? domainState?.confidence : regime?.confidence)}
+                value={percent(regime?.confidence)}
                 tone="emerald"
               />
               <MetricCard
-                label={isBtcSymbol ? "结构强度" : "控盘分"}
-                value={percent(isBtcSymbol ? domainState?.structureScore : domainState?.manipulationScore)}
+                label="数据质量"
+                value={percent(regime?.metrics?.dataQuality)}
                 tone="orange"
               />
             </div>
             <div className="mt-4">
               <TagList
-                items={[...(regime?.signals || []), ...(domainState?.signals || (isBtcSymbol ? [] : manipulation?.signals || []))]}
-                empty={isBtcSymbol ? "暂无 BTC 结构标签" : "暂无控盘/状态标签"}
+                items={regime?.signals || []}
+                empty="暂无市场状态标签"
               />
             </div>
           </Panel>
 
           <Panel title="信号压缩">
             <div className="space-y-3 text-sm">
-              <Line label="允许信号族" value={isBtcSymbol ? "BTC_STRUCTURE_ONLY" : marketSignal?.allowedSignalFamily || "-"} />
-              <Line label="调整后强度" value={percent(isBtcSymbol ? domainState?.structureScore : marketSignal?.adjustedSignalStrength)} />
-              <Line
-                label="风险说明"
-                value={
-                  isBtcSymbol
-                    ? "BTC 仅使用结构、清算、gamma 与流动性驱动，不使用控盘评分。"
-                    : marketSignal?.riskNote || "-"
-                }
-              />
+              <Line label="允许信号族" value="monitor_only" />
+              <Line label="状态置信度" value={percent(regime?.confidence)} />
+              <Line label="风险说明" value="只读市场状态输出，不包含专用操控评分。" />
             </div>
           </Panel>
 
