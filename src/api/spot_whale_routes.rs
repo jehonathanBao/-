@@ -13,10 +13,14 @@ type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_jso
 pub struct SpotWhaleApiQuery {
     pub symbol: Option<String>,
     pub limit: Option<String>,
+    pub offset: Option<String>,
+    pub from_ts: Option<String>,
+    pub to_ts: Option<String>,
     pub severity: Option<String>,
     pub signal_type: Option<String>,
     pub discord_sent: Option<String>,
     pub net_direction: Option<String>,
+    pub permanent_only: Option<String>,
 }
 
 pub async fn spot_whale_summary_route(
@@ -46,6 +50,18 @@ pub async fn spot_whale_history_route(
 ) -> ApiJsonResult {
     let symbol = parse_symbol(query.symbol.as_deref())?;
     let limit = parse_limit(query.limit.as_deref())?;
+    let offset = parse_offset(query.offset.as_deref())?;
+    let from_ts = parse_timestamp(query.from_ts.as_deref(), "from_ts")?;
+    let to_ts = parse_timestamp(query.to_ts.as_deref(), "to_ts")?;
+    if from_ts
+        .zip(to_ts)
+        .is_some_and(|(from_ts, to_ts)| from_ts >= to_ts)
+    {
+        return Err(bad_request(
+            "invalid_time_range",
+            "from_ts must be less than to_ts",
+        ));
+    }
     let discord_sent = match query.discord_sent.as_deref() {
         Some("true") => Some(true),
         Some("false") => Some(false),
@@ -58,9 +74,13 @@ pub async fn spot_whale_history_route(
         }
     };
     let min_abs_net_volume_base = parse_net_direction_filter(query.net_direction.as_deref())?;
+    let permanent_only = parse_permanent_only(query.permanent_only.as_deref())?;
     Ok(Json(serde_json::json!(state.spot_whale_service().history(
         SpotWhaleQuery {
             symbol: Some(symbol),
+            offset: Some(offset),
+            from_ts,
+            to_ts,
             severity: query
                 .severity
                 .filter(|value| !value.eq_ignore_ascii_case("all")),
@@ -69,6 +89,7 @@ pub async fn spot_whale_history_route(
                 .filter(|value| !value.eq_ignore_ascii_case("all")),
             discord_sent,
             min_abs_net_volume_base,
+            permanent_only,
             limit: Some(limit),
         }
     ))))
@@ -95,6 +116,30 @@ fn parse_limit(value: Option<&str>) -> Result<usize, (StatusCode, Json<serde_jso
     }
 }
 
+fn parse_offset(value: Option<&str>) -> Result<usize, (StatusCode, Json<serde_json::Value>)> {
+    match value {
+        Some(raw) => raw
+            .parse::<usize>()
+            .map_err(|_| bad_request("invalid_offset", "offset must be a non-negative integer")),
+        None => Ok(0),
+    }
+}
+
+fn parse_timestamp(
+    value: Option<&str>,
+    field: &str,
+) -> Result<Option<i64>, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => raw.parse::<i64>().map(Some).map_err(|_| {
+            bad_request(
+                "invalid_timestamp",
+                &format!("{field} must be a valid millisecond timestamp"),
+            )
+        }),
+        None => Ok(None),
+    }
+}
+
 fn parse_net_direction_filter(
     value: Option<&str>,
 ) -> Result<Option<f64>, (StatusCode, Json<serde_json::Value>)> {
@@ -118,6 +163,22 @@ fn parse_net_direction_filter(
             "invalid_net_direction",
             "net_direction must be all, abs50, abs100, abs200, or abs500",
         )),
+    }
+}
+
+fn parse_permanent_only(
+    value: Option<&str>,
+) -> Result<Option<bool>, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) if raw.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(raw) if raw.eq_ignore_ascii_case("false") || raw.eq_ignore_ascii_case("all") => {
+            Ok(None)
+        }
+        Some(_) => Err(bad_request(
+            "invalid_permanent_only",
+            "permanent_only must be true, false, or all",
+        )),
+        None => Ok(None),
     }
 }
 

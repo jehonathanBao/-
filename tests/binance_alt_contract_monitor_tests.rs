@@ -60,7 +60,7 @@ fn detects_main_force_long_build_when_flow_oi_and_price_align() {
     assert_eq!(signal.direction, AltContractDirection::Buy);
     assert!(signal.main_force_confidence >= 75.0);
     assert!(signal.evidence_count >= 4);
-    assert_eq!(signal.severity, AltContractSeverity::S);
+    assert_eq!(signal.severity, AltContractSeverity::Critical);
     assert!(
         !signal.discord_eligible,
         "a single-window observation must remain display-only; discord_reason={} alert_kind={} build={} abnormal={} confidence={} evidence={} oi_quality={}",
@@ -382,6 +382,7 @@ fn stats(
         direction,
         trigger_price_usd: Some(notional / 10_000.0),
         price_move_pct: Some(price_move_pct),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution {

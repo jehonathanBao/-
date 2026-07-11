@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Context;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 
 use super::migrations::MIGRATIONS;
 use crate::storage::spot_whale_repo::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
@@ -58,6 +58,21 @@ impl SqliteStore {
     {
         let conn = self.open_connection()?;
         op(&conn)
+    }
+
+    pub fn with_transaction<T, F>(&self, op: F) -> anyhow::Result<T>
+    where
+        F: FnOnce(&Transaction<'_>) -> anyhow::Result<T>,
+    {
+        let mut conn = self.open_connection()?;
+        let transaction = conn
+            .transaction()
+            .context("failed to begin sqlite transaction")?;
+        let result = op(&transaction)?;
+        transaction
+            .commit()
+            .context("failed to commit sqlite transaction")?;
+        Ok(result)
     }
 
     fn open_connection(&self) -> anyhow::Result<Connection> {

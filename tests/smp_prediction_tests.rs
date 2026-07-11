@@ -192,6 +192,7 @@ fn stats(
         direction,
         trigger_price_usd: Some(notional / 10_000.0),
         price_move_pct: Some(price_move_pct),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution {

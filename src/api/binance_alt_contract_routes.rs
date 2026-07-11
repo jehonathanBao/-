@@ -6,7 +6,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{app::AppState, binance_alt_contract_monitor::service::BinanceAltContractQuery};
+use crate::{
+    app::AppState,
+    binance_alt_contract_monitor::service::{AltContractOutcomeFilter, BinanceAltContractQuery},
+};
 
 type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
@@ -25,6 +28,12 @@ pub struct BinanceAltContractApiQuery {
     pub liquidation_driven: Option<String>,
     pub tier: Option<String>,
     pub min_build_score: Option<String>,
+    pub cursor: Option<String>,
+    pub window_sec: Option<String>,
+    pub ais_bucket: Option<String>,
+    pub regime: Option<String>,
+    pub oi_context: Option<String>,
+    pub time_of_day_utc: Option<String>,
 }
 
 pub async fn binance_alt_contract_summary_route(
@@ -62,6 +71,7 @@ pub async fn binance_alt_contract_history_route(
     let liquidation_filter = query.liquidation_driven.or(query.liquidation);
     let liquidation = parse_optional_bool(liquidation_filter.as_deref())?;
     let min_build_score = parse_optional_u8(query.min_build_score.as_deref(), "min_build_score")?;
+    let cursor_ts = parse_optional_i64(query.cursor.as_deref(), "cursor")?;
     Ok(Json(serde_json::json!(state
         .binance_alt_contract_service()
         .history(BinanceAltContractQuery {
@@ -79,7 +89,68 @@ pub async fn binance_alt_contract_history_route(
                 .tier
                 .filter(|value| !value.eq_ignore_ascii_case("all")),
             min_build_score,
+            cursor_ts,
             limit: Some(limit),
+        }))))
+}
+
+pub async fn binance_alt_contract_ranked_route(
+    State(state): State<AppState>,
+    Query(query): Query<BinanceAltContractApiQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_optional_symbol(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref())?;
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .ranked(symbol.as_deref(), limit))))
+}
+
+pub async fn binance_alt_contract_top_impact_route(
+    State(state): State<AppState>,
+    Query(query): Query<BinanceAltContractApiQuery>,
+) -> ApiJsonResult {
+    let symbol = parse_optional_symbol(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref())?;
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .top_impact(symbol.as_deref(), limit))))
+}
+
+pub async fn binance_alt_contract_outcome_summary_route(
+    State(state): State<AppState>,
+    Query(query): Query<BinanceAltContractApiQuery>,
+) -> ApiJsonResult {
+    let time_of_day_utc = parse_optional_u8(query.time_of_day_utc.as_deref(), "time_of_day_utc")?;
+    if time_of_day_utc.is_some_and(|hour| hour >= 24) {
+        return Err(bad_request(
+            "invalid_time_of_day_utc",
+            "time_of_day_utc must be between 0 and 23",
+        ));
+    }
+    Ok(Json(serde_json::json!(state
+        .binance_alt_contract_service()
+        .outcome_summary(AltContractOutcomeFilter {
+            symbol: parse_optional_symbol(query.symbol.as_deref())?,
+            tier: query
+                .tier
+                .filter(|value| !value.eq_ignore_ascii_case("all")),
+            window_sec: parse_optional_u64(query.window_sec.as_deref(), "window_sec")?,
+            signal_type: query
+                .signal_type
+                .or(query.signal_type_alias)
+                .filter(|value| !value.eq_ignore_ascii_case("all")),
+            severity: query
+                .severity
+                .filter(|value| !value.eq_ignore_ascii_case("all")),
+            ais_min: parse_ais_bucket(query.ais_bucket.as_deref())?.0,
+            ais_max: parse_ais_bucket(query.ais_bucket.as_deref())?.1,
+            regime: query
+                .regime
+                .filter(|value| !value.eq_ignore_ascii_case("all")),
+            oi_context: query
+                .oi_context
+                .filter(|value| !value.eq_ignore_ascii_case("all")),
+            time_of_day_utc,
         }))))
 }
 
@@ -117,6 +188,8 @@ pub async fn binance_alt_contract_runtime_debug_route(
             "active": diagnostics.active_symbol_count,
             "connectedShards": diagnostics.connected_shards,
             "totalShards": diagnostics.total_shards,
+            "symbolCoverageRatio": diagnostics.symbol_coverage_ratio,
+            "missingSymbols": diagnostics.missing_symbols,
             "lastRefreshAt": diagnostics.universe_last_refreshed_at,
             "refreshAgeSec": diagnostics.universe_refresh_age_sec,
         },
@@ -128,6 +201,7 @@ pub async fn binance_alt_contract_runtime_debug_route(
         "persistence": {
             "queueDepth": diagnostics.persistence_queue_depth,
             "oldestPendingAgeMs": diagnostics.oldest_persistence_age_ms,
+            "droppedTotal": diagnostics.persistence_dropped_total,
         },
         "buffers": {
             "tradeBufferTotal": diagnostics.trade_buffer_total,
@@ -193,6 +267,67 @@ fn parse_optional_u8(
             .parse::<u8>()
             .map(Some)
             .map_err(|_| bad_request("invalid_numeric_filter", &format!("{name} must be 0-100"))),
+    }
+}
+
+fn parse_optional_u64(
+    value: Option<&str>,
+    name: &str,
+) -> Result<Option<u64>, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("all") | Some("ALL") => Ok(None),
+        Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
+            bad_request(
+                "invalid_number",
+                &format!("{name} must be a positive integer"),
+            )
+        }),
+    }
+}
+
+fn parse_ais_bucket(
+    value: Option<&str>,
+) -> Result<(Option<f64>, Option<f64>), (StatusCode, Json<serde_json::Value>)> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((None, None));
+    };
+    if raw.eq_ignore_ascii_case("all") {
+        return Ok((None, None));
+    }
+    let mut parts = raw.split('-');
+    let Some(min) = parts.next().and_then(|part| part.parse::<f64>().ok()) else {
+        return Err(bad_request(
+            "invalid_ais_bucket",
+            "ais_bucket must look like 70-79",
+        ));
+    };
+    let max = parts.next().and_then(|part| part.parse::<f64>().ok());
+    if parts.next().is_some() || max.is_none_or(|max| max < min) {
+        return Err(bad_request(
+            "invalid_ais_bucket",
+            "ais_bucket must look like 70-79",
+        ));
+    }
+    Ok((Some(min), max))
+}
+
+fn parse_optional_i64(
+    value: Option<&str>,
+    name: &str,
+) -> Result<Option<i64>, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(raw) => raw
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .map(Some)
+            .ok_or_else(|| {
+                bad_request(
+                    "invalid_cursor",
+                    &format!("{name} must be a unix timestamp"),
+                )
+            }),
     }
 }
 

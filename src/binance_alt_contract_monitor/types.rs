@@ -59,6 +59,100 @@ impl AltContractSeverity {
     }
 }
 
+impl Default for AltContractSeverity {
+    fn default() -> Self {
+        Self::Calm
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AltContractStructureConfidence {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AltContractExposureTier {
+    #[default]
+    Observe,
+    Highlight,
+    Alert,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AltEvidenceDimension {
+    Flow,
+    Price,
+    Oi,
+    Liquidation,
+    Funding,
+    MarketBreadth,
+    Orderbook,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEvidenceDeclaration {
+    pub model: String,
+    pub dimensions: Vec<AltEvidenceDimension>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum EvidenceState<T> {
+    Available(T),
+    Missing,
+    Stale,
+    Partial,
+    RateLimited,
+    ParseFailed,
+    InsufficientSamples,
+}
+
+impl<T> Default for EvidenceState<T> {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltSignalAssessment {
+    pub anomaly_severity: AltContractSeverity,
+    pub structure_confidence: AltContractStructureConfidence,
+    pub exposure_tier: AltContractExposureTier,
+    pub evidence_degraded_reasons: Vec<String>,
+    #[serde(default)]
+    pub evidence_dimensions: Vec<AltEvidenceDimension>,
+    #[serde(default)]
+    pub model_evidence_declarations: Vec<ModelEvidenceDeclaration>,
+    #[serde(default)]
+    pub independent_dimension_count: usize,
+    #[serde(default)]
+    pub correlation_discount: f64,
+    #[serde(default)]
+    pub evidence_state: AltContractEvidenceState,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractEvidenceState {
+    pub trade_stream: EvidenceState<String>,
+    pub oi: EvidenceState<String>,
+    pub funding: EvidenceState<String>,
+    pub ticker: EvidenceState<String>,
+    pub mark_price: EvidenceState<String>,
+    pub liquidation: EvidenceState<String>,
+    pub dynamic_baseline: EvidenceState<String>,
+    pub market_breadth: EvidenceState<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AltContractSemanticLayer {
@@ -113,6 +207,12 @@ pub enum AltContractSymbolTier {
     C,
     D,
     E,
+}
+
+impl Default for AltContractSymbolTier {
+    fn default() -> Self {
+        Self::E
+    }
 }
 
 #[derive(
@@ -219,6 +319,14 @@ pub struct AltContractContext {
     pub ticker_quote_volume_24h_usd: Option<f64>,
     pub ticker_price_change_24h_pct: Option<f64>,
     pub ticker_updated_at: Option<i64>,
+    #[serde(default)]
+    pub local_rolling_24h_notional_usd: Option<f64>,
+    #[serde(default)]
+    pub local_rolling_24h_updated_at: Option<i64>,
+    #[serde(default)]
+    pub historical_baseline_notional_usd: Option<f64>,
+    #[serde(default)]
+    pub historical_baseline_updated_at: Option<i64>,
     pub liquidation_notional_usd: Option<f64>,
     #[serde(default)]
     pub liquidation_count: usize,
@@ -299,6 +407,8 @@ pub struct AltContractWindowStats {
     pub direction: AltContractDirection,
     pub trigger_price_usd: Option<f64>,
     pub price_move_pct: Option<f64>,
+    #[serde(default)]
+    pub price_threshold_pct: Option<f64>,
     pub exchange_count: usize,
     pub main_exchange: Option<String>,
     pub exchanges: Vec<AltContractExchangeContribution>,
@@ -394,6 +504,10 @@ pub enum ImpactReferenceSource {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AltContractLiquidityMicrostructure {
+    #[serde(default)]
+    pub evidence_mode: String,
+    #[serde(default)]
+    pub orderbook_evidence_available: bool,
     pub lms_score: f64,
     pub behavior: String,
     pub market_control: String,
@@ -608,6 +722,107 @@ pub struct AltContractSignalOutcomeRecord {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AltContractSignalOutcome {
+    pub signal_id: String,
+    pub product_id: String,
+    pub tier: AltContractSymbolTier,
+    pub signal_ts: i64,
+    pub window_sec: u64,
+    pub signal_type: String,
+    pub anomaly_severity: AltContractSeverity,
+    pub structure_confidence: AltContractStructureConfidence,
+    pub exposure_tier: AltContractExposureTier,
+    pub ais_score: f64,
+    pub abnormal_score: u8,
+    pub build_score: u8,
+    pub regime: String,
+    pub oi_context: String,
+    pub liquidation_context: String,
+    pub entry_price: Option<f64>,
+    pub markout_5m_bps: Option<f64>,
+    pub markout_15m_bps: Option<f64>,
+    pub markout_1h_bps: Option<f64>,
+    pub mfe_1h_bps: Option<f64>,
+    pub mae_1h_bps: Option<f64>,
+    pub follow_through_5m: Option<bool>,
+    pub follow_through_15m: Option<bool>,
+    pub follow_through_1h: Option<bool>,
+    pub evaluated_5m_at: Option<i64>,
+    pub evaluated_15m_at: Option<i64>,
+    pub evaluated_1h_at: Option<i64>,
+    pub outcome_version: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractOutcomeSummary {
+    pub sample_count: usize,
+    pub insufficient_samples: bool,
+    pub min_samples_for_reporting: usize,
+    pub follow_through_rate: Option<f64>,
+    pub median_markout_bps: Option<f64>,
+    pub median_mfe_bps: Option<f64>,
+    pub median_mae_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractEventRecord {
+    pub event_id: String,
+    pub product_id: String,
+    pub signal_type: String,
+    pub direction: String,
+    #[serde(default)]
+    pub tier: AltContractSymbolTier,
+    #[serde(default)]
+    pub liquidation_driven: bool,
+    pub start_ts: i64,
+    pub last_update_ts: i64,
+    pub status: String,
+    pub latest_signal_id: Option<String>,
+    pub peak_signal_id: Option<String>,
+    pub signal_count: u32,
+    pub peak_abnormal_score: u8,
+    pub peak_build_score: u8,
+    #[serde(default)]
+    pub latest_snapshot: Option<Box<AltContractSignal>>,
+    #[serde(default)]
+    pub peak_snapshot: Option<Box<AltContractSignal>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltContractEventLifecycle {
+    pub event_id: String,
+    pub product_id: String,
+    pub start_ts: i64,
+    pub last_update_ts: i64,
+    pub status: String,
+    pub close_reason: Option<String>,
+    pub signal_count: u32,
+    pub latest_signal_id: Option<String>,
+    pub peak_signal_id: Option<String>,
+    #[serde(default)]
+    pub latest_snapshot: Option<Box<AltContractSignal>>,
+    #[serde(default)]
+    pub peak_snapshot: Option<Box<AltContractSignal>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AltSignalFingerprint {
+    pub severity: AltContractSeverity,
+    pub ais_score: Option<f64>,
+    pub total_notional_usd: f64,
+    pub dynamic_multiple: f64,
+    pub oi_context: Option<String>,
+    pub price_response: String,
+    pub liquidation_notional_usd: f64,
+    pub ts: i64,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AltContractLearningErrorReport {
     pub error_type: String,
     pub severity: String,
@@ -789,6 +1004,8 @@ pub struct AltContractSignal {
     pub signal_type: AltContractSignalType,
     pub direction: AltContractDirection,
     pub severity: AltContractSeverity,
+    #[serde(default)]
+    pub assessment: AltSignalAssessment,
     pub abnormal_score: u8,
     pub build_score: u8,
     #[serde(default)]
@@ -867,6 +1084,16 @@ pub struct AltContractSignal {
     pub flow_to_depth_ratio: Option<f64>,
     #[serde(default)]
     pub event_id: Option<String>,
+    #[serde(default)]
+    pub event_start_ts: Option<i64>,
+    #[serde(default)]
+    pub event_status: String,
+    #[serde(default)]
+    pub event_close_reason: Option<String>,
+    #[serde(default)]
+    pub event_latest_signal_id: Option<String>,
+    #[serde(default)]
+    pub event_peak_signal_id: Option<String>,
     #[serde(default)]
     pub event_signal_count: u32,
     #[serde(default)]
@@ -988,6 +1215,8 @@ pub struct BacmRuntimeDiagnostics {
     pub active_symbol_count: usize,
     pub connected_shards: usize,
     pub total_shards: usize,
+    pub symbol_coverage_ratio: f64,
+    pub missing_symbols: Vec<String>,
     pub trade_buffer_total: usize,
     pub per_symbol_state_count: usize,
     pub light_candidates_total: u64,
@@ -995,8 +1224,14 @@ pub struct BacmRuntimeDiagnostics {
     pub full_score_skipped_budget_total: u64,
     pub persistence_queue_depth: usize,
     pub oldest_persistence_age_ms: Option<u64>,
+    pub persistence_dropped_total: u64,
     pub universe_last_refreshed_at: Option<i64>,
     pub universe_refresh_age_sec: Option<u64>,
+    pub scheduler_scored_by_tier: BTreeMap<String, u64>,
+    pub scheduler_skipped_by_tier: BTreeMap<String, u64>,
+    pub scheduler_oldest_candidate_age_ms: Option<i64>,
+    pub scheduler_per_symbol_score_count: BTreeMap<String, u64>,
+    pub scheduler_starved_candidate_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]

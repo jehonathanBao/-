@@ -1,11 +1,11 @@
 use anyhow::Context;
 use rusqlite::{params, OptionalExtension};
 
-use crate::spot_whale_monitor::types::SpotWhaleSignal;
+pub use crate::spot_whale_monitor::types::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
+
+use crate::spot_whale_monitor::types::{is_permanent_spot_whale_signal, SpotWhaleSignal};
 
 use super::sqlite::SqliteStore;
-
-pub const SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 200.0;
 
 #[derive(Debug, Clone, Default)]
 pub struct SpotWhaleSignalQuery {
@@ -14,6 +14,9 @@ pub struct SpotWhaleSignalQuery {
     pub signal_type: Option<String>,
     pub discord_sent: Option<bool>,
     pub min_abs_net_volume_base: Option<f64>,
+    pub from_ts: Option<i64>,
+    pub to_ts: Option<i64>,
+    pub permanent_only: Option<bool>,
     pub limit: usize,
     pub offset: usize,
 }
@@ -24,6 +27,10 @@ pub trait SpotWhaleRepo {
         &self,
         query: &SpotWhaleSignalQuery,
     ) -> anyhow::Result<Vec<SpotWhaleSignal>>;
+    fn count_spot_whale_signals_with_query(
+        &self,
+        query: &SpotWhaleSignalQuery,
+    ) -> anyhow::Result<usize>;
     fn update_spot_whale_discord_status(
         &self,
         signal_id: &str,
@@ -41,11 +48,12 @@ pub trait SpotWhaleRepo {
 
 impl SpotWhaleRepo for SqliteStore {
     fn upsert_spot_whale_signal(&self, signal: &SpotWhaleSignal) -> anyhow::Result<()> {
+        let signal = canonicalize_signal(signal);
         let signal_type = format!("{:?}", signal.signal_type);
         let direction = format!("{:?}", signal.direction);
         let severity = format!("{:?}", signal.severity);
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
-        let payload_json = serde_json::to_string(signal)?;
+        let payload_json = serde_json::to_string(&signal)?;
         self.with_connection(|conn| {
             conn.execute(
                 r#"
@@ -54,9 +62,11 @@ impl SpotWhaleRepo for SqliteStore {
                   total_volume_base, net_volume_base, total_notional_usd, dominance,
                   price_move_pct, coinbase_premium_pct, main_exchange, exchanges_json,
                   dynamic_multiple, multi_exchange_confirmed, data_quality, discord_eligible,
-                  discord_sent, discord_sent_at, discord_reason, payload_json, created_at
+                  discord_sent, discord_sent_at, discord_reason, is_permanent, payload_json,
+                  created_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                          ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                          ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                          ?26)
                 ON CONFLICT(signal_id) DO UPDATE SET
                   ts = excluded.ts,
                   symbol = excluded.symbol,
@@ -80,6 +90,7 @@ impl SpotWhaleRepo for SqliteStore {
                   discord_sent = excluded.discord_sent,
                   discord_sent_at = excluded.discord_sent_at,
                   discord_reason = excluded.discord_reason,
+                  is_permanent = excluded.is_permanent,
                   payload_json = excluded.payload_json,
                   created_at = excluded.created_at
                 "#,
@@ -107,6 +118,7 @@ impl SpotWhaleRepo for SqliteStore {
                     bool_to_int(signal.discord_sent),
                     signal.discord_sent_at,
                     signal.discord_reason,
+                    bool_to_int(signal.is_permanent),
                     payload_json,
                     crate::normalizers::trade::now_ms(),
                 ],
@@ -126,18 +138,25 @@ impl SpotWhaleRepo for SqliteStore {
         let min_abs_net_volume_base = query
             .min_abs_net_volume_base
             .filter(|value| value.is_finite() && *value > 0.0);
+        let from_ts = query.from_ts.filter(|value| *value > 0);
+        let to_ts = query.to_ts.filter(|value| *value > 0);
+        let permanent_only = query.permanent_only.map(bool_to_int);
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT payload_json, discord_eligible, discord_sent, discord_sent_at, discord_reason
+                SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
+                       discord_reason, is_permanent
                 FROM spot_whale_signals
                 WHERE (?1 IS NULL OR symbol = ?1)
                   AND (?2 IS NULL OR LOWER(REPLACE(severity, '_', '')) = ?2)
                   AND (?3 IS NULL OR LOWER(REPLACE(signal_type, '_', '')) = ?3)
                   AND (?4 IS NULL OR discord_sent = ?4)
                   AND (?5 IS NULL OR ABS(net_volume_base) >= ?5)
+                  AND (?6 IS NULL OR ts >= ?6)
+                  AND (?7 IS NULL OR ts < ?7)
+                  AND (?8 IS NULL OR is_permanent = ?8)
                 ORDER BY ts DESC
-                LIMIT ?6 OFFSET ?7
+                LIMIT ?9 OFFSET ?10
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -147,6 +166,9 @@ impl SpotWhaleRepo for SqliteStore {
                     signal_type.as_deref(),
                     discord_sent,
                     min_abs_net_volume_base,
+                    from_ts,
+                    to_ts,
+                    permanent_only,
                     query.limit as i64,
                     query.offset as i64,
                 ],
@@ -160,6 +182,49 @@ impl SpotWhaleRepo for SqliteStore {
         })
     }
 
+    fn count_spot_whale_signals_with_query(
+        &self,
+        query: &SpotWhaleSignalQuery,
+    ) -> anyhow::Result<usize> {
+        let severity = query.severity.as_deref().map(compact_filter_value);
+        let signal_type = query.signal_type.as_deref().map(compact_filter_value);
+        let discord_sent = query.discord_sent.map(bool_to_int);
+        let min_abs_net_volume_base = query
+            .min_abs_net_volume_base
+            .filter(|value| value.is_finite() && *value > 0.0);
+        let from_ts = query.from_ts.filter(|value| *value > 0);
+        let to_ts = query.to_ts.filter(|value| *value > 0);
+        let permanent_only = query.permanent_only.map(bool_to_int);
+        self.with_connection(|conn| {
+            let count = conn.query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM spot_whale_signals
+                WHERE (?1 IS NULL OR symbol = ?1)
+                  AND (?2 IS NULL OR LOWER(REPLACE(severity, '_', '')) = ?2)
+                  AND (?3 IS NULL OR LOWER(REPLACE(signal_type, '_', '')) = ?3)
+                  AND (?4 IS NULL OR discord_sent = ?4)
+                  AND (?5 IS NULL OR ABS(net_volume_base) >= ?5)
+                  AND (?6 IS NULL OR ts >= ?6)
+                  AND (?7 IS NULL OR ts < ?7)
+                  AND (?8 IS NULL OR is_permanent = ?8)
+                "#,
+                params![
+                    query.symbol.as_deref(),
+                    severity.as_deref(),
+                    signal_type.as_deref(),
+                    discord_sent,
+                    min_abs_net_volume_base,
+                    from_ts,
+                    to_ts,
+                    permanent_only,
+                ],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok(count.max(0) as usize)
+        })
+    }
+
     fn update_spot_whale_discord_status(
         &self,
         signal_id: &str,
@@ -170,14 +235,15 @@ impl SpotWhaleRepo for SqliteStore {
         self.with_connection(|conn| {
             let payload = conn
                 .query_row(
-                    "SELECT payload_json FROM spot_whale_signals WHERE signal_id = ?1",
+                    "SELECT payload_json, is_permanent FROM spot_whale_signals WHERE signal_id = ?1",
                     params![signal_id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )
                 .optional()?;
             let updated_payload = payload
-                .map(|json| {
+                .map(|(json, is_permanent)| {
                     let mut signal: SpotWhaleSignal = serde_json::from_str(&json)?;
+                    signal.is_permanent = is_permanent != 0;
                     signal.discord_sent = sent;
                     signal.discord_sent_at = sent_at_ms;
                     signal.discord_reason = reason.to_string();
@@ -235,6 +301,7 @@ impl SpotWhaleRepo for SqliteStore {
                     r#"
                     DELETE FROM spot_whale_signals
                     WHERE ts < ?1
+                      AND is_permanent = 0
                       AND ABS(net_volume_base) < ?2
                     "#,
                     params![cutoff_ts, threshold],
@@ -253,7 +320,14 @@ fn decode_signal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpotWhaleSigna
     signal.discord_sent = row.get::<_, i64>(2)? != 0;
     signal.discord_sent_at = row.get(3)?;
     signal.discord_reason = row.get(4)?;
+    signal.is_permanent = row.get::<_, i64>(5)? != 0;
     Ok(signal)
+}
+
+fn canonicalize_signal(signal: &SpotWhaleSignal) -> SpotWhaleSignal {
+    let mut signal = signal.clone();
+    signal.is_permanent = is_permanent_spot_whale_signal(signal.net_volume_base);
+    signal
 }
 
 fn compact_filter_value(value: &str) -> String {

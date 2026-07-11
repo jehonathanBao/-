@@ -82,3 +82,18 @@ fn detects_bullish_order_book_imbalance() {
         .iter()
         .any(|tag| tag == "bullish_imbalance"));
 }
+
+#[test]
+fn flow_only_mode_does_not_claim_orderbook_confirmation() {
+    let result = score_liquidity_microstructure(&LiquidityMicrostructureInput {
+        aggressive_buy_notional_usd: 2_000_000.0,
+        aggressive_sell_notional_usd: 100_000.0,
+        price_move_pct: 0.20,
+        ..LiquidityMicrostructureInput::default()
+    });
+
+    assert_eq!(result.evidence_mode, "flow_only");
+    assert!(!result.orderbook_evidence_available);
+    assert_ne!(result.behavior, "SpoofingDetected");
+    assert_eq!(result.spoofing_state, "none");
+}

@@ -291,10 +291,11 @@ impl AppState {
             contract_whale_store.clone(),
         );
         let bacm_runtime_config = bacm_config::binance_alt_contract_runtime_config();
-        let binance_alt_contract_service = BinanceAltContractService::new(
+        let binance_alt_contract_service = BinanceAltContractService::with_store(
             bacm_runtime_config.enabled,
             bacm_runtime_config.dry_run,
             booted_at_ms,
+            contract_whale_store.clone(),
         );
         let scan_log = ScanLogStore::new_from_env();
         scan_log.push(

@@ -161,6 +161,7 @@ fn stats(symbol: &str, ts: i64) -> AltContractWindowStats {
         direction: AltContractDirection::Buy,
         trigger_price_usd: Some(200.0),
         price_move_pct: Some(0.4),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution {

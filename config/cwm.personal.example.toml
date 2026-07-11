@@ -118,6 +118,25 @@ max_global_full_scoring_per_sec = 8
 max_burst_full_scoring = 3
 burst_window_ms = 1000
 
+[binance_alt_contract_monitor.flow_state]
+per_symbol_enabled = true
+bucket_retention_seconds = 3900
+
+[binance_alt_contract_monitor.scheduler]
+enabled = true
+full_scores_per_second = 60
+max_scores_per_symbol_per_second = 3
+candidate_max_age_seconds = 10
+tier_a_b_share = 0.40
+tier_c_share = 0.30
+tier_d_e_share = 0.30
+liquidation_priority_bonus = 20
+ageing_points_per_second = 2
+
+[binance_alt_contract_monitor.universe]
+refresh_seconds = 300
+dynamic_reconcile_enabled = true
+
 [binance_alt_contract_monitor.oi_scheduler]
 enabled = true
 all_symbols_interval_sec = 600
@@ -125,6 +144,29 @@ hot_symbols_interval_sec = 30
 candidate_ttl_sec = 600
 max_oi_requests_per_sec = 2
 immediate_fetch_on_candidate = true
+
+[binance_alt_contract_monitor.self_learning]
+mode = "disabled"
+min_samples = 100
+
+[binance_alt_contract_monitor.liquidation]
+retention_seconds = 600
+deduplicate = true
+
+[binance_alt_contract_monitor.impact]
+require_reliable_reference = true
+ticker_max_age_seconds = 120
+absolute_floor_required = true
+
+[binance_alt_contract_monitor.outcomes]
+enabled = true
+min_samples_for_reporting = 100
+
+[binance_alt_contract_monitor.lifecycle]
+tier_a_b_merge_seconds = 180
+tier_c_merge_seconds = 120
+tier_d_e_merge_seconds = 60
+liquidation_merge_seconds = 90
 
 [binance_alt_contract_monitor.storage]
 persist_all_1s = false
@@ -134,6 +176,10 @@ hot_1s_retention_hours = 24
 flow_1m_retention_days = 7
 signals_retention_days = 7
 cleanup_interval_sec = 3600
+queue_capacity = 10000
+batch_size = 100
+flush_interval_ms = 500
+jsonl_archive_enabled = false
 
 [binance_alt_contract_monitor.display]
 min_notional_usd = 150000

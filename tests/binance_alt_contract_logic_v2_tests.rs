@@ -50,6 +50,7 @@ fn true_long_build_requires_evidence_chain() {
         funding_rate: Some(0.0002),
         persistence_windows: 3,
         ticker_quote_volume_24h_usd: Some(2_000_000_000.0),
+        ticker_updated_at: Some(stats.ts - 10_000),
         ..AltContractContext::default()
     };
     let windows = vec![
@@ -549,6 +550,7 @@ fn stats(
         direction,
         trigger_price_usd: Some(notional / 10_000.0),
         price_move_pct: Some(price_move_pct),
+        price_threshold_pct: None,
         exchange_count: 1,
         main_exchange: Some("binance".to_string()),
         exchanges: vec![AltContractExchangeContribution {

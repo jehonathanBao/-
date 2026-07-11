@@ -15,3 +15,17 @@ fn disabled_self_learning_never_reports_accuracy_or_calibration() {
     assert!(report.outcome_records.is_empty());
     assert!(report.calibration_updates.is_empty());
 }
+
+#[test]
+fn heuristic_audit_never_labels_consistency_as_real_accuracy() {
+    let report =
+        audit_self_learning_loop_with_mode("heuristic_audit", 1_700_000_000_000, &VecDeque::new());
+
+    assert!(report.enabled);
+    assert_eq!(report.learning_mode, "heuristic_audit");
+    assert!(!report.accuracy_available);
+    assert_eq!(report.accuracy_rate, 0.0);
+    assert_eq!(report.reason, "heuristic_consistency_only");
+    assert!(report.outcome_records.is_empty());
+    assert!(report.calibration_updates.is_empty());
+}

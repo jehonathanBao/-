@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 use futures_util::StreamExt;
 use serde::Deserialize;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 
 use super::{
@@ -178,17 +179,208 @@ pub async fn run(service: BinanceAltContractService) {
             "{} binance alt aggTrade shards starting",
             LOG_PREFIX
         );
-        let total_shards = shards.len();
-        let shard_futures = shards
-            .into_iter()
-            .enumerate()
-            .map(|(shard_id, shard_symbols)| {
-                run_agg_trade_shard(service.clone(), shard_id, total_shards, shard_symbols)
-            })
-            .collect::<Vec<_>>();
-        futures_util::future::join_all(shard_futures).await;
+        let mut active_shards = shards;
+        service.begin_shard_supervision(active_shards.len());
+        service.reconcile_shard_supervision(&active_shards);
+        let mut shard_tasks = spawn_shard_tasks(&service, &active_shards);
+        let universe_config = binance_alt_contract_runtime_config().universe;
+        let mut refresh =
+            tokio::time::interval(Duration::from_secs(universe_config.refresh_seconds.max(1)));
+        let mut watchdog = tokio::time::interval(Duration::from_secs(5));
+        refresh.tick().await;
+        loop {
+            tokio::select! {
+                _ = refresh.tick(), if universe_config.dynamic_reconcile_enabled => {
+                    match refresh_symbol_universe(&client, &service).await {
+                        Ok(next_symbols) if !next_symbols.is_empty() => {
+                            let next_shards = reconcile_shard_layout(&active_shards, &next_symbols);
+                            if next_shards == active_shards {
+                                continue;
+                            }
+                            tracing::info!(
+                                target: LOG_TARGET,
+                                previous_symbol_count = active_shards.iter().map(Vec::len).sum::<usize>(),
+                                next_symbol_count = next_symbols.len(),
+                                "{} binance alt universe changed; reconciling affected shards",
+                                LOG_PREFIX
+                            );
+                            reconcile_shard_tasks(
+                                &service,
+                                &mut shard_tasks,
+                                &active_shards,
+                                &next_shards,
+                            )
+                            .await;
+                            active_shards = next_shards;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            service.record_error();
+                            tracing::warn!(target: LOG_TARGET, "{} binance alt universe refresh failed: {error}", LOG_PREFIX);
+                        }
+                    }
+                }
+                _ = watchdog.tick() => {
+                    restart_finished_shards(&service, &active_shards, &mut shard_tasks).await;
+                }
+            }
+            if shard_tasks.is_empty() {
+                tracing::warn!(target: LOG_TARGET, "{} all aggTrade shards stopped; retrying supervision", LOG_PREFIX);
+                break;
+            }
+        }
+        for (_, task) in shard_tasks {
+            task.1.abort();
+        }
         tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
     }
+}
+
+fn spawn_shard_tasks(
+    service: &BinanceAltContractService,
+    shards: &[Vec<String>],
+) -> std::collections::BTreeMap<usize, (Vec<String>, JoinHandle<()>)> {
+    let total_shards = shards.iter().filter(|symbols| !symbols.is_empty()).count();
+    shards
+        .iter()
+        .enumerate()
+        .filter(|(_, symbols)| !symbols.is_empty())
+        .map(|(shard_id, symbols)| {
+            let shard_service = service.clone();
+            let shard_symbols = symbols.clone();
+            let task = tokio::spawn(async move {
+                run_agg_trade_shard(shard_service, shard_id, total_shards, shard_symbols).await;
+            });
+            (shard_id, (symbols.clone(), task))
+        })
+        .collect()
+}
+
+async fn reconcile_shard_tasks(
+    service: &BinanceAltContractService,
+    tasks: &mut std::collections::BTreeMap<usize, (Vec<String>, JoinHandle<()>)>,
+    current: &[Vec<String>],
+    desired: &[Vec<String>],
+) {
+    let max_len = current.len().max(desired.len());
+    for shard_id in 0..max_len {
+        let desired_symbols = desired.get(shard_id).cloned().unwrap_or_default();
+        let needs_restart = tasks
+            .get(&shard_id)
+            .map(|(symbols, task)| symbols != &desired_symbols || task.is_finished())
+            .unwrap_or(!desired_symbols.is_empty());
+        if !needs_restart {
+            continue;
+        }
+        if let Some((_, task)) = tasks.remove(&shard_id) {
+            task.abort();
+        }
+        if !desired_symbols.is_empty() {
+            service.update_shard_status(shard_id, desired.len(), false);
+            let shard_service = service.clone();
+            let task_symbols = desired_symbols.clone();
+            let total_shards = desired.iter().filter(|items| !items.is_empty()).count();
+            let task = tokio::spawn(async move {
+                run_agg_trade_shard(shard_service, shard_id, total_shards, task_symbols).await;
+            });
+            tasks.insert(shard_id, (desired_symbols, task));
+        }
+    }
+    tasks.retain(|shard_id, _| {
+        desired
+            .get(*shard_id)
+            .is_some_and(|symbols| !symbols.is_empty())
+    });
+    service.reconcile_shard_supervision(desired);
+}
+
+async fn restart_finished_shards(
+    service: &BinanceAltContractService,
+    shards: &[Vec<String>],
+    tasks: &mut std::collections::BTreeMap<usize, (Vec<String>, JoinHandle<()>)>,
+) {
+    let finished = tasks
+        .iter()
+        .filter(|(_, (_, task))| task.is_finished())
+        .map(|(shard_id, _)| *shard_id)
+        .collect::<Vec<_>>();
+    for shard_id in finished {
+        if let Some((symbols, _)) = tasks.remove(&shard_id) {
+            let shard_service = service.clone();
+            let task_symbols = symbols.clone();
+            let total_shards = shards.iter().filter(|items| !items.is_empty()).count();
+            let task = tokio::spawn(async move {
+                run_agg_trade_shard(shard_service, shard_id, total_shards, task_symbols).await;
+            });
+            tasks.insert(shard_id, (symbols, task));
+        }
+    }
+}
+
+pub fn reconcile_shard_layout(current: &[Vec<String>], desired: &[String]) -> Vec<Vec<String>> {
+    let mut normalized = desired
+        .iter()
+        .map(|symbol| symbol.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    let desired_set = normalized.iter().cloned().collect::<BTreeSet<_>>();
+    let mut shards = current
+        .iter()
+        .map(|symbols| {
+            let mut retained = symbols
+                .iter()
+                .map(|symbol| symbol.to_ascii_uppercase())
+                .filter(|symbol| desired_set.contains(symbol))
+                .collect::<Vec<_>>();
+            retained.sort();
+            retained.dedup();
+            retained
+        })
+        .collect::<Vec<_>>();
+    let assigned = shards.iter().flatten().cloned().collect::<BTreeSet<_>>();
+    for symbol in normalized
+        .into_iter()
+        .filter(|symbol| !assigned.contains(symbol))
+    {
+        if let Some(shard) = shards
+            .iter_mut()
+            .find(|shard| shard.len() < MAX_STREAMS_PER_CONNECTION)
+        {
+            shard.push(symbol);
+        } else {
+            shards.push(vec![symbol]);
+        }
+    }
+    shards.retain(|shard| !shard.is_empty());
+    shards
+}
+
+pub fn universe_changed(current: &[String], desired: &[String]) -> bool {
+    let normalized = |symbols: &[String]| {
+        let mut items = symbols
+            .iter()
+            .map(|symbol| symbol.to_ascii_uppercase())
+            .collect::<Vec<_>>();
+        items.sort();
+        items.dedup();
+        items
+    };
+    normalized(current) != normalized(desired)
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(5);
+    let base_ms = RECONNECT_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(30_000);
+    let jitter_ms = base_ms / 5;
+    let delay_ms = if attempt.is_multiple_of(2) {
+        base_ms.saturating_add(jitter_ms)
+    } else {
+        base_ms.saturating_sub(jitter_ms)
+    };
+    Duration::from_millis(delay_ms)
 }
 
 async fn run_agg_trade_shard(
@@ -197,12 +389,14 @@ async fn run_agg_trade_shard(
     total_shards: usize,
     symbols: Vec<String>,
 ) {
+    let mut reconnect_attempt = 0_u32;
     loop {
         let url = stream_url(&symbols);
         service.update_shard_status(shard_id, total_shards, false);
         service.set_exchange_status(AltContractExchange::Binance, "connecting", false, None);
         match connect_async(&url).await {
             Ok((ws, _)) => {
+                reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     shard_id,
@@ -232,11 +426,12 @@ async fn run_agg_trade_shard(
                 }
             }
             Err(error) => {
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
                 service.update_shard_status(shard_id, total_shards, false);
                 service.mark_reconnecting(AltContractExchange::Binance, Some(error.to_string()));
             }
         }
-        tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+        tokio::time::sleep(reconnect_delay(reconnect_attempt)).await;
     }
 }
 
@@ -282,6 +477,7 @@ pub async fn run_context_polling(service: BinanceAltContractService) {
 }
 
 pub async fn run_all_market_context_stream(service: BinanceAltContractService) {
+    let mut reconnect_attempt = 0_u32;
     loop {
         let config = binance_alt_contract_runtime_config();
         if !config.enabled || !config.exchange.binance_enabled {
@@ -290,6 +486,7 @@ pub async fn run_all_market_context_stream(service: BinanceAltContractService) {
         }
         match connect_async(BINANCE_ALL_MARKET_CONTEXT_STREAM_URL).await {
             Ok((ws, _)) => {
+                reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     "{} binance alt all-market markPrice/ticker stream connected",
@@ -317,6 +514,7 @@ pub async fn run_all_market_context_stream(service: BinanceAltContractService) {
                 }
             }
             Err(error) => {
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
                 service.mark_all_market_context_disconnected(Some(error.to_string()));
                 tracing::warn!(
                     target: LOG_TARGET,
@@ -325,11 +523,12 @@ pub async fn run_all_market_context_stream(service: BinanceAltContractService) {
                 );
             }
         }
-        tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+        tokio::time::sleep(reconnect_delay(reconnect_attempt)).await;
     }
 }
 
 pub async fn run_force_order_stream(service: BinanceAltContractService) {
+    let mut reconnect_attempt = 0_u32;
     loop {
         let config = binance_alt_contract_runtime_config();
         if !config.enabled || !config.exchange.binance_enabled {
@@ -338,6 +537,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
         }
         match connect_async(BINANCE_FORCE_ORDER_STREAM_URL).await {
             Ok((ws, _)) => {
+                reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     "{} binance alt forceOrder snapshot stream connected",
@@ -365,6 +565,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
                 }
             }
             Err(error) => {
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
                 service.mark_force_order_stream_disconnected(Some(error.to_string()));
                 tracing::warn!(
                     target: LOG_TARGET,
@@ -373,7 +574,7 @@ pub async fn run_force_order_stream(service: BinanceAltContractService) {
                 );
             }
         }
-        tokio::time::sleep(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+        tokio::time::sleep(reconnect_delay(reconnect_attempt)).await;
     }
 }
 

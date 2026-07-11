@@ -2,11 +2,11 @@ use super::{
     config::BinanceAltContractRuntimeConfig,
     context::context_for_window,
     discord::{evaluate_alt_contract_discord_gate, AltContractDiscordCooldownStore},
-    impact::{impact_s_ready, score_alt_impact},
+    impact::impact_s_ready,
     lme::score_signal_microstructure,
     mcg::build_market_control_graph,
     mcss::score_master_capital_strength,
-    regime::classify_market_regime,
+    regime::{classify_market_regime, price_threshold_pct},
     scc::calibrate_signal_confidence,
     scoring::{
         funding_crowding_label, funding_crowding_penalty, score_alt_contract_signal,
@@ -16,10 +16,12 @@ use super::{
     smle::classify_smart_money_lifecycle,
     smp::predict_smart_money_next_stage,
     types::{
-        AltContractContext, AltContractDirection, AltContractGradeCondition,
-        AltContractImpactScore, AltContractScoreBreakdown, AltContractSeverity, AltContractSignal,
-        AltContractSignalType, AltContractSourceSnapshot, AltContractSymbolTier,
-        AltContractWindowConfirmation, AltContractWindowStats,
+        AltContractContext, AltContractDirection, AltContractEvidenceState,
+        AltContractGradeCondition, AltContractImpactScore, AltContractScoreBreakdown,
+        AltContractSeverity, AltContractSignal, AltContractSignalType, AltContractSourceSnapshot,
+        AltContractStructureConfidence, AltContractSymbolTier, AltContractWindowConfirmation,
+        AltContractWindowStats, AltEvidenceDimension, AltSignalAssessment, EvidenceState,
+        ModelEvidenceDeclaration,
     },
     LOG_PREFIX, LOG_TARGET,
 };
@@ -60,7 +62,8 @@ pub fn detect_alt_contract_signal_with_context(
     let context = &selected_context;
     let score = score_alt_contract_signal(stats, context, config);
     let market_tier = config.classify_market_tier(&stats.product_id);
-    let alt_impact_score = score_alt_impact(stats, context, market_tier);
+    let alt_impact_score =
+        super::impact::score_alt_impact_with_config(stats, context, market_tier, &config.impact);
     let liquidity_microstructure = score_signal_microstructure(stats, context);
     let evidence = evidence_for(
         stats,
@@ -175,6 +178,7 @@ pub fn detect_alt_contract_signal_with_context(
         signal_type,
         direction,
         severity,
+        assessment: assess_signal(stats, context, severity, main_force_confidence),
         abnormal_score: score.abnormal_score,
         build_score: score.build_score,
         master_capital_strength,
@@ -229,6 +233,11 @@ pub fn detect_alt_contract_signal_with_context(
         depth_1pct_usd: None,
         flow_to_depth_ratio: None,
         event_id: None,
+        event_start_ts: None,
+        event_status: "unassigned".to_string(),
+        event_close_reason: None,
+        event_latest_signal_id: None,
+        event_peak_signal_id: None,
         event_signal_count: 0,
         event_peak_abnormal_score: score.abnormal_score,
         event_peak_build_score: score.build_score,
@@ -273,6 +282,13 @@ pub fn detect_alt_contract_signal_with_context(
     };
     let exposure_decision = evaluate_exposure_gate(&signal, warmup);
     apply_semantic_boundary(&mut signal, exposure_decision);
+    signal.assessment.exposure_tier = if signal.semantic.exposure_allowed {
+        super::types::AltContractExposureTier::Alert
+    } else if signal.severity.rank() >= AltContractSeverity::High.rank() {
+        super::types::AltContractExposureTier::Highlight
+    } else {
+        super::types::AltContractExposureTier::Observe
+    };
     if tier_e_discord_guard(&signal, config) {
         signal.discord_eligible = false;
         signal.discord_would_send = false;
@@ -334,6 +350,163 @@ pub fn detect_alt_contract_signal_with_context(
         LOG_PREFIX
     );
     Some(signal)
+}
+
+fn assess_signal(
+    stats: &AltContractWindowStats,
+    context: &AltContractContext,
+    severity: AltContractSeverity,
+    main_force_confidence: f64,
+) -> AltSignalAssessment {
+    let structure_confidence = if main_force_confidence >= 80.0
+        && !context.liquidation_suspected
+        && context
+            .oi_change_1m_base
+            .or(context.oi_change_5m_base)
+            .is_some()
+    {
+        AltContractStructureConfidence::High
+    } else if main_force_confidence >= 55.0 {
+        AltContractStructureConfidence::Medium
+    } else {
+        AltContractStructureConfidence::Low
+    };
+    let mut evidence_degraded_reasons = Vec::new();
+    if context
+        .oi_change_1m_base
+        .or(context.oi_change_5m_base)
+        .is_none()
+    {
+        evidence_degraded_reasons.push("oi_missing".to_string());
+    }
+    if context.ticker_quote_volume_24h_usd.is_none() {
+        evidence_degraded_reasons.push("ticker_missing".to_string());
+    }
+    if stats.dynamic_multiple.is_none() {
+        evidence_degraded_reasons.push("dynamic_baseline_unavailable".to_string());
+    }
+    if stats.data_quality < 80 {
+        evidence_degraded_reasons.push("data_quality_degraded".to_string());
+    }
+    if context.funding_rate.is_none() {
+        evidence_degraded_reasons.push("funding_missing".to_string());
+    }
+    let mut evidence_dimensions = Vec::new();
+    if stats.total_volume_base > 0.0 {
+        evidence_dimensions.push(AltEvidenceDimension::Flow);
+    }
+    if stats.price_move_pct.is_some() {
+        evidence_dimensions.push(AltEvidenceDimension::Price);
+    }
+    if context.oi_change_1m.available || context.oi_change_5m.available {
+        evidence_dimensions.push(AltEvidenceDimension::Oi);
+    }
+    if context.liquidation_count > 0 || context.force_order_snapshot {
+        evidence_dimensions.push(AltEvidenceDimension::Liquidation);
+    }
+    if context.funding_rate.is_some() {
+        evidence_dimensions.push(AltEvidenceDimension::Funding);
+    }
+    let model_evidence_declarations = vec![
+        ModelEvidenceDeclaration {
+            model: "BACM".to_string(),
+            dimensions: vec![AltEvidenceDimension::Flow, AltEvidenceDimension::Price],
+        },
+        ModelEvidenceDeclaration {
+            model: "MCSS".to_string(),
+            dimensions: vec![
+                AltEvidenceDimension::Flow,
+                AltEvidenceDimension::Price,
+                AltEvidenceDimension::Oi,
+                AltEvidenceDimension::Liquidation,
+                AltEvidenceDimension::Funding,
+            ],
+        },
+        ModelEvidenceDeclaration {
+            model: "LME".to_string(),
+            dimensions: vec![AltEvidenceDimension::Flow, AltEvidenceDimension::Orderbook],
+        },
+    ];
+    let declared_dimension_count = model_evidence_declarations
+        .iter()
+        .map(|declaration| declaration.dimensions.len())
+        .sum::<usize>();
+    let correlation_discount = if declared_dimension_count == 0 {
+        0.0
+    } else {
+        ((declared_dimension_count.saturating_sub(evidence_dimensions.len())) as f64
+            / declared_dimension_count as f64
+            * 0.25)
+            .clamp(0.0, 0.25)
+    };
+    let evidence_state = AltContractEvidenceState {
+        trade_stream: if stats.total_volume_base > 0.0 {
+            EvidenceState::Available("aggregated_trade_flow".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        oi: if context.oi_change_1m.available || context.oi_change_5m.available {
+            if context.oi_change_1m.stale || context.oi_change_5m.stale {
+                EvidenceState::Stale
+            } else {
+                EvidenceState::Available("period_delta".to_string())
+            }
+        } else {
+            EvidenceState::Missing
+        },
+        funding: if context.funding_rate.is_some() {
+            EvidenceState::Available("funding_snapshot".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        ticker: evidence_freshness_state(
+            context.ticker_quote_volume_24h_usd,
+            context.ticker_updated_at,
+            stats.ts,
+        ),
+        mark_price: evidence_freshness_state(
+            context.mark_price_usd,
+            context.mark_price_updated_at,
+            stats.ts,
+        ),
+        liquidation: if context.liquidation_count > 0 || context.force_order_snapshot {
+            EvidenceState::Available("windowed_force_order".to_string())
+        } else {
+            EvidenceState::Missing
+        },
+        dynamic_baseline: if stats.dynamic_multiple.is_some() {
+            EvidenceState::Available("per_symbol_baseline".to_string())
+        } else {
+            EvidenceState::InsufficientSamples
+        },
+        market_breadth: EvidenceState::Partial,
+    };
+    AltSignalAssessment {
+        anomaly_severity: severity,
+        structure_confidence,
+        exposure_tier: super::types::AltContractExposureTier::Observe,
+        evidence_degraded_reasons,
+        independent_dimension_count: evidence_dimensions.len(),
+        correlation_discount,
+        evidence_dimensions,
+        model_evidence_declarations,
+        evidence_state,
+    }
+}
+
+fn evidence_freshness_state<T>(
+    value: Option<T>,
+    updated_at: Option<i64>,
+    now: i64,
+) -> EvidenceState<String> {
+    if value.is_none() {
+        return EvidenceState::Missing;
+    }
+    if updated_at.is_some_and(|timestamp| now.saturating_sub(timestamp) > 120_000) {
+        EvidenceState::Stale
+    } else {
+        EvidenceState::Available("snapshot".to_string())
+    }
 }
 
 pub fn evaluate_discord_for_signal_with_store(
@@ -598,13 +771,14 @@ fn evidence_for(
         .price_move_pct
         .or(context.price_move_1m_pct)
         .unwrap_or_default();
-    if (stats.direction == AltContractDirection::Buy && price_move > 0.05)
-        || (stats.direction == AltContractDirection::Sell && price_move < -0.05)
+    let price_threshold = price_threshold_pct(stats);
+    if (stats.direction == AltContractDirection::Buy && price_move > price_threshold)
+        || (stats.direction == AltContractDirection::Sell && price_move < -price_threshold)
     {
         tags.push("price_follow_through".to_string());
     }
-    if (stats.direction == AltContractDirection::Sell && price_move > -0.05)
-        || (stats.direction == AltContractDirection::Buy && price_move < 0.05)
+    if (stats.direction == AltContractDirection::Sell && price_move > -price_threshold)
+        || (stats.direction == AltContractDirection::Buy && price_move < price_threshold)
     {
         tags.push("price_absorption".to_string());
     }
@@ -736,6 +910,7 @@ fn classify_signal_type(
         .price_move_pct
         .or(context.price_move_1m_pct)
         .unwrap_or(0.0);
+    let price_threshold = price_threshold_pct(stats);
     if context.liquidation_suspected
         && context
             .liquidation_notional_usd
@@ -754,16 +929,20 @@ fn classify_signal_type(
         .or(context.oi_change_5m_base)
         .is_some_and(|change| change > 0.0);
     match stats.direction {
-        AltContractDirection::Buy if price_move < 0.05 && stats.dominance >= 0.60 => {
+        AltContractDirection::Buy if price_move < price_threshold && stats.dominance >= 0.60 => {
             AltContractSignalType::UpsideResistance
         }
-        AltContractDirection::Sell if price_move > -0.05 && stats.dominance >= 0.60 => {
+        AltContractDirection::Sell if price_move > -price_threshold && stats.dominance >= 0.60 => {
             AltContractSignalType::DownsideAbsorption
         }
-        AltContractDirection::Buy if strong_main_force_chain && oi_up && price_move >= -0.05 => {
+        AltContractDirection::Buy
+            if strong_main_force_chain && oi_up && price_move >= -price_threshold =>
+        {
             AltContractSignalType::MainForceLongBuild
         }
-        AltContractDirection::Sell if strong_main_force_chain && oi_up && price_move <= 0.05 => {
+        AltContractDirection::Sell
+            if strong_main_force_chain && oi_up && price_move <= price_threshold =>
+        {
             AltContractSignalType::MainForceShortBuild
         }
         AltContractDirection::Buy => AltContractSignalType::AbnormalPump,

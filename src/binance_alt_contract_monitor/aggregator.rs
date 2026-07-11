@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, collections::VecDeque};
 use super::{
     config::BinanceAltContractRuntimeConfig,
     context::context_data_quality_penalty,
+    flow_state::PerSymbolFlowBook,
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
         AltContractSymbolMeta, AltContractTrade, AltContractTradeSide, AltContractTrend60s,
@@ -12,6 +13,7 @@ use super::{
 
 pub fn rolling_window_stats(
     trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     meta: &AltContractSymbolMeta,
     window_sec: u64,
     now: i64,
@@ -32,7 +34,7 @@ pub fn rolling_window_stats(
     window_trades.sort_by_key(|trade| trade.ts);
     Some(stats_from_trades(
         &window_trades,
-        trades,
+        flow_book,
         meta,
         window_sec,
         now,
@@ -45,7 +47,7 @@ pub fn rolling_window_stats(
 #[allow(clippy::too_many_arguments)]
 pub fn stats_from_trades(
     window_trades: &[AltContractTrade],
-    all_trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     meta: &AltContractSymbolMeta,
     window_sec: u64,
     now: i64,
@@ -86,17 +88,19 @@ pub fn stats_from_trades(
         .zip(last_price)
         .filter(|(first, _)| *first > 0.0)
         .map(|(first, last)| (last / first - 1.0) * 100.0);
+    let price_threshold_pct = adaptive_price_threshold_pct(window_trades);
     let main_exchange = exchanges
         .iter()
         .max_by(|left, right| left.total_volume_base.total_cmp(&right.total_volume_base))
         .map(|item| item.exchange.clone());
-    let dynamic_multiple = if config.dynamic.enabled {
+    let dynamic_multiple = if config.dynamic.enabled && config.flow_state.per_symbol_enabled {
         dynamic_multiple(
-            all_trades,
+            flow_book,
             &meta.product_id,
             window_sec,
             now,
             total_notional_usd,
+            config.dynamic.lookback_minutes,
             config.dynamic.min_samples,
         )
     } else {
@@ -127,6 +131,7 @@ pub fn stats_from_trades(
             last_price
         },
         price_move_pct,
+        price_threshold_pct,
         exchange_count: exchanges.len(),
         main_exchange,
         exchanges,
@@ -134,6 +139,26 @@ pub fn stats_from_trades(
         data_quality,
         startup_age_ms,
     }
+}
+
+pub fn adaptive_price_threshold_pct(window_trades: &[AltContractTrade]) -> Option<f64> {
+    let mut previous_price: Option<f64> = None;
+    let mut ewma_abs_return_pct: Option<f64> = None;
+    let mut samples = 0_usize;
+    for trade in window_trades {
+        if let Some(previous) = previous_price.filter(|price| *price > 0.0) {
+            let abs_return_pct = ((trade.price / previous - 1.0) * 100.0).abs();
+            if abs_return_pct.is_finite() {
+                ewma_abs_return_pct = Some(match ewma_abs_return_pct {
+                    Some(previous_ewma) => previous_ewma * 0.8 + abs_return_pct * 0.2,
+                    None => abs_return_pct,
+                });
+                samples = samples.saturating_add(1);
+            }
+        }
+        previous_price = Some(trade.price);
+    }
+    (samples >= 3).then(|| (ewma_abs_return_pct.unwrap_or(0.0) * 2.0).max(0.05))
 }
 
 pub fn trend_for_symbol(
@@ -202,26 +227,22 @@ fn exchange_contributions(trades: &[AltContractTrade]) -> Vec<AltContractExchang
 }
 
 fn dynamic_multiple(
-    trades: &VecDeque<AltContractTrade>,
+    flow_book: &PerSymbolFlowBook,
     product_id: &str,
     window_sec: u64,
     now: i64,
-    current_notional_usd: f64,
+    _current_notional_usd: f64,
+    lookback_minutes: u64,
     min_samples: usize,
 ) -> Option<f64> {
-    let window_ms = i64::try_from(window_sec).ok()?.saturating_mul(1000);
-    let lookback_start = now.saturating_sub(3_600_000);
-    let current_start = now.saturating_sub(window_ms);
-    let mut buckets: BTreeMap<i64, f64> = BTreeMap::new();
-    for trade in trades.iter().filter(|trade| {
-        trade.product_id == product_id && trade.ts >= lookback_start && trade.ts < current_start
-    }) {
-        let bucket = (trade.ts - lookback_start) / window_ms;
-        *buckets.entry(bucket).or_insert(0.0) += trade.notional_usd;
-    }
-    if buckets.len() < min_samples {
-        return None;
-    }
-    let average = buckets.values().sum::<f64>() / buckets.len() as f64;
-    (average > 0.0).then_some(current_notional_usd / average)
+    flow_book
+        .baseline(
+            product_id,
+            window_sec,
+            now,
+            lookback_minutes.saturating_mul(60),
+            min_samples,
+        )
+        .filter(|baseline| baseline.available)
+        .map(|baseline| baseline.dynamic_multiple)
 }

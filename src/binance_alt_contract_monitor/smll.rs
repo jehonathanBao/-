@@ -1,8 +1,8 @@
-use std::{cmp::Reverse, collections::VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use super::types::{
-    AltContractAdaptiveWeightConfig, AltContractCalibrationUpdate, AltContractDirection,
-    AltContractDriftReport, AltContractLearningErrorReport, AltContractSignal,
+    AltContractAdaptiveWeightConfig, AltContractCalibrationUpdate, AltContractDriftReport,
+    AltContractLearningErrorReport, AltContractSignal, AltContractSignalOutcome,
     AltContractSignalOutcomeRecord, AltContractSmllReport,
 };
 
@@ -14,7 +14,7 @@ pub fn audit_self_learning_loop(
     now_ms: i64,
     signals: &VecDeque<AltContractSignal>,
 ) -> AltContractSmllReport {
-    audit_self_learning_loop_with_mode("heuristic_audit", now_ms, signals)
+    audit_self_learning_loop_with_mode("disabled", now_ms, signals)
 }
 
 pub fn audit_self_learning_loop_with_mode(
@@ -22,28 +22,56 @@ pub fn audit_self_learning_loop_with_mode(
     now_ms: i64,
     signals: &VecDeque<AltContractSignal>,
 ) -> AltContractSmllReport {
-    if !mode.eq_ignore_ascii_case("heuristic_audit") {
+    audit_self_learning_loop_with_outcomes(mode, now_ms, signals, &BTreeMap::new())
+}
+
+pub fn audit_self_learning_loop_with_outcomes(
+    mode: &str,
+    now_ms: i64,
+    signals: &VecDeque<AltContractSignal>,
+    outcomes: &BTreeMap<String, AltContractSignalOutcome>,
+) -> AltContractSmllReport {
+    if mode.eq_ignore_ascii_case("disabled") {
         return AltContractSmllReport {
             enabled: false,
             learning_mode: "disabled".to_string(),
             accuracy_available: false,
-            reason: if mode.eq_ignore_ascii_case("disabled") {
-                "future_outcome_evaluator_not_enabled".to_string()
-            } else {
-                "self_learning_mode_not_enabled".to_string()
-            },
+            reason: "future_outcome_evaluator_not_enabled".to_string(),
             protected_realtime: true,
             status: "disabled".to_string(),
             ..AltContractSmllReport::default()
         };
     }
-    let mut outcome_records = signals
-        .iter()
-        .filter(|signal| now_ms.saturating_sub(signal.ts) <= OUTCOME_LOOKBACK_MS)
-        .map(signal_outcome_record)
-        .collect::<Vec<_>>();
-    outcome_records.sort_by_key(|record| Reverse(record.timestamp));
+    if !mode.eq_ignore_ascii_case("heuristic_audit") {
+        if mode.eq_ignore_ascii_case("real_outcome") {
+            return audit_real_outcome_loop(now_ms, signals, outcomes);
+        }
+        return AltContractSmllReport {
+            enabled: false,
+            learning_mode: "disabled".to_string(),
+            accuracy_available: false,
+            reason: "self_learning_mode_not_enabled".to_string(),
+            protected_realtime: true,
+            status: "disabled".to_string(),
+            ..AltContractSmllReport::default()
+        };
+    }
 
+    return heuristic_audit_report(signals);
+}
+
+fn audit_real_outcome_loop(
+    now_ms: i64,
+    signals: &VecDeque<AltContractSignal>,
+    outcomes: &BTreeMap<String, AltContractSignalOutcome>,
+) -> AltContractSmllReport {
+    let mut outcome_records = outcomes
+        .values()
+        .filter(|outcome| now_ms.saturating_sub(outcome.signal_ts) <= OUTCOME_LOOKBACK_MS)
+        .filter(|outcome| outcome.markout_1h_bps.is_some())
+        .map(real_outcome_record)
+        .collect::<Vec<_>>();
+    outcome_records.sort_by_key(|record| std::cmp::Reverse(record.timestamp));
     let sample_size = outcome_records.len();
     let correct_count = outcome_records
         .iter()
@@ -59,7 +87,7 @@ pub fn audit_self_learning_loop_with_mode(
         .count();
     let scored_samples = correct_count + wrong_count;
     let accuracy_rate = if scored_samples == 0 {
-        100.0
+        0.0
     } else {
         round2(correct_count as f64 / scored_samples as f64 * 100.0)
     };
@@ -75,12 +103,15 @@ pub fn audit_self_learning_loop_with_mode(
     );
     let learning_score = learning_score(accuracy_rate, &error_reports, &drift_report, sample_size);
     outcome_records.truncate(MAX_OUTCOME_RECORDS);
-
     AltContractSmllReport {
-        enabled: true,
-        learning_mode: "heuristic_audit".to_string(),
-        accuracy_available: false,
-        reason: "heuristic_consistency_only".to_string(),
+        enabled: sample_size > 0,
+        learning_mode: "real_outcome".to_string(),
+        accuracy_available: sample_size > 0,
+        reason: if sample_size > 0 {
+            "real_future_outcomes_available".to_string()
+        } else {
+            "no_completed_future_outcomes".to_string()
+        },
         protected_realtime: true,
         status: if sample_size < MIN_SAMPLES_FOR_UPDATE {
             "collecting_outcomes".to_string()
@@ -105,65 +136,80 @@ pub fn audit_self_learning_loop_with_mode(
     }
 }
 
-fn signal_outcome_record(signal: &AltContractSignal) -> AltContractSignalOutcomeRecord {
-    let entry_price = signal.trigger_price_usd;
-    let outcome_price = entry_price.zip(signal.price_move_pct).map(|(price, pct)| {
-        let ratio = 1.0 + (pct / 100.0);
-        round_price(price * ratio)
-    });
+fn real_outcome_record(outcome: &AltContractSignalOutcome) -> AltContractSignalOutcomeRecord {
+    let markout = outcome.markout_1h_bps.unwrap_or_default();
     AltContractSignalOutcomeRecord {
-        signal_id: signal.id.clone(),
-        symbol: signal.symbol.clone(),
-        timestamp: signal.ts,
-        signal_type: format!("{:?}", signal.signal_type),
-        mc_score: signal.master_capital_strength.mcss,
-        regime: signal.market_regime.regime.clone(),
-        prediction: signal.smart_money_prediction.next_state.clone(),
-        entry_price,
-        outcome_price_5m: outcome_price,
-        outcome_price_15m: outcome_price,
-        outcome_price_1h: outcome_price,
-        realized_direction: realized_direction(signal),
-        accuracy_label: accuracy_label(signal),
+        signal_id: outcome.signal_id.clone(),
+        symbol: outcome.product_id.trim_end_matches("USDT").to_string(),
+        timestamp: outcome.signal_ts,
+        signal_type: outcome.signal_type.clone(),
+        mc_score: outcome.ais_score,
+        regime: outcome.regime.clone(),
+        prediction: String::new(),
+        entry_price: outcome.entry_price,
+        outcome_price_5m: None,
+        outcome_price_15m: None,
+        outcome_price_1h: None,
+        realized_direction: if markout > 0.0 {
+            "follow_through".to_string()
+        } else if markout < 0.0 {
+            "reversal".to_string()
+        } else {
+            "flat".to_string()
+        },
+        accuracy_label: if outcome.follow_through_1h == Some(true) {
+            "correct".to_string()
+        } else if outcome.follow_through_1h == Some(false) {
+            "wrong".to_string()
+        } else {
+            "neutral".to_string()
+        },
     }
 }
 
-fn accuracy_label(signal: &AltContractSignal) -> String {
-    if signal.post_signal_status == "failed" || signal.failed_at.is_some() {
-        return "wrong".to_string();
-    }
-    if signal.post_signal_status == "validated" || signal.validated_at.is_some() {
-        return "correct".to_string();
-    }
-    let Some(price_move_pct) = signal.price_move_pct else {
-        return "neutral".to_string();
-    };
-    if price_move_pct.abs() < 0.03 {
-        return "neutral".to_string();
-    }
-    if direction_matches_price(signal.direction, price_move_pct) {
-        "correct".to_string()
+fn heuristic_audit_report(signals: &VecDeque<AltContractSignal>) -> AltContractSmllReport {
+    let sample_size = signals.len();
+    let complete_count = signals
+        .iter()
+        .filter(|signal| {
+            signal.evidence_count >= 2
+                && signal.data_quality >= 70
+                && signal.assessment.evidence_degraded_reasons.is_empty()
+        })
+        .count();
+    let consistency_score = if sample_size == 0 {
+        0.0
     } else {
-        "wrong".to_string()
-    }
-}
+        round2(complete_count as f64 / sample_size as f64 * 100.0)
+    };
 
-fn realized_direction(signal: &AltContractSignal) -> String {
-    match signal.price_move_pct {
-        Some(value) if value > 0.03 => "up".to_string(),
-        Some(value) if value < -0.03 => "down".to_string(),
-        Some(_) => "flat".to_string(),
-        None => "unknown".to_string(),
-    }
-}
-
-fn direction_matches_price(direction: AltContractDirection, price_move_pct: f64) -> bool {
-    match direction {
-        AltContractDirection::Buy => price_move_pct > 0.0,
-        AltContractDirection::Sell => price_move_pct < 0.0,
-        AltContractDirection::Absorption => price_move_pct >= -0.05,
-        AltContractDirection::Suppression => price_move_pct <= 0.05,
-        AltContractDirection::Neutral => price_move_pct.abs() <= 0.20,
+    AltContractSmllReport {
+        enabled: true,
+        learning_mode: "heuristic_audit".to_string(),
+        accuracy_available: false,
+        reason: "heuristic_consistency_only".to_string(),
+        protected_realtime: true,
+        status: "heuristic_audit".to_string(),
+        learning_score: consistency_score,
+        sample_size,
+        min_samples_for_update: MIN_SAMPLES_FOR_UPDATE,
+        accuracy_rate: 0.0,
+        wrong_count: 0,
+        neutral_count: 0,
+        outcome_records: Vec::new(),
+        error_reports: Vec::new(),
+        suggested_weights: AltContractAdaptiveWeightConfig {
+            volume_weight: 1.0,
+            oi_weight: 1.0,
+            price_weight: 1.0,
+            liquidation_weight: 1.0,
+            funding_weight: 1.0,
+        },
+        drift_report: AltContractDriftReport {
+            reason: "heuristic_consistency_only".to_string(),
+            ..AltContractDriftReport::default()
+        },
+        calibration_updates: Vec::new(),
     }
 }
 
@@ -442,8 +488,4 @@ fn learning_score(
 
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
-}
-
-fn round_price(value: f64) -> f64 {
-    (value * 100_000_000.0).round() / 100_000_000.0
 }
