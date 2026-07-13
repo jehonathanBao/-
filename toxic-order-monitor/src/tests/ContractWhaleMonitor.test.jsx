@@ -2144,6 +2144,8 @@ describe("ContractWhaleMonitor", () => {
     expect(await screen.findByText("16,869 ETH")).toBeInTheDocument();
     expect(screen.getByText("净买入 614 ETH")).toBeInTheDocument();
     expect(screen.getByText("总量 761 ETH · dominance 80.7%")).toBeInTheDocument();
+    expect(screen.getAllByText("窗口总流量 ETH").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("峰值窗口流量 ETH").length).toBeGreaterThan(0);
     expect(screen.queryByText("净买入 614 BTC")).not.toBeInTheDocument();
   });
 
@@ -3077,7 +3079,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主力合约监控数据暂时不可用，已保留上一次结果。")).toBeInTheDocument();
   });
 
-  it("polls summary every 5s and latest signals every 3s while visible", async () => {
+  it("refreshes canonical contract views on one 5s timer while visible", async () => {
     vi.useFakeTimers();
 
     render(<ContractWhaleMonitor />);
@@ -3095,7 +3097,7 @@ describe("ContractWhaleMonitor", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(3);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
-    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(4);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(3);
   });
 
   it("keeps latest requests scoped to locked ETH", async () => {

@@ -87,7 +87,7 @@ impl VolumeDisplayContext {
     pub fn display_label(self) -> &'static str {
         match self {
             Self::SingleWindowSignal => "窗口总流量 BTC",
-            Self::ContractEventStream => "累计总流量 BTC",
+            Self::ContractEventStream => "峰值窗口流量 BTC",
             Self::FinalLifecycleEvent => "峰值窗口流量 BTC",
         }
     }
@@ -95,12 +95,16 @@ impl VolumeDisplayContext {
     pub fn semantics(self) -> &'static str {
         match self {
             Self::SingleWindowSignal => "single_window_bidirectional_cross_exchange",
-            Self::ContractEventStream => "multi_exchange_bidirectional_lifecycle_accumulated",
+            Self::ContractEventStream => "multi_exchange_bidirectional_peak_window",
             Self::FinalLifecycleEvent => "multi_exchange_bidirectional_peak_window",
         }
     }
 
     pub fn is_lifecycle_accumulated(self) -> bool {
+        false
+    }
+
+    fn supports_unique_turnover(self) -> bool {
         !matches!(self, Self::SingleWindowSignal)
     }
 }
@@ -254,7 +258,7 @@ pub fn build_volume_display_meta(
     source_signal_ids: &[String],
     context: VolumeDisplayContext,
 ) -> VolumeDisplayMeta {
-    let unique_turnover = context.is_lifecycle_accumulated()
+    let unique_turnover = context.supports_unique_turnover()
         && signal.event_lifecycle.unique_turnover_available
         && signal
             .event_lifecycle
@@ -288,7 +292,7 @@ pub fn build_volume_display_meta(
         },
         is_bidirectional_volume: true,
         is_cross_exchange_aggregated: source_exchange_count.is_some_and(|count| count > 1),
-        is_lifecycle_accumulated: context.is_lifecycle_accumulated(),
+        is_lifecycle_accumulated: unique_turnover || context.is_lifecycle_accumulated(),
         merged_signal_count,
         source_exchange_count,
         source_exchanges,
@@ -299,7 +303,7 @@ pub fn build_volume_display_meta(
 }
 
 fn display_volume_for_context(signal: &ContractWhaleSignal, context: VolumeDisplayContext) -> f64 {
-    if context.is_lifecycle_accumulated()
+    if !matches!(context, VolumeDisplayContext::SingleWindowSignal)
         && signal.event_lifecycle.volume_accumulated > f64::EPSILON
     {
         signal.event_lifecycle.volume_accumulated
@@ -429,14 +433,14 @@ mod tests {
         );
 
         assert_eq!(meta.display_volume_btc, 4_280.0);
-        assert_eq!(meta.display_volume_label, "生命周期累计流量 BTC");
+        assert_eq!(meta.display_volume_label, "峰值窗口流量 BTC");
         assert_eq!(
             meta.volume_semantics,
-            "multi_exchange_bidirectional_lifecycle_accumulated"
+            "multi_exchange_bidirectional_peak_window"
         );
         assert!(meta.is_bidirectional_volume);
         assert!(meta.is_cross_exchange_aggregated);
-        assert!(meta.is_lifecycle_accumulated);
+        assert!(!meta.is_lifecycle_accumulated);
         assert_eq!(meta.merged_signal_count, 3);
         assert_eq!(meta.source_exchange_count, Some(3));
         assert_eq!(meta.source_exchanges, vec!["binance", "bitfinex", "okx"]);
@@ -478,14 +482,14 @@ mod tests {
 
         assert_eq!(final_event.total_volume_btc, 4_280.0);
         assert_eq!(final_event.display_volume_btc, 4_280.0);
-        assert_eq!(final_event.display_volume_label, "累计总流量 BTC");
+        assert_eq!(final_event.display_volume_label, "峰值窗口流量 BTC");
         assert_eq!(
             final_event.volume_semantics,
-            "multi_exchange_bidirectional_lifecycle_accumulated"
+            "multi_exchange_bidirectional_peak_window"
         );
         assert!(final_event.is_bidirectional_volume);
         assert!(final_event.is_cross_exchange_aggregated);
-        assert!(final_event.is_lifecycle_accumulated);
+        assert!(!final_event.is_lifecycle_accumulated);
         assert_eq!(final_event.merged_signal_count, 2);
         assert_eq!(final_event.source_exchange_count, Some(3));
         assert_eq!(

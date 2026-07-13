@@ -93,15 +93,22 @@ fn classify_signal_type(stats: &SpotWhaleWindowStats) -> Option<SpotWhaleSignalT
     {
         return Some(SpotWhaleSignalType::SpotExchangeDislocation);
     }
-    let price_move_pct = stats.price_move_pct.unwrap_or(0.0);
     if stats.net_volume_base > 0.0 {
-        if stats.dominance >= 0.60 && price_move_pct < 0.05 {
+        if stats.dominance >= 0.60
+            && stats
+                .price_move_pct
+                .is_some_and(|price_move_pct| price_move_pct < 0.05)
+        {
             Some(SpotWhaleSignalType::SpotUpsideSuppression)
         } else {
             Some(SpotWhaleSignalType::SpotAggressiveBuy)
         }
     } else if stats.net_volume_base < 0.0 {
-        if stats.dominance >= 0.60 && price_move_pct > -0.05 {
+        if stats.dominance >= 0.60
+            && stats
+                .price_move_pct
+                .is_some_and(|price_move_pct| price_move_pct > -0.05)
+        {
             Some(SpotWhaleSignalType::SpotDownsideAbsorption)
         } else {
             Some(SpotWhaleSignalType::SpotAggressiveSell)
@@ -156,7 +163,13 @@ fn classify_severity(
     {
         return SpotWhaleSeverity::High;
     }
-    if stats.total_volume_base >= thresholds.high_base * 0.5 || dynamic_multiple >= 4.0 {
+    let medium_evidence_ok = stats.total_notional_usd >= thresholds.high_notional_usd * 0.60
+        && stats.dominance >= 0.55
+        && stats.data_quality >= 60;
+    if medium_evidence_ok
+        && (stats.total_volume_base >= thresholds.high_base * 0.60 || dynamic_multiple >= 5.0)
+        && (same_direction_price_move >= 0.10 || muted)
+    {
         return SpotWhaleSeverity::Medium;
     }
     SpotWhaleSeverity::Calm

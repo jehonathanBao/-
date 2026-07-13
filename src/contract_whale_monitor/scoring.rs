@@ -188,6 +188,7 @@ pub fn discord_gate(
     symbol: &str,
     total_volume_btc: f64,
     impact_level: Option<&str>,
+    btc_high_fallback_allowed: bool,
     config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
     super::discord_gate::discord_gate(
@@ -199,6 +200,7 @@ pub fn discord_gate(
         symbol,
         total_volume_btc,
         impact_level,
+        btc_high_fallback_allowed,
         config,
     )
 }

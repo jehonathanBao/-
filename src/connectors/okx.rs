@@ -9,7 +9,7 @@ use crate::{
     market_data::event_bus::{MarketDataBus, MarketDataEvent},
     normalizers::{
         book::{normalize_book, RawBookInput},
-        trade::{normalize_okx_trade, OkxTrade},
+        trade::{normalize_okx_trade_with_contract_value, OkxTrade},
     },
     types::market::{Venue, VenueConnectionStatus, VenueHealth},
 };
@@ -42,6 +42,7 @@ struct BookData {
 
 pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHealth>>>) {
     loop {
+        let contract_values = resolve_contract_values().await;
         set_status(
             &bus,
             &health,
@@ -74,7 +75,7 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                         Ok(message) => {
                             if let Ok(text) = message.to_text() {
                                 mark_message(&bus, &health, Venue::Okx);
-                                handle_message(text, &bus, &health);
+                                handle_message(text, &bus, &health, &contract_values);
                             }
                         }
                         Err(error) => {
@@ -115,6 +116,7 @@ fn handle_message(
     text: &str,
     bus: &MarketDataBus,
     health: &Arc<RwLock<BTreeMap<String, VenueHealth>>>,
+    contract_values: &BTreeMap<String, f64>,
 ) {
     if text == "pong" {
         return;
@@ -155,11 +157,23 @@ fn handle_message(
                 );
             }
             if let Ok(raw) = serde_json::from_value::<OkxTrade>(item) {
-                if let Some(trade) = normalize_okx_trade(raw) {
+                let ct_val_base = raw
+                    .inst_id
+                    .as_deref()
+                    .and_then(|inst_id| contract_values.get(&inst_id.to_ascii_uppercase()))
+                    .copied();
+                if let Some(trade) = ct_val_base
+                    .and_then(|ct_val| normalize_okx_trade_with_contract_value(raw, ct_val))
+                {
                     mark_trade(bus, health, Venue::Okx, trade.ts);
                     bus.publish(MarketDataEvent::Trade(trade));
                 } else {
-                    mark_parse_error(bus, health, Venue::Okx, "okx trade normalize failed");
+                    mark_parse_error(
+                        bus,
+                        health,
+                        Venue::Okx,
+                        "okx trade normalize failed: ctVal unavailable or invalid",
+                    );
                 }
             } else {
                 mark_parse_error(bus, health, Venue::Okx, "okx trade schema error");
@@ -190,6 +204,55 @@ fn handle_message(
             }
         }
     }
+}
+
+async fn resolve_contract_values() -> BTreeMap<String, f64> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let config = crate::contract_whale_monitor::config::contract_whale_runtime_config();
+    let mut values = BTreeMap::new();
+    for symbol in ["BTC", "ETH"] {
+        let fallback = config.okx_instruments.fallback_ct_val_base(symbol);
+        match crate::contract_whale_monitor::collector_okx::resolve_okx_contract_value_with_cache(
+            &client,
+            symbol,
+            config.okx_instruments.metadata_enabled,
+            config.okx_instruments.refresh_minutes,
+            fallback,
+        )
+        .await
+        {
+            Ok(resolution) => {
+                if let Some(ct_val_base) = resolution.ct_val_base {
+                    values.insert(format!("{symbol}-USDT-SWAP"), ct_val_base);
+                    if resolution.evidence_degraded {
+                        tracing::warn!(
+                            exchange = "okx",
+                            symbol,
+                            reason = ?resolution.reason,
+                            "OKX trade normalization uses configured ctVal fallback"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        exchange = "okx",
+                        symbol,
+                        "OKX trade stream disabled for symbol because ctVal is unavailable"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                exchange = "okx",
+                symbol,
+                error = %error,
+                "OKX ctVal lookup failed; trades for symbol will fail closed"
+            ),
+        }
+    }
+    values
 }
 
 fn parse_book_levels(levels: Vec<[String; 4]>) -> Vec<(f64, f64)> {

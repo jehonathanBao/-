@@ -256,6 +256,20 @@ fn evidence_summary(
     } else {
         ContractWhaleEvidenceState::InsufficientSamples
     };
+    let (liquidation_status, liquidation_reason) = if stats.liquidation_context.total_liq_btc > 0.0
+    {
+        ("live".to_string(), None)
+    } else if stats.liquidation_driven {
+        (
+            "inferred".to_string(),
+            Some("price_volume_shape_only".to_string()),
+        )
+    } else {
+        (
+            "unavailable".to_string(),
+            Some("no_live_liquidation_samples".to_string()),
+        )
+    };
     let mut degradation_reasons = Vec::new();
     if matches!(dynamic_multiple, ContractWhaleEvidenceState::Missing) {
         degradation_reasons.push("dynamic_multiple_missing".to_string());
@@ -291,6 +305,8 @@ fn evidence_summary(
         oi,
         funding,
         multi_exchange_confirmation,
+        liquidation_status,
+        liquidation_reason,
         evidence_degraded: !degradation_reasons.is_empty(),
         evidence_reason: degradation_reasons.first().cloned(),
         degradation_reasons,

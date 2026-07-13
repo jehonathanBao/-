@@ -285,6 +285,35 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getByText(/60s 总成交 0 BTC/)).toBeInTheDocument();
   });
 
+  it("warns when the latest spot signal is an old snapshot", async () => {
+    const staleSummary = {
+      enabled: true,
+      dryRun: true,
+      symbol: "BTC",
+      status: "calm",
+      healthStatus: "healthy",
+      latestIsStale: true,
+      latestAgeSec: 720,
+      latestStaleReason: "older_than_latest_ttl",
+      exchanges: {},
+      trend60s: {},
+    };
+    fetchSpotWhaleSummary.mockResolvedValueOnce({ summary: staleSummary, error: null });
+    fetchSpotWhaleLatest.mockResolvedValueOnce({
+      summary: staleSummary,
+      items: [],
+      limit: 50,
+      offset: 0,
+      total: 0,
+      hasMore: false,
+      error: null,
+    });
+
+    render(<SpotWhaleMonitor lockedSymbol="BTC" />);
+
+    expect(await screen.findByText(/BTC latest 为旧快照/)).toBeInTheDocument();
+  });
+
   it("supports permanent-only history paging", async () => {
     const user = userEvent.setup();
     fetchSpotWhaleHistory

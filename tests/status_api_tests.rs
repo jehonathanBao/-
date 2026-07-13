@@ -283,6 +283,7 @@ fn test_config() -> AppConfig {
         liq_hunt_watch_score: 30.0,
         book_stale_ms: 5000,
         max_buffer_age_ms: 120000,
+        system_mode: Default::default(),
         contract_whale_monitor:
             btc_toxic_flow_monitor_rs::config::env::ContractWhaleMonitorConfig {
                 enabled: false,

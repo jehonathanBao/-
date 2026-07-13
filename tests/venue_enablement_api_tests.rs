@@ -38,16 +38,16 @@ async fn venues_diagnostics_explains_disabled_venues() {
     assert_eq!(payload["executionEnabled"], false);
     assert_eq!(payload["runtimeModified"], false);
     assert_eq!(payload["monitoringStarted"], true);
-    assert_eq!(payload["summary"]["configuredVenues"], 3);
+    assert_eq!(payload["summary"]["configuredVenues"], 4);
     assert_eq!(payload["summary"]["enabledVenues"], 0);
     assert_eq!(payload["summary"]["connectorConstructedVenues"], 0);
     assert_eq!(payload["summary"]["startAttemptedVenues"], 0);
     assert_eq!(payload["summary"]["connectedVenues"], 0);
     assert_eq!(payload["summary"]["wsConnectAttemptedVenues"], 0);
     assert_eq!(payload["summary"]["wsConnectedVenues"], 0);
-    assert_eq!(payload["summary"]["symbolMappedVenues"], 3);
+    assert_eq!(payload["summary"]["symbolMappedVenues"], 4);
     assert_eq!(payload["summary"]["venuesWithNetworkErrors"], 0);
-    assert_eq!(payload["summary"]["disabledByEnvVenues"], 3);
+    assert_eq!(payload["summary"]["disabledByEnvVenues"], 4);
     assert_eq!(payload["summary"]["symbolMappingFailedVenues"], 0);
     assert_eq!(payload["summary"]["streamSubscribeFailedVenues"], 0);
     assert_eq!(payload["summary"]["connectedButNoEventsVenues"], 0);
@@ -71,7 +71,7 @@ async fn venues_diagnostics_explains_disabled_venues() {
         .contains("all venue enable flags are false or missing"));
 
     let venues = payload["venues"].as_array().expect("venues array");
-    assert_eq!(venues.len(), 3);
+    assert_eq!(venues.len(), 4);
     assert!(venues.iter().any(|venue| {
         venue["venue"] == "binance"
             && venue["enableFlagName"] == "ENABLE_BINANCE"
@@ -111,7 +111,7 @@ async fn venues_diagnostics_explains_disabled_venues() {
 #[test]
 fn venue_diagnostics_reports_symbol_mapping_configuration_error() {
     let mut config = test_config(true, false, false);
-    config.symbol = "ETH-PERP".to_string();
+    config.symbol = "UNSUPPORTED-PERP".to_string();
     let state = AppState::new(config);
 
     let diagnostics = build_venue_diagnostics_response(&state);
@@ -132,13 +132,13 @@ fn venue_diagnostics_reports_symbol_mapping_configuration_error() {
             .copied(),
         Some("symbol_mapping_failed")
     );
-    assert_eq!(binance.requested_symbol, "ETH-PERP");
+    assert_eq!(binance.requested_symbol, "UNSUPPORTED-PERP");
     assert_eq!(binance.venue_symbol, None);
     assert_eq!(binance.symbol_mapping_status, "missing");
     assert!(binance
         .symbol_mapping_error
         .as_deref()
-        .is_some_and(|error| error.contains("ETH-PERP")));
+        .is_some_and(|error| error.contains("UNSUPPORTED-PERP")));
     assert_eq!(
         binance.disabled_reason.as_deref(),
         Some("symbol_mapping_missing")
@@ -337,6 +337,7 @@ fn test_config(binance: bool, bybit: bool, okx: bool) -> AppConfig {
         liq_hunt_watch_score: 30.0,
         book_stale_ms: 5000,
         max_buffer_age_ms: 120000,
+        system_mode: Default::default(),
         contract_whale_monitor:
             btc_toxic_flow_monitor_rs::config::env::ContractWhaleMonitorConfig {
                 enabled: false,

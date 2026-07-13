@@ -229,7 +229,7 @@ fn cwm_discord_gate_allows_btc_high_without_multi_exchange_score_gate() {
     let mut signal = sample_single_exchange_high_signal();
     signal.id = "contract-whale-btc-high".to_string();
     signal.severity = ContractWhaleSeverity::High;
-    signal.score = 54;
+    signal.score = 70;
     signal.data_quality = 70;
     signal.discord_eligible = true;
     signal.discord_reason = "btc_high_gate".to_string();
@@ -513,7 +513,7 @@ fn cwm_discord_rate_control_uses_semantic_tier_windows() {
     let mut alert = sample_single_exchange_high_signal();
     alert.id = "contract-whale:BTC:15:1700000015000:alert-high".to_string();
     alert.severity = ContractWhaleSeverity::High;
-    alert.score = 54;
+    alert.score = 70;
     alert.data_quality = 70;
     alert.discord_eligible = true;
     alert.discord_reason = "btc_high_gate".to_string();

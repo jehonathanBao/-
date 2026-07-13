@@ -369,16 +369,33 @@ pub fn market_context_from_snapshots(
     symbol: &str,
     now_ts: i64,
 ) -> ContractWhaleMarketContext {
-    let latest_oi = sum_latest_oi_before(oi_snapshots, symbol, now_ts);
-    let prior_1m_oi = sum_latest_oi_before(oi_snapshots, symbol, now_ts.saturating_sub(60_000));
-    let prior_5m_oi = sum_latest_oi_before(oi_snapshots, symbol, now_ts.saturating_sub(300_000));
+    let max_gap_ms = contract_whale_runtime_config()
+        .classification
+        .oi_lookup_max_gap_seconds
+        .max(1)
+        .saturating_mul(1_000);
+    let (latest_oi, latest_oi_stale) =
+        sum_latest_oi_before(oi_snapshots, symbol, now_ts, max_gap_ms);
+    let (prior_1m_oi, _) = sum_latest_oi_before(
+        oi_snapshots,
+        symbol,
+        now_ts.saturating_sub(60_000),
+        max_gap_ms,
+    );
+    let (prior_5m_oi, _) = sum_latest_oi_before(
+        oi_snapshots,
+        symbol,
+        now_ts.saturating_sub(300_000),
+        max_gap_ms,
+    );
     let oi_change_1m_btc = option_diff(latest_oi, prior_1m_oi);
     let oi_change_5m_btc = option_diff(latest_oi, prior_5m_oi);
     let oi_change_pct = match (oi_change_5m_btc, prior_5m_oi) {
         (Some(change), Some(prior)) if prior.abs() > f64::EPSILON => Some(change / prior * 100.0),
         _ => None,
     };
-    let latest_funding = average_latest_funding_before(funding_snapshots, symbol, now_ts);
+    let (latest_funding, latest_funding_stale) =
+        average_latest_funding_before(funding_snapshots, symbol, now_ts, max_gap_ms);
     let symbol_oi_snapshots = oi_snapshots
         .iter()
         .filter(|snapshot| snapshot.symbol.eq_ignore_ascii_case(symbol))
@@ -386,17 +403,31 @@ pub fn market_context_from_snapshots(
     let ct_val_available = symbol_oi_snapshots
         .iter()
         .all(|snapshot| snapshot.ct_val_available);
-    let evidence_reason = symbol_oi_snapshots
+    let metadata_reason = symbol_oi_snapshots
         .iter()
         .find_map(|snapshot| snapshot.evidence_degraded_reason.clone());
+    let oi_reason = evidence_reason(latest_oi.is_some(), latest_oi_stale);
+    let funding_reason = evidence_reason(latest_funding.is_some(), latest_funding_stale);
+    let evidence_reason = metadata_reason.or_else(|| {
+        [oi_reason.as_deref(), funding_reason.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|reason| *reason != "available")
+            .map(str::to_string)
+    });
 
     ContractWhaleMarketContext {
         context_expected: true,
         ct_val_available,
-        evidence_degraded: evidence_reason.is_some() || !ct_val_available,
+        evidence_degraded: evidence_reason.is_some()
+            || !ct_val_available
+            || latest_oi.is_none()
+            || latest_funding.is_none(),
         evidence_reason,
         oi_available: latest_oi.is_some(),
+        oi_reason,
         funding_available: latest_funding.is_some(),
+        funding_reason,
         oi_change_1m_btc,
         oi_change_5m_btc,
         oi_change_pct,
@@ -496,13 +527,19 @@ fn sum_latest_oi_before(
     snapshots: &[ContractOiSnapshot],
     symbol: &str,
     target_ts: i64,
-) -> Option<f64> {
+    max_gap_ms: i64,
+) -> (Option<f64>, bool) {
     let mut latest_by_exchange: BTreeMap<String, &ContractOiSnapshot> = BTreeMap::new();
+    let mut matching_before_target = false;
     for snapshot in snapshots {
         if !snapshot.symbol.eq_ignore_ascii_case(symbol)
             || snapshot.ts > target_ts
             || !contract_whale_runtime_config().exchange_enabled(snapshot.exchange.as_key())
         {
+            continue;
+        }
+        matching_before_target = true;
+        if target_ts.saturating_sub(snapshot.ts) > max_gap_ms {
             continue;
         }
         let key = snapshot.exchange.as_key().to_string();
@@ -518,20 +555,27 @@ fn sum_latest_oi_before(
         .map(|snapshot| snapshot.oi_btc)
         .filter(|value| value.is_finite() && *value > 0.0)
         .sum::<f64>();
-    (sum > 0.0).then_some(sum)
+    let value = (sum > 0.0).then_some(sum);
+    (value, matching_before_target && value.is_none())
 }
 
 fn average_latest_funding_before(
     snapshots: &[ContractFundingSnapshot],
     symbol: &str,
     target_ts: i64,
-) -> Option<f64> {
+    max_gap_ms: i64,
+) -> (Option<f64>, bool) {
     let mut latest_by_exchange: BTreeMap<String, &ContractFundingSnapshot> = BTreeMap::new();
+    let mut matching_before_target = false;
     for snapshot in snapshots {
         if !snapshot.symbol.eq_ignore_ascii_case(symbol)
             || snapshot.ts > target_ts
             || !contract_whale_runtime_config().exchange_enabled(snapshot.exchange.as_key())
         {
+            continue;
+        }
+        matching_before_target = true;
+        if target_ts.saturating_sub(snapshot.ts) > max_gap_ms {
             continue;
         }
         let key = snapshot.exchange.as_key().to_string();
@@ -548,9 +592,22 @@ fn average_latest_funding_before(
         .filter(|value| value.is_finite())
         .collect::<Vec<_>>();
     if values.is_empty() {
-        None
+        (None, matching_before_target)
     } else {
-        Some(values.iter().sum::<f64>() / values.len() as f64)
+        (
+            Some(values.iter().sum::<f64>() / values.len() as f64),
+            false,
+        )
+    }
+}
+
+fn evidence_reason(available: bool, stale: bool) -> Option<String> {
+    if available {
+        None
+    } else if stale {
+        Some("stale".to_string())
+    } else {
+        Some("missing".to_string())
     }
 }
 

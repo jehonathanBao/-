@@ -12,7 +12,10 @@ use btc_toxic_flow_monitor_rs::{
             normalize_binance_spot_trade, normalize_bitfinex_trade_value,
             normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
         },
-        service::{SpotWhaleQuery, SpotWhaleService},
+        service::{
+            decode_spot_history_cursor, encode_spot_history_cursor, SpotWhaleQuery,
+            SpotWhaleService,
+        },
         types::{
             SpotExchange, SpotExchangeContribution, SpotTrade, SpotTradeSide, SpotWhaleSeverity,
             SpotWhaleSignalType, SpotWhaleWindowStats,
@@ -115,6 +118,35 @@ fn spot_discord_gate_rejects_medium_and_low_quality() {
     let (eligible, reason) = discord_gate(SpotWhaleSeverity::Critical, 95, true, 69);
     assert!(!eligible);
     assert_eq!(reason, "data_quality_display_only");
+}
+
+#[test]
+fn spot_detector_rejects_medium_without_directional_quality_and_price_response() {
+    let config = SpotWhaleRuntimeConfig::default();
+    let mut stats = high_conviction_stats();
+    stats.total_volume_base = 190.0;
+    stats.net_volume_base = 5.0;
+    stats.dominance = 5.0 / 190.0;
+    stats.total_notional_usd = 16_000_000.0;
+    stats.price_move_pct = Some(0.30);
+    stats.dynamic_multiple = Some(5.5);
+
+    assert!(detect_spot_whale_signal_with_config(&stats, &config).is_none());
+
+    stats.dominance = 0.60;
+    stats.net_volume_base = 114.0;
+    stats.data_quality = 55;
+    assert!(detect_spot_whale_signal_with_config(&stats, &config).is_none());
+}
+
+#[test]
+fn spot_detector_does_not_infer_absorption_or_suppression_without_price_evidence() {
+    let config = SpotWhaleRuntimeConfig::default();
+    let mut stats = high_conviction_stats();
+    stats.price_move_pct = None;
+
+    let signal = detect_spot_whale_signal_with_config(&stats, &config).expect("volume signal");
+    assert_eq!(signal.signal_type, SpotWhaleSignalType::SpotAggressiveBuy);
 }
 
 #[test]
@@ -358,6 +390,166 @@ fn spot_whale_summary_marks_stale_exchange_unhealthy() {
     assert!(!coinbase.connected);
     assert_eq!(summary.health_status, "unhealthy");
     assert_eq!(summary.health_reason, "spot_sources_stale_or_disconnected");
+}
+
+#[test]
+fn spot_whale_summary_health_is_scoped_to_requested_symbol() {
+    let ts = now_ms();
+    let service = SpotWhaleService::new(true, true, ts.saturating_sub(120_000), None);
+
+    service.ingest_trade(SpotTrade {
+        ts,
+        exchange: SpotExchange::Binance,
+        symbol: "BTC".to_string(),
+        market: "spot".to_string(),
+        price: 70_000.0,
+        qty_base: 0.2,
+        notional_usd: 14_000.0,
+        side: SpotTradeSide::Buy,
+        trade_id: Some("btc-only-health".to_string()),
+    });
+
+    let btc = service.summary("BTC");
+    let eth = service.summary("ETH");
+    assert!(btc.exchanges["binance"].connected);
+    assert!(!eth.exchanges["binance"].connected);
+    assert_ne!(eth.exchanges["binance"].status, "connected");
+}
+
+#[test]
+fn spot_whale_summary_marks_restored_latest_signal_stale() {
+    let store = temp_store("spot-whale-stale-restored-summary");
+    let config = SpotWhaleRuntimeConfig::default();
+    let mut signal =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    signal.ts = now_ms().saturating_sub(10 * 60_000);
+    store.upsert_spot_whale_signal(&signal).unwrap();
+
+    let service = SpotWhaleService::new(true, true, now_ms(), Some(store));
+    let summary = service.summary("BTC");
+
+    assert!(summary.latest_is_stale);
+    assert!(summary.latest_age_sec.is_some_and(|age| age >= 9 * 60));
+    assert_eq!(
+        summary.latest_stale_reason.as_deref(),
+        Some("latest_signal_ttl_exceeded")
+    );
+    assert_eq!(summary.status, "calm");
+    assert_eq!(summary.direction, "neutral");
+}
+
+#[test]
+fn spot_whale_repo_cursor_is_stable_for_equal_timestamps() {
+    let store = temp_store("spot-whale-stable-cursor");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    let ts = base.ts + 10_000;
+    for suffix in ["a", "b", "c"] {
+        let mut signal = signal_with_net(&base, suffix, 10_000, 60.0);
+        signal.id = format!("cursor-{suffix}");
+        signal.ts = ts;
+        store.upsert_spot_whale_signal(&signal).unwrap();
+    }
+
+    let first = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            limit: 2,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        first
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cursor-c", "cursor-b"]
+    );
+
+    let second = store
+        .query_spot_whale_signals(&SpotWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            cursor_ts: Some(ts),
+            cursor_signal_id: Some("cursor-b".to_string()),
+            limit: 2,
+            ..SpotWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        second
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["cursor-a"]
+    );
+}
+
+#[test]
+fn spot_whale_cursor_round_trips_timestamp_and_stable_id() {
+    let config = SpotWhaleRuntimeConfig::default();
+    let signal =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    let cursor = encode_spot_history_cursor(&signal);
+
+    assert_eq!(
+        decode_spot_history_cursor(&cursor),
+        Some((signal.ts, signal.id.clone()))
+    );
+    assert_eq!(decode_spot_history_cursor("not-a-cursor"), None);
+}
+
+#[test]
+fn spot_whale_service_cursor_does_not_offer_an_empty_extra_page() {
+    let store = temp_store("spot-whale-cursor-final-page");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    for (index, suffix) in ["a", "b", "c", "d"].into_iter().enumerate() {
+        let signal = signal_with_net(&base, suffix, index as i64 * 1_000, 60.0);
+        store.upsert_spot_whale_signal(&signal).unwrap();
+    }
+
+    let service = SpotWhaleService::new(true, true, base.ts + 60_000, Some(store));
+    let first = service.history(SpotWhaleQuery {
+        symbol: Some("BTC".to_string()),
+        limit: Some(2),
+        ..SpotWhaleQuery::default()
+    });
+    let (cursor_ts, cursor_signal_id) =
+        decode_spot_history_cursor(first.next_cursor.as_deref().expect("next cursor"))
+            .expect("valid cursor");
+    let final_page = service.history(SpotWhaleQuery {
+        symbol: Some("BTC".to_string()),
+        limit: Some(2),
+        cursor_ts: Some(cursor_ts),
+        cursor_signal_id: Some(cursor_signal_id),
+        ..SpotWhaleQuery::default()
+    });
+
+    assert_eq!(final_page.items.len(), 2);
+    assert!(!final_page.has_more);
+    assert!(final_page.next_cursor.is_none());
+}
+
+#[test]
+fn spot_whale_service_retention_prunes_only_old_unprotected_rows() {
+    let store = temp_store("spot-whale-service-retention");
+    let config = SpotWhaleRuntimeConfig::default();
+    let base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
+    let old_weak = signal_with_net(&base, "service-old-weak", 0, 20.0);
+    let old_protected = signal_with_net(&base, "service-old-protected", 1, -60.0);
+    store.upsert_spot_whale_signal(&old_weak).unwrap();
+    store.upsert_spot_whale_signal(&old_protected).unwrap();
+    let service = SpotWhaleService::new(true, true, base.ts, Some(store.clone()));
+
+    let deleted = service
+        .run_retention_once(base.ts + 366 * 86_400_000)
+        .expect("retention run");
+
+    assert_eq!(deleted, 1);
+    assert_eq!(store.count_spot_whale_signals("BTC").unwrap(), 1);
 }
 
 fn high_conviction_stats() -> SpotWhaleWindowStats {

@@ -8,6 +8,9 @@ const calmSummary = {
   latestDirection: "neutral",
   latestSeverity: "calm",
   latestSignalAt: null,
+  latestAgeSec: null,
+  latestIsStale: false,
+  latestStaleReason: null,
   lastDiscordSentAt: null,
   updatedAtMs: null,
   signalCount: 0,
@@ -59,6 +62,7 @@ export async function fetchSpotWhaleLatest(limit = 50, symbol = "BTC") {
       offset: numberOrNull(response.data?.offset) || 0,
       total: numberOrNull(response.data?.total) || normalizedItems.length,
       hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
+      nextCursor: response.data?.nextCursor ?? response.data?.next_cursor ?? null,
       error: null,
     };
   } catch {
@@ -69,6 +73,7 @@ export async function fetchSpotWhaleLatest(limit = 50, symbol = "BTC") {
       offset: 0,
       total: 0,
       hasMore: false,
+      nextCursor: null,
       error: "latest_unavailable",
     };
   }
@@ -91,6 +96,7 @@ export async function fetchSpotWhaleHistory(filters = {}) {
       offset: numberOrNull(response.data?.offset) || Number(filters.offset ?? 0),
       total: numberOrNull(response.data?.total) || normalizedItems.length,
       hasMore: Boolean(response.data?.hasMore ?? response.data?.has_more),
+      nextCursor: response.data?.nextCursor ?? response.data?.next_cursor ?? null,
       error: null,
     };
   } catch {
@@ -101,6 +107,7 @@ export async function fetchSpotWhaleHistory(filters = {}) {
       offset: Number(filters.offset ?? 0),
       total: 0,
       hasMore: false,
+      nextCursor: null,
       error: "history_unavailable",
     };
   }
@@ -168,6 +175,9 @@ function normalizeSummary(summary, fallbackSymbol = "BTC") {
     latestDirection: summary.latestDirection || summary.direction || calmSummary.latestDirection,
     latestSeverity: summary.latestSeverity || calmSummary.latestSeverity,
     latestSignalAt: numberOrNull(summary.latestSignalAt),
+    latestAgeSec: numberOrNull(summary.latestAgeSec),
+    latestIsStale: Boolean(summary.latestIsStale),
+    latestStaleReason: summary.latestStaleReason || null,
     lastDiscordSentAt: numberOrNull(summary.lastDiscordSentAt),
     updatedAtMs: numberOrNull(summary.updatedAtMs),
     signalCount: numberOrNull(summary.signalCount) || 0,

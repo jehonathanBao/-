@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchSpotWhaleHistory,
   fetchSpotWhaleLatest,
@@ -35,10 +35,12 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
   const [viewMode, setViewMode] = useState("latest");
   const [filters, setFilters] = useState(() => ({ ...DEFAULT_FILTERS, symbol: assetSymbol }));
   const [pageIndex, setPageIndex] = useState(0);
+  const pageCursorsRef = useRef([null]);
 
   useEffect(() => {
     setSelectedSignalId(null);
     setPageIndex(0);
+    pageCursorsRef.current = [null];
     setFilters((previous) => (
       previous.symbol === assetSymbol ? previous : { ...previous, symbol: assetSymbol }
     ));
@@ -64,11 +66,13 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
     };
 
     const refreshItems = () => {
+      const cursor = isHistoryMode ? pageCursorsRef.current[pageIndex] || undefined : undefined;
       const request = isHistoryMode
         ? fetchSpotWhaleHistory({
             ...filters,
             limit: HISTORY_PAGE_SIZE,
-            offset: pageIndex * HISTORY_PAGE_SIZE,
+            offset: cursor ? undefined : pageIndex * HISTORY_PAGE_SIZE,
+            cursor,
             from_ts: toQueryTimestamp(filters.from_ts),
             to_ts: toQueryTimestamp(filters.to_ts),
             permanent_only: filters.permanent_only || undefined,
@@ -76,6 +80,9 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
         : fetchSpotWhaleLatest(HISTORY_PAGE_SIZE, symbol);
       request.then((payload) => {
         if (cancelled) return;
+        if (isHistoryMode && !payload.error && payload.nextCursor) {
+          pageCursorsRef.current[pageIndex + 1] = payload.nextCursor;
+        }
         setState((previous) => ({
           ...previous,
           loading: false,
@@ -195,6 +202,13 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
         </p>
       ) : null}
 
+      {summary.latestIsStale ? (
+        <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          {assetSymbol} latest 为旧快照，最近没有新的 {assetSymbol} 现货主力信号
+          {Number.isFinite(Number(summary.latestAgeSec)) ? `（距今 ${Math.round(Number(summary.latestAgeSec))} 秒）` : ""}。
+        </p>
+      ) : null}
+
       <SpotWhaleFilters
         filters={filters}
         pageIndex={pageIndex}
@@ -205,6 +219,7 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
         onChange={(nextFilters) => {
           setSelectedSignalId(null);
           setPageIndex(0);
+          pageCursorsRef.current = [null];
           setFilters({ ...nextFilters, symbol: assetSymbol });
         }}
       />

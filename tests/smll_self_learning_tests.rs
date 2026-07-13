@@ -1,12 +1,12 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::{
     config::BinanceAltContractRuntimeConfig,
     detector::detect_alt_contract_signal,
-    smll::audit_self_learning_loop,
+    smll::audit_self_learning_loop_with_outcomes,
     types::{
         AltContractContext, AltContractDirection, AltContractExchangeContribution,
-        AltContractSignal, AltContractSymbolTier, AltContractWindowStats,
+        AltContractSignal, AltContractSignalOutcome, AltContractSymbolTier, AltContractWindowStats,
     },
 };
 
@@ -21,7 +21,7 @@ fn accumulated_prediction_errors_suggest_prediction_recalibration() {
         correct_buy_signal("ADA", NOW_MS - 60_000),
     ]);
 
-    let report = audit_self_learning_loop(NOW_MS, &signals);
+    let report = audit_real_outcomes(&signals);
 
     assert!(report.accuracy_rate < 60.0, "{report:?}");
     assert!(report
@@ -43,7 +43,7 @@ fn repeated_oi_misdirection_reduces_suggested_oi_weight() {
         wrong_buy_signal("XRP", NOW_MS - 120_000),
     ]);
 
-    let report = audit_self_learning_loop(NOW_MS, &signals);
+    let report = audit_real_outcomes(&signals);
 
     assert!(report.suggested_weights.oi_weight < 1.0, "{report:?}");
     assert!(report
@@ -65,7 +65,7 @@ fn liquidation_false_build_reduces_liquidation_weight() {
     third.force_order_snapshot = true;
     let signals = VecDeque::from(vec![first, second, third]);
 
-    let report = audit_self_learning_loop(NOW_MS, &signals);
+    let report = audit_real_outcomes(&signals);
 
     assert!(
         report.suggested_weights.liquidation_weight < 1.0,
@@ -93,7 +93,7 @@ fn regime_drift_triggers_retrain_suggestion() {
     four.smart_money_prediction.next_state = "Accumulation".to_string();
     let signals = VecDeque::from(vec![one, two, three, four]);
 
-    let report = audit_self_learning_loop(NOW_MS, &signals);
+    let report = audit_real_outcomes(&signals);
 
     assert!(report.drift_report.drift_detected, "{report:?}");
     assert!(report.drift_report.suggested_retrain, "{report:?}");
@@ -101,6 +101,36 @@ fn regime_drift_triggers_retrain_suggestion() {
         .calibration_updates
         .iter()
         .any(|item| item.parameter == "smle.transition_recalibration"));
+}
+
+fn audit_real_outcomes(
+    signals: &VecDeque<AltContractSignal>,
+) -> btc_toxic_flow_monitor_rs::binance_alt_contract_monitor::types::AltContractSmllReport {
+    let outcomes = signals
+        .iter()
+        .map(|signal| {
+            let correct = signal.post_signal_status == "validated";
+            (
+                signal.id.clone(),
+                AltContractSignalOutcome {
+                    signal_id: signal.id.clone(),
+                    product_id: signal.product_id.clone(),
+                    signal_ts: signal.ts,
+                    window_sec: signal.window_sec,
+                    signal_type: format!("{:?}", signal.signal_type),
+                    ais_score: signal.alt_impact_score.final_score,
+                    regime: signal.market_regime.regime.clone(),
+                    entry_price: signal.trigger_price_usd,
+                    markout_1h_bps: Some(if correct { 45.0 } else { -45.0 }),
+                    follow_through_1h: Some(correct),
+                    evaluated_1h_at: Some(signal.ts + 60 * 60_000),
+                    ..AltContractSignalOutcome::default()
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    audit_self_learning_loop_with_outcomes("real_outcome", NOW_MS, signals, &outcomes)
 }
 
 fn wrong_buy_signal(symbol: &str, ts: i64) -> AltContractSignal {

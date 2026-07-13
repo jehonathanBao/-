@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use super::{
     config::contract_whale_runtime_config,
     discord::{contract_whale_gate_symbol, effective_push_total_volume},
-    discord_gate::discord_gate,
+    discord_gate::{btc_high_fallback_allowed, discord_gate, inferred_liquidation_display_only},
     types::{
         ContractFlowBucket, ContractWhaleEventLifecycle, ContractWhaleEventStatus,
         ContractWhaleSignal, ContractWhaleSignalSnapshot,
@@ -226,6 +226,8 @@ fn update_lifecycle_event(existing: &mut ContractWhaleSignal, next: &ContractWha
 fn refresh_lifecycle_discord_gate(signal: &mut ContractWhaleSignal) {
     let warmup_collect_only = signal.discord_reason == "warmup_collect_only";
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
+    let btc_high_fallback_allowed =
+        btc_high_fallback_allowed(signal.signal_type, signal.price_response_type, signal.score);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         signal.severity,
         signal.score,
@@ -235,8 +237,17 @@ fn refresh_lifecycle_discord_gate(signal: &mut ContractWhaleSignal) {
         contract_whale_gate_symbol(signal),
         effective_push_total_volume(signal),
         signal.impact_level.as_deref(),
+        btc_high_fallback_allowed,
         &contract_whale_runtime_config(),
     );
+    if inferred_liquidation_display_only(
+        signal.liquidation_suspected,
+        signal.liquidation_long_btc,
+        signal.liquidation_short_btc,
+    ) {
+        discord_eligible = false;
+        discord_reason = "liquidation_inferred_display_only".to_string();
+    }
     if warmup_collect_only {
         discord_eligible = false;
         discord_reason = "warmup_collect_only".to_string();

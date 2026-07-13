@@ -38,6 +38,24 @@ describe("spotWhale API", () => {
     expect(result.summary.enabled).toBe(true);
   });
 
+  it("normalizes stale latest diagnostics from the summary", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        symbol: "BTC",
+        latestAgeSec: 720,
+        latestIsStale: true,
+        latestStaleReason: "older_than_latest_ttl",
+      },
+    });
+
+    const result = await fetchSpotWhaleSummary("BTC");
+
+    expect(result.summary.latestAgeSec).toBe(720);
+    expect(result.summary.latestIsStale).toBe(true);
+    expect(result.summary.latestStaleReason).toBe("older_than_latest_ttl");
+  });
+
   it("maps latest spot whale signal fields", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
@@ -181,6 +199,16 @@ describe("spotWhale API", () => {
     expect(result.offset).toBe(50);
     expect(result.total).toBe(120);
     expect(result.hasMore).toBe(true);
+  });
+
+  it("passes a stable composite cursor to the history endpoint", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: { summary: { enabled: true, symbol: "BTC" }, items: [] },
+    });
+
+    await fetchSpotWhaleHistory({ symbol: "BTC", cursor: "stable-cursor", limit: 50 });
+
+    expect(axios.get.mock.calls[0][0]).toContain("cursor=stable-cursor");
   });
 
   it("normalizes permanent flags from history results", async () => {
