@@ -4685,11 +4685,9 @@ fn contract_exchange_statuses(
             .expect("known contract whale platform");
         let platform_enabled = enabled && platform.any_market_enabled();
         let contract_enabled = enabled && runtime_config.exchange_enabled(&exchange);
+        let symbol_last_trade_at = flow_last_trades.get(&exchange).copied().flatten();
         let last_trade_at = if contract_enabled {
-            max_option(
-                flow_last_trades.get(&exchange).copied().flatten(),
-                health_for_exchange(venue_health, &exchange).and_then(health_last_trade_at),
-            )
+            symbol_last_trade_at
         } else if platform_enabled
             && platform
                 .market_enabled(crate::contract_whale_monitor::types::ContractWhaleMarketType::Spot)
@@ -4701,15 +4699,17 @@ fn contract_exchange_statuses(
         let reconnect_count = health_for_exchange(venue_health, &exchange)
             .map(|health| health.ws_reconnect_count.max(health.reconnect_count))
             .unwrap_or(0);
-        let health_connected = health_for_exchange(venue_health, &exchange)
+        let transport_connected = health_for_exchange(venue_health, &exchange)
             .map(health_connected)
             .unwrap_or(false);
         let flow_connected = last_trade_at.is_some_and(|ts| now.saturating_sub(ts) <= 30_000);
-        let connected = contract_enabled && (health_connected || flow_connected);
+        let connected = contract_enabled && flow_connected;
         let status = exchange_status_label(
             platform_enabled,
             contract_enabled,
             connected,
+            symbol_last_trade_at.is_some(),
+            transport_connected,
             health_for_exchange(venue_health, &exchange),
         );
         let latency_ms = last_trade_at
@@ -4803,6 +4803,8 @@ fn exchange_status_label(
     platform_enabled: bool,
     contract_enabled: bool,
     connected: bool,
+    has_symbol_trade: bool,
+    transport_connected: bool,
     health: Option<&VenueHealth>,
 ) -> &'static str {
     if !platform_enabled {
@@ -4816,11 +4818,22 @@ fn exchange_status_label(
     }
     match health.map(|item| item.status) {
         Some(VenueConnectionStatus::Reconnecting) | Some(VenueConnectionStatus::Connecting) => {
-            "reconnecting"
+            return "reconnecting";
         }
-        Some(VenueConnectionStatus::Disabled) => "disabled",
-        _ => "disconnected",
+        Some(VenueConnectionStatus::ConfigurationError) => return "configuration_error",
+        Some(VenueConnectionStatus::Degraded) => return "degraded",
+        Some(VenueConnectionStatus::Error) => return "error",
+        Some(VenueConnectionStatus::Disconnected) => return "disconnected",
+        Some(VenueConnectionStatus::Disabled) => return "disabled",
+        Some(VenueConnectionStatus::Connected) | None => {}
     }
+    if has_symbol_trade {
+        return "stale";
+    }
+    if transport_connected {
+        return "waiting_for_data";
+    }
+    "disconnected"
 }
 
 fn max_option(left: Option<i64>, right: Option<i64>) -> Option<i64> {

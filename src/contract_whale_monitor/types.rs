@@ -204,7 +204,11 @@ pub struct ContractWhaleMarketContext {
     #[serde(default)]
     pub oi_available: bool,
     #[serde(default)]
+    pub oi_reason: Option<String>,
+    #[serde(default)]
     pub funding_available: bool,
+    #[serde(default)]
+    pub funding_reason: Option<String>,
     #[serde(default)]
     pub oi_change_1m_btc: Option<f64>,
     #[serde(default)]
@@ -227,7 +231,9 @@ impl Default for ContractWhaleMarketContext {
             evidence_degraded: false,
             evidence_reason: None,
             oi_available: false,
+            oi_reason: Some("missing".to_string()),
             funding_available: false,
+            funding_reason: Some("missing".to_string()),
             oi_change_1m_btc: None,
             oi_change_5m_btc: None,
             oi_change_pct: None,
@@ -696,6 +702,10 @@ pub struct ContractWhaleEvidenceSummary {
     pub funding: ContractWhaleEvidenceState<f64>,
     #[serde(default)]
     pub multi_exchange_confirmation: ContractWhaleEvidenceState<bool>,
+    #[serde(default)]
+    pub liquidation_status: String,
+    #[serde(default)]
+    pub liquidation_reason: Option<String>,
     #[serde(default)]
     pub evidence_degraded: bool,
     #[serde(default)]

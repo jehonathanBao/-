@@ -19,6 +19,8 @@ pub struct SpotWhaleSignalQuery {
     pub permanent_only: Option<bool>,
     pub limit: usize,
     pub offset: usize,
+    pub cursor_ts: Option<i64>,
+    pub cursor_signal_id: Option<String>,
 }
 
 pub trait SpotWhaleRepo {
@@ -155,8 +157,9 @@ impl SpotWhaleRepo for SqliteStore {
                   AND (?6 IS NULL OR ts >= ?6)
                   AND (?7 IS NULL OR ts < ?7)
                   AND (?8 IS NULL OR is_permanent = ?8)
-                ORDER BY ts DESC
-                LIMIT ?9 OFFSET ?10
+                  AND (?9 IS NULL OR ts < ?9 OR (ts = ?9 AND signal_id < ?10))
+                ORDER BY ts DESC, signal_id DESC
+                LIMIT ?11 OFFSET ?12
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -169,6 +172,8 @@ impl SpotWhaleRepo for SqliteStore {
                     from_ts,
                     to_ts,
                     permanent_only,
+                    query.cursor_ts,
+                    query.cursor_signal_id.as_deref(),
                     query.limit as i64,
                     query.offset as i64,
                 ],

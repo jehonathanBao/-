@@ -917,10 +917,10 @@ function normalizeOpportunityZone(item = {}) {
   };
 }
 
-function volumeDisplayLabelForContext(context) {
-  if (context === VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM) return "累计总流量 BTC";
-  if (context === VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT) return "峰值窗口流量 BTC";
-  return "窗口总流量 BTC";
+function volumeDisplayLabelForContext(context, symbol = "BTC") {
+  const unit = baseAssetKey(symbol) || "BTC";
+  if (context !== VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW) return `峰值窗口流量 ${unit}`;
+  return `窗口总流量 ${unit}`;
 }
 
 function volumeSemanticsForContext(context) {
@@ -989,7 +989,7 @@ function mergeWindowsSec(item, fallbackWindowSec) {
   return Array.from(values).sort((left, right) => left - right);
 }
 
-function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null) {
+function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null, fallbackSymbol = "BTC") {
   const rawTotal =
     numberOrNull(item?.displayVolumeBtc ?? item?.display_volume_btc) ??
     numberOrNull(item?.totalVolumeBtc ?? item?.total_volume_btc) ??
@@ -1006,16 +1006,20 @@ function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null) {
     item?.sourceExchanges ?? item?.source_exchanges ?? item?.exchanges ?? item?.sourceSignal?.exchanges,
   );
   const sourceExchangeCount = numberOrNull(item?.sourceExchangeCount ?? item?.source_exchange_count);
+  const quantityUnit = item?.quantityUnit ?? item?.quantity_unit ?? item?.baseAsset ?? item?.base_asset ?? item?.symbol ?? fallbackSymbol;
   return {
     displayVolumeBtc: rawTotal,
-    displayVolumeLabel: item?.displayVolumeLabel ?? item?.display_volume_label ?? volumeDisplayLabelForContext(context),
+    displayVolumeLabel:
+      item?.displayVolumeLabel ?? item?.display_volume_label ?? volumeDisplayLabelForContext(context, quantityUnit),
     volumeSemantics: item?.volumeSemantics ?? item?.volume_semantics ?? volumeSemanticsForContext(context),
     isBidirectionalVolume: Boolean(item?.isBidirectionalVolume ?? item?.is_bidirectional_volume ?? true),
     isCrossExchangeAggregated: Boolean(
       item?.isCrossExchangeAggregated ?? item?.is_cross_exchange_aggregated ?? sourceExchanges.length > 1,
     ),
     isLifecycleAccumulated: Boolean(
-      item?.isLifecycleAccumulated ?? item?.is_lifecycle_accumulated ?? context !== VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW,
+      item?.isLifecycleAccumulated ??
+        item?.is_lifecycle_accumulated ??
+        false,
     ),
     mergedSignalCount: Math.max(
       1,
@@ -1133,6 +1137,7 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     },
     VOLUME_DISPLAY_CONTEXT.FINAL_LIFECYCLE_EVENT,
     item?.windowSec ?? signal.windowSec,
+    eventSymbol,
   );
   const volume = numberOrNull(item?.volume) ?? signal.totalVolumeBtc;
   const netVolume = numberOrNull(item?.netVolume) ?? signal.netVolumeBtc;
@@ -1256,7 +1261,12 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
   const rawNetVolumeBtc = numberOrNull(item?.netVolumeBtc ?? item?.net_volume_btc);
   const rawPrice = numberOrNull(item?.price);
   const rawTs = numberOrNull(item?.ts);
-  const volumeMeta = normalizeVolumeDisplayMeta(item, VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM, rawWindowSec ?? normalized.windowSec);
+  const volumeMeta = normalizeVolumeDisplayMeta(
+    item,
+    VOLUME_DISPLAY_CONTEXT.CONTRACT_EVENT_STREAM,
+    rawWindowSec ?? normalized.windowSec,
+    normalized.symbol || fallbackSymbol,
+  );
   return {
     ...normalized,
     id: item?.eventId || item?.event_id || normalized.id,
@@ -1347,6 +1357,7 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
 
 export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
   const classification = item?.classificationV2 || item?.classification_v2 || {};
+  const evidence = item?.evidence || classification?.evidence || {};
   const totalVolumeBtc = numberOrNull(item.totalVolume) ?? numberOrNull(item.totalVolumeBtc) ?? 0;
   const totalNotionalUsd = numberOrNull(item.totalNotionalUsd) || 0;
   const activeSources = normalizeActiveSources(item.activeSources);
@@ -1355,6 +1366,7 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     item,
     VOLUME_DISPLAY_CONTEXT.SINGLE_WINDOW,
     numberOrNull(item.windowSec) || 0,
+    item.symbol || item.quantityUnit || item.baseAsset || fallbackSymbol,
   );
   const orderPriceUsd =
     numberOrNull(item.orderPriceUsd) ??
@@ -1410,6 +1422,12 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     ),
     oiEvidenceReason:
       item.oiEvidenceReason || item.oi_evidence_reason || classification.oiEvidenceReason || classification.oi_evidence_reason || null,
+    oiEvidenceState: normalizeEvidenceState(evidence.oi),
+    fundingEvidenceState: normalizeEvidenceState(evidence.funding),
+    liquidationEvidenceStatus:
+      evidence.liquidationStatus || evidence.liquidation_status || "unavailable",
+    liquidationEvidenceReason:
+      evidence.liquidationReason || evidence.liquidation_reason || null,
     intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
     isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
     classificationVersion: item.classificationVersion || item.classification_version || "",
@@ -2027,6 +2045,11 @@ function normalizeCanonicalTimelineResponse(payload, filters = {}, fallbackError
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item || "").toLowerCase()).filter(Boolean);
+}
+
+function normalizeEvidenceState(value) {
+  if (!value || typeof value !== "object") return "missing";
+  return String(value.state || "missing").toLowerCase();
 }
 
 function normalizeContractWhaleDynamicThresholds(value) {

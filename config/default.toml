@@ -372,10 +372,16 @@ min_discord_quality = 70
 warmup_ms = 60000
 single_exchange_penalty = 20
 heartbeat_stale_ms = 45000
+latest_signal_stale_ms = 120000
 
 [spot_whale_monitor.performance]
 scan_interval_ms = 2000
 duplicate_window_ms = 60000
+
+[spot_whale_monitor.retention]
+signals_days = 365
+interval_seconds = 3600
+initial_delay_seconds = 30
 
 [spot_whale_monitor.symbols.BTC]
 enabled = true

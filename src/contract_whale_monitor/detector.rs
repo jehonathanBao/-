@@ -4,6 +4,7 @@ use super::{
         contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
         ThresholdProfileResolution,
     },
+    discord_gate::{btc_high_fallback_allowed, inferred_liquidation_display_only},
     log_events,
     scoring::{discord_gate, score_contract_whale_breakdown_with_profile},
     types::{
@@ -129,6 +130,8 @@ pub fn inspect_contract_whale_signal_with_config(
         primary_source_extreme_discord_candidate(&scoring_stats, signal_type, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let impact = market_impact_normalization(&scoring_stats);
+    let btc_high_fallback_allowed =
+        btc_high_fallback_allowed(signal_type, price_response_type, score);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
         severity,
         score,
@@ -138,8 +141,17 @@ pub fn inspect_contract_whale_signal_with_config(
         &scoring_stats.symbol,
         scoring_stats.total_volume_btc,
         Some(impact.impact_level.as_str()),
+        btc_high_fallback_allowed,
         config,
     );
+    if inferred_liquidation_display_only(
+        liquidation_suspected,
+        scoring_stats.liquidation_context.long_liq_btc,
+        scoring_stats.liquidation_context.short_liq_btc,
+    ) {
+        discord_eligible = false;
+        discord_reason = "liquidation_inferred_display_only".to_string();
+    }
     if warmup_collect_only {
         discord_eligible = false;
         discord_reason = "warmup_collect_only".to_string();
@@ -817,9 +829,16 @@ fn classify_severity(
         return ContractWhaleSeverity::High;
     }
 
-    let medium_price_confirmed =
-        stats.total_volume_btc >= thresholds.high_btc * 0.6 && same_direction_price_move >= 0.30;
-    let medium_dynamic_confirmed = dynamic_multiple >= 5.0 && stats.dominance >= 0.55;
+    let medium_notional_floor = notional_thresholds.high * 0.60;
+    let medium_evidence_ok = stats.total_notional_usd >= medium_notional_floor
+        && stats.dominance >= 0.55
+        && stats.data_quality >= 65;
+    let medium_price_confirmed = medium_evidence_ok
+        && stats.total_volume_btc >= thresholds.high_btc * 0.6
+        && (same_direction_price_move >= 0.30 || muted_absorption);
+    let medium_dynamic_confirmed = medium_evidence_ok
+        && dynamic_multiple >= 5.0
+        && (same_direction_price_move >= 0.10 || muted_absorption);
     if medium_price_confirmed || medium_dynamic_confirmed {
         return ContractWhaleSeverity::Medium;
     }
@@ -1079,6 +1098,13 @@ fn same_direction_exchange_count(
         .filter(|item| active_source_contains(resolution, &item.exchange))
         .filter(|item| config.exchange_enabled(&item.exchange))
         .filter(|item| item.total_volume_btc > 0.0)
+        .filter(|item| item.total_volume_btc / stats.total_volume_btc.max(f64::EPSILON) >= 0.05)
+        .filter(|item| {
+            (item.buy_notional_usd + item.sell_notional_usd)
+                / stats.total_notional_usd.max(f64::EPSILON)
+                >= 0.02
+        })
+        .filter(|item| item.net_contribution_share >= 0.05)
         .filter(|item| item.dominance >= 0.55)
         .filter(|item| (item.net_volume_btc > 0.0) == net_positive)
         .count()

@@ -28,6 +28,7 @@ use btc_toxic_flow_monitor_rs::{
         build_final_events_from_contract_whale_signals, VolumeDisplayContext,
     },
     types::flow::{DataQuality, FlowState, FlowWindow, VenueFlowBreakdown},
+    types::market::{Venue, VenueConnectionStatus, VenueHealth},
 };
 
 fn contract_whale_test_guard() -> MutexGuard<'static, ()> {
@@ -96,6 +97,93 @@ fn contract_whale_response_is_calm_without_contract_flow_data() {
     assert_eq!(response.filter.get("readOnly"), Some(&"true".to_string()));
     assert_eq!(response.filter.get("enabled"), Some(&"true".to_string()));
     assert_eq!(response.filter.get("dryRun"), Some(&"true".to_string()));
+}
+
+#[test]
+fn contract_whale_exchange_health_does_not_use_another_symbols_global_trade() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    let now = 1_700_000_015_000;
+    let flow_state = FlowState {
+        symbol: "ETH-PERP".to_string(),
+        updated_at: now,
+        windows: BTreeMap::new(),
+    };
+    let mut binance = VenueHealth::from_config(Venue::Binance, true);
+    binance.status = VenueConnectionStatus::Connected;
+    binance.ws_connected = true;
+    binance.last_trade_ts = Some(now);
+    let venue_health = BTreeMap::from([("binance".to_string(), binance)]);
+
+    let response = build_contract_whale_response_with_runtime_and_baselines(
+        &flow_state,
+        "ETH",
+        50,
+        None,
+        true,
+        true,
+        ContractWhaleResponseRuntime {
+            venue_health: Some(&venue_health),
+            baselines: &BTreeMap::new(),
+            liquidations: &BTreeMap::new(),
+            market_context: &ContractWhaleMarketContext::default(),
+            booted_at_ms: None,
+        },
+    );
+
+    let status = response
+        .summary
+        .exchanges
+        .get("binance")
+        .expect("binance status");
+    assert!(!status.connected);
+    assert_eq!(status.status, "waiting_for_data");
+    assert_eq!(status.last_trade_at, None);
+}
+
+#[test]
+fn contract_whale_exchange_health_prioritizes_reconnecting_over_stale_symbol_flow() {
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut window = high_conviction_window();
+    window.now_ts = now.saturating_sub(60_000);
+    let mut binance_flow = breakdown_at_price(600.0, 100.0, 70_000.0);
+    binance_flow.last_trade_ts = Some(now.saturating_sub(60_000));
+    window.venue_breakdown = BTreeMap::from([("binance".to_string(), binance_flow)]);
+    let flow_state = FlowState {
+        symbol: "BTC-PERP".to_string(),
+        updated_at: now,
+        windows: BTreeMap::from([("15000".to_string(), window)]),
+    };
+    let mut binance = VenueHealth::from_config(Venue::Binance, true);
+    binance.status = VenueConnectionStatus::Reconnecting;
+    binance.ws_connected = false;
+    let venue_health = BTreeMap::from([("binance".to_string(), binance)]);
+
+    let response = build_contract_whale_response_with_runtime_and_baselines(
+        &flow_state,
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        ContractWhaleResponseRuntime {
+            venue_health: Some(&venue_health),
+            baselines: &BTreeMap::new(),
+            liquidations: &BTreeMap::new(),
+            market_context: &ContractWhaleMarketContext::default(),
+            booted_at_ms: None,
+        },
+    );
+
+    let status = response
+        .summary
+        .exchanges
+        .get("binance")
+        .expect("binance status");
+    assert!(!status.connected);
+    assert_eq!(status.status, "reconnecting");
 }
 
 #[test]
@@ -364,7 +452,9 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
         evidence_degraded: false,
         evidence_reason: None,
         oi_available: true,
+        oi_reason: None,
         funding_available: true,
+        funding_reason: None,
         oi_change_1m_btc: Some(250.0),
         oi_change_5m_btc: Some(900.0),
         oi_change_pct: Some(1.2),

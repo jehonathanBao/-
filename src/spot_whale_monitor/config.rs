@@ -14,6 +14,7 @@ pub struct SpotWhaleRuntimeConfig {
     pub symbols: BTreeMap<String, SpotWhaleSymbolConfig>,
     pub data_quality: SpotWhaleDataQualityConfig,
     pub performance: SpotWhalePerformanceConfig,
+    pub retention: SpotWhaleRetentionConfig,
 }
 
 impl SpotWhaleRuntimeConfig {
@@ -54,6 +55,7 @@ impl Default for SpotWhaleRuntimeConfig {
             symbols,
             data_quality: SpotWhaleDataQualityConfig::default(),
             performance: SpotWhalePerformanceConfig::default(),
+            retention: SpotWhaleRetentionConfig::default(),
         }
     }
 }
@@ -209,6 +211,7 @@ pub struct SpotWhaleDataQualityConfig {
     pub warmup_ms: i64,
     pub single_exchange_penalty: u8,
     pub heartbeat_stale_ms: i64,
+    pub latest_signal_stale_ms: i64,
 }
 
 impl Default for SpotWhaleDataQualityConfig {
@@ -218,6 +221,7 @@ impl Default for SpotWhaleDataQualityConfig {
             warmup_ms: 60_000,
             single_exchange_penalty: 20,
             heartbeat_stale_ms: 45_000,
+            latest_signal_stale_ms: 120_000,
         }
     }
 }
@@ -226,6 +230,23 @@ impl Default for SpotWhaleDataQualityConfig {
 pub struct SpotWhalePerformanceConfig {
     pub scan_interval_ms: i64,
     pub duplicate_window_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpotWhaleRetentionConfig {
+    pub signals_days: i64,
+    pub interval_seconds: i64,
+    pub initial_delay_seconds: i64,
+}
+
+impl Default for SpotWhaleRetentionConfig {
+    fn default() -> Self {
+        Self {
+            signals_days: 365,
+            interval_seconds: 3_600,
+            initial_delay_seconds: 30,
+        }
+    }
 }
 
 impl Default for SpotWhalePerformanceConfig {
@@ -296,6 +317,11 @@ pub fn load_spot_whale_runtime_config_from_settings(
                 "spot_whale_monitor.data_quality.heartbeat_stale_ms",
                 45_000,
             ),
+            latest_signal_stale_ms: i64_setting(
+                settings,
+                "spot_whale_monitor.data_quality.latest_signal_stale_ms",
+                120_000,
+            ),
         },
         performance: SpotWhalePerformanceConfig {
             scan_interval_ms: i64_setting(
@@ -307,6 +333,19 @@ pub fn load_spot_whale_runtime_config_from_settings(
                 settings,
                 "spot_whale_monitor.performance.duplicate_window_ms",
                 60_000,
+            ),
+        },
+        retention: SpotWhaleRetentionConfig {
+            signals_days: i64_setting(settings, "spot_whale_monitor.retention.signals_days", 365),
+            interval_seconds: i64_setting(
+                settings,
+                "spot_whale_monitor.retention.interval_seconds",
+                3_600,
+            ),
+            initial_delay_seconds: i64_setting(
+                settings,
+                "spot_whale_monitor.retention.initial_delay_seconds",
+                30,
             ),
         },
     }

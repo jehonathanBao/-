@@ -178,7 +178,12 @@ pub fn evaluate_contract_whale_discord_gate(
     let config = super::config::contract_whale_runtime_config();
     let impact_level_override = super::discord_gate::impact_level_discord_eligible(signal, &config);
     let btc_contract_override = matches!(signal.severity, ContractWhaleSeverity::High)
-        && super::discord::is_btc_contract_symbol(&signal.symbol);
+        && super::discord::is_btc_contract_symbol(&signal.symbol)
+        && super::discord_gate::btc_high_fallback_allowed(
+            signal.signal_type,
+            signal.price_response_type,
+            signal.score,
+        );
     let min_score = match signal.severity {
         ContractWhaleSeverity::High if btc_contract_override => 0,
         ContractWhaleSeverity::High if primary_source_override => 0,
@@ -195,6 +200,13 @@ pub fn evaluate_contract_whale_discord_gate(
     }
     if signal.discord_reason == "warmup_collect_only" {
         return gate(false, "warmup_collect_only");
+    }
+    if super::discord_gate::inferred_liquidation_display_only(
+        signal.liquidation_suspected,
+        signal.liquidation_long_btc,
+        signal.liquidation_short_btc,
+    ) {
+        return gate(false, "liquidation_inferred_display_only");
     }
     let semantic_tier = classify_contract_whale_signal_semantic(signal);
     if !semantic_tier.allows_discord() {

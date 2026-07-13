@@ -4,7 +4,8 @@ use btc_toxic_flow_monitor_rs::{
         symbol::normalize_symbol,
         trade::{
             normalize_binance_agg_trade, normalize_bitfinex_trade, normalize_bybit_trade,
-            normalize_okx_trade, BinanceAggTrade, BitfinexTrade, BybitTrade, OkxTrade,
+            normalize_okx_trade, normalize_okx_trade_with_contract_value, BinanceAggTrade,
+            BitfinexTrade, BybitTrade, OkxTrade,
         },
     },
     types::market::{AggressorSide, Venue},
@@ -66,16 +67,31 @@ fn trade_normalizers_map_aggressor_side_and_size_usd() {
     .expect("trade");
     assert_eq!(bybit_buy.aggressor_side, AggressorSide::Buy);
 
-    let okx_sell = normalize_okx_trade(OkxTrade {
+    let raw_okx = OkxTrade {
         inst_id: Some("BTC-USDT-SWAP".to_string()),
         trade_id: None,
         px: "100".to_string(),
         sz: "2".to_string(),
         side: "sell".to_string(),
         ts: Some("1".to_string()),
-    })
+    };
+    assert!(normalize_okx_trade(raw_okx).is_none());
+
+    let okx_sell = normalize_okx_trade_with_contract_value(
+        OkxTrade {
+            inst_id: Some("BTC-USDT-SWAP".to_string()),
+            trade_id: None,
+            px: "100".to_string(),
+            sz: "2".to_string(),
+            side: "sell".to_string(),
+            ts: Some("1".to_string()),
+        },
+        0.01,
+    )
     .expect("trade");
     assert_eq!(okx_sell.aggressor_side, AggressorSide::Sell);
+    assert_eq!(okx_sell.size_btc, 0.02);
+    assert_eq!(okx_sell.size_usd, 2.0);
 
     let bitfinex_sell = normalize_bitfinex_trade(BitfinexTrade {
         symbol: "tETHF0:USTF0".to_string(),

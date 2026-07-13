@@ -90,6 +90,17 @@ pub fn normalize_bybit_trade(raw: BybitTrade) -> Option<NormalizedTrade> {
 }
 
 pub fn normalize_okx_trade(raw: OkxTrade) -> Option<NormalizedTrade> {
+    let _ = raw;
+    None
+}
+
+pub fn normalize_okx_trade_with_contract_value(
+    raw: OkxTrade,
+    ct_val_base: f64,
+) -> Option<NormalizedTrade> {
+    if !ct_val_base.is_finite() || ct_val_base <= 0.0 {
+        return None;
+    }
     let side = match raw.side.as_str() {
         "buy" => AggressorSide::Buy,
         "sell" => AggressorSide::Sell,
@@ -100,7 +111,7 @@ pub fn normalize_okx_trade(raw: OkxTrade) -> Option<NormalizedTrade> {
         raw.inst_id.as_deref().unwrap_or("BTC-USDT-SWAP"),
         raw.ts.and_then(|ts| ts.parse().ok()).unwrap_or_else(now_ms),
         raw.px.parse().ok()?,
-        raw.sz.parse().ok()?,
+        raw.sz.parse::<f64>().ok()? * ct_val_base,
         side,
         raw.trade_id,
     )

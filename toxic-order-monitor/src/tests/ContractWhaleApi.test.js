@@ -14,6 +14,7 @@ import {
   fetchFinalEvents,
   fetchFinalEventsV2,
   fetchJsonWithTimeout,
+  normalizeContractEvent,
   normalizeContractWhaleSignal,
   normalizeMarketStatus,
   normalizePlatformStatus,
@@ -1559,6 +1560,46 @@ describe("contract whale api", () => {
     expect(signal.sourceExchangeCount).toBe(2);
     expect(signal.sourceExchanges).toEqual(["binance", "bitfinex"]);
     expect(signal.mergedWindowsSec).toEqual([5, 15]);
+  });
+
+  it("uses peak-window semantics when historical event turnover is unavailable", () => {
+    const event = normalizeContractEvent({
+      eventId: "historical-volume-fallback",
+      symbol: "ETH",
+      totalVolumeBtc: 4280,
+      netVolumeBtc: -620,
+      eventLifecycle: {
+        peakWindowVolumeBtc: 4280,
+        uniqueTurnoverAvailable: false,
+      },
+    });
+
+    expect(event.displayVolumeLabel).toBe("峰值窗口流量 ETH");
+    expect(event.volumeSemantics).toBe("multi_exchange_bidirectional_peak_window");
+    expect(event.isLifecycleAccumulated).toBe(false);
+  });
+
+  it("uses the requested asset in volume labels and exposes evidence provenance", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "eth-evidence-signal",
+      symbol: "ETH",
+      windowSec: 15,
+      totalVolumeBtc: 4200,
+      classificationV2: {
+        evidence: {
+          oi: { state: "stale" },
+          funding: { state: "missing" },
+          liquidationStatus: "inferred",
+          liquidationReason: "price_volume_shape_only",
+        },
+      },
+    });
+
+    expect(signal.displayVolumeLabel).toBe("窗口总流量 ETH");
+    expect(signal.oiEvidenceState).toBe("stale");
+    expect(signal.fundingEvidenceState).toBe("missing");
+    expect(signal.liquidationEvidenceStatus).toBe("inferred");
+    expect(signal.liquidationEvidenceReason).toBe("price_volume_shape_only");
   });
 
   it("derives impact mapping from legacy percentile and threshold metadata when normalized fields are absent", () => {

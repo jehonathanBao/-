@@ -5,7 +5,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{app::AppState, spot_whale_monitor::service::SpotWhaleQuery};
+use crate::{
+    app::AppState,
+    spot_whale_monitor::service::{decode_spot_history_cursor, SpotWhaleQuery},
+};
 
 type ApiJsonResult = Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>;
 
@@ -14,6 +17,7 @@ pub struct SpotWhaleApiQuery {
     pub symbol: Option<String>,
     pub limit: Option<String>,
     pub offset: Option<String>,
+    pub cursor: Option<String>,
     pub from_ts: Option<String>,
     pub to_ts: Option<String>,
     pub severity: Option<String>,
@@ -51,6 +55,15 @@ pub async fn spot_whale_history_route(
     let symbol = parse_symbol(query.symbol.as_deref())?;
     let limit = parse_limit(query.limit.as_deref())?;
     let offset = parse_offset(query.offset.as_deref())?;
+    let (cursor_ts, cursor_signal_id) = match query.cursor.as_deref() {
+        Some(cursor) => decode_spot_history_cursor(cursor).ok_or_else(|| {
+            bad_request(
+                "invalid_cursor",
+                "cursor must be a valid spot history cursor",
+            )
+        })?,
+        None => (0, String::new()),
+    };
     let from_ts = parse_timestamp(query.from_ts.as_deref(), "from_ts")?;
     let to_ts = parse_timestamp(query.to_ts.as_deref(), "to_ts")?;
     if from_ts
@@ -78,7 +91,9 @@ pub async fn spot_whale_history_route(
     Ok(Json(serde_json::json!(state.spot_whale_service().history(
         SpotWhaleQuery {
             symbol: Some(symbol),
-            offset: Some(offset),
+            offset: Some(if query.cursor.is_some() { 0 } else { offset }),
+            cursor_ts: query.cursor.as_ref().map(|_| cursor_ts),
+            cursor_signal_id: query.cursor.as_ref().map(|_| cursor_signal_id),
             from_ts,
             to_ts,
             severity: query

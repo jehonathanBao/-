@@ -3,8 +3,38 @@ use crate::signal_semantics::SignalSemanticTier;
 use super::{
     config::{contract_whale_runtime_config, ContractWhaleRuntimeConfig},
     discord::{is_btc_contract_symbol, meets_contract_whale_push_total_volume},
-    types::{ContractWhaleSeverity, ContractWhaleSignal},
+    types::{
+        ContractWhalePriceResponseType, ContractWhaleSeverity, ContractWhaleSignal,
+        ContractWhaleSignalType,
+    },
 };
+
+pub fn btc_high_fallback_allowed(
+    signal_type: ContractWhaleSignalType,
+    price_response_type: ContractWhalePriceResponseType,
+    score: u8,
+) -> bool {
+    score >= 70
+        && matches!(
+            (signal_type, price_response_type),
+            (
+                ContractWhaleSignalType::AggressiveBuy,
+                ContractWhalePriceResponseType::TrendFollowUp
+            ) | (
+                ContractWhaleSignalType::AggressiveSell,
+                ContractWhalePriceResponseType::TrendFollowDown
+            )
+        )
+}
+
+pub fn inferred_liquidation_display_only(
+    liquidation_suspected: bool,
+    liquidation_long_btc: f64,
+    liquidation_short_btc: f64,
+) -> bool {
+    liquidation_suspected
+        && liquidation_long_btc.max(0.0) + liquidation_short_btc.max(0.0) <= f64::EPSILON
+}
 
 pub fn classify_contract_whale_signal_semantic(signal: &ContractWhaleSignal) -> SignalSemanticTier {
     let config = contract_whale_runtime_config();
@@ -33,6 +63,7 @@ pub fn discord_gate(
     symbol: &str,
     total_volume_btc: f64,
     impact_level: Option<&str>,
+    btc_high_fallback_allowed: bool,
     config: &ContractWhaleRuntimeConfig,
 ) -> (bool, String) {
     if !meets_contract_whale_push_total_volume(symbol, total_volume_btc) {
@@ -60,13 +91,51 @@ pub fn discord_gate(
         ContractWhaleSeverity::High if primary_source_override => {
             (true, "high_primary_source_extreme".to_string())
         }
-        ContractWhaleSeverity::High if is_btc_contract_symbol(symbol) => {
+        ContractWhaleSeverity::High
+            if is_btc_contract_symbol(symbol) && btc_high_fallback_allowed =>
+        {
             (true, "btc_high_gate".to_string())
         }
         ContractWhaleSeverity::High => (false, "high_without_discord_confirmation".to_string()),
         ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm => {
             (false, observe_reason(severity).to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn btc_high_fallback_requires_score_and_directional_price_follow_through() {
+        assert!(btc_high_fallback_allowed(
+            ContractWhaleSignalType::AggressiveBuy,
+            ContractWhalePriceResponseType::TrendFollowUp,
+            70,
+        ));
+        assert!(!btc_high_fallback_allowed(
+            ContractWhaleSignalType::AggressiveBuy,
+            ContractWhalePriceResponseType::TrendFollowUp,
+            69,
+        ));
+        assert!(!btc_high_fallback_allowed(
+            ContractWhaleSignalType::AggressiveBuy,
+            ContractWhalePriceResponseType::NoClearResponse,
+            90,
+        ));
+        assert!(!btc_high_fallback_allowed(
+            ContractWhaleSignalType::DownsideAbsorption,
+            ContractWhalePriceResponseType::DownsideAbsorption,
+            90,
+        ));
+    }
+
+    #[test]
+    fn inferred_liquidation_is_display_only_but_live_liquidation_is_not() {
+        assert!(inferred_liquidation_display_only(true, 0.0, 0.0));
+        assert!(!inferred_liquidation_display_only(true, 1.0, 0.0));
+        assert!(!inferred_liquidation_display_only(false, 0.0, 0.0));
     }
 }
 

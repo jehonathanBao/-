@@ -13,12 +13,11 @@ import {
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
-const SUMMARY_REFRESH_MS = 5_000;
-const LATEST_REFRESH_MS = 3_000;
-const CONTRACT_EVENTS_REFRESH_MS = 5_000;
-const FINAL_EVENTS_REFRESH_MS = 10_000;
+const CANONICAL_REFRESH_MS = 5_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
+const OPERATOR_DIAGNOSTICS_ENABLED =
+  import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
 const DEFAULT_FILTERS = {
   symbol: "BTC",
   severity: "all",
@@ -90,11 +89,8 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
   useEffect(() => {
     let cancelled = false;
-    let summaryTimer = null;
-    let latestTimer = null;
-    let contractEventsTimer = null;
-    let finalEventsTimer = null;
-    let intelligenceTimer = null;
+    let canonicalTimer = null;
+    let canonicalRefreshInFlight = false;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -124,12 +120,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     const refreshLatest = async () => {
       const payload = await fetchContractWhaleLatest(50, filters.symbol);
       const unavailable = payload.error || payload.dataState === "degraded";
-      let shouldRefreshHistory = false;
       updateState((previous) => {
-        shouldRefreshHistory =
-          !unavailable &&
-          Number.isFinite(payload.maxTs) &&
-          Number(payload.maxTs) > Number(previous.latestMaxTs || 0);
         return {
           ...previous,
           loading: false,
@@ -144,20 +135,12 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "latest_degraded" : null),
         };
       });
-      if (shouldRefreshHistory) {
-        void refreshContractEvents(50);
-      }
     };
 
     const refreshContractEvents = async (limit = 50) => {
       const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
       const unavailable = payload.error || payload.dataState === "degraded";
-      let shouldRefreshFinalEvents = false;
       updateState((previous) => {
-        shouldRefreshFinalEvents =
-          !unavailable &&
-          Number.isFinite(payload.maxEventTs) &&
-          Number(payload.maxEventTs) > Number(previous.contractEventsMaxEventTs || 0);
         return {
           ...previous,
           loading: false,
@@ -175,9 +158,6 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "contract_events_degraded" : previous.error),
         };
       });
-      if (shouldRefreshFinalEvents) {
-        void refreshFinalEvents(30);
-      }
     };
 
     const refreshContractEventDebugCounts = async () => {
@@ -265,48 +245,48 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       }));
     };
 
+    const refreshCanonicalViews = async () => {
+      if (canonicalRefreshInFlight) return;
+      canonicalRefreshInFlight = true;
+      try {
+        await Promise.allSettled([
+          refreshSummary(),
+          refreshLatest(),
+          refreshContractEvents(50),
+          refreshFinalEvents(30),
+          refreshIntelligenceTerminal(),
+        ]);
+      } finally {
+        canonicalRefreshInFlight = false;
+      }
+    };
+
     const clearTimers = () => {
-      if (summaryTimer) window.clearInterval(summaryTimer);
-      if (latestTimer) window.clearInterval(latestTimer);
-      if (contractEventsTimer) window.clearInterval(contractEventsTimer);
-      if (finalEventsTimer) window.clearInterval(finalEventsTimer);
-      if (intelligenceTimer) window.clearInterval(intelligenceTimer);
-      summaryTimer = null;
-      latestTimer = null;
-      contractEventsTimer = null;
-      finalEventsTimer = null;
-      intelligenceTimer = null;
+      if (canonicalTimer) window.clearInterval(canonicalTimer);
+      canonicalTimer = null;
     };
 
     const configurePolling = () => {
       clearTimers();
       if (document.visibilityState === "hidden") return;
-      summaryTimer = window.setInterval(refreshSummary, SUMMARY_REFRESH_MS);
-      latestTimer = window.setInterval(refreshLatest, LATEST_REFRESH_MS);
-      contractEventsTimer = window.setInterval(refreshContractEvents, CONTRACT_EVENTS_REFRESH_MS);
-      finalEventsTimer = window.setInterval(refreshFinalEvents, FINAL_EVENTS_REFRESH_MS);
-      intelligenceTimer = window.setInterval(refreshIntelligenceTerminal, SUMMARY_REFRESH_MS);
+      canonicalTimer = window.setInterval(() => {
+        void refreshCanonicalViews();
+      }, CANONICAL_REFRESH_MS);
     };
 
     const handleVisibilityChange = () => {
       configurePolling();
       if (document.visibilityState !== "hidden") {
-        refreshSummary();
-        refreshLatest();
-        refreshContractEvents(50);
-        refreshFinalEvents(30);
-        refreshIntelligenceTerminal();
+        void refreshCanonicalViews();
       }
     };
 
-    void refreshSummary();
-    void refreshLatest();
-    void refreshContractEvents(50);
-    void refreshContractEventDebugCounts();
-    void refreshRawFlowDebug();
-    void refreshLatencyDebug();
-    void refreshFinalEvents(30);
-    void refreshIntelligenceTerminal();
+    void refreshCanonicalViews();
+    if (OPERATOR_DIAGNOSTICS_ENABLED) {
+      void refreshContractEventDebugCounts();
+      void refreshRawFlowDebug();
+      void refreshLatencyDebug();
+    }
     void refreshWhaleEvents();
     retentionTimer = window.setTimeout(() => {
       void refreshRetention();
@@ -617,6 +597,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           finalEventsHasMore={state.finalEventsHasMore}
           onLoadMoreFinalEvents={loadMoreFinalEvents}
           onOpenSignal={setSelectedSignalId}
+          symbol={filters.symbol}
         />
         <RiskContextDeskPanel intelligence={state.intelligenceTerminal} summary={summary} />
       </section>
@@ -1075,9 +1056,9 @@ function HistoricalEventStreamPanel({
   displayFilterLabel,
   symbol,
 }) {
-  const historicalVolumeLabel = "窗口总流量 BTC";
+  const historicalVolumeLabel = `窗口总流量 ${baseAssetSymbol(symbol)}`;
   const volumeTooltip =
-    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。";
+    "总流量 = 主动买量 + 主动卖量；历史事件会跨已启用交易所聚合。ACTIVE/CLOSED 优先显示真实换手，原始 1s 数据不足时显示生命周期峰值窗口，不对重复窗口相加。";
   const diagnostics = deriveEventFeedDiagnostics({
     contractEvents,
     debugCounts,
@@ -1197,8 +1178,9 @@ function LifecycleEventSections({
   finalEventsHasMore,
   onLoadMoreFinalEvents,
   onOpenSignal,
+  symbol,
 }) {
-  const lifecycleVolumeLabel = "峰值窗口流量 BTC";
+  const lifecycleVolumeLabel = `峰值窗口流量 ${baseAssetSymbol(symbol)}`;
   const volumeTooltip =
     "总流量 = 主动买量 + 主动卖量；ACTIVE/CLOSED 优先显示事件真实换手，raw 1s bucket 缺失时显示生命周期内的峰值窗口流量。";
 
@@ -1934,7 +1916,7 @@ function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpen
   );
 }
 
-function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量 BTC", volumeTooltip }) {
+function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量", volumeTooltip }) {
   return (
     <table className="min-w-full table-fixed text-left text-xs" data-testid={testId}>
       <thead className="bg-slate-950/80 text-slate-400">
@@ -2573,6 +2555,7 @@ function TradeMetric({ label, value }) {
 }
 
 function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) {
+  const quantityUnit = baseAssetSymbol(signal.symbol);
   const windowRows = [5, 15, 60].map((windowSec) => {
     const match = relatedSignals.find(
       (item) =>
@@ -2629,12 +2612,12 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["事件开始", formatTime(signal.eventLifecycle?.startTime)],
               ["最近更新", formatTime(signal.eventLifecycle?.lastUpdateTime)],
               ["事件更新次数", `${signal.eventLifecycle?.updateCount || 1}`],
-              ["流量口径", signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || "总流量 BTC"],
-              ["总流量 BTC", formatOptionalBaseVolume(signal.displayVolumeBtc ?? signal.finalEvent?.displayVolumeBtc ?? signal.totalVolumeBtc, signal.symbol)],
+              ["流量口径", signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || `总流量 ${quantityUnit}`],
+              [`总流量 ${quantityUnit}`, formatOptionalBaseVolume(signal.displayVolumeBtc ?? signal.finalEvent?.displayVolumeBtc ?? signal.totalVolumeBtc, signal.symbol)],
               ["原始窗口流量", formatOptionalBaseVolume(signal.rawVolume ?? signal.finalEvent?.rawVolume ?? signal.totalVolumeBtc, signal.symbol)],
-              ["主动买 BTC", formatOptionalBaseVolume(signal.buyVolumeBtc ?? signal.finalEvent?.buyVolumeBtc, signal.symbol)],
-              ["主动卖 BTC", formatOptionalBaseVolume(signal.sellVolumeBtc ?? signal.finalEvent?.sellVolumeBtc, signal.symbol)],
-              ["净方向 BTC", signal.netVolumeBtc === null || signal.netVolumeBtc === undefined ? "—" : netDirection(signal.netVolumeBtc, signal.symbol)],
+              [`主动买 ${quantityUnit}`, formatOptionalBaseVolume(signal.buyVolumeBtc ?? signal.finalEvent?.buyVolumeBtc, signal.symbol)],
+              [`主动卖 ${quantityUnit}`, formatOptionalBaseVolume(signal.sellVolumeBtc ?? signal.finalEvent?.sellVolumeBtc, signal.symbol)],
+              [`净方向 ${quantityUnit}`, signal.netVolumeBtc === null || signal.netVolumeBtc === undefined ? "—" : netDirection(signal.netVolumeBtc, signal.symbol)],
               ["来源交易所", sourceListLabel(signal.sourceExchanges || signal.finalEvent?.sourceExchanges || signal.activeSources?.contract?.map((entry) => entry.exchange))],
               ["来源交易所数", signal.sourceExchangeCount === null || signal.sourceExchangeCount === undefined ? "—" : `${signal.sourceExchangeCount}`],
               ["合并窗口", formatWindowList(signal.mergedWindowsSec || signal.finalEvent?.mergedWindowsSec || [signal.windowSec])],
@@ -2800,12 +2783,12 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                   <p className="font-bold text-slate-100">{windowSec}s</p>
                   {item ? (
                     <div className="mt-2 space-y-1 text-xs text-slate-300">
-                      <p>{signal.displayVolumeLabel || "总流量 BTC"}：{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, signal.symbol)}</p>
-                      <p>主动买 BTC：{formatOptionalBaseVolume(item.buyVolumeBtc, signal.symbol)}</p>
-                      <p>主动卖 BTC：{formatOptionalBaseVolume(item.sellVolumeBtc, signal.symbol)}</p>
+                      <p>{signal.displayVolumeLabel || `总流量 ${quantityUnit}`}：{formatOptionalBaseVolume(item.displayVolumeBtc ?? item.totalVolumeBtc, signal.symbol)}</p>
+                      <p>主动买 {quantityUnit}：{formatOptionalBaseVolume(item.buyVolumeBtc, signal.symbol)}</p>
+                      <p>主动卖 {quantityUnit}：{formatOptionalBaseVolume(item.sellVolumeBtc, signal.symbol)}</p>
                       <p>名义金额：{formatUsd(item.totalNotionalUsd)}</p>
                       <p>价格：{formatPrice(signalTriggerPrice(item))}</p>
-                      <p>净方向 BTC：{item.netVolumeBtc === null || item.netVolumeBtc === undefined ? "—" : netDirection(item.netVolumeBtc, signal.symbol)}</p>
+                      <p>净方向 {quantityUnit}：{item.netVolumeBtc === null || item.netVolumeBtc === undefined ? "—" : netDirection(item.netVolumeBtc, signal.symbol)}</p>
                       <p>价格变化：{formatSignedPct(item.priceMovePct)}</p>
                       <p>异常倍数：{formatMultiple(item.dynamicMultiple)}</p>
                     </div>
@@ -2861,8 +2844,11 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Price Reversal", signal.priceReversalRatio === null || signal.priceReversalRatio === undefined ? "N/A" : formatPct(signal.priceReversalRatio * 100)],
                 ["Dominant Net Flow", formatPct(dominantNetFlowShare(signal) * 100)],
                 ["Liquidation", liquidationStatus(signal)],
+                ["Liquidation Evidence", liquidationEvidenceLabel(signal)],
                 ["OI", oiStatus(signal)],
+                ["OI Evidence", evidenceStateLabel(signal.oiEvidenceState, signal.oiReason)],
                 ["Funding", fundingStatus(signal)],
+                ["Funding Evidence", evidenceStateLabel(signal.fundingEvidenceState)],
               ]}
             />
           </DetailSection>
@@ -2874,7 +2860,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
 
         <DetailSection title="口径说明" className="mt-4">
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-xs leading-6 text-cyan-50">
-            <p>总流量 = 主动买量 + 主动卖量；历史视图会跨已启用交易所聚合，ACTIVE/CLOSED 视图还会继续累计生命周期内的连续信号。</p>
+            <p>总流量 = 主动买量 + 主动卖量；历史视图会跨已启用交易所聚合。ACTIVE/CLOSED 优先显示真实换手，原始 1s 数据不足时显示生命周期峰值窗口，不做重复窗口相加。</p>
             <p>主动买 / 主动卖 / 净方向 是流向拆分，不是新的算法结果；净方向只表示买卖差值，不代表总量变化。</p>
             <p>买入/卖出占比 = 单个平台内部的主动买卖比例，只说明该平台自己的流向结构。</p>
             <p>净流贡献 = 该平台对本轮信号同方向净流的贡献比例，用来判断主导平台。</p>
@@ -4602,6 +4588,36 @@ function liquidationStatus(item) {
     ? "N/A"
     : formatPct(Number(item.liquidationRatio) * 100);
   return `疑似强平 ${formatBaseVolume(total, item.symbol)} / ${ratio}`;
+}
+
+function liquidationEvidenceLabel(item) {
+  const status = String(item?.liquidationEvidenceStatus || "unavailable").toLowerCase();
+  if (status === "live") return "实时强平样本";
+  if (status === "inferred") return `结构推断 · ${evidenceReasonLabel(item?.liquidationEvidenceReason)}`;
+  return `不可用 · ${evidenceReasonLabel(item?.liquidationEvidenceReason)}`;
+}
+
+function evidenceStateLabel(state, reason = null) {
+  const labels = {
+    available: "可用",
+    missing: "缺失",
+    stale: "陈旧",
+    insufficient_samples: "样本不足",
+    query_failed: "查询失败",
+  };
+  const label = labels[String(state || "missing").toLowerCase()] || String(state || "missing");
+  return reason ? `${label} · ${evidenceReasonLabel(reason)}` : label;
+}
+
+function evidenceReasonLabel(reason) {
+  const labels = {
+    price_volume_shape_only: "仅价格/流量形态",
+    no_live_liquidation_samples: "无实时强平样本",
+    older_than_latest_ttl: "超过实时有效期",
+    stale: "超过证据有效期",
+    missing: "未采集到数据",
+  };
+  return labels[String(reason || "").toLowerCase()] || reason || "未提供原因";
 }
 
 function activeLiquidationZoneLabel(value) {

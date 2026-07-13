@@ -225,6 +225,12 @@ pub struct SpotWhaleSummary {
     pub latest_direction: String,
     pub latest_severity: SpotWhaleSeverity,
     pub latest_signal_at: Option<i64>,
+    #[serde(default)]
+    pub latest_age_sec: Option<i64>,
+    #[serde(default)]
+    pub latest_is_stale: bool,
+    #[serde(default)]
+    pub latest_stale_reason: Option<String>,
     pub last_discord_sent_at: Option<i64>,
     pub updated_at_ms: Option<i64>,
     pub signal_count: usize,
@@ -245,6 +251,8 @@ pub struct SpotWhaleLatestResponse {
     pub offset: usize,
     pub total: usize,
     pub has_more: bool,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
