@@ -48,6 +48,24 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     ] {
         let nginx = fs::read_to_string(root.join(relative)).expect("nginx config");
         assert!(
+            nginx.contains("gzip on;"),
+            "gzip must be enabled by {relative}"
+        );
+        assert!(
+            nginx.contains("application/json")
+                && nginx.contains("application/javascript")
+                && nginx.contains("text/css"),
+            "compressible dashboard MIME types must be configured by {relative}"
+        );
+        assert!(
+            nginx.contains("gzip_vary on;"),
+            "proxy caches must vary compressed responses by Accept-Encoding in {relative}"
+        );
+        assert!(
+            nginx.contains("max-age=31536000, immutable"),
+            "hashed frontend assets must be cached immutably by {relative}"
+        );
+        assert!(
             nginx.contains(
                 "location = /api/binance-alt-contract/runtime-debug {\n        return 404;\n    }"
             ) || nginx.contains(
@@ -56,6 +74,13 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
             "operator-only BACM diagnostics must not be forwarded by {relative}"
         );
     }
+
+    let host_nginx = fs::read_to_string(root.join("deploy/nginx-site.toxic-order-monitor.conf"))
+        .expect("host nginx config");
+    assert!(
+        host_nginx.contains("proxy_hide_header Cache-Control;"),
+        "host nginx must replace the upstream asset cache header instead of duplicating it"
+    );
 
     let vite = fs::read_to_string(root.join("toxic-order-monitor/vite.config.js")).expect("vite");
     assert!(vite.contains("VITE_PROXY_API_TARGET"));

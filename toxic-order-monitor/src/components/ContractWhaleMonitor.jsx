@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractEventDebugCounts,
@@ -13,7 +13,8 @@ import {
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
-const CANONICAL_REFRESH_MS = 5_000;
+const STATUS_REFRESH_MS = 5_000;
+const EVENT_REFRESH_MS = 15_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
 const OPERATOR_DIAGNOSTICS_ENABLED =
@@ -33,6 +34,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
   const [state, setState] = useState({
     loading: true,
+    contractEventsLoading: true,
     summary: null,
     items: [],
     contractEvents: [],
@@ -89,8 +91,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
   useEffect(() => {
     let cancelled = false;
-    let canonicalTimer = null;
-    let canonicalRefreshInFlight = false;
+    let statusTimer = null;
+    let eventTimer = null;
+    let statusRefreshInFlight = false;
+    let eventRefreshInFlight = false;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -100,6 +104,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     updateState((previous) => ({
       ...previous,
+      contractEventsLoading: true,
       hiddenContractEvents: [],
       hiddenContractEventsLoaded: false,
       hiddenContractEventsExpanded: false,
@@ -144,7 +149,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         return {
           ...previous,
           loading: false,
-          contractEvents: unavailable ? previous.contractEvents : payload.items,
+          contractEvents: unavailable
+            ? previous.contractEvents
+            : reuseEventList(previous.contractEvents, payload.items),
+          contractEventsLoading: false,
           contractEventsCursor: unavailable ? previous.contractEventsCursor : payload.nextCursor,
           contractEventsHasMore: unavailable ? previous.contractEventsHasMore : payload.hasMore,
           contractEventsServerTime: unavailable ? previous.contractEventsServerTime : payload.serverTime,
@@ -202,7 +210,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         loading: false,
         finalEvents: unavailable
           ? previous.finalEvents
-          : { active: payload.active, closed: payload.closed },
+          : {
+              active: reuseEventList(previous.finalEvents.active, payload.active),
+              closed: reuseEventList(previous.finalEvents.closed, payload.closed),
+            },
         finalEventsCursor: unavailable ? previous.finalEventsCursor : payload.nextCursor,
         finalEventsHasMore: unavailable ? previous.finalEventsHasMore : payload.hasMore,
         finalEventsServerTime: unavailable ? previous.finalEventsServerTime : payload.serverTime,
@@ -245,43 +256,61 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       }));
     };
 
-    const refreshCanonicalViews = async () => {
-      if (canonicalRefreshInFlight) return;
-      canonicalRefreshInFlight = true;
+    const refreshStatusViews = async () => {
+      if (statusRefreshInFlight) return;
+      statusRefreshInFlight = true;
       try {
         await Promise.allSettled([
           refreshSummary(),
           refreshLatest(),
+        ]);
+      } finally {
+        statusRefreshInFlight = false;
+      }
+    };
+
+    const refreshEventViews = async () => {
+      if (eventRefreshInFlight) return;
+      eventRefreshInFlight = true;
+      try {
+        await Promise.allSettled([
           refreshContractEvents(50),
           refreshFinalEvents(30),
           refreshIntelligenceTerminal(),
         ]);
       } finally {
-        canonicalRefreshInFlight = false;
+        eventRefreshInFlight = false;
       }
     };
 
     const clearTimers = () => {
-      if (canonicalTimer) window.clearInterval(canonicalTimer);
-      canonicalTimer = null;
+      if (statusTimer) window.clearInterval(statusTimer);
+      if (eventTimer) window.clearInterval(eventTimer);
+      statusTimer = null;
+      eventTimer = null;
     };
 
     const configurePolling = () => {
       clearTimers();
       if (document.visibilityState === "hidden") return;
-      canonicalTimer = window.setInterval(() => {
-        void refreshCanonicalViews();
-      }, CANONICAL_REFRESH_MS);
+      statusTimer = window.setInterval(() => {
+        void refreshStatusViews();
+      }, STATUS_REFRESH_MS);
+      eventTimer = window.setInterval(() => {
+        void refreshEventViews();
+      }, EVENT_REFRESH_MS);
     };
 
     const handleVisibilityChange = () => {
       configurePolling();
       if (document.visibilityState !== "hidden") {
-        void refreshCanonicalViews();
+        void refreshStatusViews();
+        void refreshEventViews();
       }
     };
 
-    void refreshCanonicalViews();
+    void refreshStatusViews();
+    void refreshEventViews();
     if (OPERATOR_DIAGNOSTICS_ENABLED) {
       void refreshContractEventDebugCounts();
       void refreshRawFlowDebug();
@@ -395,18 +424,47 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     },
   };
   const platformCapabilities = summary.platforms || {};
-  const latestItems = filterContractItemsBySymbol(state.items, assetSymbol);
-  const contractEvents = filterContractItemsBySymbol(state.contractEvents, assetSymbol);
-  const finalEvents = {
-    active: filterContractItemsBySymbol(state.finalEvents.active, assetSymbol),
-    closed: filterContractItemsBySymbol(state.finalEvents.closed, assetSymbol),
-  };
-  const whaleEvents = filterContractItemsBySymbol(state.events, assetSymbol);
-  const hiddenContractEvents = filterContractItemsBySymbol(state.hiddenContractEvents, assetSymbol);
-  const lifecycleItems = [...finalEvents.active, ...finalEvents.closed];
-  const detailItems = dedupeSignalsById([...latestItems, ...contractEvents, ...lifecycleItems]);
+  const latestItems = useMemo(
+    () => filterContractItemsBySymbol(state.items, assetSymbol),
+    [assetSymbol, state.items],
+  );
+  const contractEvents = useMemo(
+    () => filterContractItemsBySymbol(state.contractEvents, assetSymbol),
+    [assetSymbol, state.contractEvents],
+  );
+  const finalActiveEvents = useMemo(
+    () => filterContractItemsBySymbol(state.finalEvents.active, assetSymbol),
+    [assetSymbol, state.finalEvents.active],
+  );
+  const finalClosedEvents = useMemo(
+    () => filterContractItemsBySymbol(state.finalEvents.closed, assetSymbol),
+    [assetSymbol, state.finalEvents.closed],
+  );
+  const finalEvents = useMemo(
+    () => ({ active: finalActiveEvents, closed: finalClosedEvents }),
+    [finalActiveEvents, finalClosedEvents],
+  );
+  const whaleEvents = useMemo(
+    () => filterContractItemsBySymbol(state.events, assetSymbol),
+    [assetSymbol, state.events],
+  );
+  const hiddenContractEvents = useMemo(
+    () => filterContractItemsBySymbol(state.hiddenContractEvents, assetSymbol),
+    [assetSymbol, state.hiddenContractEvents],
+  );
+  const lifecycleItems = useMemo(
+    () => [...finalEvents.active, ...finalEvents.closed],
+    [finalEvents],
+  );
+  const detailItems = useMemo(
+    () => dedupeSignalsById([...latestItems, ...contractEvents, ...lifecycleItems]),
+    [contractEvents, latestItems, lifecycleItems],
+  );
   const displayFilterLabel = contractWhaleDisplayFilterLabel(assetSymbol);
-  const visibleContractEvents = contractEvents.filter((item) => passesContractWhaleVisibleDisplayFilter(item, assetSymbol));
+  const visibleContractEvents = useMemo(
+    () => contractEvents.filter((item) => passesContractWhaleVisibleDisplayFilter(item, assetSymbol)),
+    [assetSymbol, contractEvents],
+  );
   const hiddenDisplayFilteredCount = Math.max(0, contractEvents.length - visibleContractEvents.length);
   const shouldApplyNotionalDisplayFilter = contractEvents.length > 0;
   const visibleSignalIds = buildVisibleSignalIdSet(visibleContractEvents);
@@ -560,7 +618,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           debugCounts={state.contractEventDebugCounts}
           rawFlowDebug={state.rawFlowDebug}
           enabled={summary.enabled}
-          loading={state.loading}
+          loading={state.contractEventsLoading}
           onLoadMoreContractEvents={loadMoreContractEvents}
           onOpenSignal={setSelectedSignalId}
           eventsSyncLag={eventsSyncLag}
@@ -1916,7 +1974,7 @@ function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpen
   );
 }
 
-function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量", volumeTooltip }) {
+const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量", volumeTooltip }) {
   return (
     <table className="min-w-full table-fixed text-left text-xs" data-testid={testId}>
       <thead className="bg-slate-950/80 text-slate-400">
@@ -2042,6 +2100,19 @@ function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale
       </tbody>
     </table>
   );
+});
+
+function reuseEventList(previous = [], next = []) {
+  if (previous === next) return previous;
+  if (previous.length !== next.length) return next;
+  for (let index = 0; index < previous.length; index += 1) {
+    if (eventRevisionKey(previous[index]) !== eventRevisionKey(next[index])) return next;
+  }
+  return previous;
+}
+
+function eventRevisionKey(item = {}) {
+  return JSON.stringify(item);
 }
 
 function LifecycleVolumeCell({ item, volumeLabel }) {

@@ -1258,6 +1258,16 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractEventDebugCounts).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the event feed loading until its own request finishes", async () => {
+    fetchContractEvents.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<ContractWhaleMonitor />);
+
+    await screen.findByText("主力合约监控");
+    expect(screen.getByText("主力合约监控载入中...")).toBeInTheDocument();
+    expect(screen.queryByText("暂无主力合约异动")).not.toBeInTheDocument();
+  });
+
   it("keeps the core contract-whale content visible while retention stays deferred", async () => {
     fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
 
@@ -3079,7 +3089,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("主力合约监控数据暂时不可用，已保留上一次结果。")).toBeInTheDocument();
   });
 
-  it("refreshes canonical contract views on one 5s timer while visible", async () => {
+  it("refreshes status every 5s and heavyweight event projections every 15s", async () => {
     vi.useFakeTimers();
 
     render(<ContractWhaleMonitor />);
@@ -3088,16 +3098,41 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
+    expect(fetchContractEvents).toHaveBeenCalledTimes(1);
+    expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(2);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(2);
+    expect(fetchContractEvents).toHaveBeenCalledTimes(1);
+    expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(4);
     expect(fetchContractWhaleSummary).toHaveBeenLastCalledWith("BTC");
-    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(3);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(4);
+    expect(fetchContractEvents).toHaveBeenCalledTimes(2);
+    expect(fetchFinalEventsV2).toHaveBeenCalledTimes(2);
+  });
+
+  it("rerenders a stable event row when its evidence changes", async () => {
+    const defaultContractEvents = await fetchContractEvents.getMockImplementation()();
+    const updatedContractEvents = structuredClone(defaultContractEvents);
+    updatedContractEvents.items[0].discordSent = true;
+    fetchContractEvents
+      .mockResolvedValueOnce(defaultContractEvents)
+      .mockResolvedValueOnce(updatedContractEvents);
+    vi.useFakeTimers();
+
+    render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(within(screen.getByTestId("raw-contract-whale-signals")).getByText("待推")).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(within(screen.getByTestId("raw-contract-whale-signals")).getByText("已推")).toBeInTheDocument();
   });
 
   it("keeps latest requests scoped to locked ETH", async () => {
