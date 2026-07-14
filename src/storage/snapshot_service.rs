@@ -178,6 +178,7 @@ impl SnapshotService {
                             time_column = table_result.time_column.as_str(),
                             status = table_result.status.as_str(),
                             deleted = table_result.deleted_rows,
+                            reason = table_result.reason.as_deref().unwrap_or("completed"),
                             duration_ms = table_result.duration_ms,
                             "runtime_retention table result"
                         ),

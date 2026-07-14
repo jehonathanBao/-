@@ -35,6 +35,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const [state, setState] = useState({
     loading: true,
     contractEventsLoading: true,
+    contractEventsError: null,
     summary: null,
     items: [],
     contractEvents: [],
@@ -105,6 +106,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     updateState((previous) => ({
       ...previous,
       contractEventsLoading: true,
+      contractEventsError: null,
       hiddenContractEvents: [],
       hiddenContractEventsLoaded: false,
       hiddenContractEventsExpanded: false,
@@ -153,6 +155,9 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             ? previous.contractEvents
             : reuseEventList(previous.contractEvents, payload.items),
           contractEventsLoading: false,
+          contractEventsError: unavailable
+            ? payload.error || payload.errorCode || "contract_events_unavailable"
+            : null,
           contractEventsCursor: unavailable ? previous.contractEventsCursor : payload.nextCursor,
           contractEventsHasMore: unavailable ? previous.contractEventsHasMore : payload.hasMore,
           contractEventsServerTime: unavailable ? previous.contractEventsServerTime : payload.serverTime,
@@ -619,6 +624,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           rawFlowDebug={state.rawFlowDebug}
           enabled={summary.enabled}
           loading={state.contractEventsLoading}
+          error={state.contractEventsError}
           onLoadMoreContractEvents={loadMoreContractEvents}
           onOpenSignal={setSelectedSignalId}
           eventsSyncLag={eventsSyncLag}
@@ -1101,6 +1107,7 @@ function HistoricalEventStreamPanel({
   rawFlowDebug,
   enabled,
   loading,
+  error,
   onLoadMoreContractEvents,
   onOpenSignal,
   eventsSyncLag,
@@ -1187,6 +1194,10 @@ function HistoricalEventStreamPanel({
         </div>
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
+        ) : error && contractEvents.length === 0 ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
+            事件流暂时不可用，系统将在下一轮自动重试。
+          </p>
         ) : contractEvents.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
         ) : visibleContractEvents.length === 0 ? (

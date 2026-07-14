@@ -124,6 +124,7 @@ pub const MIGRATIONS: &[&str] = &[
       price_move_bps REAL,
       payload_json TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_flow_snapshots_ts ON flow_snapshots(ts);
     "#,
     r#"
     CREATE TABLE IF NOT EXISTS venue_health_snapshots (
@@ -138,6 +139,7 @@ pub const MIGRATIONS: &[&str] = &[
       reconnect_count INTEGER NOT NULL,
       last_error TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_venue_health_snapshots_ts ON venue_health_snapshots(ts);
     "#,
     r#"
     CREATE TABLE IF NOT EXISTS replay_runs (
