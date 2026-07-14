@@ -727,30 +727,32 @@ fn project_contract_event_candidates(
         ContractWhaleLifecycleClock::Live { now_ms: now_ms() },
     );
     if let Some(store) = store {
-        let mut ranges_by_symbol = BTreeMap::<String, (i64, i64)>::new();
+        let mut ranges_by_symbol = BTreeMap::<String, Vec<(i64, i64)>>::new();
         for signal in &items {
             let start_ts = lifecycle_raw_start_ts(signal);
             let end_ts = signal.event_lifecycle.last_update_time.max(signal.ts);
             ranges_by_symbol
                 .entry(signal.symbol.to_ascii_uppercase())
-                .and_modify(|range| {
-                    range.0 = range.0.min(start_ts);
-                    range.1 = range.1.max(end_ts);
-                })
-                .or_insert((start_ts, end_ts));
+                .or_default()
+                .push((start_ts, end_ts));
         }
         let mut buckets = Vec::new();
         let mut failed_symbols = BTreeSet::new();
-        for (symbol, (from_ts, to_ts)) in ranges_by_symbol {
-            match store.list_contract_flow_buckets_between(&symbol, from_ts, to_ts) {
-                Ok(mut symbol_buckets) => buckets.append(&mut symbol_buckets),
-                Err(error) => {
-                    tracing::warn!(
-                        symbol = %symbol,
-                        error = %error,
-                        "contract lifecycle raw-flow range query failed"
-                    );
-                    failed_symbols.insert(symbol);
+        for (symbol, ranges) in coalesce_lifecycle_flow_ranges(ranges_by_symbol) {
+            for (from_ts, to_ts) in ranges {
+                match store.list_contract_flow_buckets_between(&symbol, from_ts, to_ts) {
+                    Ok(mut symbol_buckets) => buckets.append(&mut symbol_buckets),
+                    Err(error) => {
+                        tracing::warn!(
+                            symbol = %symbol,
+                            from_ts,
+                            to_ts,
+                            error = %error,
+                            "contract lifecycle raw-flow range query failed"
+                        );
+                        failed_symbols.insert(symbol.clone());
+                        break;
+                    }
                 }
             }
         }
@@ -784,6 +786,31 @@ fn project_contract_event_candidates(
             }
         })
         .collect()
+}
+
+fn coalesce_lifecycle_flow_ranges(
+    mut ranges_by_symbol: BTreeMap<String, Vec<(i64, i64)>>,
+) -> BTreeMap<String, Vec<(i64, i64)>> {
+    for ranges in ranges_by_symbol.values_mut() {
+        for range in ranges.iter_mut() {
+            if range.0 > range.1 {
+                std::mem::swap(&mut range.0, &mut range.1);
+            }
+        }
+        ranges.sort_unstable_by_key(|range| (range.0, range.1));
+
+        let mut merged = Vec::<(i64, i64)>::with_capacity(ranges.len());
+        for (start_ts, end_ts) in ranges.drain(..) {
+            match merged.last_mut() {
+                Some(current) if start_ts <= current.1.saturating_add(1_000) => {
+                    current.1 = current.1.max(end_ts);
+                }
+                _ => merged.push((start_ts, end_ts)),
+            }
+        }
+        *ranges = merged;
+    }
+    ranges_by_symbol
 }
 
 fn visibility_metadata(
@@ -1203,4 +1230,24 @@ fn bad_request(reason: &str) -> (StatusCode, Json<serde_json::Value>) {
             "executionEnabled": false
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_flow_ranges_keep_separated_events_disjoint() {
+        let ranges = BTreeMap::from([(
+            "BTC".to_string(),
+            vec![(1_000, 5_000), (4_000, 7_000), (60_000, 65_000)],
+        )]);
+
+        let merged = coalesce_lifecycle_flow_ranges(ranges);
+
+        assert_eq!(
+            merged.get("BTC"),
+            Some(&vec![(1_000, 7_000), (60_000, 65_000)])
+        );
+    }
 }
