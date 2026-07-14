@@ -23,6 +23,8 @@ pub struct RuntimeRetentionPolicy {
     pub delete_batch_size: usize,
     pub max_batches_per_table: usize,
     pub batch_pause_ms: u64,
+    pub lock_wait_ms: u64,
+    pub max_table_duration_ms: u64,
 }
 
 impl Default for RuntimeRetentionPolicy {
@@ -39,6 +41,8 @@ impl Default for RuntimeRetentionPolicy {
             delete_batch_size: 250,
             max_batches_per_table: 80,
             batch_pause_ms: 10,
+            lock_wait_ms: 250,
+            max_table_duration_ms: 3_000,
         }
     }
 }
@@ -107,6 +111,7 @@ impl RuntimeRetentionRepo for SqliteStore {
             retention_cutoff(now_ms, policy.new_token_l2_outcomes_retention_ms);
 
         self.with_connection(|conn| {
+            conn.busy_timeout(std::time::Duration::from_millis(policy.lock_wait_ms.max(1)))?;
             let mut result = RuntimeRetentionPruneResult::default();
             result.toxic_events_deleted = prune_table(
                 conn,
@@ -244,8 +249,16 @@ fn prune_table(
     );
     let mut total_deleted = 0_usize;
     let mut completed = false;
+    let mut time_budget_reached = false;
     let mut failure = None;
     for batch_index in 0..max_batches {
+        if batch_index > 0
+            && started_at.elapsed()
+                >= std::time::Duration::from_millis(policy.max_table_duration_ms.max(1))
+        {
+            time_budget_reached = true;
+            break;
+        }
         match conn.execute(&sql, params![cutoff, batch_size as i64]) {
             Ok(deleted_rows) => {
                 total_deleted = total_deleted.saturating_add(deleted_rows);
@@ -272,7 +285,13 @@ fn prune_table(
                 status: RetentionTableStatus::Ok,
                 deleted_rows: total_deleted,
                 duration_ms: started_at.elapsed().as_millis() as u64,
-                reason: (!completed).then(|| "batch_limit_reached".to_string()),
+                reason: if completed {
+                    None
+                } else if time_budget_reached {
+                    Some("time_budget_reached".to_string())
+                } else {
+                    Some("batch_limit_reached".to_string())
+                },
                 error: None,
                 error_kind: None,
             });

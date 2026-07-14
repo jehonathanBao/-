@@ -371,6 +371,8 @@ fn runtime_retention_caps_each_table_to_short_delete_batches() {
                 delete_batch_size: 1,
                 max_batches_per_table: 2,
                 batch_pause_ms: 0,
+                lock_wait_ms: 250,
+                max_table_duration_ms: 5_000,
             },
         )
         .expect("prune bounded runtime retention");
@@ -386,6 +388,48 @@ fn runtime_retention_caps_each_table_to_short_delete_batches() {
         })
         .expect("count remaining stale rows");
     assert_eq!(stale_remaining, 1);
+}
+
+#[test]
+fn runtime_retention_yields_when_table_time_budget_is_reached() {
+    let store = open_store("runtime_retention_table_time_budget");
+    store.migrate().expect("migrate");
+    let now = 1_800_000_000_000_i64;
+    store
+        .with_connection(|conn| {
+            for offset in 0..20_i64 {
+                conn.execute(
+                    "INSERT INTO flow_snapshots (
+                        ts, symbol, window_ms, aggressive_buy_btc, aggressive_sell_btc,
+                        net_aggressive_btc, abs_aggressive_btc, price_move_bps, payload_json
+                     ) VALUES (?1, 'BTC', 5000, 1, 1, 0, 2, 0, '{}')",
+                    [now - 40_000 - offset],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed stale flow snapshots");
+
+    let result = store
+        .prune_runtime_retention(
+            now,
+            &RuntimeRetentionPolicy {
+                flow_snapshots_retention_ms: 10_000,
+                delete_batch_size: 1,
+                max_batches_per_table: 100,
+                batch_pause_ms: 20,
+                lock_wait_ms: 100,
+                max_table_duration_ms: 5,
+                ..RuntimeRetentionPolicy::default()
+            },
+        )
+        .expect("prune runtime retention within table budget");
+
+    assert!(result.flow_snapshots_deleted > 0);
+    assert!(result.flow_snapshots_deleted < 20);
+    assert!(result.table_results.iter().any(|entry| {
+        entry.table == "flow_snapshots" && entry.reason.as_deref() == Some("time_budget_reached")
+    }));
 }
 
 #[test]
