@@ -178,6 +178,7 @@ impl SnapshotService {
                             time_column = table_result.time_column.as_str(),
                             status = table_result.status.as_str(),
                             deleted = table_result.deleted_rows,
+                            reason = table_result.reason.as_deref().unwrap_or("completed"),
                             duration_ms = table_result.duration_ms,
                             "runtime_retention table result"
                         ),
@@ -212,6 +213,8 @@ impl SnapshotService {
                     deleted_venue_health_snapshots = result.venue_health_snapshots_deleted,
                     deleted_vpin_buckets = result.vpin_buckets_deleted,
                     deleted_replay_runs = result.replay_runs_deleted,
+                    deleted_new_token_l2_metrics = result.new_token_l2_metrics_deleted,
+                    deleted_new_token_l2_outcomes = result.new_token_l2_outcomes_deleted,
                     total_deleted_rows = result.total_deleted(),
                     failed_tables = result
                         .table_results

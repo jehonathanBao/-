@@ -1268,6 +1268,20 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("暂无主力合约异动")).not.toBeInTheDocument();
   });
 
+  it("replaces the loading state with a recoverable event-feed error", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [],
+      dataState: "degraded",
+      error: "contract_events_unavailable",
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByText("事件流暂时不可用，系统将在下一轮自动重试。"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("主力合约监控载入中...")).not.toBeInTheDocument();
+  });
+
   it("keeps the core contract-whale content visible while retention stays deferred", async () => {
     fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
 

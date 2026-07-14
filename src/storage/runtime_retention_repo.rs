@@ -20,6 +20,9 @@ pub struct RuntimeRetentionPolicy {
     pub replay_runs_retention_ms: i64,
     pub new_token_l2_metrics_retention_ms: i64,
     pub new_token_l2_outcomes_retention_ms: i64,
+    pub delete_batch_size: usize,
+    pub max_batches_per_table: usize,
+    pub batch_pause_ms: u64,
 }
 
 impl Default for RuntimeRetentionPolicy {
@@ -33,6 +36,9 @@ impl Default for RuntimeRetentionPolicy {
             replay_runs_retention_ms: 30 * DAY_MS,
             new_token_l2_metrics_retention_ms: 7 * DAY_MS,
             new_token_l2_outcomes_retention_ms: 365 * DAY_MS,
+            delete_batch_size: 250,
+            max_batches_per_table: 80,
+            batch_pause_ms: 10,
         }
     }
 }
@@ -106,64 +112,72 @@ impl RuntimeRetentionRepo for SqliteStore {
                 conn,
                 "toxic_events",
                 "ts",
-                "DELETE FROM toxic_events WHERE ts < ?1",
+                "ts",
                 toxic_events_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.toxic_snapshots_deleted = prune_table(
                 conn,
                 "toxic_snapshots",
                 "ts",
-                "DELETE FROM toxic_snapshots WHERE ts < ?1",
+                "ts",
                 toxic_snapshots_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.flow_snapshots_deleted = prune_table(
                 conn,
                 "flow_snapshots",
                 "ts",
-                "DELETE FROM flow_snapshots WHERE ts < ?1",
+                "ts",
                 flow_snapshots_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.venue_health_snapshots_deleted = prune_table(
                 conn,
                 "venue_health_snapshots",
                 "ts",
-                "DELETE FROM venue_health_snapshots WHERE ts < ?1",
+                "ts",
                 venue_health_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.vpin_buckets_deleted = prune_table(
                 conn,
                 "vpin_buckets",
                 "end_ts",
-                "DELETE FROM vpin_buckets WHERE end_ts < ?1",
+                "end_ts",
                 vpin_buckets_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.replay_runs_deleted = prune_table(
                 conn,
                 "replay_runs",
                 "finished_at",
-                "DELETE FROM replay_runs WHERE COALESCE(finished_at, started_at) < ?1",
+                "COALESCE(finished_at, started_at)",
                 replay_runs_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.new_token_l2_metrics_deleted = prune_table(
                 conn,
                 "new_token_l2_metrics",
                 "ts",
-                "DELETE FROM new_token_l2_metrics WHERE ts < ?1",
+                "ts",
                 new_token_l2_metrics_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
             result.new_token_l2_outcomes_deleted = prune_table(
                 conn,
                 "new_token_l2_outcomes",
                 "observed_at",
-                "DELETE FROM new_token_l2_outcomes WHERE observed_at < ?1",
+                "observed_at",
                 new_token_l2_outcomes_cutoff,
+                policy,
                 &mut result.table_results,
             )?;
 
@@ -184,8 +198,9 @@ fn prune_table(
     conn: &rusqlite::Connection,
     table: &str,
     time_column: &str,
-    sql: &str,
+    time_expression: &str,
     cutoff: i64,
+    policy: &RuntimeRetentionPolicy,
     table_results: &mut Vec<RetentionTableResult>,
 ) -> anyhow::Result<usize> {
     let started_at = std::time::Instant::now();
@@ -216,45 +231,84 @@ fn prune_table(
         return Ok(0);
     }
 
-    match conn.execute(sql, params![cutoff]) {
-        Ok(deleted_rows) => {
+    let batch_size = policy.delete_batch_size.max(1);
+    let max_batches = policy.max_batches_per_table.max(1);
+    let sql = format!(
+        "DELETE FROM {table}
+         WHERE rowid IN (
+           SELECT rowid FROM {table}
+           WHERE {time_expression} < ?1
+           ORDER BY {time_expression} ASC, rowid ASC
+           LIMIT ?2
+         )"
+    );
+    let mut total_deleted = 0_usize;
+    let mut completed = false;
+    let mut failure = None;
+    for batch_index in 0..max_batches {
+        match conn.execute(&sql, params![cutoff, batch_size as i64]) {
+            Ok(deleted_rows) => {
+                total_deleted = total_deleted.saturating_add(deleted_rows);
+                if deleted_rows < batch_size {
+                    completed = true;
+                    break;
+                }
+                if policy.batch_pause_ms > 0 && batch_index + 1 < max_batches {
+                    std::thread::sleep(std::time::Duration::from_millis(policy.batch_pause_ms));
+                }
+            }
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+
+    match failure {
+        None => {
             table_results.push(RetentionTableResult {
                 table: table.to_string(),
                 time_column: time_column.to_string(),
                 status: RetentionTableStatus::Ok,
-                deleted_rows,
+                deleted_rows: total_deleted,
                 duration_ms: started_at.elapsed().as_millis() as u64,
-                reason: None,
+                reason: (!completed).then(|| "batch_limit_reached".to_string()),
                 error: None,
                 error_kind: None,
             });
-            Ok(deleted_rows)
+            Ok(total_deleted)
         }
-        Err(error) => {
+        Some(error) => {
             let message = format!("{error:#}");
             table_results.push(RetentionTableResult {
                 table: table.to_string(),
                 time_column: time_column.to_string(),
                 status: RetentionTableStatus::Error,
-                deleted_rows: 0,
+                deleted_rows: total_deleted,
                 duration_ms: started_at.elapsed().as_millis() as u64,
                 reason: None,
                 error_kind: Some(classify_retention_error(&message)),
                 error: Some(message),
             });
-            Ok(0)
+            Ok(total_deleted)
         }
     }
 }
 
 fn run_wal_checkpoint(conn: &rusqlite::Connection) -> WalCheckpointResult {
     let started_at = std::time::Instant::now();
-    match conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
-        Ok(()) => WalCheckpointResult {
+    match conn.query_row("PRAGMA wal_checkpoint(PASSIVE);", [], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+    }) {
+        Ok((busy, log_frames, checkpointed_frames)) => WalCheckpointResult {
             attempted: true,
-            ok: true,
+            ok: busy == 0,
             duration_ms: started_at.elapsed().as_millis() as u64,
-            error: None,
+            error: (busy != 0).then(|| {
+                format!(
+                    "wal_checkpoint_busy log_frames={log_frames} checkpointed_frames={checkpointed_frames}"
+                )
+            }),
         },
         Err(error) => WalCheckpointResult {
             attempted: true,

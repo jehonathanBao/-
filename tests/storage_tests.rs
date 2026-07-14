@@ -297,8 +297,7 @@ fn runtime_retention_prunes_snapshot_and_event_tables() {
                 venue_health_retention_ms: 10_000,
                 vpin_buckets_retention_ms: 10_000,
                 replay_runs_retention_ms: 10_000,
-                new_token_l2_metrics_retention_ms: 10_000,
-                new_token_l2_outcomes_retention_ms: 10_000,
+                ..RuntimeRetentionPolicy::default()
             },
         )
         .expect("prune runtime retention");
@@ -338,6 +337,58 @@ fn runtime_retention_prunes_snapshot_and_event_tables() {
 }
 
 #[test]
+fn runtime_retention_caps_each_table_to_short_delete_batches() {
+    let store = open_store("runtime_retention_bounded_batches");
+    store.migrate().expect("migrate");
+    let now = 1_800_000_000_000_i64;
+    store
+        .with_connection(|conn| {
+            for offset in [40_000_i64, 30_000, 20_000] {
+                conn.execute(
+                    "INSERT INTO flow_snapshots (
+                        ts, symbol, window_ms, aggressive_buy_btc, aggressive_sell_btc,
+                        net_aggressive_btc, abs_aggressive_btc, price_move_bps, payload_json
+                     ) VALUES (?1, 'BTC', 5000, 1, 1, 0, 2, 0, '{}')",
+                    [now - offset],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed stale flow snapshots");
+
+    let result = store
+        .prune_runtime_retention(
+            now,
+            &RuntimeRetentionPolicy {
+                toxic_events_retention_ms: 10_000,
+                toxic_snapshots_retention_ms: 10_000,
+                flow_snapshots_retention_ms: 10_000,
+                venue_health_retention_ms: 10_000,
+                vpin_buckets_retention_ms: 10_000,
+                replay_runs_retention_ms: 10_000,
+                new_token_l2_metrics_retention_ms: 10_000,
+                new_token_l2_outcomes_retention_ms: 10_000,
+                delete_batch_size: 1,
+                max_batches_per_table: 2,
+                batch_pause_ms: 0,
+            },
+        )
+        .expect("prune bounded runtime retention");
+
+    assert_eq!(result.flow_snapshots_deleted, 2);
+    let stale_remaining: i64 = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM flow_snapshots WHERE ts < ?1",
+                [now - 10_000],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count remaining stale rows");
+    assert_eq!(stale_remaining, 1);
+}
+
+#[test]
 fn runtime_retention_skips_missing_table_and_keeps_other_tables() {
     let store = open_store("runtime_retention_missing_table");
     store.migrate().expect("migrate");
@@ -368,8 +419,7 @@ fn runtime_retention_skips_missing_table_and_keeps_other_tables() {
                 venue_health_retention_ms: 10_000,
                 vpin_buckets_retention_ms: 10_000,
                 replay_runs_retention_ms: 10_000,
-                new_token_l2_metrics_retention_ms: 10_000,
-                new_token_l2_outcomes_retention_ms: 10_000,
+                ..RuntimeRetentionPolicy::default()
             },
         )
         .expect("prune runtime retention");
