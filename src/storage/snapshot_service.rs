@@ -40,6 +40,16 @@ pub struct SnapshotService {
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
+fn initial_retention_last_run_ts(
+    now_ms: i64,
+    retention_interval_ms: u64,
+    initial_delay_ms: i64,
+) -> i64 {
+    let elapsed_before_first_run =
+        retention_interval_ms.saturating_sub(initial_delay_ms.max(0) as u64);
+    now_ms.saturating_sub(elapsed_before_first_run as i64)
+}
+
 impl SnapshotService {
     pub fn new(
         enabled: bool,
@@ -89,8 +99,11 @@ impl SnapshotService {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(
                 service.persist_interval_ms.max(100),
             ));
-            let mut last_retention_run_ts = now_ms()
-                .saturating_add(service.retention_interval_ms as i64 - INITIAL_RETENTION_DELAY_MS);
+            let mut last_retention_run_ts = initial_retention_last_run_ts(
+                now_ms(),
+                service.retention_interval_ms,
+                INITIAL_RETENTION_DELAY_MS,
+            );
             loop {
                 interval.tick().await;
                 let now_ts = now_ms();
@@ -297,5 +310,21 @@ impl SnapshotService {
                 storage_health.refresh_now();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initial_retention_last_run_ts;
+
+    #[test]
+    fn initial_runtime_retention_becomes_due_after_configured_delay() {
+        let now_ms = 1_800_000_000_000_i64;
+        let interval_ms = 60 * 60 * 1_000_u64;
+        let delay_ms = 30_000_i64;
+        let last_run_ms = initial_retention_last_run_ts(now_ms, interval_ms, delay_ms);
+
+        assert!(now_ms + delay_ms - 1 - last_run_ms < interval_ms as i64);
+        assert!(now_ms + delay_ms - last_run_ms >= interval_ms as i64);
     }
 }
