@@ -366,6 +366,8 @@ fn runtime_retention_caps_each_table_to_short_delete_batches() {
                 venue_health_retention_ms: 10_000,
                 vpin_buckets_retention_ms: 10_000,
                 replay_runs_retention_ms: 10_000,
+                new_token_l2_metrics_retention_ms: 10_000,
+                new_token_l2_outcomes_retention_ms: 10_000,
                 delete_batch_size: 1,
                 max_batches_per_table: 2,
                 batch_pause_ms: 0,
