@@ -16,6 +16,8 @@ import {
 const STATUS_REFRESH_MS = 5_000;
 const EVENT_REFRESH_MS = 15_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
+const DEFAULT_CONTRACT_EVENT_LIMIT = 50;
+const ETH_INITIAL_CONTRACT_EVENT_LIMIT = 20;
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
 const OPERATOR_DIAGNOSTICS_ENABLED =
   import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
@@ -96,6 +98,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     let eventTimer = null;
     let statusRefreshInFlight = false;
     let eventRefreshInFlight = false;
+    let initialEventViewPending = true;
     let retentionTimer = null;
 
     const updateState = (updater) => {
@@ -278,8 +281,12 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       if (eventRefreshInFlight) return;
       eventRefreshInFlight = true;
       try {
+        const contractEventLimit = initialEventViewPending && filters.symbol === "ETH"
+          ? ETH_INITIAL_CONTRACT_EVENT_LIMIT
+          : DEFAULT_CONTRACT_EVENT_LIMIT;
+        await refreshContractEvents(contractEventLimit);
+        initialEventViewPending = false;
         await Promise.allSettled([
-          refreshContractEvents(50),
           refreshFinalEvents(30),
           refreshIntelligenceTerminal(),
         ]);

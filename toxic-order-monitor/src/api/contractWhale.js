@@ -442,7 +442,7 @@ export async function fetchContractEvents(filters = {}) {
       min_notional_usd: filters.min_notional_usd ?? 10_000_000,
     });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events?${query}`, {
-      timeoutMs: 6_000,
+      timeoutMs: 12_000,
     });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";

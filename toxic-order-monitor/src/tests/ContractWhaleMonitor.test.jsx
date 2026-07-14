@@ -1268,6 +1268,33 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("暂无主力合约异动")).not.toBeInTheDocument();
   });
 
+  it("prioritizes a compact ETH event page before secondary event views", async () => {
+    const initialPayload = await fetchContractEvents.getMockImplementation()();
+    let resolveContractEvents;
+    fetchContractEvents.mockReturnValueOnce(new Promise((resolve) => {
+      resolveContractEvents = resolve;
+    }));
+
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
+
+    await waitFor(() =>
+      expect(fetchContractEvents).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: "ETH",
+          range: "24h",
+          limit: 20,
+        }),
+      ),
+    );
+    expect(fetchFinalEventsV2).not.toHaveBeenCalled();
+    expect(fetchContractWhaleIntelligenceTerminal).not.toHaveBeenCalled();
+
+    resolveContractEvents(initialPayload);
+
+    await waitFor(() => expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1));
+    expect(fetchContractWhaleIntelligenceTerminal).toHaveBeenCalledTimes(1);
+  });
+
   it("replaces the loading state with a recoverable event-feed error", async () => {
     fetchContractEvents.mockResolvedValueOnce({
       items: [],
@@ -1291,7 +1318,7 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(1);
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
     expect(fetchContractEvents).toHaveBeenCalledTimes(1);
-    expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1));
     expect(fetchContractEventDebugCounts).toHaveBeenCalledTimes(1);
     expect(fetchContractWhaleEvents).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByText("强异动")).toBeInTheDocument());
@@ -3107,6 +3134,7 @@ describe("ContractWhaleMonitor", () => {
     vi.useFakeTimers();
 
     render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(screen.getByText("主力合约监控")).toBeInTheDocument();
     expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
