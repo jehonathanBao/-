@@ -843,6 +843,31 @@ describe("contract whale api", () => {
     }
   });
 
+  it("keeps contract event history requests alive beyond six seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      axios.get.mockImplementationOnce((_url, config = {}) => {
+        expect(config.signal).toBeDefined();
+        return new Promise(() => {});
+      });
+
+      let settled = false;
+      const request = fetchContractEvents({ symbol: "ETH", range: "24h", limit: 20 })
+        .then((payload) => {
+          settled = true;
+          return payload;
+        });
+
+      await vi.advanceTimersByTimeAsync(6_001);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      await expect(request).resolves.toMatchObject({ error: "contract_events_unavailable" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fetches main-force event history for timeline markers", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
