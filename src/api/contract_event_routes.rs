@@ -2,12 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
 
 use crate::{
+    api::contract_event_projection_runtime::{
+        ContractEventProjectionValue, ProjectionFailure, ProjectionKey, ProjectionOutcome,
+        ProjectionUnavailable, ProjectionUnavailableReason,
+    },
     api::contract_timeline_routes::{build_canonical_timeline_meta, CanonicalTimelineMeta},
     api::contract_whale_routes::{
         build_contract_whale_items_response, decorate_contract_whale_oi_contexts,
@@ -261,8 +266,31 @@ struct ContractEventCandidate {
 pub async fn contract_events_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
-) -> ApiJsonResult<ContractEventPage> {
-    let page = contract_event_page_for_query(state, query)?;
+) -> Result<Json<ContractEventPage>, Response> {
+    let requested_limit =
+        validate_contract_events_query(&query).map_err(IntoResponse::into_response)?;
+    let include_hidden = parse_include_hidden(query.include_hidden.as_deref())
+        .map_err(IntoResponse::into_response)?;
+    let key = contract_projection_key("contract_events", &query, requested_limit, include_hidden);
+    let runtime = state.contract_event_projection_runtime();
+    let projection_state = state.clone();
+    let projection_query = query.clone();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            contract_event_page_for_query(projection_state, projection_query)
+                .map(ContractEventProjectionValue::ContractEvents)
+                .map_err(|error| {
+                    tracing::warn!(
+                        status = %error.0,
+                        "contract_event_projection_failed"
+                    );
+                    ProjectionFailure::new("contract_event_projection_failed")
+                })
+        })
+        .await
+        .map_err(projection_unavailable_response)?;
+    let page =
+        contract_event_page_from_outcome(outcome).map_err(projection_unavailable_response)?;
     Ok(Json(page))
 }
 
@@ -270,15 +298,321 @@ pub async fn contract_events_debug_counts_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult<ContractEventDebugCountsResponse> {
-    Ok(Json(contract_event_debug_counts_for_query(state, query)))
+    let response =
+        tokio::task::spawn_blocking(move || contract_event_debug_counts_for_query(state, query))
+            .await
+            .map_err(|error| {
+                internal_error(anyhow::anyhow!("debug projection join failed: {error}"))
+            })?;
+    Ok(Json(response))
 }
 
 pub async fn final_events_v2_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
-) -> ApiJsonResult<FinalEventsV2Response> {
-    let page = final_events_v2_for_query(state, query)?;
+) -> Result<Json<FinalEventsV2Response>, Response> {
+    let requested_limit =
+        validate_final_events_query(&query).map_err(IntoResponse::into_response)?;
+    let key = contract_projection_key("final_events_v2", &query, requested_limit, false);
+    let runtime = state.contract_event_projection_runtime();
+    let projection_state = state.clone();
+    let projection_query = query.clone();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            final_events_v2_for_query(projection_state, projection_query)
+                .map(ContractEventProjectionValue::FinalEventsV2)
+                .map_err(|error| {
+                    tracing::warn!(
+                        status = %error.0,
+                        "final_events_v2_projection_failed"
+                    );
+                    ProjectionFailure::new("final_events_v2_projection_failed")
+                })
+        })
+        .await
+        .map_err(projection_unavailable_response)?;
+    let page =
+        final_events_v2_page_from_outcome(outcome).map_err(projection_unavailable_response)?;
     Ok(Json(page))
+}
+
+fn validate_contract_events_query(
+    query: &ContractWhaleQuery,
+) -> Result<usize, (StatusCode, Json<serde_json::Value>)> {
+    let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
+    parse_include_hidden(query.include_hidden.as_deref())?;
+    let mut history_query = query.clone();
+    history_query.limit = Some((requested_limit + 1).to_string());
+    parse_history_query(&history_query)?;
+    Ok(requested_limit)
+}
+
+fn validate_final_events_query(
+    query: &ContractWhaleQuery,
+) -> Result<usize, (StatusCode, Json<serde_json::Value>)> {
+    let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
+    let mut history_query = query.clone();
+    history_query.limit = Some((requested_limit + 1).to_string());
+    parse_history_query(&history_query)?;
+    Ok(requested_limit)
+}
+
+fn contract_projection_key(
+    view: &str,
+    query: &ContractWhaleQuery,
+    requested_limit: usize,
+    include_hidden: bool,
+) -> ProjectionKey {
+    let normalize = |value: Option<&String>| {
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let symbol = query
+        .symbol
+        .as_deref()
+        .unwrap_or("BTC")
+        .trim()
+        .to_ascii_uppercase();
+    let range = query
+        .range
+        .as_deref()
+        .unwrap_or("24h")
+        .trim()
+        .to_ascii_lowercase();
+    let min_notional_bits = query
+        .min_notional_usd
+        .as_deref()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(f64::to_bits)
+        .unwrap_or_default();
+    ProjectionKey::new(
+        serde_json::json!({
+            "view": view,
+            "symbol": symbol,
+            "severity": normalize(query.severity.as_ref()),
+            "signalType": normalize(query.signal_type.as_ref()),
+            "direction": normalize(query.direction.as_ref()),
+            "discordSent": normalize(query.discord_sent.as_ref()),
+            "windowSec": normalize(query.window_sec.as_ref()),
+            "exchange": normalize(query.exchange.as_ref()),
+            "netDirection": normalize(query.net_direction.as_ref()),
+            "status": normalize_status_filter(query.status.as_deref()).unwrap_or_else(|| "all".to_string()),
+            "range": range,
+            "cursor": query.cursor.as_deref().map(str::trim).unwrap_or_default(),
+            "from": normalize(query.from.as_ref()),
+            "to": normalize(query.to.as_ref()),
+            "offset": normalize(query.offset.as_ref()),
+            "minNotionalBits": min_notional_bits,
+            "includeHidden": include_hidden,
+            "limit": requested_limit,
+        })
+        .to_string(),
+    )
+}
+
+fn contract_event_page_from_outcome(
+    outcome: ProjectionOutcome<ContractEventProjectionValue>,
+) -> Result<ContractEventPage, ProjectionUnavailable> {
+    match outcome {
+        ProjectionOutcome::Fresh {
+            value,
+            cache_age,
+            completed_at_ms,
+        } => {
+            match value {
+                ContractEventProjectionValue::ContractEvents(page) => Ok(
+                    serve_contract_event_page(page, cache_age, completed_at_ms, None),
+                ),
+                ContractEventProjectionValue::FinalEventsV2(_) => Err(projection_type_mismatch()),
+            }
+        }
+        ProjectionOutcome::Stale {
+            value,
+            cache_age,
+            completed_at_ms,
+            reason,
+        } => {
+            match value {
+                ContractEventProjectionValue::ContractEvents(page) => Ok(
+                    serve_contract_event_page(page, cache_age, completed_at_ms, Some(reason)),
+                ),
+                ContractEventProjectionValue::FinalEventsV2(_) => Err(projection_type_mismatch()),
+            }
+        }
+    }
+}
+
+fn final_events_v2_page_from_outcome(
+    outcome: ProjectionOutcome<ContractEventProjectionValue>,
+) -> Result<FinalEventsV2Response, ProjectionUnavailable> {
+    match outcome {
+        ProjectionOutcome::Fresh {
+            value,
+            cache_age,
+            completed_at_ms,
+        } => {
+            match value {
+                ContractEventProjectionValue::FinalEventsV2(page) => Ok(
+                    serve_final_events_v2_page(page, cache_age, completed_at_ms, None),
+                ),
+                ContractEventProjectionValue::ContractEvents(_) => Err(projection_type_mismatch()),
+            }
+        }
+        ProjectionOutcome::Stale {
+            value,
+            cache_age,
+            completed_at_ms,
+            reason,
+        } => {
+            match value {
+                ContractEventProjectionValue::FinalEventsV2(page) => Ok(
+                    serve_final_events_v2_page(page, cache_age, completed_at_ms, Some(reason)),
+                ),
+                ContractEventProjectionValue::ContractEvents(_) => Err(projection_type_mismatch()),
+            }
+        }
+    }
+}
+
+fn serve_contract_event_page(
+    mut page: ContractEventPage,
+    cache_age: std::time::Duration,
+    _completed_at_ms: i64,
+    stale_reason: Option<ProjectionUnavailableReason>,
+) -> ContractEventPage {
+    let served_at = now_ms();
+    page.server_time = served_at;
+    page.cache_age_sec = duration_secs_i64(cache_age);
+    page.cache_ttl_sec = FINAL_EVENTS_V2_CACHE_TTL_SEC;
+    page.timeline.served_ts = served_at;
+    if let Some(reason) = stale_reason {
+        page.data_state = "stale".to_string();
+        page.degraded = true;
+        page.error_code = Some(reason.error_code().to_string());
+        page.last_known_data_available = !page.items.is_empty();
+    } else {
+        page.degraded = false;
+        page.error_code = None;
+    }
+    page
+}
+
+fn serve_final_events_v2_page(
+    mut page: FinalEventsV2Response,
+    cache_age: std::time::Duration,
+    _completed_at_ms: i64,
+    stale_reason: Option<ProjectionUnavailableReason>,
+) -> FinalEventsV2Response {
+    let served_at = now_ms();
+    page.server_time = served_at;
+    page.cache_age_sec = duration_secs_i64(cache_age);
+    page.cache_ttl_sec = FINAL_EVENTS_V2_CACHE_TTL_SEC;
+    page.projection_lag_sec = page
+        .max_event_ts
+        .map(|ts| served_at.saturating_sub(ts).max(0).saturating_div(1000))
+        .unwrap_or(0);
+    page.timeline.served_ts = served_at;
+    if let Some(reason) = stale_reason {
+        page.data_state = "stale".to_string();
+        page.degraded = true;
+        page.error_code = Some(reason.error_code().to_string());
+        page.last_known_data_available = !page.active.is_empty() || !page.closed.is_empty();
+    } else {
+        page.degraded = false;
+        page.error_code = None;
+    }
+    page
+}
+
+fn duration_secs_i64(duration: std::time::Duration) -> i64 {
+    duration.as_secs().min(i64::MAX as u64) as i64
+}
+
+fn projection_type_mismatch() -> ProjectionUnavailable {
+    ProjectionUnavailable {
+        reason: ProjectionUnavailableReason::Failed,
+        retry_after_ms: 2_000,
+    }
+}
+
+fn projection_unavailable_response(error: ProjectionUnavailable) -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": error.error_code(),
+            "lastKnownDataAvailable": false,
+            "retryAfterMs": error.retry_after_ms,
+            "readOnly": true,
+            "executionEnabled": false,
+        })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+    response
+}
+
+pub(crate) async fn contract_event_page_for_query_nonblocking(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> Result<ContractEventPage, (StatusCode, Json<serde_json::Value>)> {
+    let requested_limit = validate_contract_events_query(&query)?;
+    let include_hidden = parse_include_hidden(query.include_hidden.as_deref())?;
+    let key = contract_projection_key("contract_events", &query, requested_limit, include_hidden);
+    let runtime = state.contract_event_projection_runtime();
+    let projection_state = state.clone();
+    let projection_query = query.clone();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            contract_event_page_for_query(projection_state, projection_query)
+                .map(ContractEventProjectionValue::ContractEvents)
+                .map_err(|_| ProjectionFailure::new("contract_event_projection_failed"))
+        })
+        .await
+        .map_err(projection_unavailable_api_error)?;
+    contract_event_page_from_outcome(outcome).map_err(projection_unavailable_api_error)
+}
+
+pub(crate) async fn final_events_v2_for_query_nonblocking(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> Result<FinalEventsV2Response, (StatusCode, Json<serde_json::Value>)> {
+    let requested_limit = validate_final_events_query(&query)?;
+    let key = contract_projection_key("final_events_v2", &query, requested_limit, false);
+    let runtime = state.contract_event_projection_runtime();
+    let projection_state = state.clone();
+    let projection_query = query.clone();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            final_events_v2_for_query(projection_state, projection_query)
+                .map(ContractEventProjectionValue::FinalEventsV2)
+                .map_err(|_| ProjectionFailure::new("final_events_v2_projection_failed"))
+        })
+        .await
+        .map_err(projection_unavailable_api_error)?;
+    final_events_v2_page_from_outcome(outcome).map_err(projection_unavailable_api_error)
+}
+
+fn projection_unavailable_api_error(
+    error: ProjectionUnavailable,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": error.error_code(),
+            "lastKnownDataAvailable": false,
+            "retryAfterMs": error.retry_after_ms,
+            "readOnly": true,
+            "executionEnabled": false,
+        })),
+    )
 }
 
 pub async fn contract_retention_status_route(
@@ -429,30 +763,8 @@ pub(crate) fn final_events_v2_for_query(
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     let requested_status = normalize_status_filter(query.status.as_deref());
     query.limit = Some((requested_limit + 1).to_string());
-    let cache_key =
-        final_events_v2_cache_key(&query, requested_status.as_deref(), &range, requested_limit);
     let history_query = parse_history_query(&query)?;
     let now = now_ms();
-    if let Some((cached_at_ms, mut response)) = state.cached_final_events_v2(&cache_key) {
-        let cache_age_sec = now.saturating_sub(cached_at_ms).max(0).saturating_div(1000);
-        if cache_age_sec <= FINAL_EVENTS_V2_CACHE_TTL_SEC {
-            response.server_time = now;
-            response.cache_age_sec = cache_age_sec;
-            response.cache_ttl_sec = FINAL_EVENTS_V2_CACHE_TTL_SEC;
-            response.projection_lag_sec = response
-                .max_event_ts
-                .map(|ts| now.saturating_sub(ts).max(0).saturating_div(1000))
-                .unwrap_or(0);
-            response.timeline = build_canonical_timeline_meta(
-                "contract_whale_signals",
-                response.max_event_ts,
-                response.timeline.persisted_ts.or(response.max_event_ts),
-                Some(response.generated_at),
-                now,
-            );
-            return Ok(response);
-        }
-    }
     let store = state
         .contract_whale_store()
         .ok_or_else(|| internal_error(anyhow::anyhow!("contract whale store unavailable")))?;
@@ -493,7 +805,7 @@ pub(crate) fn final_events_v2_for_query(
         }
     }
 
-    let response = FinalEventsV2Response {
+    Ok(FinalEventsV2Response {
         active,
         closed,
         data_state: if max_event_ts.is_some() {
@@ -524,36 +836,7 @@ pub(crate) fn final_events_v2_for_query(
             Some(now),
             now,
         ),
-    };
-    state.store_final_events_v2_cache(cache_key, now, response.clone());
-    Ok(response)
-}
-
-fn final_events_v2_cache_key(
-    query: &ContractWhaleQuery,
-    requested_status: Option<&str>,
-    range: &str,
-    requested_limit: usize,
-) -> String {
-    format!(
-        "symbol={:?}|severity={:?}|signal_type={:?}|direction={:?}|discord_sent={:?}|window_sec={:?}|exchange={:?}|net_direction={:?}|min_notional_usd={:?}|cursor={:?}|from={:?}|to={:?}|offset={:?}|status={}|range={}|limit={}",
-        query.symbol,
-        query.severity,
-        query.signal_type,
-        query.direction,
-        query.discord_sent,
-        query.window_sec,
-        query.exchange,
-        query.net_direction,
-        query.min_notional_usd,
-        query.cursor,
-        query.from,
-        query.to,
-        query.offset,
-        requested_status.unwrap_or("all"),
-        range,
-        requested_limit,
-    )
+    })
 }
 
 fn contract_event_debug_counts_for_query(

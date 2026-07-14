@@ -1,6 +1,9 @@
 mod support;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use btc_toxic_flow_monitor_rs::{
     api::server::router,
@@ -906,6 +909,198 @@ async fn final_events_v2_reuses_recent_projection_within_cache_ttl() {
     server.abort();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn slow_contract_projection_does_not_delay_summary_or_latest() {
+    let state = seeded_contract_event_state();
+    state.set_contract_event_projection_delay_for_tests(Duration::from_millis(1_200));
+    state.set_contract_event_projection_wait_budget_for_tests(Duration::from_secs(2));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let heavy_client = client.clone();
+    let heavy = tokio::spawn(async move {
+        heavy_client
+            .get(format!(
+                "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+            ))
+            .send()
+            .await
+            .expect("contract events response")
+    });
+    wait_for_projection_running(&state).await;
+
+    let light_started = Instant::now();
+    let (summary, latest) = tokio::join!(
+        client
+            .get(format!(
+                "http://{addr}/api/contract-whale/summary?symbol=BTC"
+            ))
+            .send(),
+        client
+            .get(format!(
+                "http://{addr}/api/contract-whale/latest?symbol=BTC&limit=50"
+            ))
+            .send(),
+    );
+    let light_elapsed = light_started.elapsed();
+
+    assert_eq!(summary.expect("summary response").status(), StatusCode::OK);
+    assert_eq!(latest.expect("latest response").status(), StatusCode::OK);
+    assert!(
+        light_elapsed < Duration::from_millis(800),
+        "light routes waited {light_elapsed:?} for the heavy projection"
+    );
+    assert!(
+        !heavy.is_finished(),
+        "heavy projection unexpectedly finished first"
+    );
+    assert_eq!(heavy.await.expect("heavy task").status(), StatusCode::OK);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn equivalent_contract_event_requests_execute_projection_once() {
+    let state = seeded_contract_event_state();
+    state.set_contract_event_projection_delay_for_tests(Duration::from_millis(150));
+    state.set_contract_event_projection_wait_budget_for_tests(Duration::from_secs(1));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let mut requests = Vec::new();
+    for _ in 0..8 {
+        let client = client.clone();
+        requests.push(tokio::spawn(async move {
+            client
+                .get(format!(
+                    "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+                ))
+                .send()
+                .await
+                .expect("contract events response")
+        }));
+    }
+
+    for request in requests {
+        assert_eq!(
+            request.await.expect("request task").status(),
+            StatusCode::OK
+        );
+    }
+    let stats = state.contract_event_projection_stats_for_tests();
+    assert_eq!(stats.started, 1);
+    assert_eq!(stats.max_running, 1);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn contract_events_timeout_returns_structured_503_without_cache() {
+    let state = seeded_contract_event_state();
+    state.set_contract_event_projection_delay_for_tests(Duration::from_millis(300));
+    state.set_contract_event_projection_wait_budget_for_tests(Duration::from_millis(50));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    let payload: serde_json::Value = response.json().await.expect("503 json");
+    assert_eq!(payload["dataState"], "degraded");
+    assert_eq!(payload["degraded"], true);
+    assert_eq!(payload["errorCode"], "contract_projection_timeout");
+    assert_eq!(payload["lastKnownDataAvailable"], false);
+    assert_eq!(payload["retryAfterMs"], 2_000);
+    wait_for_projection_idle(&state).await;
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn contract_events_timeout_serves_stale_payload() {
+    let state = seeded_contract_event_state();
+    state.set_contract_event_projection_wait_budget_for_tests(Duration::from_secs(2));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let url = format!("http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20");
+
+    let first = client.get(&url).send().await.expect("first response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_payload: serde_json::Value = first.json().await.expect("first json");
+    let first_ids = first_payload["items"]
+        .as_array()
+        .expect("first items")
+        .iter()
+        .map(|item| item["eventId"].clone())
+        .collect::<Vec<_>>();
+    assert!(!first_ids.is_empty());
+
+    state
+        .expire_contract_event_projection_cache_for_tests(Duration::from_secs(20))
+        .await;
+    state.set_contract_event_projection_wait_budget_for_tests(Duration::from_millis(50));
+    state.set_contract_event_projection_delay_for_tests(Duration::from_millis(300));
+    let stale = client.get(&url).send().await.expect("stale response");
+
+    assert_eq!(stale.status(), StatusCode::OK);
+    let stale_payload: serde_json::Value = stale.json().await.expect("stale json");
+    let stale_ids = stale_payload["items"]
+        .as_array()
+        .expect("stale items")
+        .iter()
+        .map(|item| item["eventId"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(stale_ids, first_ids);
+    assert_eq!(stale_payload["dataState"], "stale");
+    assert_eq!(stale_payload["degraded"], true);
+    assert_eq!(
+        stale_payload["errorCode"],
+        "contract_projection_refresh_in_progress"
+    );
+    assert_eq!(stale_payload["lastKnownDataAvailable"], true);
+    wait_for_projection_idle(&state).await;
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn contract_events_and_final_events_v2_share_same_timeline_event_ts() {
     let state = seeded_contract_event_state();
@@ -1372,6 +1567,26 @@ fn seeded_contract_event_state() -> AppState {
     state
 }
 
+async fn wait_for_projection_running(state: &AppState) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.contract_event_projection_stats_for_tests().running == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("projection did not start");
+}
+
+async fn wait_for_projection_idle(state: &AppState) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while state.contract_event_projection_stats_for_tests().in_flight > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("projection did not become idle");
+}
+
 fn seeded_pipeline_debug_state() -> AppState {
     let config = test_config_with_symbol(
         temp_sqlite_path("contract-whale-pipeline-debug"),
@@ -1514,13 +1729,16 @@ fn base_signal(suffix: &str, ts: i64) -> ContractWhaleSignal {
 }
 
 fn temp_sqlite_path(name: &str) -> String {
+    static TEMP_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
+    let sequence = TEMP_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
         .join(format!(
-            "btc-toxic-flow-{name}-{unique}-{}.sqlite",
+            "btc-toxic-flow-{name}-{unique}-{sequence}-{}.sqlite",
             std::process::id()
         ))
         .to_string_lossy()

@@ -1784,6 +1784,136 @@ describe("contract whale api", () => {
       label: "现货确认源",
     });
   });
+
+  it("normalizes stale latest metadata from snake case without discarding snapshots", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        summary: {},
+        items: [{ id: "latest-stale", symbol: "BTC", isVisible: true }],
+        data_state: "stale",
+        degraded: true,
+        error_code: "contract_projection_refresh_in_progress",
+        last_known_data_available: true,
+        cache_age_sec: 21,
+        cache_ttl_sec: 300,
+        retry_after_ms: 2_000,
+      },
+    });
+
+    const payload = await fetchContractWhaleLatest(20, "BTC");
+
+    expect(payload.items).toHaveLength(1);
+    expect(payload).toMatchObject({
+      dataState: "stale",
+      degraded: true,
+      errorCode: "contract_projection_refresh_in_progress",
+      lastKnownDataAvailable: true,
+      cacheAgeSec: 21,
+      cacheTtlSec: 300,
+      retryAfterMs: 2_000,
+      error: null,
+    });
+  });
+
+  it("keeps stale contract events and normalizes cache metadata", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [{ eventId: "stale-event", symbol: "ETH", isVisible: true }],
+        dataState: "stale",
+        degraded: true,
+        errorCode: "contract_projection_refresh_in_progress",
+        lastKnownDataAvailable: true,
+        cacheAgeSec: 18,
+        cacheTtlSec: 300,
+        retryAfterMs: 2_000,
+      },
+    });
+
+    const payload = await fetchContractEvents({ symbol: "ETH", limit: 20 });
+
+    expect(payload.items).toHaveLength(1);
+    expect(payload).toMatchObject({
+      dataState: "stale",
+      degraded: true,
+      lastKnownDataAvailable: true,
+      cacheAgeSec: 18,
+      cacheTtlSec: 300,
+      retryAfterMs: 2_000,
+      error: null,
+    });
+  });
+
+  it("keeps stale lifecycle arrays and intelligence context", async () => {
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          active: [{ eventId: "active-stale", symbol: "ETH", isVisible: true }],
+          closed: [{ eventId: "closed-stale", symbol: "ETH", isVisible: true }],
+          data_state: "stale",
+          degraded: true,
+          error_code: "contract_projection_refresh_in_progress",
+          last_known_data_available: true,
+          cache_age_sec: 17,
+          cache_ttl_sec: 300,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          symbol: "ETH",
+          marketRegime: { regime: "TRENDING_UP", confidence: 82, reason: "prior structure" },
+          riskContext: { riskState: "high", fakeBreakoutRisk: "HIGH", summary: "prior risk" },
+          dataState: "stale",
+          degraded: true,
+          errorCode: "contract_projection_refresh_in_progress",
+          lastKnownDataAvailable: true,
+          cacheAgeSec: 16,
+          cacheTtlSec: 300,
+        },
+      });
+
+    const lifecycle = await fetchFinalEventsV2({ symbol: "ETH", limit: 20 });
+    const intelligence = await fetchContractWhaleIntelligenceTerminal({ symbol: "ETH" });
+
+    expect(lifecycle.active).toHaveLength(1);
+    expect(lifecycle.closed).toHaveLength(1);
+    expect(lifecycle).toMatchObject({ dataState: "stale", cacheAgeSec: 17, cacheTtlSec: 300 });
+    expect(intelligence.marketRegime.regime).toBe("TRENDING_UP");
+    expect(intelligence.riskContext.riskState).toBe("high");
+    expect(intelligence).toMatchObject({
+      dataState: "stale",
+      degraded: true,
+      lastKnownDataAvailable: true,
+      cacheAgeSec: 16,
+      cacheTtlSec: 300,
+      error: null,
+    });
+  });
+
+  it("normalizes a no-cache projection 503 as unavailable", async () => {
+    axios.get.mockRejectedValueOnce({
+      response: {
+        data: {
+          dataState: "degraded",
+          degraded: true,
+          errorCode: "contract_projection_timeout",
+          lastKnownDataAvailable: false,
+          retryAfterMs: 2_000,
+        },
+      },
+    });
+
+    const payload = await fetchContractEvents({ symbol: "ETH", limit: 20 });
+
+    expect(payload).toMatchObject({
+      items: [],
+      dataState: "degraded",
+      degraded: true,
+      errorCode: "contract_projection_timeout",
+      lastKnownDataAvailable: false,
+      retryAfterMs: 2_000,
+      error: "contract_projection_timeout",
+    });
+  });
 });
 
 function contractWhaleItem(overrides = {}) {

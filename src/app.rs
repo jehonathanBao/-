@@ -6,13 +6,15 @@ use std::sync::{
 use axum::http::{header, HeaderMap};
 use parking_lot::RwLock;
 
+pub use crate::api::contract_event_projection_runtime::ProjectionRuntimeStats;
+
 use crate::{
     alerts::{
         alert_service::{AlertService, DevTestSidecarAlertInput, DevTestSidecarAlertResult},
         alert_types::AlertState,
     },
     api::{
-        contract_event_routes::FinalEventsV2Response,
+        contract_event_projection_runtime::ContractEventProjectionRuntime,
         contract_whale_routes::{
             build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
             load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
@@ -177,18 +179,11 @@ struct AppStateInner {
     operator_api_token: Option<String>,
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
-    final_events_v2_cache:
-        Arc<RwLock<std::collections::BTreeMap<String, CachedFinalEventsV2Entry>>>,
+    contract_event_projection_runtime: ContractEventProjectionRuntime,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
     binance_alt_contract_service: BinanceAltContractService,
-}
-
-#[derive(Debug, Clone)]
-struct CachedFinalEventsV2Entry {
-    cached_at_ms: i64,
-    response: FinalEventsV2Response,
 }
 
 #[derive(Debug, Clone)]
@@ -470,7 +465,7 @@ impl AppState {
                 contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
                     std::collections::BTreeMap::new(),
                 )),
-                final_events_v2_cache: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
+                contract_event_projection_runtime: ContractEventProjectionRuntime::new(),
                 signal_history_service,
                 whale_flow_candidate_history_service,
                 spot_whale_service,
@@ -1832,27 +1827,34 @@ impl AppState {
         *self.inner.cwm_oi_resolver_diagnostics.write() = diagnostics;
     }
 
-    pub fn cached_final_events_v2(&self, key: &str) -> Option<(i64, FinalEventsV2Response)> {
-        self.inner
-            .final_events_v2_cache
-            .read()
-            .get(key)
-            .map(|entry| (entry.cached_at_ms, entry.response.clone()))
+    pub(crate) fn contract_event_projection_runtime(&self) -> ContractEventProjectionRuntime {
+        self.inner.contract_event_projection_runtime.clone()
     }
 
-    pub fn store_final_events_v2_cache(
+    pub fn set_contract_event_projection_delay_for_tests(&self, delay: std::time::Duration) {
+        self.inner
+            .contract_event_projection_runtime
+            .set_forced_delay(delay);
+    }
+
+    pub fn set_contract_event_projection_wait_budget_for_tests(
         &self,
-        key: String,
-        cached_at_ms: i64,
-        response: FinalEventsV2Response,
+        wait_budget: std::time::Duration,
     ) {
-        self.inner.final_events_v2_cache.write().insert(
-            key,
-            CachedFinalEventsV2Entry {
-                cached_at_ms,
-                response,
-            },
-        );
+        self.inner
+            .contract_event_projection_runtime
+            .set_wait_budget(wait_budget);
+    }
+
+    pub async fn expire_contract_event_projection_cache_for_tests(&self, age: std::time::Duration) {
+        self.inner
+            .contract_event_projection_runtime
+            .expire_cache_by(age)
+            .await;
+    }
+
+    pub fn contract_event_projection_stats_for_tests(&self) -> ProjectionRuntimeStats {
+        self.inner.contract_event_projection_runtime.stats()
     }
 
     pub fn recent_toxic_events(

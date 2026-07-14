@@ -406,4 +406,8 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_symbol_ts
       ON contract_whale_signals(symbol, ts DESC);
     "#,
+    r#"
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_event_feed
+      ON contract_whale_signals(symbol, ts DESC, signal_id DESC);
+    "#,
 ];
