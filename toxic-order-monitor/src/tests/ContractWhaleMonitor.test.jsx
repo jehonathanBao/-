@@ -1444,12 +1444,14 @@ describe("ContractWhaleMonitor", () => {
     const setups = screen.getByText("Structure Setups");
     const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
+    const monitorPanel = screen.getByText("主力合约监控").closest("section");
 
     expect(historical.compareDocumentPosition(proDesk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(proDesk.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historical.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(structure.compareDocumentPosition(setups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(setups.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(monitorPanel).toHaveClass("overflow-x-hidden");
     expect(historicalPanel).toHaveClass("min-h-[50vh]");
     expect(screen.getByTestId("primary-analysis-grid")).toHaveClass("2xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)]");
     expect(screen.getByTestId("secondary-analysis-grid").className).toContain("2xl:grid-cols-");

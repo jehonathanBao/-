@@ -705,7 +705,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   }
 
   return (
-    <section className="console-panel mb-5 p-4 md:p-5">
+    <section className="console-panel mb-5 overflow-x-hidden p-4 md:p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="max-w-3xl">
           <p className="console-label text-cyan-300">Contract Whale Flow</p>
