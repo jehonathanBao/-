@@ -15,6 +15,7 @@ import {
 
 const STATUS_REFRESH_MS = 5_000;
 const EVENT_REFRESH_MS = 15_000;
+const EVENT_RECOVERY_RETRY_MS = 2_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_CONTRACT_EVENT_LIMIT = 50;
 const ETH_INITIAL_CONTRACT_EVENT_LIMIT = 20;
@@ -32,12 +33,82 @@ const DEFAULT_FILTERS = {
   exchange: "all",
 };
 
+const DATA_SLICE_LABELS = {
+  status: "状态快照",
+  historical: "历史事件",
+  lifecycle: "生命周期",
+  intelligence: "智能分析",
+};
+
+function createDataSlice(overrides = {}) {
+  return {
+    state: "loading",
+    errorCode: null,
+    lastSuccessAt: null,
+    nextRetryAt: null,
+    cacheAgeSec: null,
+    cacheTtlSec: null,
+    ...overrides,
+  };
+}
+
+function createDataSlices() {
+  return {
+    status: createDataSlice(),
+    historical: createDataSlice(),
+    lifecycle: createDataSlice(),
+    intelligence: createDataSlice(),
+  };
+}
+
+function isUsableDataPayload(payload) {
+  if (!payload || payload.error) return false;
+  const dataState = String(payload.dataState || "fresh").toLowerCase();
+  if (dataState === "unavailable") return false;
+  if (dataState === "degraded" && payload.lastKnownDataAvailable !== true) return false;
+  return true;
+}
+
+function deriveDataSlice(previous, payload, hasPreviousData, retryIntervalMs) {
+  const now = Date.now();
+  const dataState = String(payload?.dataState || (payload?.error ? "unavailable" : "fresh")).toLowerCase();
+  const failed = !isUsableDataPayload(payload);
+  const stale = dataState === "stale" || dataState === "degraded" || (failed && hasPreviousData);
+  const nextState = failed ? (hasPreviousData ? "stale" : "unavailable") : (stale ? "stale" : "fresh");
+  const retryAfterMs = Number(payload?.retryAfterMs);
+
+  return createDataSlice({
+    state: nextState,
+    errorCode: nextState === "fresh" ? null : payload?.errorCode || payload?.error || "data_refresh_unavailable",
+    lastSuccessAt: nextState === "fresh" ? now : previous?.lastSuccessAt ?? null,
+    nextRetryAt:
+      nextState === "fresh"
+        ? null
+        : now + (Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : retryIntervalMs),
+    cacheAgeSec: Number.isFinite(Number(payload?.cacheAgeSec)) ? Number(payload.cacheAgeSec) : previous?.cacheAgeSec ?? null,
+    cacheTtlSec: Number.isFinite(Number(payload?.cacheTtlSec)) ? Number(payload.cacheTtlSec) : previous?.cacheTtlSec ?? null,
+  });
+}
+
+function eventRecoveryRetryDelay(payloads) {
+  const affected = payloads.filter((payload) => {
+    const dataState = String(payload?.dataState || (payload?.error ? "unavailable" : "fresh")).toLowerCase();
+    return payload?.error || ["stale", "degraded", "unavailable"].includes(dataState);
+  });
+  if (affected.length === 0) return null;
+
+  const hintedDelays = affected
+    .map((payload) => Number(payload?.retryAfterMs))
+    .filter((delay) => Number.isFinite(delay) && delay > 0);
+  return Math.min(EVENT_REFRESH_MS, hintedDelays.length > 0 ? Math.min(...hintedDelays) : EVENT_RECOVERY_RETRY_MS);
+}
+
 export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
   const [state, setState] = useState({
     loading: true,
     contractEventsLoading: true,
-    contractEventsError: null,
+    dataSlices: createDataSlices(),
     summary: null,
     items: [],
     contractEvents: [],
@@ -78,7 +149,6 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     latestStaleCount: null,
     latestTimeline: null,
     meta: null,
-    error: null,
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
   const [selectedWhaleId, setSelectedWhaleId] = useState(null);
@@ -96,6 +166,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     let cancelled = false;
     let statusTimer = null;
     let eventTimer = null;
+    let eventRetryTimer = null;
     let statusRefreshInFlight = false;
     let eventRefreshInFlight = false;
     let initialEventViewPending = true;
@@ -108,72 +179,52 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     updateState((previous) => ({
       ...previous,
+      loading: true,
       contractEventsLoading: true,
-      contractEventsError: null,
+      dataSlices: createDataSlices(),
       hiddenContractEvents: [],
       hiddenContractEventsLoaded: false,
       hiddenContractEventsExpanded: false,
       hiddenContractEventsLoading: false,
     }));
 
-    const refreshSummary = async () => {
-      const payload = await fetchContractWhaleSummary(filters.symbol);
-      updateState((previous) => ({
-        ...previous,
-        loading: false,
-        summary: payload.error ? previous.summary : payload.summary,
-        meta: payload.error ? previous.meta : (payload.meta || previous.meta),
-        error: payload.error || null,
-      }));
-    };
+    const refreshSummary = () => fetchContractWhaleSummary(filters.symbol);
 
-    const refreshLatest = async () => {
-      const payload = await fetchContractWhaleLatest(50, filters.symbol);
-      const unavailable = payload.error || payload.dataState === "degraded";
-      updateState((previous) => {
-        return {
-          ...previous,
-          loading: false,
-          summary: unavailable ? previous.summary : payload.summary,
-          items: unavailable ? previous.items : payload.items,
-          latestServerTime: unavailable ? previous.latestServerTime : payload.serverTime,
-          latestMaxTs: unavailable ? previous.latestMaxTs : payload.maxTs,
-          latestMaxAgeSec: unavailable ? previous.latestMaxAgeSec : payload.maxAgeSec,
-          latestStaleCount: unavailable ? previous.latestStaleCount : payload.staleCount,
-          latestTimeline: unavailable ? previous.latestTimeline : payload.timeline,
-          meta: unavailable ? previous.meta : (payload.meta || previous.meta),
-          error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "latest_degraded" : null),
-        };
-      });
-    };
+    const refreshLatest = () => fetchContractWhaleLatest(50, filters.symbol);
 
     const refreshContractEvents = async (limit = 50) => {
       const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
-      const unavailable = payload.error || payload.dataState === "degraded";
+      const usable = isUsableDataPayload(payload);
       updateState((previous) => {
         return {
           ...previous,
           loading: false,
-          contractEvents: unavailable
-            ? previous.contractEvents
-            : reuseEventList(previous.contractEvents, payload.items),
+          contractEvents: usable
+            ? reuseEventList(previous.contractEvents, payload.items)
+            : previous.contractEvents,
           contractEventsLoading: false,
-          contractEventsError: unavailable
-            ? payload.error || payload.errorCode || "contract_events_unavailable"
-            : null,
-          contractEventsCursor: unavailable ? previous.contractEventsCursor : payload.nextCursor,
-          contractEventsHasMore: unavailable ? previous.contractEventsHasMore : payload.hasMore,
-          contractEventsServerTime: unavailable ? previous.contractEventsServerTime : payload.serverTime,
-          contractEventsLastEventTs: unavailable ? previous.contractEventsLastEventTs : payload.lastEventTs,
-          contractEventsMaxEventTs: unavailable ? previous.contractEventsMaxEventTs : payload.maxEventTs,
-          contractEventsHistoryLagSec: unavailable ? previous.contractEventsHistoryLagSec : payload.historyLagSec,
-          contractEventsLatestLagSec: unavailable ? previous.contractEventsLatestLagSec : payload.latestLagSec,
-          contractEventsCacheAgeSec: unavailable ? previous.contractEventsCacheAgeSec : payload.cacheAgeSec,
-          contractEventsCacheTtlSec: unavailable ? previous.contractEventsCacheTtlSec : payload.cacheTtlSec,
-          contractEventsTimeline: unavailable ? previous.contractEventsTimeline : payload.timeline,
-          error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "contract_events_degraded" : previous.error),
+          contractEventsCursor: usable ? payload.nextCursor : previous.contractEventsCursor,
+          contractEventsHasMore: usable ? payload.hasMore : previous.contractEventsHasMore,
+          contractEventsServerTime: usable ? payload.serverTime : previous.contractEventsServerTime,
+          contractEventsLastEventTs: usable ? payload.lastEventTs : previous.contractEventsLastEventTs,
+          contractEventsMaxEventTs: usable ? payload.maxEventTs : previous.contractEventsMaxEventTs,
+          contractEventsHistoryLagSec: usable ? payload.historyLagSec : previous.contractEventsHistoryLagSec,
+          contractEventsLatestLagSec: usable ? payload.latestLagSec : previous.contractEventsLatestLagSec,
+          contractEventsCacheAgeSec: usable ? payload.cacheAgeSec : previous.contractEventsCacheAgeSec,
+          contractEventsCacheTtlSec: usable ? payload.cacheTtlSec : previous.contractEventsCacheTtlSec,
+          contractEventsTimeline: usable ? payload.timeline : previous.contractEventsTimeline,
+          dataSlices: {
+            ...previous.dataSlices,
+            historical: deriveDataSlice(
+              previous.dataSlices.historical,
+              payload,
+              previous.contractEvents.length > 0,
+              EVENT_REFRESH_MS,
+            ),
+          },
         };
       });
+      return payload;
     };
 
     const refreshContractEventDebugCounts = async () => {
@@ -212,28 +263,37 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     const refreshFinalEvents = async (limit = 30) => {
       const payload = await fetchFinalEventsV2({ symbol: filters.symbol, range: "24h", limit });
-      const unavailable = payload.error || payload.dataState === "degraded";
+      const usable = isUsableDataPayload(payload);
       updateState((previous) => ({
         ...previous,
         loading: false,
-        finalEvents: unavailable
-          ? previous.finalEvents
-          : {
+        finalEvents: usable
+          ? {
               active: reuseEventList(previous.finalEvents.active, payload.active),
               closed: reuseEventList(previous.finalEvents.closed, payload.closed),
-            },
-        finalEventsCursor: unavailable ? previous.finalEventsCursor : payload.nextCursor,
-        finalEventsHasMore: unavailable ? previous.finalEventsHasMore : payload.hasMore,
-        finalEventsServerTime: unavailable ? previous.finalEventsServerTime : payload.serverTime,
-        finalEventsLastEventTs: unavailable ? previous.finalEventsLastEventTs : payload.lastEventTs,
-        finalEventsMaxEventTs: unavailable ? previous.finalEventsMaxEventTs : payload.maxEventTs,
-        finalEventsGeneratedAt: unavailable ? previous.finalEventsGeneratedAt : payload.generatedAt,
-        finalEventsProjectionLagSec: unavailable ? previous.finalEventsProjectionLagSec : payload.projectionLagSec,
-        finalEventsCacheAgeSec: unavailable ? previous.finalEventsCacheAgeSec : payload.cacheAgeSec,
-        finalEventsCacheTtlSec: unavailable ? previous.finalEventsCacheTtlSec : payload.cacheTtlSec,
-        finalEventsTimeline: unavailable ? previous.finalEventsTimeline : payload.timeline,
-        error: payload.error || (payload.dataState === "degraded" ? payload.errorCode || "final_events_degraded" : previous.error),
+            }
+          : previous.finalEvents,
+        finalEventsCursor: usable ? payload.nextCursor : previous.finalEventsCursor,
+        finalEventsHasMore: usable ? payload.hasMore : previous.finalEventsHasMore,
+        finalEventsServerTime: usable ? payload.serverTime : previous.finalEventsServerTime,
+        finalEventsLastEventTs: usable ? payload.lastEventTs : previous.finalEventsLastEventTs,
+        finalEventsMaxEventTs: usable ? payload.maxEventTs : previous.finalEventsMaxEventTs,
+        finalEventsGeneratedAt: usable ? payload.generatedAt : previous.finalEventsGeneratedAt,
+        finalEventsProjectionLagSec: usable ? payload.projectionLagSec : previous.finalEventsProjectionLagSec,
+        finalEventsCacheAgeSec: usable ? payload.cacheAgeSec : previous.finalEventsCacheAgeSec,
+        finalEventsCacheTtlSec: usable ? payload.cacheTtlSec : previous.finalEventsCacheTtlSec,
+        finalEventsTimeline: usable ? payload.timeline : previous.finalEventsTimeline,
+        dataSlices: {
+          ...previous.dataSlices,
+          lifecycle: deriveDataSlice(
+            previous.dataSlices.lifecycle,
+            payload,
+            previous.finalEvents.active.length > 0 || previous.finalEvents.closed.length > 0,
+            EVENT_REFRESH_MS,
+          ),
+        },
       }));
+      return payload;
     };
 
     const refreshIntelligenceTerminal = async () => {
@@ -243,8 +303,18 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       });
       updateState((previous) => ({
         ...previous,
-        intelligenceTerminal: payload.error ? previous.intelligenceTerminal : payload,
+        intelligenceTerminal: isUsableDataPayload(payload) ? payload : previous.intelligenceTerminal,
+        dataSlices: {
+          ...previous.dataSlices,
+          intelligence: deriveDataSlice(
+            previous.dataSlices.intelligence,
+            payload,
+            Boolean(previous.intelligenceTerminal),
+            EVENT_REFRESH_MS,
+          ),
+        },
       }));
+      return payload;
     };
 
     const refreshWhaleEvents = async () => {
@@ -268,28 +338,83 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       if (statusRefreshInFlight) return;
       statusRefreshInFlight = true;
       try {
-        await Promise.allSettled([
+        const [summaryPayload, latestPayload] = await Promise.all([
           refreshSummary(),
           refreshLatest(),
         ]);
+        const summaryUsable = Boolean(summaryPayload && !summaryPayload.error);
+        const latestUsable = isUsableDataPayload(latestPayload);
+        const statusError = summaryPayload?.error || latestPayload?.error ||
+          (latestPayload?.dataState === "degraded" ? latestPayload.errorCode || "latest_degraded" : null);
+        const statusPayload = statusError
+          ? {
+              ...latestPayload,
+              dataState: "degraded",
+              degraded: true,
+              errorCode: statusError,
+              error: statusError,
+            }
+          : latestPayload;
+        updateState((previous) => ({
+          ...previous,
+          loading: false,
+          summary: latestUsable
+            ? latestPayload.summary
+            : (summaryUsable ? summaryPayload.summary : previous.summary),
+          items: latestUsable ? latestPayload.items : previous.items,
+          latestServerTime: latestUsable ? latestPayload.serverTime : previous.latestServerTime,
+          latestMaxTs: latestUsable ? latestPayload.maxTs : previous.latestMaxTs,
+          latestMaxAgeSec: latestUsable ? latestPayload.maxAgeSec : previous.latestMaxAgeSec,
+          latestStaleCount: latestUsable ? latestPayload.staleCount : previous.latestStaleCount,
+          latestTimeline: latestUsable ? latestPayload.timeline : previous.latestTimeline,
+          meta: latestUsable
+            ? (latestPayload.meta || previous.meta)
+            : (summaryUsable ? summaryPayload.meta || previous.meta : previous.meta),
+          dataSlices: {
+            ...previous.dataSlices,
+            status: deriveDataSlice(
+              previous.dataSlices.status,
+              statusPayload,
+              Boolean(previous.summary) || previous.items.length > 0 || summaryUsable || latestUsable,
+              STATUS_REFRESH_MS,
+            ),
+          },
+        }));
       } finally {
         statusRefreshInFlight = false;
       }
     };
 
-    const refreshEventViews = async () => {
+    const refreshEventViews = async ({ allowRecoveryRetry = true } = {}) => {
       if (eventRefreshInFlight) return;
       eventRefreshInFlight = true;
       try {
         const contractEventLimit = initialEventViewPending && filters.symbol === "ETH"
           ? ETH_INITIAL_CONTRACT_EVENT_LIMIT
           : DEFAULT_CONTRACT_EVENT_LIMIT;
-        await refreshContractEvents(contractEventLimit);
+        const contractEventsPayload = await refreshContractEvents(contractEventLimit);
         initialEventViewPending = false;
-        await Promise.allSettled([
+        const secondaryResults = await Promise.allSettled([
           refreshFinalEvents(30),
           refreshIntelligenceTerminal(),
         ]);
+        const projectionPayloads = [
+          contractEventsPayload,
+          ...secondaryResults
+            .filter((result) => result.status === "fulfilled")
+            .map((result) => result.value),
+        ];
+        const retryDelay = allowRecoveryRetry ? eventRecoveryRetryDelay(projectionPayloads) : null;
+        if (eventRetryTimer) {
+          window.clearTimeout(eventRetryTimer);
+          eventRetryTimer = null;
+        }
+        if (retryDelay !== null && document.visibilityState !== "hidden") {
+          eventRetryTimer = window.setTimeout(() => {
+            eventRetryTimer = null;
+            void refreshEventViews({ allowRecoveryRetry: false });
+          }, retryDelay);
+        }
       } finally {
         eventRefreshInFlight = false;
       }
@@ -298,8 +423,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     const clearTimers = () => {
       if (statusTimer) window.clearInterval(statusTimer);
       if (eventTimer) window.clearInterval(eventTimer);
+      if (eventRetryTimer) window.clearTimeout(eventRetryTimer);
       statusTimer = null;
       eventTimer = null;
+      eventRetryTimer = null;
     };
 
     const configurePolling = () => {
@@ -483,6 +610,8 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const displayIntelligence = shouldApplyNotionalDisplayFilter
     ? filterIntelligenceByVisibleSignals(state.intelligenceTerminal, visibleSignalIds)
     : state.intelligenceTerminal;
+  const intelligenceSlice = state.dataSlices.intelligence;
+  const currentDisplayIntelligence = intelligenceSlice.state === "fresh" ? displayIntelligence : null;
   const displaySummary = shouldApplyNotionalDisplayFilter
     ? filterSummaryTradeOpportunitiesByVisibleSignals(summary, visibleSignalIds)
     : summary;
@@ -609,50 +738,56 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
         已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；当前过滤：{displayFilterLabel}。低于阈值的事件仍保留在原始数据里。
       </p>
-      {state.error ? (
-        <p className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
-          主力合约监控数据暂时不可用，已保留上一次结果。
-        </p>
-      ) : null}
+      <DataHealthBanner dataSlices={state.dataSlices} />
 
-      <ProDeskOverviewBar
-        contractEventsLastEventTs={state.contractEventsLastEventTs}
-        intelligence={displayIntelligence}
-        latestSignalTs={latestSignalTs}
-        summary={summary}
-      />
+      <section
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)] 2xl:items-start"
+        data-testid="primary-analysis-grid"
+      >
+        <div className="min-w-0">
+          <HistoricalEventStreamPanel
+            contractEvents={contractEvents}
+            visibleContractEvents={visibleContractEvents}
+            hiddenDisplayFilteredCount={hiddenDisplayFilteredCount}
+            debugCounts={state.contractEventDebugCounts}
+            rawFlowDebug={state.rawFlowDebug}
+            enabled={summary.enabled}
+            loading={state.contractEventsLoading}
+            error={state.dataSlices.historical.state === "unavailable"}
+            onLoadMoreContractEvents={loadMoreContractEvents}
+            onOpenSignal={setSelectedSignalId}
+            eventsSyncLag={eventsSyncLag}
+            latestSignalTs={latestSignalTs}
+            contractEventsLastEventTs={state.contractEventsLastEventTs}
+            latestMaxTs={state.latestMaxTs}
+            contractEventsMaxEventTs={state.contractEventsMaxEventTs}
+            contractEventsLatestLagSec={state.contractEventsLatestLagSec}
+            contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
+            contractEventsHasMore={state.contractEventsHasMore}
+            displayFilterLabel={displayFilterLabel}
+            symbol={filters.symbol}
+          />
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)] xl:items-start">
-        <HistoricalEventStreamPanel
-          contractEvents={contractEvents}
-          visibleContractEvents={visibleContractEvents}
-          hiddenDisplayFilteredCount={hiddenDisplayFilteredCount}
-          debugCounts={state.contractEventDebugCounts}
-          rawFlowDebug={state.rawFlowDebug}
-          enabled={summary.enabled}
-          loading={state.contractEventsLoading}
-          error={state.contractEventsError}
-          onLoadMoreContractEvents={loadMoreContractEvents}
-          onOpenSignal={setSelectedSignalId}
-          eventsSyncLag={eventsSyncLag}
-          latestSignalTs={latestSignalTs}
-          contractEventsLastEventTs={state.contractEventsLastEventTs}
-          latestMaxTs={state.latestMaxTs}
-          contractEventsMaxEventTs={state.contractEventsMaxEventTs}
-          contractEventsLatestLagSec={state.contractEventsLatestLagSec}
-          contractEventsHistoryLagSec={state.contractEventsHistoryLagSec}
-          contractEventsHasMore={state.contractEventsHasMore}
-          displayFilterLabel={displayFilterLabel}
-          symbol={filters.symbol}
-        />
+          <ProDeskOverviewBar
+            contractEventsLastEventTs={state.contractEventsLastEventTs}
+            intelligence={currentDisplayIntelligence}
+            intelligenceSlice={intelligenceSlice}
+            latestSignalTs={latestSignalTs}
+            previousIntelligence={displayIntelligence}
+            summary={summary}
+          />
+        </div>
 
-        <MarketStructureDeskPanel intelligence={displayIntelligence} summary={summary} />
+        <MarketStructureDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(280px,0.85fr)_minmax(0,1.15fr)] xl:items-start">
-        <LiquidityMapDeskPanel intelligence={displayIntelligence} />
+      <section
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(280px,0.85fr)_minmax(0,1.15fr)] 2xl:items-start"
+        data-testid="secondary-analysis-grid"
+      >
+        <LiquidityMapDeskPanel intelligence={currentDisplayIntelligence} />
         <TradeSetupsDeskPanel
-          intelligence={displayIntelligence}
+          intelligence={currentDisplayIntelligence}
           onSelectSignal={(signalId) => {
             setSelectedSignalId(signalId);
             document.getElementById("contract-whale-events")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -662,7 +797,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         />
       </section>
 
-      <section className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)] xl:items-start">
+      <section
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)] 2xl:items-start"
+        data-testid="lifecycle-risk-grid"
+      >
         <LifecycleEventSections
           finalEvents={finalEvents}
           finalEventsHasMore={state.finalEventsHasMore}
@@ -670,7 +808,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           onOpenSignal={setSelectedSignalId}
           symbol={filters.symbol}
         />
-        <RiskContextDeskPanel intelligence={state.intelligenceTerminal} summary={summary} />
+        <RiskContextDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
       </section>
 
       <ContractWhaleSystemStatusPanel
@@ -1106,6 +1244,32 @@ function deriveEventFeedDiagnostics({
   };
 }
 
+function DataHealthBanner({ dataSlices }) {
+  const affected = Object.entries(dataSlices || {}).filter(([, slice]) =>
+    slice?.state === "stale" || slice?.state === "unavailable",
+  );
+  if (affected.length === 0) return null;
+
+  const hasStatusIssue = affected.some(([key]) => key === "status");
+  const historicalUnavailable = dataSlices?.historical?.state === "unavailable";
+  const affectedLabel = affected
+    .map(([key, slice]) => `${DATA_SLICE_LABELS[key]}（${slice.state === "stale" ? "陈旧" : "不可用"}）`)
+    .join("、");
+
+  return (
+    <aside
+      className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs leading-5 text-amber-100"
+      data-testid="data-health-banner"
+      role="status"
+    >
+      <p className="font-semibold">部分数据正在自动恢复：{affectedLabel}</p>
+      {hasStatusIssue ? <p className="mt-1">主力合约监控数据暂时不可用，已保留上一次结果。</p> : null}
+      {historicalUnavailable ? <p className="mt-1">事件流暂时不可用，系统将在下一轮自动重试。</p> : null}
+      <p className="mt-1 text-amber-200/80">页面会先做一次短间隔重试，再按原轮询节奏继续恢复，无需手动操作。</p>
+    </aside>
+  );
+}
+
 function HistoricalEventStreamPanel({
   contractEvents,
   visibleContractEvents,
@@ -1154,7 +1318,7 @@ function HistoricalEventStreamPanel({
 
   return (
     <section
-      className="mt-4 min-h-[50vh] rounded-2xl border border-cyan-500/20 bg-slate-950/35"
+      className={`mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 ${visibleContractEvents.length > 0 ? "min-h-[50vh]" : ""}`}
       data-testid="historical-events-primary"
       id="contract-whale-events"
     >
@@ -1202,9 +1366,7 @@ function HistoricalEventStreamPanel({
         {loading ? (
           <p className="px-4 py-5 text-sm text-slate-400">主力合约监控载入中...</p>
         ) : error && contractEvents.length === 0 ? (
-          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
-            事件流暂时不可用，系统将在下一轮自动重试。
-          </p>
+          <p className="px-4 py-5 text-sm text-slate-400">暂无可用的历史事件缓存。</p>
         ) : contractEvents.length === 0 ? (
           <p className="px-4 py-5 text-sm text-slate-400">{enabled ? "暂无主力合约异动" : "主力合约监控未启用"}</p>
         ) : visibleContractEvents.length === 0 ? (
@@ -1474,40 +1636,84 @@ function ContractWhaleSystemStatusPanel({
   );
 }
 
-function ProDeskOverviewBar({ contractEventsLastEventTs, intelligence, latestSignalTs, summary }) {
+function ProDeskOverviewBar({
+  contractEventsLastEventTs,
+  intelligence,
+  intelligenceSlice,
+  latestSignalTs,
+  previousIntelligence,
+  summary,
+}) {
   const regime = intelligence?.marketRegime || {};
   const riskContext = intelligence?.riskContext || {};
+  const intelligenceState = intelligenceSlice?.state || "loading";
+  const intelligenceFresh = intelligenceState === "fresh";
+  const previousRegime = previousIntelligence?.marketRegime?.regime;
+  const previousRisk = previousIntelligence?.riskContext?.fakeBreakoutRisk;
   const freshTs = Number(contractEventsLastEventTs ?? latestSignalTs) || null;
   const freshness = freshTs ? relativeAge(freshTs) : "暂无";
   const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones.length : 0;
+  const intelligenceFreshnessLabel = intelligenceState === "stale"
+    ? "STALE"
+    : intelligenceState === "unavailable"
+      ? "UNAVAILABLE"
+      : intelligenceState === "fresh"
+        ? "FRESH"
+        : "LOADING";
 
   return (
     <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Pro Trading Desk Layout v2</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Pro Trading Desk Layout v2</p>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${intelligenceFresh ? "border-emerald-500/30 text-emerald-200" : "border-amber-500/30 text-amber-200"}`}
+              data-testid="intelligence-freshness"
+            >
+              {intelligenceFreshnessLabel}
+            </span>
+          </div>
           <h4 className="mt-1 text-base font-bold text-white">事件驱动交易台总览</h4>
           <p className="mt-1 text-xs leading-5 text-slate-400">
             首屏先看市场发生了什么，再看结构、流动性、机会和风险，不让分析层抢走事件流的主视角。
           </p>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
-          <TradeSummaryPill label="Regime" tone="cyan" value={regime.regime || "RANGING"} />
-          <TradeSummaryPill label="当前风险" tone={riskPillTone(riskContext.fakeBreakoutRisk)} value={riskLabel(riskContext.fakeBreakoutRisk)} />
+          <TradeSummaryPill
+            label="Regime"
+            testId="current-market-regime"
+            tone={intelligenceFresh ? "cyan" : "slate"}
+            value={intelligenceFresh ? regime.regime || "UNKNOWN" : "UNKNOWN"}
+          />
+          <TradeSummaryPill
+            label="当前风险"
+            testId="current-risk-state"
+            tone={intelligenceFresh ? riskPillTone(riskContext.fakeBreakoutRisk) : "slate"}
+            value={intelligenceFresh ? riskLabel(riskContext.fakeBreakoutRisk) : "UNKNOWN"}
+          />
           <TradeSummaryPill label="历史新鲜度" tone="slate" value={freshness} />
           <TradeSummaryPill label="No-trade Zones" tone="yellow" value={`${noTradeZones}`} />
           <TradeSummaryPill label="Run Mode" tone={summary.enabled ? (summary.dryRun ? "yellow" : "cyan") : "slate"} value={modeLabel(summary)} />
         </div>
       </div>
+      {!intelligenceFresh && previousRegime ? (
+        <p
+          className="mt-3 rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-400"
+          data-testid="previous-intelligence-context"
+        >
+          上一版分析（仅供对照）：{previousRegime} / {previousRisk ? riskLabel(previousRisk) : "UNKNOWN"}
+        </p>
+      ) : null}
     </section>
   );
 }
 
 function MarketStructureDeskPanel({ intelligence, summary }) {
   const regime = intelligence?.marketRegime || {
-    regime: "RANGING",
+    regime: "UNKNOWN",
     confidence: 0,
-    reason: "当前缺少足够的主力历史信号。",
+    reason: "当前分析数据不可用或仍在刷新，不沿用上一版结论作为当前判断。",
   };
   const rankedEvents = Array.isArray(intelligence?.rankedEvents) ? intelligence.rankedEvents : [];
   const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
@@ -2625,9 +2831,12 @@ function InstitutionalAnalysisTerminalPanel({ intelligence }) {
   );
 }
 
-function TradeSummaryPill({ label, value, tone = "slate" }) {
+function TradeSummaryPill({ label, value, tone = "slate", testId }) {
   return (
-    <div className={`rounded-xl border px-3 py-2 ${tradeSummaryPillClass(tone)}`}>
+    <div
+      className={`rounded-xl border px-3 py-2 ${tradeSummaryPillClass(tone)}`}
+      data-testid={testId}
+    >
       <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
       <p className="mt-1 text-sm font-bold text-white">{value}</p>
     </div>

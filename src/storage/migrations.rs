@@ -443,4 +443,8 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_new_token_l2_outcomes_symbol_observed
       ON new_token_l2_outcomes(symbol, observed_at DESC);
     "#,
+    r#"
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_event_feed
+      ON contract_whale_signals(symbol, ts DESC, signal_id DESC);
+    "#,
 ];

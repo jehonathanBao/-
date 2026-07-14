@@ -630,6 +630,159 @@ fn contract_whale_signal_query_filters_and_paginates_history() {
 }
 
 #[test]
+fn contract_whale_event_feed_fast_path_matches_general_query_ordering() {
+    let store = temp_store("contract-whale-event-feed-fast-path");
+    let from_ts = 1_700_000_000_000;
+    let min_notional_usd = 10_000_000.0;
+    let mut base = sample_s_signal();
+    base.symbol = "BTC".to_string();
+    base.market_type = ContractWhaleMarketType::Perp;
+    base.total_notional_usd = 12_000_000.0;
+
+    let mut same_ts_low_id = base.clone();
+    same_ts_low_id.id = "contract-whale:BTC:event-feed:a".to_string();
+    same_ts_low_id.ts = from_ts + 20_000;
+
+    let mut same_ts_high_id = base.clone();
+    same_ts_high_id.id = "contract-whale:BTC:event-feed:z".to_string();
+    same_ts_high_id.ts = same_ts_low_id.ts;
+
+    let mut newer = base.clone();
+    newer.id = "contract-whale:BTC:event-feed:newer".to_string();
+    newer.ts = from_ts + 30_000;
+
+    let mut below_notional = base.clone();
+    below_notional.id = "contract-whale:BTC:event-feed:below-notional".to_string();
+    below_notional.ts = from_ts + 40_000;
+    below_notional.total_notional_usd = min_notional_usd - 1.0;
+
+    let mut older = base.clone();
+    older.id = "contract-whale:BTC:event-feed:older".to_string();
+    older.ts = from_ts - 1;
+
+    let mut eth = base.clone();
+    eth.id = "contract-whale:ETH:event-feed".to_string();
+    eth.symbol = "ETH".to_string();
+    eth.ts = from_ts + 50_000;
+
+    let mut spot = base.clone();
+    spot.id = "contract-whale:BTC:event-feed:spot".to_string();
+    spot.market_type = ContractWhaleMarketType::Spot;
+    spot.ts = from_ts + 60_000;
+
+    for signal in [
+        &same_ts_low_id,
+        &same_ts_high_id,
+        &newer,
+        &below_notional,
+        &older,
+        &eth,
+        &spot,
+    ] {
+        store.upsert_contract_whale_signal(signal).unwrap();
+    }
+
+    let repository_ids = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            from_ts: Some(from_ts),
+            min_notional_usd: Some(min_notional_usd),
+            limit: 100,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .map(|signal| signal.id)
+        .collect::<Vec<_>>();
+    let general_ids = store
+        .with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT signal_id
+                FROM contract_whale_signals
+                WHERE market_type = 'perp'
+                  AND (?1 IS NULL OR symbol = ?1)
+                  AND (?2 IS NULL OR ts >= ?2)
+                  AND (?3 IS NULL OR total_notional_usd >= ?3)
+                ORDER BY ts DESC, signal_id DESC
+                LIMIT ?4 OFFSET ?5
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![
+                    Some("BTC"),
+                    Some(from_ts),
+                    Some(min_notional_usd),
+                    100_i64,
+                    0_i64,
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+        .unwrap();
+
+    assert_eq!(
+        repository_ids,
+        vec![newer.id, same_ts_high_id.id, same_ts_low_id.id,]
+    );
+    assert_eq!(repository_ids, general_ids);
+}
+
+#[test]
+fn contract_whale_event_feed_query_plan_uses_ordered_symbol_index() {
+    let store = temp_store("contract-whale-event-feed-query-plan");
+    let details = store
+        .with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
+                       active_sources_json, threshold_profile
+                FROM contract_whale_signals
+                WHERE market_type = 'perp'
+                  AND symbol = ?1
+                  AND ts >= ?2
+                  AND (?3 IS NULL OR ts <= ?3)
+                  AND total_notional_usd >= ?4
+                ORDER BY ts DESC, signal_id DESC
+                LIMIT ?5 OFFSET ?6
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![
+                    "BTC",
+                    1_700_000_000_000_i64,
+                    Option::<i64>::None,
+                    10_000_000.0_f64,
+                    50_i64,
+                    0_i64,
+                ],
+                |row| row.get::<_, String>(3),
+            )?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+        .unwrap();
+
+    assert!(
+        details
+            .iter()
+            .any(|line| line.contains("idx_contract_whale_signals_event_feed")),
+        "query plan did not select the event-feed index: {details:?}"
+    );
+    assert!(
+        !details
+            .iter()
+            .any(|line| line.contains("SCAN contract_whale_signals")),
+        "query plan performed a full table scan: {details:?}"
+    );
+    assert!(
+        !details.iter().any(|line| line.contains("USE TEMP B-TREE")),
+        "query plan required a temporary sort: {details:?}"
+    );
+}
+
+#[test]
 fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
     let store = temp_store("contract-whale-retention");
     let now = 1_700_000_000_000;

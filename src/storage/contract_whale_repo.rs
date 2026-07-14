@@ -40,6 +40,48 @@ pub struct ContractWhaleSignalQuery {
     pub offset: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractWhaleSignalQueryPath {
+    LatestBySymbol,
+    EventFeed,
+    General,
+}
+
+fn contract_whale_signal_query_path(
+    query: &ContractWhaleSignalQuery,
+) -> ContractWhaleSignalQueryPath {
+    let min_notional_usd = query
+        .min_notional_usd
+        .filter(|value| value.is_finite() && *value > 0.0);
+    let has_optional_filters = query.severity.is_some()
+        || query.signal_type.is_some()
+        || query.direction.is_some()
+        || query.discord_sent.is_some()
+        || query.window_sec.is_some()
+        || query.exchange.is_some()
+        || query.min_abs_net_volume_btc.is_some();
+    let has_positioned_cursor = query.cursor_ts.is_some() || query.cursor_signal_id.is_some();
+
+    if query.symbol.is_some()
+        && !has_optional_filters
+        && min_notional_usd.is_none()
+        && query.from_ts.is_none()
+        && query.to_ts.is_none()
+        && !has_positioned_cursor
+    {
+        ContractWhaleSignalQueryPath::LatestBySymbol
+    } else if query.symbol.is_some()
+        && query.from_ts.is_some()
+        && min_notional_usd.is_some()
+        && !has_optional_filters
+        && !has_positioned_cursor
+    {
+        ContractWhaleSignalQueryPath::EventFeed
+    } else {
+        ContractWhaleSignalQueryPath::General
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractWhaleDiscordOutboxStatus {
     Pending,
@@ -784,20 +826,8 @@ impl ContractWhaleRepo for SqliteStore {
         &self,
         query: &ContractWhaleSignalQuery,
     ) -> anyhow::Result<Vec<ContractWhaleSignal>> {
-        if query.symbol.is_some()
-            && query.severity.is_none()
-            && query.signal_type.is_none()
-            && query.direction.is_none()
-            && query.discord_sent.is_none()
-            && query.window_sec.is_none()
-            && query.exchange.is_none()
-            && query.min_abs_net_volume_btc.is_none()
-            && query.min_notional_usd.is_none()
-            && query.from_ts.is_none()
-            && query.to_ts.is_none()
-            && query.cursor_ts.is_none()
-            && query.cursor_signal_id.is_none()
-        {
+        let query_path = contract_whale_signal_query_path(query);
+        if query_path == ContractWhaleSignalQueryPath::LatestBySymbol {
             return self.with_connection(|conn| {
                 let mut stmt = conn.prepare(
                     r#"
@@ -826,6 +856,53 @@ impl ContractWhaleRepo for SqliteStore {
             });
         }
 
+        let min_notional_usd = query
+            .min_notional_usd
+            .filter(|value| value.is_finite() && *value > 0.0);
+        if query_path == ContractWhaleSignalQueryPath::EventFeed {
+            let symbol = query
+                .symbol
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("event-feed query requires symbol"))?;
+            let from_ts = query
+                .from_ts
+                .ok_or_else(|| anyhow::anyhow!("event-feed query requires from_ts"))?;
+            let min_notional_usd = min_notional_usd
+                .ok_or_else(|| anyhow::anyhow!("event-feed query requires min_notional_usd"))?;
+            return self.with_connection(|conn| {
+                let mut stmt = conn.prepare(
+                    r#"
+                    SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
+                           active_sources_json, threshold_profile
+                    FROM contract_whale_signals
+                    WHERE market_type = 'perp'
+                      AND symbol = ?1
+                      AND ts >= ?2
+                      AND (?3 IS NULL OR ts <= ?3)
+                      AND total_notional_usd >= ?4
+                    ORDER BY ts DESC, signal_id DESC
+                    LIMIT ?5 OFFSET ?6
+                    "#,
+                )?;
+                let rows = stmt.query_map(
+                    params![
+                        symbol,
+                        from_ts,
+                        query.to_ts,
+                        min_notional_usd,
+                        query.limit as i64,
+                        query.offset as i64,
+                    ],
+                    decode_signal_row,
+                )?;
+                let mut signals = Vec::new();
+                for row in rows {
+                    signals.push(row?);
+                }
+                Ok(signals)
+            });
+        }
+
         let severity = query.severity.map(enum_value).transpose()?;
         let signal_type = query.signal_type.map(enum_value).transpose()?;
         let direction = query.direction.map(enum_value).transpose()?;
@@ -833,9 +910,6 @@ impl ContractWhaleRepo for SqliteStore {
         let window_sec = query.window_sec.map(|window_sec| window_sec as i64);
         let min_abs_net_volume_btc = query
             .min_abs_net_volume_btc
-            .filter(|value| value.is_finite() && *value > 0.0);
-        let min_notional_usd = query
-            .min_notional_usd
             .filter(|value| value.is_finite() && *value > 0.0);
         let cursor_signal_id = query.cursor_signal_id.as_deref().map(str::to_string);
         let exchange_like = query
@@ -1939,5 +2013,44 @@ fn bool_to_int(value: bool) -> i64 {
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod query_path_tests {
+    use super::*;
+
+    #[test]
+    fn symbol_range_notional_query_selects_event_feed_path() {
+        let query = ContractWhaleSignalQuery {
+            symbol: Some("ETH".to_string()),
+            from_ts: Some(1_700_000_000_000),
+            min_notional_usd: Some(10_000_000.0),
+            limit: 20,
+            ..ContractWhaleSignalQuery::default()
+        };
+
+        assert_eq!(
+            contract_whale_signal_query_path(&query),
+            ContractWhaleSignalQueryPath::EventFeed
+        );
+    }
+
+    #[test]
+    fn positioned_cursor_keeps_general_query_path() {
+        let query = ContractWhaleSignalQuery {
+            symbol: Some("ETH".to_string()),
+            from_ts: Some(1_700_000_000_000),
+            min_notional_usd: Some(10_000_000.0),
+            cursor_ts: Some(1_700_000_010_000),
+            cursor_signal_id: Some("contract-whale:ETH:cursor".to_string()),
+            limit: 20,
+            ..ContractWhaleSignalQuery::default()
+        };
+
+        assert_eq!(
+            contract_whale_signal_query_path(&query),
+            ContractWhaleSignalQueryPath::General
+        );
     }
 }

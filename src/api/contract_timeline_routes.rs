@@ -7,7 +7,9 @@ use serde::Serialize;
 
 use crate::{
     api::{
-        contract_event_routes::{contract_event_page_for_query, final_events_v2_for_query},
+        contract_event_routes::{
+            contract_event_page_for_query_nonblocking, final_events_v2_for_query_nonblocking,
+        },
         contract_whale_routes::{parse_history_query, parse_symbol_for_latest, ContractWhaleQuery},
     },
     app::AppState,
@@ -80,7 +82,8 @@ pub async fn contract_whale_timeline_route(
             .as_deref()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(100),
-    )?;
+    )
+    .await?;
     Ok(Json(timeline))
 }
 
@@ -174,7 +177,7 @@ pub fn canonical_timeline_meta_for_signal_range(
     )
 }
 
-pub fn build_contract_whale_timeline_response(
+pub async fn build_contract_whale_timeline_response(
     state: &AppState,
     symbol: &str,
     range: &str,
@@ -186,18 +189,26 @@ pub fn build_contract_whale_timeline_response(
             "contract whale store unavailable"
         ))
     })?;
-    let latest_rows = store
-        .query_contract_whale_signals(
+    let latest_symbol = symbol.to_string();
+    let latest_rows = tokio::task::spawn_blocking(move || {
+        store.query_contract_whale_signals(
             &crate::storage::contract_whale_repo::ContractWhaleSignalQuery {
-                symbol: Some(symbol.to_string()),
+                symbol: Some(latest_symbol),
                 limit: limit.max(1),
                 ..crate::storage::contract_whale_repo::ContractWhaleSignalQuery::default()
             },
         )
-        .map_err(crate::api::contract_event_routes::internal_error)?;
+    })
+    .await
+    .map_err(|error| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "timeline latest join failed: {error}"
+        ))
+    })?
+    .map_err(crate::api::contract_event_routes::internal_error)?;
     let latest_max_ts = latest_rows.iter().map(|signal| signal.ts).max();
 
-    let history = contract_event_page_for_query(
+    let history_future = contract_event_page_for_query_nonblocking(
         state.clone(),
         ContractWhaleQuery {
             symbol: Some(symbol.to_string()),
@@ -206,8 +217,8 @@ pub fn build_contract_whale_timeline_response(
             include_hidden: Some("true".to_string()),
             ..ContractWhaleQuery::default()
         },
-    )?;
-    let final_events = final_events_v2_for_query(
+    );
+    let final_events_future = final_events_v2_for_query_nonblocking(
         state.clone(),
         ContractWhaleQuery {
             symbol: Some(symbol.to_string()),
@@ -215,7 +226,10 @@ pub fn build_contract_whale_timeline_response(
             limit: Some(limit.max(1).to_string()),
             ..ContractWhaleQuery::default()
         },
-    )?;
+    );
+    let (history, final_events) = tokio::join!(history_future, final_events_future);
+    let history = history?;
+    let final_events = final_events?;
     let flow_state = state.flow_state_for_symbol(symbol);
     let flow_updated_at = (flow_state.updated_at > 0).then_some(flow_state.updated_at);
 

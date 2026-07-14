@@ -1309,6 +1309,113 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("主力合约监控载入中...")).not.toBeInTheDocument();
   });
 
+  it("keeps historical rows while only the historical slice turns stale, then clears on success", async () => {
+    const initialPayload = await fetchContractEvents.getMockImplementation()();
+    fetchContractEvents
+      .mockResolvedValueOnce(initialPayload)
+      .mockResolvedValueOnce({
+        items: [],
+        dataState: "degraded",
+        degraded: true,
+        errorCode: "contract_projection_timeout",
+        lastKnownDataAvailable: false,
+        retryAfterMs: 2_000,
+        error: "contract_projection_timeout",
+      })
+      .mockResolvedValueOnce(initialPayload);
+    vi.useFakeTimers();
+
+    render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(within(screen.getByTestId("raw-contract-whale-signals")).getAllByRole("row").length).toBeGreaterThan(1);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const staleBanner = screen.getByTestId("data-health-banner");
+    expect(staleBanner).toHaveTextContent("历史事件");
+    expect(staleBanner).not.toHaveTextContent("生命周期（陈旧）");
+    expect(staleBanner).not.toHaveTextContent("智能分析（陈旧）");
+    expect(within(screen.getByTestId("raw-contract-whale-signals")).getAllByRole("row").length).toBeGreaterThan(1);
+
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(screen.getByTestId("data-health-banner")).toHaveTextContent("历史事件");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchContractEvents).toHaveBeenCalledTimes(3);
+    expect(screen.queryByTestId("data-health-banner")).not.toBeInTheDocument();
+  });
+
+  it("masks stale intelligence as UNKNOWN while keeping the previous context secondary", async () => {
+    fetchContractWhaleIntelligenceTerminal.mockResolvedValueOnce({
+      symbol: "ETH",
+      marketRegime: { regime: "TRENDING_UP", confidence: 82, reason: "prior structure" },
+      riskContext: {
+        riskState: "high",
+        fakeBreakoutRisk: "HIGH",
+        summary: "prior risk",
+        noTradeZones: [],
+      },
+      dataState: "stale",
+      degraded: true,
+      errorCode: "contract_projection_refresh_in_progress",
+      lastKnownDataAvailable: true,
+      cacheAgeSec: 18,
+      cacheTtlSec: 300,
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
+
+    expect(await screen.findByTestId("intelligence-freshness")).toHaveTextContent("STALE");
+    expect(screen.getByTestId("current-market-regime")).toHaveTextContent("UNKNOWN");
+    expect(screen.getByTestId("current-risk-state")).toHaveTextContent("UNKNOWN");
+    expect(screen.getByTestId("previous-intelligence-context")).toHaveTextContent("TRENDING_UP");
+    expect(screen.getByTestId("previous-intelligence-context")).toHaveTextContent("HIGH RISK");
+  });
+
+  it("renders one consolidated recovery banner without an action button", async () => {
+    fetchContractWhaleSummary.mockResolvedValueOnce({ summary: null, meta: null, error: "summary_unavailable" });
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: null,
+      items: [],
+      dataState: "degraded",
+      errorCode: "latest_unavailable",
+      lastKnownDataAvailable: false,
+      error: "latest_unavailable",
+    });
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [],
+      dataState: "degraded",
+      errorCode: "contract_events_unavailable",
+      lastKnownDataAvailable: false,
+      error: "contract_events_unavailable",
+    });
+    fetchFinalEventsV2.mockResolvedValueOnce({
+      active: [],
+      closed: [],
+      dataState: "degraded",
+      errorCode: "final_events_v2_unavailable",
+      lastKnownDataAvailable: false,
+      error: "final_events_v2_unavailable",
+    });
+    fetchContractWhaleIntelligenceTerminal.mockResolvedValueOnce({
+      dataState: "degraded",
+      errorCode: "intelligence_terminal_unavailable",
+      lastKnownDataAvailable: false,
+      error: "intelligence_terminal_unavailable",
+    });
+
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
+
+    const banner = await screen.findByTestId("data-health-banner");
+    expect(screen.getAllByTestId("data-health-banner")).toHaveLength(1);
+    expect(banner).toHaveTextContent("状态快照");
+    expect(banner).toHaveTextContent("历史事件");
+    expect(banner).toHaveTextContent("生命周期");
+    expect(banner).toHaveTextContent("智能分析");
+    expect(within(banner).queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("keeps the core contract-whale content visible while retention stays deferred", async () => {
     fetchContractRetentionStatus.mockReturnValueOnce(new Promise(() => {}));
 
@@ -1332,16 +1439,37 @@ describe("ContractWhaleMonitor", () => {
     render(<ContractWhaleMonitor />);
 
     const historical = await screen.findByText("HISTORICAL EVENTS (24h stream)");
+    const proDesk = screen.getByText("事件驱动交易台总览");
     const structure = screen.getByText("Market Structure");
     const setups = screen.getByText("Structure Setups");
     const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
 
+    expect(historical.compareDocumentPosition(proDesk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(proDesk.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historical.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(structure.compareDocumentPosition(setups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(setups.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historicalPanel).toHaveClass("min-h-[50vh]");
+    expect(screen.getByTestId("primary-analysis-grid")).toHaveClass("2xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)]");
+    expect(screen.getByTestId("secondary-analysis-grid").className).toContain("2xl:grid-cols-");
+    expect(screen.getByTestId("lifecycle-risk-grid").className).toContain("2xl:grid-cols-");
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
+  });
+
+  it("does not reserve a half-screen canvas for an empty event feed", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [],
+      dataState: "fresh",
+      degraded: false,
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    const historicalPanel = await screen.findByTestId("historical-events-primary");
+    await screen.findByText("暂无主力合约异动");
+    expect(historicalPanel).not.toHaveClass("min-h-[50vh]");
   });
 
   it("shows contract classification v2 semantics in the event type column", async () => {

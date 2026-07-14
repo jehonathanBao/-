@@ -292,14 +292,12 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxAgeSec: numberOrNull(response.data?.maxAgeSec ?? response.data?.max_age_sec),
       staleCount: numberOrNull(response.data?.staleCount ?? response.data?.stale_count),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
-      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
-      degraded: Boolean(response.data?.degraded),
-      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
-      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
+      ...normalizeDataState(response.data),
       meta: normalizeResponseMeta(response.data?.meta),
       error: null,
     };
-  } catch {
+  } catch (error) {
+    const dataState = normalizeDataState(error?.response?.data, "latest_unavailable");
     return {
       summary: fallbackSummary(symbol),
       items: [],
@@ -308,12 +306,9 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       maxAgeSec: null,
       staleCount: null,
       timeline: null,
-      dataState: "degraded",
-      degraded: true,
-      errorCode: "latest_unavailable",
-      lastKnownDataAvailable: true,
+      ...dataState,
       meta: null,
-      error: "latest_unavailable",
+      error: dataState.errorCode || "latest_unavailable",
     };
   }
 }
@@ -368,8 +363,12 @@ export async function fetchContractWhaleIntelligenceTerminal(filters = {}) {
       timeoutMs: 5_000,
     });
     return normalizeContractWhaleIntelligenceResponse(response.data, requestedSymbol);
-  } catch {
-    return normalizeContractWhaleIntelligenceResponse(null, requestedSymbol, "intelligence_terminal_unavailable");
+  } catch (error) {
+    return normalizeContractWhaleIntelligenceResponse(
+      error?.response?.data,
+      requestedSymbol,
+      "intelligence_terminal_unavailable",
+    );
   }
 }
 
@@ -461,16 +460,12 @@ export async function fetchContractEvents(filters = {}) {
       maxPersistedAt: numberOrNull(response.data?.maxPersistedAt ?? response.data?.max_persisted_at),
       historyLagSec: numberOrNull(response.data?.historyLagSec ?? response.data?.history_lag_sec),
       latestLagSec: numberOrNull(response.data?.latestLagSec ?? response.data?.latest_lag_sec),
-      cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
-      cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
-      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
-      degraded: Boolean(response.data?.degraded),
-      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
-      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
+      ...normalizeDataState(response.data),
       error: null,
     };
-  } catch {
+  } catch (error) {
+    const dataState = normalizeDataState(error?.response?.data, "contract_events_unavailable");
     return {
       items: [],
       nextCursor: null,
@@ -483,14 +478,9 @@ export async function fetchContractEvents(filters = {}) {
       maxPersistedAt: null,
       historyLagSec: null,
       latestLagSec: null,
-      cacheAgeSec: null,
-      cacheTtlSec: null,
       timeline: null,
-      dataState: "degraded",
-      degraded: true,
-      errorCode: "contract_events_unavailable",
-      lastKnownDataAvailable: true,
-      error: "contract_events_unavailable",
+      ...dataState,
+      error: dataState.errorCode || "contract_events_unavailable",
     };
   }
 }
@@ -625,17 +615,13 @@ export async function fetchFinalEventsV2(filters = {}) {
       lastEventTs: numberOrNull(response.data?.lastEventTs ?? response.data?.last_event_ts),
       maxEventTs: numberOrNull(response.data?.maxEventTs ?? response.data?.max_event_ts),
       generatedAt: numberOrNull(response.data?.generatedAt ?? response.data?.generated_at),
-      cacheAgeSec: numberOrNull(response.data?.cacheAgeSec ?? response.data?.cache_age_sec),
-      cacheTtlSec: numberOrNull(response.data?.cacheTtlSec ?? response.data?.cache_ttl_sec),
       projectionLagSec: numberOrNull(response.data?.projectionLagSec ?? response.data?.projection_lag_sec),
       timeline: normalizeCanonicalTimeline(response.data?.timeline),
-      dataState: String(response.data?.dataState || response.data?.data_state || "fresh"),
-      degraded: Boolean(response.data?.degraded),
-      errorCode: response.data?.errorCode ?? response.data?.error_code ?? null,
-      lastKnownDataAvailable: Boolean(response.data?.lastKnownDataAvailable ?? response.data?.last_known_data_available),
+      ...normalizeDataState(response.data),
       error: null,
     };
-  } catch {
+  } catch (error) {
+    const dataState = normalizeDataState(error?.response?.data, "final_events_v2_unavailable");
     return {
       active: [],
       closed: [],
@@ -647,15 +633,10 @@ export async function fetchFinalEventsV2(filters = {}) {
       lastEventTs: null,
       maxEventTs: null,
       generatedAt: null,
-      cacheAgeSec: null,
-      cacheTtlSec: null,
       projectionLagSec: null,
       timeline: null,
-      dataState: "degraded",
-      degraded: true,
-      errorCode: "final_events_v2_unavailable",
-      lastKnownDataAvailable: true,
-      error: "final_events_v2_unavailable",
+      ...dataState,
+      error: dataState.errorCode || "final_events_v2_unavailable",
     };
   }
 }
@@ -824,6 +805,7 @@ function normalizeContractWhaleIntelligenceResponse(payload, symbol = "BTC", fal
       ? (data.tradeIdeas ?? data.trade_ideas).map(normalizeTradeIdea)
       : [],
     riskContext: normalizeRiskContext(data.riskContext ?? data.risk_context),
+    ...normalizeDataState(data, fallbackError),
     error: fallbackError || data.error || null,
   };
 }
@@ -2074,6 +2056,34 @@ function buildContractWhaleQuery(filters) {
     params.set(key, String(value));
   });
   return params.toString();
+}
+
+function normalizeDataState(payload, fallbackErrorCode = null) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const explicitState = data.dataState ?? data.data_state;
+  const dataState = String(explicitState || (fallbackErrorCode ? "unavailable" : "fresh"))
+    .trim()
+    .toLowerCase();
+  const rawLastKnown = data.lastKnownDataAvailable ?? data.last_known_data_available;
+  const lastKnownDataAvailable =
+    typeof rawLastKnown === "boolean"
+      ? rawLastKnown
+      : String(rawLastKnown || "").toLowerCase() === "true" || dataState === "stale";
+  const rawDegraded = data.degraded;
+  const degraded =
+    typeof rawDegraded === "boolean"
+      ? rawDegraded
+      : ["stale", "degraded", "unavailable"].includes(dataState);
+
+  return {
+    dataState,
+    degraded,
+    errorCode: data.errorCode ?? data.error_code ?? fallbackErrorCode,
+    lastKnownDataAvailable,
+    cacheAgeSec: numberOrNull(data.cacheAgeSec ?? data.cache_age_sec),
+    cacheTtlSec: numberOrNull(data.cacheTtlSec ?? data.cache_ttl_sec),
+    retryAfterMs: numberOrNull(data.retryAfterMs ?? data.retry_after_ms),
+  };
 }
 
 function numberOrNull(value) {

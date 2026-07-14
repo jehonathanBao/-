@@ -2,6 +2,7 @@ pub mod active_trade_toxicity_routes;
 pub mod binance_alt_contract_routes;
 pub mod btc_structure_routes;
 pub mod calibration_routes;
+pub(crate) mod contract_event_projection_runtime;
 pub mod contract_event_routes;
 pub mod contract_timeline_routes;
 pub mod contract_whale_routes;
