@@ -370,44 +370,53 @@ pub async fn contract_whale_summary_route(
     headers: HeaderMap,
 ) -> ApiJsonResult {
     log_summary_access(&headers);
-    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
-    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
-    let config = state.config().contract_whale_monitor;
-    let runtime_config = contract_whale_runtime_config();
-    let symbol_enabled = config.enabled && contract_whale_runtime_config().symbol_enabled(&symbol);
-    let flow_state = state.flow_state_for_symbol(&symbol);
-    let venue_health = state.venue_health();
-    let baselines = state
-        .contract_whale_store()
-        .map(|store| load_quality_baselines(&store, &flow_state, &symbol))
-        .unwrap_or_default();
-    let liquidations = state
-        .contract_whale_store()
-        .map(|store| load_liquidation_contexts(&store, &flow_state, &symbol))
-        .unwrap_or_default();
-    let market_context = state
-        .contract_whale_store()
-        .map(|store| load_market_context(&store, &flow_state, &symbol))
-        .unwrap_or_default();
-    let mut response = build_contract_whale_response_with_runtime_and_baselines(
-        &flow_state,
-        &symbol,
-        50,
-        None,
-        symbol_enabled,
-        config.dry_run,
-        ContractWhaleResponseRuntime {
-            venue_health: Some(&venue_health),
-            baselines: &baselines,
-            liquidations: &liquidations,
-            market_context: &market_context,
-            booted_at_ms: Some(state.booted_at_ms()),
-        },
-    );
-    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-    let mut summary = response.summary;
-    summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
-    Ok(Json(serde_json::json!(summary)))
+    tokio::task::spawn_blocking(move || {
+        let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+        let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+        let config = state.config().contract_whale_monitor;
+        let runtime_config = contract_whale_runtime_config();
+        let symbol_enabled =
+            config.enabled && contract_whale_runtime_config().symbol_enabled(&symbol);
+        let flow_state = state.flow_state_for_symbol(&symbol);
+        let venue_health = state.venue_health();
+        let baselines = state
+            .contract_whale_store()
+            .map(|store| load_quality_baselines(&store, &flow_state, &symbol))
+            .unwrap_or_default();
+        let liquidations = state
+            .contract_whale_store()
+            .map(|store| load_liquidation_contexts(&store, &flow_state, &symbol))
+            .unwrap_or_default();
+        let market_context = state
+            .contract_whale_store()
+            .map(|store| load_market_context(&store, &flow_state, &symbol))
+            .unwrap_or_default();
+        let mut response = build_contract_whale_response_with_runtime_and_baselines(
+            &flow_state,
+            &symbol,
+            50,
+            None,
+            symbol_enabled,
+            config.dry_run,
+            ContractWhaleResponseRuntime {
+                venue_health: Some(&venue_health),
+                baselines: &baselines,
+                liquidations: &liquidations,
+                market_context: &market_context,
+                booted_at_ms: Some(state.booted_at_ms()),
+            },
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        let mut summary = response.summary;
+        summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
+        Ok(Json(serde_json::json!(summary)))
+    })
+    .await
+    .map_err(|error| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "contract whale summary projection join failed: {error}"
+        ))
+    })?
 }
 
 fn log_summary_access(headers: &HeaderMap) {
@@ -434,78 +443,86 @@ pub async fn contract_whale_latest_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult {
-    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
-    let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
-    let hide_stale =
-        parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
-    let range = query.range.clone().or_else(|| Some("24h".to_string()));
-    let stale_after_ts = parse_range_start_ms(range.as_deref())?;
-    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
-    let flow_state = state.flow_state_for_symbol(&symbol);
-    let venue_health = state.venue_health();
-    let config = state.config().contract_whale_monitor;
-    let cwm_runtime_config = contract_whale_runtime_config();
-    if let Some(meta) =
-        contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
-    {
-        let mut response = build_contract_whale_history_response(
-            Vec::new(),
+    tokio::task::spawn_blocking(move || {
+        let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+        let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+        let hide_stale =
+            parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
+        let range = query.range.clone().or_else(|| Some("24h".to_string()));
+        let stale_after_ts = parse_range_start_ms(range.as_deref())?;
+        let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+        let flow_state = state.flow_state_for_symbol(&symbol);
+        let venue_health = state.venue_health();
+        let config = state.config().contract_whale_monitor;
+        let cwm_runtime_config = contract_whale_runtime_config();
+        if let Some(meta) =
+            contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
+        {
+            let mut response = build_contract_whale_history_response(
+                Vec::new(),
+                &symbol,
+                limit,
+                None,
+                config.enabled,
+                config.dry_run,
+                Some(meta),
+            );
+            enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+            return Ok(Json(with_latest_stale_annotations(
+                &state,
+                &symbol,
+                response,
+                stale_after_ts,
+                range.as_deref(),
+                hide_stale,
+            )));
+        }
+        if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
+            let mut response = build_contract_whale_response_with_runtime(
+                &flow_state,
+                &symbol,
+                limit,
+                None,
+                false,
+                config.dry_run,
+                Some(&venue_health),
+            );
+            enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+            return Ok(Json(with_latest_stale_annotations(
+                &state,
+                &symbol,
+                response,
+                stale_after_ts,
+                range.as_deref(),
+                hide_stale,
+            )));
+        }
+        let mut response = build_contract_whale_terminal_live_or_persisted_response(
+            &state,
+            &flow_state,
+            &venue_health,
             &symbol,
             limit,
-            None,
+            exchange_filter.as_deref(),
             config.enabled,
             config.dry_run,
-            Some(meta),
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        return Ok(Json(with_latest_stale_annotations(
+        Ok(Json(with_latest_stale_annotations(
             &state,
             &symbol,
             response,
             stale_after_ts,
             range.as_deref(),
             hide_stale,
-        )));
-    }
-    if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
-        let mut response = build_contract_whale_response_with_runtime(
-            &flow_state,
-            &symbol,
-            limit,
-            None,
-            false,
-            config.dry_run,
-            Some(&venue_health),
-        );
-        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        return Ok(Json(with_latest_stale_annotations(
-            &state,
-            &symbol,
-            response,
-            stale_after_ts,
-            range.as_deref(),
-            hide_stale,
-        )));
-    }
-    let mut response = build_contract_whale_terminal_live_or_persisted_response(
-        &state,
-        &flow_state,
-        &venue_health,
-        &symbol,
-        limit,
-        exchange_filter.as_deref(),
-        config.enabled,
-        config.dry_run,
-    );
-    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-    Ok(Json(with_latest_stale_annotations(
-        &state,
-        &symbol,
-        response,
-        stale_after_ts,
-        range.as_deref(),
-        hide_stale,
-    )))
+        )))
+    })
+    .await
+    .map_err(|error| {
+        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
+            "contract whale latest projection join failed: {error}"
+        ))
+    })?
 }
 
 pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>) -> ApiJsonResult {
