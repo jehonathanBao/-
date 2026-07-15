@@ -2,6 +2,11 @@ import axios from "axios";
 
 export const CWM_MAX_PRICE_DEVIATION_PCT = 5;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
+const CRITICAL_READ_REQUEST_OPTIONS = Object.freeze({
+  timeoutMs: 6_000,
+  retryCount: 1,
+  retryDelayMs: 250,
+});
 const VOLUME_DISPLAY_CONTEXT = {
   SINGLE_WINDOW: "single_window",
   CONTRACT_EVENT_STREAM: "contract_event_stream",
@@ -126,7 +131,7 @@ export async function fetchJsonWithTimeout(
       return await Promise.race([guardedRequestPromise, timeoutPromise]);
     } catch (error) {
       lastError = error;
-      if (error?.code === "ERR_CWM_TIMEOUT" && attempt < attempts - 1) {
+      if (isRetryableReadError(error) && attempt < attempts - 1) {
         if (retryDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         }
@@ -141,6 +146,13 @@ export async function fetchJsonWithTimeout(
     }
   }
   throw lastError;
+}
+
+function isRetryableReadError(error) {
+  if (error?.code === "ERR_CWM_TIMEOUT") return true;
+  const status = Number(error?.response?.status);
+  if ([408, 425, 429, 502, 503, 504].includes(status)) return true;
+  return Boolean(error?.request) && !error?.response;
 }
 
 export function normalizePlatformStatus(platform) {
@@ -257,7 +269,7 @@ export async function fetchContractWhaleSummary(symbol = "BTC") {
   try {
     const query = buildContractWhaleQuery({ symbol });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/summary?${query}`, {
-      timeoutMs: 5_000,
+      ...CRITICAL_READ_REQUEST_OPTIONS,
     });
     return {
       summary: normalizeSummary(response.data, symbol),
@@ -278,7 +290,7 @@ export async function fetchContractWhaleLatest(limit = 50, symbol = "BTC", optio
       hide_stale: (options.hide_stale ?? options.hideStale) ? "true" : undefined,
     });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/latest?${query}`, {
-      timeoutMs: 5_000,
+      ...CRITICAL_READ_REQUEST_OPTIONS,
     });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     return {
@@ -360,7 +372,7 @@ export async function fetchContractWhaleIntelligenceTerminal(filters = {}) {
       exchange: filters.exchange,
     });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/intelligence-terminal?${query}`, {
-      timeoutMs: 5_000,
+      ...CRITICAL_READ_REQUEST_OPTIONS,
     });
     return normalizeContractWhaleIntelligenceResponse(response.data, requestedSymbol);
   } catch (error) {
@@ -441,7 +453,7 @@ export async function fetchContractEvents(filters = {}) {
       min_notional_usd: filters.min_notional_usd ?? 10_000_000,
     });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-events?${query}`, {
-      timeoutMs: 12_000,
+      ...CRITICAL_READ_REQUEST_OPTIONS,
     });
     const items = Array.isArray(response.data?.items) ? response.data.items : [];
     const requestedSymbol = filters.symbol || "BTC";
@@ -595,7 +607,7 @@ export async function fetchFinalEventsV2(filters = {}) {
   try {
     const query = buildContractWhaleQuery({ ...filters, range: filters.range ?? "24h", limit: filters.limit ?? 100 });
     const response = await fetchJsonWithTimeout(`${baseURL}/api/final-events-v2?${query}`, {
-      timeoutMs: 6_000,
+      ...CRITICAL_READ_REQUEST_OPTIONS,
     });
     const requestedSymbol = filters.symbol || "BTC";
     const normalizeArray = (items) =>
