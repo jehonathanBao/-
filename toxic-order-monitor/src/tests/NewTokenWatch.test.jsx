@@ -621,11 +621,12 @@ describe("NewTokenWatch", () => {
 
   it("renders active token behavior signals", async () => {
     const user = userEvent.setup();
-    render(<NewTokenWatch />);
+    const { container } = render(<NewTokenWatch />);
 
     expect(await screen.findByText("机构级智能资金终端")).toBeInTheDocument();
     expect(screen.getByText("ABCUSDT")).toBeInTheDocument();
     expect(await screen.findByText("成本结构与仓位状态")).toBeInTheDocument();
+    expect(container.querySelectorAll(".workspace-panel").length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText("Market Price")).toBeInTheDocument();
     expect(screen.getByText("Price Source")).toBeInTheDocument();
     expect(screen.getAllByText("PERP").length).toBeGreaterThan(0);

@@ -19,6 +19,7 @@ import SignalDetail from "../components/SignalDetail.jsx";
 import SignalTable from "../components/SignalTable.jsx";
 import SpotWhaleMonitor from "../components/SpotWhaleMonitor.jsx";
 import UsageGuide from "../components/UsageGuide.jsx";
+import WorkspacePageHeader from "../components/WorkspacePageHeader.jsx";
 import { useReconnectingWebSocket } from "../hooks/useReconnectingWebSocket.js";
 import { useSignalsStore } from "../store/signalsStore.js";
 
@@ -276,113 +277,124 @@ export default function Dashboard() {
   }
 
   return (
-    <div className={`flex min-h-screen flex-col lg:flex-row ${isContractWhaleView ? "contract-workspace-shell" : "bg-[#07111f]"}`}>
-      <Sidebar compact={isContractWhaleView} />
+    <div
+      className={`workspace-shell flex min-h-screen flex-col lg:flex-row ${isContractWhaleView ? "contract-workspace-shell" : ""}`}
+      data-testid="workspace-shell"
+    >
+      <Sidebar />
       <main
-        className={isContractWhaleView ? "contract-workspace-main w-full min-w-0 flex-1" : "w-full min-w-0 flex-1 p-4 lg:p-6"}
-        data-testid={isContractWhaleView ? "contract-workspace-main" : undefined}
+        className={[
+          "workspace-main w-full min-w-0 flex-1",
+          `workspace-route-${viewMode}`,
+          isContractWhaleView ? "contract-workspace-main" : "",
+        ].filter(Boolean).join(" ")}
+        data-testid="workspace-main"
       >
-        {!isContractWhaleView ? (
-          <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
-        ) : null}
         {isContractWhaleView ? (
           <ContractWhalePage symbol={mainstreamSymbol} />
-        ) : isLiquidationCascadeView ? (
-          <LiquidationCascadePage />
-        ) : isSpotWhaleView ? (
-          <SpotWhalePage symbol={mainstreamSymbol} />
-        ) : isAltContractView ? (
-          <AltContractPage />
-        ) : isNewTokenWatchView ? (
-          <NewTokenWatchPage />
-        ) : isUsageGuideView ? (
-          <UsageGuidePage />
         ) : (
           <>
-            <RuleStatus
-              discordConnected={discordConnected}
-              lastPushedAt={lastPushedAt}
-              onTestPush={handleTestPush}
-              testPending={testPushPending}
-              wsStatus={wsStatus}
-            />
-            {pushNotice ? (
-              <div
-                className={[
-                  "mb-5 rounded-xl border px-4 py-3 text-sm",
-                  pushNotice.type === "success"
-                    ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-                    : pushNotice.type === "pending"
-                      ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-200"
-                      : "border-red-400/40 bg-red-400/10 text-red-200",
-                ].join(" ")}
-                role="status"
-              >
-                {pushNotice.message}
-              </div>
-            ) : null}
-
-            {viewMode === "dashboard" ? <ContractWhaleMonitor /> : null}
-            {viewMode === "dashboard" ? <RiskSystemSummaryCards signal={focusedScoreSignal} /> : null}
-
-            <section className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <RiskCard active={activeRiskFilter === "high"} count={stats.high} onClick={() => setRiskFilter("high")} percentage={ratio(stats.high, stats.all)} risk="high" />
-              <RiskCard active={activeRiskFilter === "medium"} count={stats.medium} onClick={() => { setRiskFilter("medium"); setMediumExpanded(true); }} percentage={ratio(stats.medium, stats.all)} risk="medium" />
-              <RiskCard active={activeRiskFilter === "low"} count={stats.low} onClick={() => setRiskFilter("low")} percentage={ratio(stats.low, stats.all)} risk="low" />
-              <RiskCard active={activeRiskFilter === "all"} count={stats.all} onClick={() => setRiskFilter("all")} percentage={100} risk="all" />
-            </section>
-
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <button className="rounded-lg border border-slate-700/60 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200" onClick={() => setRiskFilter("all")} type="button">
-                  全部
-                </button>
-                <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter, viewMode)}</span>
-              </div>
-              <button
-                className="rounded-lg border border-red-400/50 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
-                onClick={handleClearCache}
-                type="button"
-              >
-                清除缓存
-              </button>
-            </div>
-
-            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
-              <div className="space-y-5">
-                <SignalTable
-                  inboxStats={stats}
-                  title={primarySignalView.title}
-                  description={primarySignalView.description}
-                  emptyHint={primarySignalView.emptyHint}
-                  emptyMessage={primarySignalView.emptyMessage}
-                  onPush={handlePush}
-                  onMarkStatus={setSignalReviewStatus}
-                  onSelect={setSelectedSignal}
-                  pushStatus={effectivePushStatus}
-                  selectedSignal={selectedSignal}
-                  signals={primarySignalView.signals}
-                />
-                {showMediumFoldout ? (
-                  <MediumRiskSection
-                    expanded={mediumExpanded}
-                    inboxStats={stats}
-                    onPush={handlePush}
-                    onMarkStatus={setSignalReviewStatus}
-                    onSelect={setSelectedSignal}
-                    pushStatus={effectivePushStatus}
-                    onToggle={() => setMediumExpanded((value) => !value)}
-                    selectedSignal={selectedSignal}
-                    signals={mediumRiskSignals}
+            <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
+            <div className="workspace-content">
+              {isLiquidationCascadeView ? (
+                <LiquidationCascadePage />
+              ) : isSpotWhaleView ? (
+                <SpotWhalePage symbol={mainstreamSymbol} />
+              ) : isAltContractView ? (
+                <AltContractPage />
+              ) : isNewTokenWatchView ? (
+                <NewTokenWatchPage />
+              ) : isUsageGuideView ? (
+                <UsageGuidePage />
+              ) : (
+                <>
+                  <RuleStatus
+                    discordConnected={discordConnected}
+                    lastPushedAt={lastPushedAt}
+                    onTestPush={handleTestPush}
+                    testPending={testPushPending}
+                    wsStatus={wsStatus}
                   />
-                ) : null}
-                <SignalDetail signal={selectedSignal} />
-                <ScanLogPanel />
-              </div>
-              <div className="space-y-5">
-                <RiskCharts signals={rawInboxSignals} />
-                <PushLog logs={pushLogs} />
-              </div>
+                  {pushNotice ? (
+                    <div
+                      className={[
+                        "mb-5 rounded-xl border px-4 py-3 text-sm",
+                        pushNotice.type === "success"
+                          ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+                          : pushNotice.type === "pending"
+                            ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-200"
+                            : "border-red-400/40 bg-red-400/10 text-red-200",
+                      ].join(" ")}
+                      role="status"
+                    >
+                      {pushNotice.message}
+                    </div>
+                  ) : null}
+
+                  {viewMode === "dashboard" ? <ContractWhaleMonitor /> : null}
+                  {viewMode === "dashboard" ? <RiskSystemSummaryCards signal={focusedScoreSignal} /> : null}
+
+                  <section className="mb-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <RiskCard active={activeRiskFilter === "high"} count={stats.high} onClick={() => setRiskFilter("high")} percentage={ratio(stats.high, stats.all)} risk="high" />
+                    <RiskCard active={activeRiskFilter === "medium"} count={stats.medium} onClick={() => { setRiskFilter("medium"); setMediumExpanded(true); }} percentage={ratio(stats.medium, stats.all)} risk="medium" />
+                    <RiskCard active={activeRiskFilter === "low"} count={stats.low} onClick={() => setRiskFilter("low")} percentage={ratio(stats.low, stats.all)} risk="low" />
+                    <RiskCard active={activeRiskFilter === "all"} count={stats.all} onClick={() => setRiskFilter("all")} percentage={100} risk="all" />
+                  </section>
+
+                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button className="rounded-lg border border-slate-700/60 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200" onClick={() => setRiskFilter("all")} type="button">
+                        全部
+                      </button>
+                      <span className="text-sm text-slate-500">当前筛选：{filterLabel(activeRiskFilter, viewMode)}</span>
+                    </div>
+                    <button
+                      className="rounded-lg border border-red-400/50 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-500/20"
+                      onClick={handleClearCache}
+                      type="button"
+                    >
+                      清除缓存
+                    </button>
+                  </div>
+
+                  <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+                    <div className="space-y-5">
+                      <SignalTable
+                        inboxStats={stats}
+                        title={primarySignalView.title}
+                        description={primarySignalView.description}
+                        emptyHint={primarySignalView.emptyHint}
+                        emptyMessage={primarySignalView.emptyMessage}
+                        onPush={handlePush}
+                        onMarkStatus={setSignalReviewStatus}
+                        onSelect={setSelectedSignal}
+                        pushStatus={effectivePushStatus}
+                        selectedSignal={selectedSignal}
+                        signals={primarySignalView.signals}
+                      />
+                      {showMediumFoldout ? (
+                        <MediumRiskSection
+                          expanded={mediumExpanded}
+                          inboxStats={stats}
+                          onPush={handlePush}
+                          onMarkStatus={setSignalReviewStatus}
+                          onSelect={setSelectedSignal}
+                          pushStatus={effectivePushStatus}
+                          onToggle={() => setMediumExpanded((value) => !value)}
+                          selectedSignal={selectedSignal}
+                          signals={mediumRiskSignals}
+                        />
+                      ) : null}
+                      <SignalDetail signal={selectedSignal} />
+                      <ScanLogPanel />
+                    </div>
+                    <div className="space-y-5">
+                      <RiskCharts signals={rawInboxSignals} />
+                      <PushLog logs={pushLogs} />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </>
         )}
@@ -422,18 +434,12 @@ function ContractWhalePage({ symbol }) {
 function LiquidationCascadePage() {
   return (
     <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Liquidation Cascade Predictor</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">强平瀑布预测</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            独立展示杠杆集中、流动性缺口和市场状态，用于观察潜在强平瀑布窗口。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读预测 · 不推送 · 不下单
-        </div>
-      </div>
+      <WorkspacePageHeader
+        badge="只读预测 · 不推送 · 不下单"
+        description="独立展示杠杆集中、流动性缺口和市场状态，用于观察潜在强平瀑布窗口。"
+        eyebrow="Liquidation Cascade Predictor"
+        title="强平瀑布预测"
+      />
       <LiquidationCascadeDashboard />
     </>
   );
@@ -443,18 +449,12 @@ function SpotWhalePage({ symbol }) {
   const asset = normalizeMainstreamSymbol(symbol);
   return (
     <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">{asset} SPOT WHALE FLOW</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">{asset} 现货监控</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，识别 {asset} 主动买入、主动卖出、下方吸收、上方压制和跨所错位。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读提醒 · 不下单 · Spot Discord gate 独立
-        </div>
-      </div>
+      <WorkspacePageHeader
+        badge="只读提醒 · 不下单 · Spot Discord gate 独立"
+        description={`聚合 Binance、Coinbase 与 Bitfinex 现货主动成交流，识别 ${asset} 主动买入、主动卖出、下方吸收、上方压制和跨所错位。`}
+        eyebrow={`${asset} SPOT WHALE FLOW`}
+        title={`${asset} 现货监控`}
+      />
       <SpotWhaleMonitor lockedSymbol={asset} />
     </>
   );
@@ -463,18 +463,12 @@ function SpotWhalePage({ symbol }) {
 function AltContractPage() {
   return (
     <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Binance Alt Contract Anomaly</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">山寨合约异常监控</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            独立于 BTC/ETH CWM，只看 Binance USDT 永续山寨合约异常成交、OI、价格响应与清算上下文。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读提醒 · 不下单 · dry-run Discord
-        </div>
-      </div>
+      <WorkspacePageHeader
+        badge="只读提醒 · 不下单 · dry-run Discord"
+        description="独立于 BTC/ETH CWM，只看 Binance USDT 永续山寨合约异常成交、OI、价格响应与清算上下文。"
+        eyebrow="Binance Alt Contract Anomaly"
+        title="山寨合约异常监控"
+      />
       <BinanceAltContractMonitor />
     </>
   );
@@ -483,18 +477,12 @@ function AltContractPage() {
 function NewTokenWatchPage() {
   return (
     <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">New Token Contract Flow</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">新币合约监控</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            最多选择 50 个 USDT 合约 symbol，独立观察吸筹、建仓、出货和中性订单流候选。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读提醒 · 不下单 · 外部观测扩展
-        </div>
-      </div>
+      <WorkspacePageHeader
+        badge="只读提醒 · 不下单 · 外部观测扩展"
+        description="最多选择 50 个 USDT 合约 symbol，独立观察吸筹、建仓、出货和中性订单流候选。"
+        eyebrow="New Token Contract Flow"
+        title="新币合约监控"
+      />
       <NewTokenWatch />
     </>
   );
@@ -503,18 +491,12 @@ function NewTokenWatchPage() {
 function UsageGuidePage() {
   return (
     <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">User Manual</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">用户使用指南</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            面向看盘用户的信号解释、页面状态说明和 Discord 提示含义。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读指南 · Candidate only
-        </div>
-      </div>
+      <WorkspacePageHeader
+        badge="只读指南 · Candidate only"
+        description="面向看盘用户的信号解释、页面状态说明和 Discord 提示含义。"
+        eyebrow="User Manual"
+        title="用户使用指南"
+      />
       <UsageGuide />
     </>
   );

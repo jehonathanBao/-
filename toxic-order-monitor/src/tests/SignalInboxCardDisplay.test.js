@@ -265,7 +265,7 @@ describe("Signal inbox card display", () => {
     expect(screen.getByRole("button", { name: /查看回放 sig_001/ })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Review sig_001/ }));
 
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveClass("workspace-dialog");
     expect(screen.getByText("Candidate Review")).toBeInTheDocument();
     expect(screen.getByText("Symbol")).toBeInTheDocument();
     expect(screen.getAllByText("BTCUSDT", { exact: false })).not.toHaveLength(0);
@@ -367,7 +367,7 @@ describe("Signal inbox card display", () => {
     expect(replayButton).toBeEnabled();
     await user.click(replayButton);
 
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveClass("workspace-dialog");
     expect(screen.getByText("Replay Snapshot")).toBeInTheDocument();
     expect(screen.getByText(/redacted replay snapshot/)).toBeInTheDocument();
     expect(screen.queryByText("must not render")).not.toBeInTheDocument();

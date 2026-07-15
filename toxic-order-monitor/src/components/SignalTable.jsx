@@ -33,7 +33,7 @@ export default function SignalTable({
 
   return (
     <>
-      <section className="rounded-2xl border border-slate-700/60 bg-slate-900/80 shadow-glow">
+      <section className="workspace-panel">
         <div className="flex flex-col gap-4 border-b border-slate-700/60 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <h3 className="font-bold text-white">{title}</h3>
@@ -108,7 +108,7 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
   return (
     <article
       className={[
-        "rounded-2xl border bg-slate-950/40 p-4 transition",
+        "workspace-signal-card border p-4 transition",
         selected ? "border-cyan-300/60 shadow-[0_0_0_1px_rgba(103,232,249,0.22)]" : riskHighlight,
       ].join(" ")}
       data-testid={`signal-card-${signal.id}`}
@@ -331,7 +331,7 @@ function CandidateReviewModal({ signal, onClose, onMarkStatus }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6">
       <div
         aria-modal="true"
-        className="max-h-full w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl"
+        className="workspace-dialog max-h-full w-full max-w-2xl overflow-y-auto p-5"
         role="dialog"
       >
         <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
@@ -398,7 +398,7 @@ function ReplayModal({ signal, onClose }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6">
       <div
         aria-modal="true"
-        className="max-h-full w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950 p-5 shadow-2xl"
+        className="workspace-dialog max-h-full w-full max-w-3xl overflow-y-auto p-5"
         role="dialog"
       >
         <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">

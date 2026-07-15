@@ -145,7 +145,7 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
   const currentPage = pageIndex + 1;
 
   return (
-    <section className="mb-5 rounded-2xl border border-slate-700/60 bg-slate-900/80 p-5 shadow-glow">
+    <section className="workspace-monitor-panel console-panel mb-5 p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">{assetSymbol} SPOT WHALE FLOW</p>
@@ -261,7 +261,7 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {visibleItems.map((item) => (
                 <tr
-                  className="cursor-pointer align-top transition hover:bg-slate-800/30"
+                  className="console-row hover:bg-slate-800/30"
                   data-testid={`spot-whale-row-${item.id}`}
                   key={item.id}
                   onClick={() => setSelectedSignalId(item.id)}
@@ -334,7 +334,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">等级</span>
           <select
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, severity: event.target.value })}
             value={filters.severity}
           >
@@ -348,7 +348,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">类型</span>
           <select
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, signal_type: event.target.value })}
             value={filters.signal_type}
           >
@@ -363,7 +363,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">Discord</span>
           <select
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, discord_sent: event.target.value })}
             value={filters.discord_sent}
           >
@@ -375,7 +375,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">净方向</span>
           <select
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, net_direction: event.target.value })}
             value={filters.net_direction}
           >
@@ -389,7 +389,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">开始时间</span>
           <input
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, from_ts: event.target.value })}
             type="datetime-local"
             value={filters.from_ts}
@@ -398,7 +398,7 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">结束时间</span>
           <input
-            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            className="console-field"
             onChange={(event) => onChange({ ...filters, to_ts: event.target.value })}
             type="datetime-local"
             value={filters.to_ts}
@@ -514,7 +514,7 @@ function ExchangeStatus({ exchange, status }) {
 function SpotSignalDetail({ signal, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-cyan-400/30 bg-slate-950 p-5 shadow-glow">
+      <div className="workspace-dialog max-h-[90vh] w-full max-w-3xl overflow-y-auto p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Spot Candidate Review</p>

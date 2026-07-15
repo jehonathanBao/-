@@ -173,6 +173,7 @@ describe("BinanceAltContractMonitor", () => {
     await user.click(screen.getByTestId("alt-contract-row-bacm-sol-s"));
 
     expect(screen.getByText("Alt Contract Review")).toBeInTheDocument();
+    expect(screen.getByText("Alt Contract Review").closest(".workspace-dialog")).toBeInTheDocument();
     expect(screen.getByText("SOL · 累积压力观察")).toBeInTheDocument();
     expect(screen.getAllByText("$175.50").length).toBeGreaterThan(0);
     expect(screen.getByText("Discord dry-run")).toBeInTheDocument();
