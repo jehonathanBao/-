@@ -78,6 +78,15 @@ impl PriceIndex {
             .map(|(_, snapshot)| snapshot.clone())
     }
 
+    pub fn snapshot_at_or_before_for_symbol(&self, ts: i64, symbol: &str) -> Option<PriceSnapshot> {
+        let normalized = symbol_prefix(symbol);
+        self.snapshots
+            .iter()
+            .rev()
+            .find(|(snapshot_symbol, snapshot)| snapshot_symbol == &normalized && snapshot.ts <= ts)
+            .map(|(_, snapshot)| snapshot.clone())
+    }
+
     pub fn latest_snapshot(&self) -> Option<PriceSnapshot> {
         self.snapshots.last().map(|(_, snapshot)| snapshot.clone())
     }
@@ -86,6 +95,17 @@ impl PriceIndex {
         self.snapshots
             .iter()
             .filter(|(_, snapshot)| snapshot.ts >= ts)
+            .map(|(_, snapshot)| snapshot.clone())
+            .collect()
+    }
+
+    pub fn snapshots_since_for_symbol(&self, ts: i64, symbol: &str) -> Vec<PriceSnapshot> {
+        let normalized = symbol_prefix(symbol);
+        self.snapshots
+            .iter()
+            .filter(|(snapshot_symbol, snapshot)| {
+                snapshot_symbol == &normalized && snapshot.ts >= ts
+            })
             .map(|(_, snapshot)| snapshot.clone())
             .collect()
     }

@@ -4,9 +4,13 @@ use btc_toxic_flow_monitor_rs::{
 };
 
 fn book(venue: Venue, mid: f64, ts: i64) -> NormalizedBook {
+    book_for_symbol(venue, "BTC-PERP", mid, ts)
+}
+
+fn book_for_symbol(venue: Venue, symbol: &str, mid: f64, ts: i64) -> NormalizedBook {
     NormalizedBook {
         venue,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         ts,
         best_bid: mid - 1.0,
         best_ask: mid + 1.0,
@@ -20,6 +24,36 @@ fn book(venue: Venue, mid: f64, ts: i64) -> NormalizedBook {
         ask_depth_usd_10bps: mid + 1.0,
         imbalance_10bps: 0.0,
     }
+}
+
+#[test]
+fn historical_snapshots_are_scoped_to_the_requested_symbol() {
+    let mut index = PriceIndex::new(120_000, 5_000);
+    index.update_book(book_for_symbol(Venue::Binance, "BTC-PERP", 100.0, 1_000));
+    index.update_book(book_for_symbol(Venue::Binance, "ETH-PERP", 2_000.0, 1_100));
+    index.update_book(book_for_symbol(Venue::Binance, "BTC-PERP", 110.0, 2_000));
+    index.update_book(book_for_symbol(Venue::Binance, "ETH-PERP", 2_100.0, 2_100));
+
+    assert_eq!(
+        index
+            .snapshot_at_or_before_for_symbol(1_500, "BTC-PERP")
+            .map(|snapshot| snapshot.index_mid),
+        Some(100.0)
+    );
+    assert_eq!(
+        index
+            .snapshot_at_or_before_for_symbol(1_500, "ETH-PERP")
+            .map(|snapshot| snapshot.index_mid),
+        Some(2_000.0)
+    );
+    assert_eq!(
+        index
+            .snapshots_since_for_symbol(1_500, "ETH-PERP")
+            .into_iter()
+            .map(|snapshot| snapshot.index_mid)
+            .collect::<Vec<_>>(),
+        vec![2_100.0]
+    );
 }
 
 #[test]

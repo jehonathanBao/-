@@ -5,7 +5,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SignalTable from "../components/SignalTable.jsx";
 import { mockSignals } from "../data/mockSignals.js";
-import { useSignalsStore } from "../store/signalsStore.js";
+import { SIGNAL_INBOX_STORAGE_KEY, useSignalsStore } from "../store/signalsStore.js";
 
 describe("Signal inbox card display", () => {
   beforeEach(() => {
@@ -71,7 +71,7 @@ describe("Signal inbox card display", () => {
 
     const state = useSignalsStore.getState();
     expect(state.rawInboxSignals.find((signal) => signal.id === "sig_001").reviewStatus).toBe("acknowledged");
-    const persisted = JSON.parse(window.localStorage.getItem("toxic-order-monitor.signal-inbox.v1"));
+    const persisted = JSON.parse(window.localStorage.getItem(SIGNAL_INBOX_STORAGE_KEY));
     expect(persisted.rawInboxSignals.find((signal) => signal.id === "sig_001").reviewStatus).toBe("acknowledged");
   });
 
@@ -116,7 +116,7 @@ describe("Signal inbox card display", () => {
     expect(screen.queryByText("insufficient_trade_confirmation")).not.toBeInTheDocument();
   });
 
-  it("shows stale candidates instead of deleting them from the card list", () => {
+  it("shows stale candidates with an explicit historical badge instead of deleting them", () => {
     const staleSignal = {
       ...mockSignals[0],
       isLive: false,
@@ -126,7 +126,54 @@ describe("Signal inbox card display", () => {
     renderInbox([staleSignal]);
 
     expect(screen.getByTestId("signal-card-sig_001")).toBeInTheDocument();
-    expect(screen.queryByText(/stale · last seen/)).not.toBeInTheDocument();
+    expect(screen.getByText("历史 / 非实时")).toBeInTheDocument();
+  });
+
+  it("renders nullable card and review metrics as unavailable instead of zero", async () => {
+    const user = userEvent.setup();
+    const nullableSignal = {
+      ...mockSignals[0],
+      id: "sig-nullable",
+      dedupeKey: "binance:BTCUSDT:nullable",
+      isLive: false,
+      score: null,
+      finalRiskScore: null,
+      toxicScore: null,
+      dataQuality: null,
+      shortPressure: null,
+      tofScore: null,
+      perpScore: null,
+      advancedScore: null,
+      mainForceScore: null,
+      structureBias: null,
+      mainForceConfirmed: null,
+      mainForceConfirmationCount: null,
+      mainForceConfirmationTotal: null,
+      extremeImpactConfirmed: null,
+      toxicTtlSec: null,
+      toxicHalfLifeSec: null,
+      toxicExpiresAt: null,
+      riskSystems: null,
+      marketStructureScore: null,
+      tofMetrics: null,
+      perpTofMetrics: null,
+      advancedTofMetrics: null,
+      cwmContribution: null,
+    };
+
+    renderInbox([nullableSignal]);
+
+    expect(screen.getByText("短线毒性 N/A")).toBeInTheDocument();
+    expect(screen.getByText("压力 N/A")).toBeInTheDocument();
+    expect(screen.getByText("Quality N/A")).toBeInTheDocument();
+    expect(screen.getByText("主力结构 N/A")).toBeInTheDocument();
+    expect(screen.getByText("偏向 N/A")).toBeInTheDocument();
+    expect(screen.getByText("主力确认 不可用 · N/A/N/A")).toBeInTheDocument();
+    expect(screen.getByText("极端行情 不可用")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Review sig-nullable/ }));
+    expect(screen.getByText("Toxic TTL").nextSibling).toHaveTextContent("N/A");
+    expect(screen.getByText("Toxic Half-Life").nextSibling).toHaveTextContent("N/A");
   });
 
   it("keeps low-score candidates visible even when Discord push is gated", () => {
@@ -143,7 +190,7 @@ describe("Signal inbox card display", () => {
   });
 
   it("shows a manual Discord push action for high-risk candidates", () => {
-    renderInbox([mockSignals[0]]);
+    renderInbox([alertEligibleSignal(mockSignals[0])]);
 
     expect(screen.getByRole("button", { name: /推送 sig_001 到 Discord/ })).toHaveTextContent("手动推送");
     expect(screen.getByText("卖方挂单诱导，潜在下行压力")).toBeInTheDocument();
@@ -389,6 +436,25 @@ describe("Signal inbox card display", () => {
     expect(screen.getByRole("button", { name: /推送 sig_003 到 Discord/ })).toHaveTextContent("仅页面展示");
   });
 });
+
+function alertEligibleSignal(signal) {
+  return {
+    ...signal,
+    riskScore: signal.score,
+    dataQualityScore: signal.dataQuality,
+    alertEligible: true,
+    isLive: true,
+    runtimeBoundary: {
+      phase: "confirmed",
+      readOnly: true,
+      monitoringStarted: true,
+      executionEnabled: false,
+      runtimeModified: false,
+      analysisOnly: true,
+      checkedAtMs: Date.now(),
+    },
+  };
+}
 
 function renderInbox(signals, overrides = {}) {
   return render(

@@ -103,20 +103,20 @@ fn build_context(state: &AppState, requested_symbol: &str) -> ToxicSignalDetailO
     let markout_recent = toxic_markout_recent(
         requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     );
     let quality_summary = toxic_quality_scorecard_summary(
         requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     );
     let recommendation_summary = toxic_weight_recommendation_summary(
         requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     );
     let governance_summary = toxic_governance_ledger_summary(Some(requested_symbol));
     let inbox_recent = build_inbox_recent(state, requested_symbol);

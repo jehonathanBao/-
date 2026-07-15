@@ -39,8 +39,8 @@ pub async fn toxic_quality_scorecard_status_route(
     Json(serde_json::json!(toxic_quality_scorecard_status(
         &requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, &requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, &requested_symbol),
     )))
 }
 
@@ -69,8 +69,8 @@ pub(crate) fn build_summary(
     toxic_quality_scorecard_summary(
         requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     )
 }
 

@@ -301,6 +301,8 @@ fn inbox_item(spec: InboxItemSpec<'_>) -> ToxicSignalInboxItem {
         signal_kind: spec.signal_kind.to_string(),
         direction_bias: "short_bias".to_string(),
         severity: spec.severity.to_string(),
+        risk_score: 82,
+        data_quality_score: Some(82.0),
         confidence: spec.confidence,
         created_at_ms: 1_000,
         fusion: ToxicSignalInboxFusionSummary {

@@ -1,18 +1,38 @@
 import axios from "axios";
 import { mockSignals } from "../data/mockSignals.js";
 
-export async function fetchSignals() {
+export async function fetchSignalsSnapshot() {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  const fetchedAtMs = Date.now();
   try {
     const response = await axios.get(`${baseURL}/api/toxicity/signal-inbox/recent`);
-    const items = Array.isArray(response.data?.items) ? response.data.items : [];
-    if (items.length === 0) {
-      return demoSignalsIfEnabled();
+    if (!response.data || typeof response.data !== "object" || !Array.isArray(response.data.items)) {
+      return errorSnapshot("MALFORMED_RESPONSE", fetchedAtMs);
     }
-    return items.map(mapInboxItemToSignal);
-  } catch {
-    return demoSignalsIfEnabled();
+    const runtime = runtimeFromPayload(response.data, fetchedAtMs);
+    const demoSignals = response.data.items.length === 0 ? demoSignalsIfEnabled() : [];
+    const source = demoSignals.length > 0 ? "cache" : "backend";
+    const items = demoSignals.length > 0 ? demoSignals : response.data.items.map(mapInboxItemToSignal);
+    return {
+      signals: items.map((signal) => ({
+        ...signal,
+        runtimeBoundary: runtime,
+      })),
+      request: {
+        phase: "ready",
+        source,
+        errorCode: null,
+        fetchedAtMs,
+      },
+      runtime,
+    };
+  } catch (error) {
+    return errorSnapshot(requestErrorCode(error), fetchedAtMs);
   }
+}
+
+export async function fetchSignals() {
+  return (await fetchSignalsSnapshot()).signals;
 }
 
 function demoSignalsIfEnabled() {
@@ -25,28 +45,74 @@ function demoSignalsIfEnabled() {
   }));
 }
 
+export function runtimeFromPayload(payload, checkedAtMs = Date.now()) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const readOnly = booleanOrNull(source.readOnly);
+  const monitoringStarted = booleanOrNull(source.monitoringStarted);
+  const executionEnabled = booleanOrNull(source.executionEnabled);
+  const runtimeModified = booleanOrNull(source.runtimeModified);
+  const analysisOnly = booleanOrNull(source.analysisOnly);
+  const confirmed =
+    readOnly !== null &&
+    monitoringStarted !== null &&
+    executionEnabled !== null &&
+    runtimeModified !== null &&
+    analysisOnly !== null;
+  return {
+    phase: confirmed ? "confirmed" : "unavailable",
+    readOnly,
+    monitoringStarted,
+    executionEnabled,
+    runtimeModified,
+    analysisOnly,
+    checkedAtMs,
+  };
+}
+
+function errorSnapshot(errorCode, fetchedAtMs) {
+  return {
+    signals: [],
+    request: {
+      phase: "error",
+      source: null,
+      errorCode,
+      fetchedAtMs,
+    },
+    runtime: runtimeFromPayload(null, fetchedAtMs),
+  };
+}
+
+function requestErrorCode(error) {
+  const status = Number(error?.response?.status);
+  if (Number.isInteger(status) && status > 0) {
+    return `HTTP_${status}`;
+  }
+  return "NETWORK_ERROR";
+}
+
 export function mapInboxItemToSignal(item) {
   const signalId = item.signalId ?? item.id;
   const signalKind = item.signalKind ?? item.detector;
   const directionBias = item.directionBias ?? item.direction;
   const createdAtMs = item.createdAtMs ?? Date.parse(item.createdAt || "");
-  const riskSystems = normalizeRiskSystems(item.riskSystems);
-  const toxicShortScore = normalizeToxicShortScore(item.toxicShortScore ?? riskSystems.shortTermToxic);
+  const normalizedRiskSystems = normalizeRiskSystems(item.riskSystems);
+  const toxicShortScore = normalizeToxicShortScore(item.toxicShortScore ?? normalizedRiskSystems.shortTermToxic);
   const marketStructureScore = normalizeMarketStructureScore(
-    item.marketStructureScore ?? riskSystems.marketStructureScore ?? riskSystems.mainForceStructure,
+    ownValueOrFallback(
+      item,
+      "marketStructureScore",
+      normalizedRiskSystems.marketStructureScore ?? normalizedRiskSystems.mainForceStructure,
+    ),
   );
-  const score =
-    numberOrNull(item.toxicScore) ??
-    numberOrNull(toxicShortScore?.toxicScore) ??
-    numberOrNull(item.finalRiskScore) ??
-    numberOrNull(item.advancedTofMetrics?.finalRiskScore) ??
-    numberOrNull(item.riskScore) ??
-    scoreFromSeverity(item.severity);
-  const dataQuality =
-    numberOrNull(item.dataQuality) ??
-    numberOrNull(toxicShortScore?.dataQuality) ??
-    numberOrNull(item.advancedTofMetrics?.dataQuality) ??
-    dataQualityFromBucket(item.quality?.qualityBucket ?? item.qualityBucket);
+  const riskSystems = {
+    ...normalizedRiskSystems,
+    marketStructureScore,
+    mainForceStructure: marketStructureScore,
+  };
+  const authoritativeRiskScore = numberOrNull(item.riskScore);
+  const authoritativeDataQuality = numberOrNull(item.dataQualityScore);
+  const score = authoritativeRiskScore;
+  const dataQuality = authoritativeDataQuality ?? numberOrNull(item.dataQuality);
   const confidence = confidencePercent(
     item.confidence ??
       toxicShortScore?.confidence ??
@@ -66,8 +132,12 @@ export function mapInboxItemToSignal(item) {
     level: levelFromSeverity(item.severity),
     risk: riskFromSeverity(item.severity),
     score,
+    riskScore: authoritativeRiskScore,
+    authoritativeRiskScore,
     confidence,
     dataQuality,
+    dataQualityScore: authoritativeDataQuality,
+    authoritativeDataQuality,
     triggerPriceUsd: normalizeSignalPrice(item),
     tofMetrics: normalizeTofMetrics(item.tofMetrics),
     tofScore: numberOrNull(item.tofScore),
@@ -77,6 +147,9 @@ export function mapInboxItemToSignal(item) {
     advancedTofMetrics: normalizeAdvancedTofMetrics(item.advancedTofMetrics),
     advancedScore: numberOrNull(item.advancedScore),
     advancedCandidateType: item.advancedCandidateType || item.advancedTofMetrics?.candidateType || null,
+    alertEligible: item.alertEligible === true,
+    lineage: normalizeLineage(item.lineage),
+    runtimeBoundary: runtimeFromPayload(item),
     cwmContribution: normalizeCwmContribution(item.cwmContribution),
     riskSystems,
     toxicShortScore,
@@ -92,72 +165,110 @@ export function mapInboxItemToSignal(item) {
     toxicDecayedScore: numberOrNull(item.toxicDecayedScore ?? toxicShortScore?.decayedScore),
     toxicDecayFormula: item.toxicDecayFormula || toxicShortScore?.decayFormula || null,
     toxicReasons: normalizeToxicReasons(item.toxicReasons ?? toxicShortScore?.reasons),
-    mainForceScore: numberOrNull(item.mainForceScore ?? marketStructureScore?.mainForceScore),
-    mainForceConfirmed:
-      typeof (item.mainForceConfirmed ?? marketStructureScore?.mainForceConfirmed) === "boolean"
-        ? (item.mainForceConfirmed ?? marketStructureScore?.mainForceConfirmed)
-        : false,
+    mainForceScore: numberOrNull(ownValueOrFallback(item, "mainForceScore", marketStructureScore?.mainForceScore)),
+    mainForceConfirmed: booleanOrNull(
+      ownValueOrFallback(item, "mainForceConfirmed", marketStructureScore?.mainForceConfirmed),
+    ),
     mainForceConfirmationCount: numberOrNull(
-      item.mainForceConfirmationCount ?? marketStructureScore?.mainForceConfirmationCount,
+      ownValueOrFallback(item, "mainForceConfirmationCount", marketStructureScore?.mainForceConfirmationCount),
     ),
     mainForceConfirmationTotal: numberOrNull(
-      item.mainForceConfirmationTotal ?? marketStructureScore?.mainForceConfirmationTotal,
+      ownValueOrFallback(item, "mainForceConfirmationTotal", marketStructureScore?.mainForceConfirmationTotal),
     ),
     mainForceConfirmationThreshold: numberOrNull(
-      item.mainForceConfirmationThreshold ?? marketStructureScore?.mainForceConfirmationThreshold,
+      ownValueOrFallback(item, "mainForceConfirmationThreshold", marketStructureScore?.mainForceConfirmationThreshold),
     ),
-    structureBias: numberOrNull(item.structureBias ?? marketStructureScore?.structureBias),
-    extremeImpactScore: numberOrNull(item.extremeImpactScore ?? marketStructureScore?.extremeImpactScore),
-    extremeImpactConfirmed:
-      typeof (item.extremeImpactConfirmed ?? marketStructureScore?.extremeImpactConfirmed) === "boolean"
-        ? (item.extremeImpactConfirmed ?? marketStructureScore?.extremeImpactConfirmed)
-        : false,
-    regimeType: item.regimeType || marketStructureScore?.regimeType || null,
-    marketStructureSeverity: item.marketStructureSeverity || marketStructureScore?.severity || null,
+    structureBias: numberOrNull(ownValueOrFallback(item, "structureBias", marketStructureScore?.structureBias)),
+    extremeImpactScore: numberOrNull(
+      ownValueOrFallback(item, "extremeImpactScore", marketStructureScore?.extremeImpactScore),
+    ),
+    extremeImpactConfirmed: booleanOrNull(
+      ownValueOrFallback(item, "extremeImpactConfirmed", marketStructureScore?.extremeImpactConfirmed),
+    ),
+    regimeType: stringOrNull(ownValueOrFallback(item, "regimeType", marketStructureScore?.regimeType)),
+    marketStructureSeverity: stringOrNull(
+      ownValueOrFallback(item, "marketStructureSeverity", marketStructureScore?.severity),
+    ),
     marketStructureConfidence: numberOrNull(
-      item.marketStructureConfidence ?? marketStructureScore?.confidence,
+      ownValueOrFallback(item, "marketStructureConfidence", marketStructureScore?.confidence),
     ),
-    marketStructureDataQuality: numberOrNull(item.marketStructureDataQuality ?? marketStructureScore?.dataQuality),
-    structureRaw: numberOrNull(item.structureRaw ?? marketStructureScore?.structureRaw),
-    spotContractFloor: numberOrNull(item.spotContractFloor ?? marketStructureScore?.spotContractFloor),
-    durationScore: numberOrNull(item.durationScore ?? marketStructureScore?.durationScore),
-    liquidationPenalty: numberOrNull(item.liquidationPenalty ?? marketStructureScore?.liquidationPenalty),
-    crowdingPenalty: numberOrNull(item.crowdingPenalty ?? marketStructureScore?.crowdingPenalty),
-    spotScore: numberOrNull(item.spotScore ?? marketStructureScore?.spotScore),
-    spotCvdScore: numberOrNull(item.spotCvdScore ?? marketStructureScore?.spotCvdScore),
-    spotVolumeAnomaly: numberOrNull(item.spotVolumeAnomaly ?? marketStructureScore?.spotVolumeAnomaly),
-    spotAbsorption: numberOrNull(item.spotAbsorption ?? marketStructureScore?.spotAbsorption),
-    spotLiquidityShift: numberOrNull(item.spotLiquidityShift ?? marketStructureScore?.spotLiquidityShift),
-    spotPriceResponse: numberOrNull(item.spotPriceResponse ?? marketStructureScore?.spotPriceResponse),
-    contractScore: numberOrNull(item.contractScore ?? marketStructureScore?.contractScore),
-    cwmAggressiveFlow: numberOrNull(item.cwmAggressiveFlow ?? marketStructureScore?.cwmAggressiveFlow),
-    oiImpulse: numberOrNull(item.oiImpulse ?? marketStructureScore?.oiImpulse),
-    liquidationContext: numberOrNull(item.liquidationContext ?? marketStructureScore?.liquidationContext),
-    fundingCrowding: numberOrNull(item.fundingCrowding ?? marketStructureScore?.fundingCrowding),
-    basisPremium: numberOrNull(item.basisPremium ?? marketStructureScore?.basisPremium),
+    marketStructureDataQuality: numberOrNull(
+      ownValueOrFallback(item, "marketStructureDataQuality", marketStructureScore?.dataQuality),
+    ),
+    structureRaw: numberOrNull(ownValueOrFallback(item, "structureRaw", marketStructureScore?.structureRaw)),
+    spotContractFloor: numberOrNull(
+      ownValueOrFallback(item, "spotContractFloor", marketStructureScore?.spotContractFloor),
+    ),
+    durationScore: numberOrNull(ownValueOrFallback(item, "durationScore", marketStructureScore?.durationScore)),
+    liquidationPenalty: numberOrNull(
+      ownValueOrFallback(item, "liquidationPenalty", marketStructureScore?.liquidationPenalty),
+    ),
+    crowdingPenalty: numberOrNull(
+      ownValueOrFallback(item, "crowdingPenalty", marketStructureScore?.crowdingPenalty),
+    ),
+    spotScore: numberOrNull(ownValueOrFallback(item, "spotScore", marketStructureScore?.spotScore)),
+    spotCvdScore: numberOrNull(ownValueOrFallback(item, "spotCvdScore", marketStructureScore?.spotCvdScore)),
+    spotVolumeAnomaly: numberOrNull(
+      ownValueOrFallback(item, "spotVolumeAnomaly", marketStructureScore?.spotVolumeAnomaly),
+    ),
+    spotAbsorption: numberOrNull(
+      ownValueOrFallback(item, "spotAbsorption", marketStructureScore?.spotAbsorption),
+    ),
+    spotLiquidityShift: numberOrNull(
+      ownValueOrFallback(item, "spotLiquidityShift", marketStructureScore?.spotLiquidityShift),
+    ),
+    spotPriceResponse: numberOrNull(
+      ownValueOrFallback(item, "spotPriceResponse", marketStructureScore?.spotPriceResponse),
+    ),
+    contractScore: numberOrNull(ownValueOrFallback(item, "contractScore", marketStructureScore?.contractScore)),
+    cwmAggressiveFlow: numberOrNull(
+      ownValueOrFallback(item, "cwmAggressiveFlow", marketStructureScore?.cwmAggressiveFlow),
+    ),
+    oiImpulse: numberOrNull(ownValueOrFallback(item, "oiImpulse", marketStructureScore?.oiImpulse)),
+    liquidationContext: numberOrNull(
+      ownValueOrFallback(item, "liquidationContext", marketStructureScore?.liquidationContext),
+    ),
+    fundingCrowding: numberOrNull(
+      ownValueOrFallback(item, "fundingCrowding", marketStructureScore?.fundingCrowding),
+    ),
+    basisPremium: numberOrNull(ownValueOrFallback(item, "basisPremium", marketStructureScore?.basisPremium)),
     activeExchangeConfirmation: numberOrNull(
-      item.activeExchangeConfirmation ?? marketStructureScore?.activeExchangeConfirmation,
+      ownValueOrFallback(item, "activeExchangeConfirmation", marketStructureScore?.activeExchangeConfirmation),
     ),
-    crossConfirmScore: numberOrNull(item.crossConfirmScore ?? marketStructureScore?.crossConfirmScore),
+    crossConfirmScore: numberOrNull(
+      ownValueOrFallback(item, "crossConfirmScore", marketStructureScore?.crossConfirmScore),
+    ),
     spotContractDirectionConsistency: numberOrNull(
-      item.spotContractDirectionConsistency ?? marketStructureScore?.spotContractDirectionConsistency,
+      ownValueOrFallback(
+        item,
+        "spotContractDirectionConsistency",
+        marketStructureScore?.spotContractDirectionConsistency,
+      ),
     ),
-    multiWindowConsistency: numberOrNull(item.multiWindowConsistency ?? marketStructureScore?.multiWindowConsistency),
+    multiWindowConsistency: numberOrNull(
+      ownValueOrFallback(item, "multiWindowConsistency", marketStructureScore?.multiWindowConsistency),
+    ),
     priceResponseConsistency: numberOrNull(
-      item.priceResponseConsistency ?? marketStructureScore?.priceResponseConsistency,
+      ownValueOrFallback(item, "priceResponseConsistency", marketStructureScore?.priceResponseConsistency),
     ),
-    sourceCoverage: numberOrNull(item.sourceCoverage ?? marketStructureScore?.sourceCoverage),
-    signalAgreement: numberOrNull(item.signalAgreement ?? marketStructureScore?.signalAgreement),
-    oiScore: numberOrNull(item.oiScore ?? marketStructureScore?.oiScore),
-    liquidationScore: numberOrNull(item.liquidationScore ?? marketStructureScore?.liquidationScore),
-    fundingCrowdingScore: numberOrNull(item.fundingCrowdingScore ?? marketStructureScore?.fundingCrowdingScore),
-    cwmScore: numberOrNull(item.cwmScore ?? marketStructureScore?.cwmScore),
-    marketStructureReasons: normalizeMarketStructureReasons(item.marketStructureReasons ?? marketStructureScore?.reasons),
+    sourceCoverage: numberOrNull(ownValueOrFallback(item, "sourceCoverage", marketStructureScore?.sourceCoverage)),
+    signalAgreement: numberOrNull(ownValueOrFallback(item, "signalAgreement", marketStructureScore?.signalAgreement)),
+    oiScore: numberOrNull(ownValueOrFallback(item, "oiScore", marketStructureScore?.oiScore)),
+    liquidationScore: numberOrNull(
+      ownValueOrFallback(item, "liquidationScore", marketStructureScore?.liquidationScore),
+    ),
+    fundingCrowdingScore: numberOrNull(
+      ownValueOrFallback(item, "fundingCrowdingScore", marketStructureScore?.fundingCrowdingScore),
+    ),
+    cwmScore: numberOrNull(ownValueOrFallback(item, "cwmScore", marketStructureScore?.cwmScore)),
+    marketStructureReasons: normalizeMarketStructureReasons(
+      ownValueOrFallback(item, "marketStructureReasons", marketStructureScore?.reasons),
+    ),
     finalCandidateType: item.finalCandidateType || null,
     metricsDirection:
       item.metricsDirection || item.advancedTofMetrics?.metricsDirection || item.perpTofMetrics?.metricsDirection || null,
     mergedConfidence: numberOrNull(item.mergedConfidence),
-    finalRiskScore: numberOrNull(item.finalRiskScore ?? item.toxicScore ?? riskSystems.shortTermToxic?.toxicScore),
+    finalRiskScore: authoritativeRiskScore,
     candidateType: item.candidateType || item.signalKind || item.detector || "toxic_flow_candidate",
     explainTags: Array.isArray(item.explainTags) ? item.explainTags.filter((tag) => typeof tag === "string") : [],
     directionLabel: item.directionLabel || directionLabel(directionBias),
@@ -282,9 +393,7 @@ function normalizeRiskSystems(systems) {
   const shortTerm = source.shortTermToxic && typeof source.shortTermToxic === "object"
     ? source.shortTermToxic
     : {};
-  const mainForceSource = source.marketStructureScore && typeof source.marketStructureScore === "object"
-    ? source.marketStructureScore
-    : source.mainForceStructure;
+  const mainForceSource = ownValueOrFallback(source, "marketStructureScore", source.mainForceStructure);
   const mainForce = normalizeMarketStructureScore(mainForceSource);
   return {
     shortTermToxic: normalizeToxicShortScore(shortTerm),
@@ -294,17 +403,20 @@ function normalizeRiskSystems(systems) {
 }
 
 function normalizeMarketStructureScore(structure) {
-  const source = structure && typeof structure === "object" ? structure : {};
+  if (!structure || typeof structure !== "object" || Array.isArray(structure)) {
+    return null;
+  }
+  const source = structure;
   return {
     ts: numberOrNull(source.ts),
     symbol: typeof source.symbol === "string" ? source.symbol : null,
     mainForceScore: numberOrNull(source.mainForceScore),
-    mainForceConfirmed: typeof source.mainForceConfirmed === "boolean" ? source.mainForceConfirmed : false,
+    mainForceConfirmed: booleanOrNull(source.mainForceConfirmed),
     mainForceConfirmationCount: numberOrNull(source.mainForceConfirmationCount),
     mainForceConfirmationTotal: numberOrNull(source.mainForceConfirmationTotal),
     mainForceConfirmationThreshold: numberOrNull(source.mainForceConfirmationThreshold),
     extremeImpactScore: numberOrNull(source.extremeImpactScore),
-    extremeImpactConfirmed: typeof source.extremeImpactConfirmed === "boolean" ? source.extremeImpactConfirmed : false,
+    extremeImpactConfirmed: booleanOrNull(source.extremeImpactConfirmed),
     structureBias: numberOrNull(source.structureBias),
     confidence: numberOrNull(source.confidence),
     dataQuality: numberOrNull(source.dataQuality),
@@ -424,9 +536,10 @@ function normalizeAdvancedTofMetrics(metrics) {
     freshDataCoverage: numberOrNull(metrics.freshDataCoverage),
     candidateType: typeof metrics.candidateType === "string" ? metrics.candidateType : "AdvancedTofCandidate",
     finalCandidateType: typeof metrics.finalCandidateType === "string" ? metrics.finalCandidateType : null,
-    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : "neutral",
+    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : null,
     confidence: numberOrNull(metrics.confidence),
     explainTags: Array.isArray(metrics.explainTags) ? metrics.explainTags.filter((tag) => typeof tag === "string") : [],
+    lineage: normalizeLineage(metrics.lineage),
   };
 }
 
@@ -436,20 +549,24 @@ function normalizePerpTofMetrics(metrics) {
   }
   return {
     oiChange: numberOrNull(metrics.oiChange),
-    oiDirection: typeof metrics.oiDirection === "string" ? metrics.oiDirection : "neutral",
+    oiDirection: typeof metrics.oiDirection === "string" ? metrics.oiDirection : null,
     fundingRate: numberOrNull(metrics.fundingRate),
-    fundingSide: typeof metrics.fundingSide === "string" ? metrics.fundingSide : "neutral",
+    fundingSide: typeof metrics.fundingSide === "string" ? metrics.fundingSide : null,
     liquidationPressure: numberOrNull(metrics.liquidationPressure),
-    squeezeSide: typeof metrics.squeezeSide === "string" ? metrics.squeezeSide : "neutral",
+    squeezeRiskProxy: numberOrNull(metrics.squeezeRiskProxy),
+    observedLiquidationNotional: numberOrNull(metrics.observedLiquidationNotional),
+    squeezeSide: typeof metrics.squeezeSide === "string" ? metrics.squeezeSide : null,
     aggBuyVolume: numberOrNull(metrics.aggBuyVolume),
     aggSellVolume: numberOrNull(metrics.aggSellVolume),
-    directionBias: typeof metrics.directionBias === "string" ? metrics.directionBias : "neutral",
-    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : "neutral",
+    directionBias: typeof metrics.directionBias === "string" ? metrics.directionBias : null,
+    metricsDirection: typeof metrics.metricsDirection === "string" ? metrics.metricsDirection : null,
     riskScore: numberOrNull(metrics.riskScore),
     dataQuality: numberOrNull(metrics.dataQuality),
     candidateType: typeof metrics.candidateType === "string" ? metrics.candidateType : "PerpTofCandidate",
     explainTags: Array.isArray(metrics.explainTags) ? metrics.explainTags.filter((tag) => typeof tag === "string") : [],
     confidence: numberOrNull(metrics.confidence),
+    lineage: normalizeLineage(metrics.lineage),
+    liquidationLineage: normalizeLineage(metrics.liquidationLineage),
   };
 }
 
@@ -498,24 +615,6 @@ function levelFromSeverity(severity) {
   return "D";
 }
 
-function scoreFromSeverity(severity) {
-  const value = String(severity || "").toLowerCase();
-  if (value === "critical") return 92;
-  if (value === "high") return 85;
-  if (value === "medium") return 72;
-  return 45;
-}
-
-function dataQualityFromBucket(bucket) {
-  const value = String(bucket || "").toLowerCase();
-  if (value === "excellent") return 92;
-  if (value === "good") return 82;
-  if (value === "mixed") return 74;
-  if (value === "weak") return 62;
-  if (value === "bad") return 45;
-  return 70;
-}
-
 function directionLabel(directionBias) {
   const value = String(directionBias || "").toLowerCase();
   if (value.includes("bearish")) return "Ask/Sell";
@@ -535,6 +634,9 @@ function normalizeTofMetrics(metrics) {
     tradeImbalance: numberOrNull(metrics.tradeImbalance),
     tradeImbalanceScore: numberOrNull(metrics.tradeImbalanceScore),
     vpinProxy: numberOrNull(metrics.vpinProxy),
+    vpinZscore: numberOrNull(metrics.vpinZscore),
+    vpinPercentile: numberOrNull(metrics.vpinPercentile),
+    perVenueVpin: normalizePerVenueVpin(metrics.perVenueVpin),
     vpinBucketCount: numberOrNull(metrics.vpinBucketCount),
     vpinWindowVolume: numberOrNull(metrics.vpinWindowVolume),
     bidDepthWithdrawal: numberOrNull(metrics.bidDepthWithdrawal),
@@ -550,7 +652,58 @@ function normalizeTofMetrics(metrics) {
     tofScore: numberOrNull(metrics.tofScore),
     finalRiskScore: numberOrNull(metrics.finalRiskScore),
     metricsCompleteness: numberOrNull(metrics.metricsCompleteness),
+    lineage: normalizeLineage(metrics.lineage),
+    metricLineage: normalizeLineageMap(metrics.metricLineage),
   };
+}
+
+function normalizePerVenueVpin(value) {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        venue: typeof item.venue === "string" ? item.venue : null,
+        vpin: numberOrNull(item.vpin),
+        zscore: numberOrNull(item.zscore),
+        percentile: numberOrNull(item.percentile),
+      }));
+  }
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  return Object.entries(value).map(([venue, item]) => ({
+    venue,
+    vpin: numberOrNull(item?.vpin ?? item),
+    zscore: numberOrNull(item?.zscore),
+    percentile: numberOrNull(item?.percentile),
+  }));
+}
+
+function normalizeLineage(lineage) {
+  const source = lineage && typeof lineage === "object" ? lineage : {};
+  const allowed = new Set(["observed", "calculated_from_observed", "inferred", "unavailable"]);
+  const provenance = allowed.has(source.provenance) ? source.provenance : "unavailable";
+  const available = source.available === true;
+  const fresh = source.fresh === true;
+  const eligibleProvenance = provenance === "observed" || provenance === "calculated_from_observed";
+  return {
+    provenance,
+    available,
+    fresh,
+    source: typeof source.source === "string" ? source.source : "unknown",
+    observedAtMs: numberOrNull(source.observedAtMs),
+    unavailableReason: typeof source.unavailableReason === "string" ? source.unavailableReason : null,
+    alertEligible: source.alertEligible === true && available && fresh && eligibleProvenance,
+  };
+}
+
+function normalizeLineageMap(lineages) {
+  if (!lineages || typeof lineages !== "object" || Array.isArray(lineages)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(lineages).map(([metric, lineage]) => [metric, normalizeLineage(lineage)]),
+  );
 }
 
 function numberOrNull(value) {
@@ -559,6 +712,18 @@ function numberOrNull(value) {
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function booleanOrNull(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function ownValueOrFallback(source, key, fallback) {
+  return source && Object.prototype.hasOwnProperty.call(source, key) ? source[key] : fallback;
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function confidencePercent(value) {

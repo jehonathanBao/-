@@ -14,13 +14,13 @@ export default function RuleStatus({ discordConnected, lastPushedAt, onTestPush,
           <Status label="最后推送" value={lastPushedAt || "暂无"} ok={Boolean(lastPushedAt)} />
         </div>
         <button
-          aria-label="测试 Discord 推送"
+          aria-label="预览 Discord 候选"
           className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-200 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={testPending}
           onClick={onTestPush}
           type="button"
         >
-          {testPending ? "测试中" : "测试推送"}
+          {testPending ? "校验中" : "候选预览"}
         </button>
       </div>
       <div className="mt-5 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3">

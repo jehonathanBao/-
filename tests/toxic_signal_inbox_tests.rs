@@ -30,11 +30,11 @@ use btc_toxic_flow_monitor_rs::{
 
 #[test]
 fn signal_inbox_builds_items_with_safety_contract() {
-    let fusion = fusion_recent(vec![fusion_signal(
-        "fusion-1",
-        "BTC-PERP",
-        ToxicSignalType::ShortBiasToxicFlow,
-    )]);
+    let mut source_signal =
+        fusion_signal("fusion-1", "BTC-PERP", ToxicSignalType::ShortBiasToxicFlow);
+    source_signal.toxicity_score = 83;
+    source_signal.data_quality = Some(77.5);
+    let fusion = fusion_recent(vec![source_signal]);
     let recent = build_toxic_signal_inbox_recent(
         "BTC-PERP",
         &fusion,
@@ -71,6 +71,8 @@ fn signal_inbox_builds_items_with_safety_contract() {
     assert!(!recent.runtime_weight_modified);
     assert!(!recent.config_modified);
     assert_eq!(recent.items.len(), 1);
+    assert_eq!(recent.items[0].risk_score, 83);
+    assert_eq!(recent.items[0].data_quality_score, Some(77.5));
     assert_eq!(
         recent.items[0].operator_action,
         ToxicSignalInboxOperatorAction::ReviewMarkout
@@ -83,6 +85,48 @@ fn signal_inbox_builds_items_with_safety_contract() {
     assert!(status.analysis_only);
     assert!(!status.execution_enabled);
     assert_eq!(status.item_count, 1);
+}
+
+#[test]
+fn inbox_preserves_source_runtime_boundary_instead_of_hard_coding_safety() {
+    let mut fusion = fusion_recent(vec![fusion_signal(
+        "fusion-runtime",
+        "BTC-PERP",
+        ToxicSignalType::ShortBiasToxicFlow,
+    )]);
+    fusion.read_only = false;
+    fusion.runtime_modified = true;
+    fusion.analysis_only = false;
+    fusion.execution_enabled = true;
+
+    let recent = build_toxic_signal_inbox_recent(
+        "BTC-PERP",
+        &fusion,
+        &replay_recent(Vec::new()),
+        &markout_recent(Vec::new()),
+        &quality_summary(Vec::new()),
+        &recommendation_summary(Vec::new()),
+        &governance_summary(Vec::new()),
+    );
+    let status = build_toxic_signal_inbox_status(&recent);
+    let detail = build_toxic_signal_inbox_detail("BTC-PERP", "fusion-runtime", &recent);
+
+    assert!(!recent.read_only);
+    assert!(recent.runtime_modified);
+    assert!(!recent.analysis_only);
+    assert!(recent.execution_enabled);
+    assert!(!recent.items[0].read_only);
+    assert!(recent.items[0].runtime_modified);
+    assert!(!recent.items[0].analysis_only);
+    assert!(recent.items[0].execution_enabled);
+    assert!(!status.read_only);
+    assert!(status.runtime_modified);
+    assert!(!status.analysis_only);
+    assert!(status.execution_enabled);
+    assert!(!detail.read_only);
+    assert!(detail.runtime_modified);
+    assert!(!detail.analysis_only);
+    assert!(detail.execution_enabled);
 }
 
 #[test]

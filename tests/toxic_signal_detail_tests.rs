@@ -509,6 +509,8 @@ fn inbox_item(
         } else {
             "medium".to_string()
         },
+        risk_score: if confidence > 0.7 { 82 } else { 65 },
+        data_quality_score: Some(confidence * 100.0),
         confidence,
         created_at_ms,
         fusion: ToxicSignalInboxFusionSummary {

@@ -43,12 +43,15 @@ async fn toxic_signal_inbox_api_returns_read_only_contract() {
     let recent_payload: serde_json::Value = recent.json().await.expect("recent json");
     assert_eq!(recent_payload["readOnly"], true);
     assert_eq!(recent_payload["runtimeModified"], false);
+    assert_eq!(recent_payload["monitoringStarted"], false);
     assert!(recent_payload["items"].is_array());
     assert!(recent_payload["items"]
         .as_array()
         .expect("items array")
         .iter()
         .all(|item| item["readOnly"] == true
+            && item["monitoringStarted"] == false
+            && item["alertEligible"] == false
             && item["runtimeModified"] == false
             && item["analysisOnly"] == true
             && item["executionEnabled"] == false

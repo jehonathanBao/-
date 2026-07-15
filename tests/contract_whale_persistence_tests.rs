@@ -16,7 +16,7 @@ use btc_toxic_flow_monitor_rs::{
             normalize_bitfinex_trade, normalize_okx_funding_rate_json,
             normalize_okx_open_interest_json,
         },
-        outcome_calibration::ContractWhaleSignalOutcome,
+        outcome_calibration::{ContractWhaleSignalOutcome, CONTRACT_WHALE_OUTCOME_VERSION},
         persistence::flush_contract_flow_buckets_nonblocking,
         persistence::persist_contract_whale_signals_nonblocking,
         types::{
@@ -98,6 +98,16 @@ fn contract_whale_outcome_summary_persists_shadow_markouts() {
         markout_5m_bps: Some(24.0),
         mfe_5m_bps: Some(30.0),
         mae_5m_bps: Some(-4.0),
+        absolute_return_30s_bps: None,
+        absolute_return_2m_bps: None,
+        absolute_return_5m_bps: None,
+        realized_volatility_5m_bps: None,
+        max_absolute_excursion_5m_bps: None,
+        price_sample_count_5m: None,
+        liquidity_recovered_5m: None,
+        liquidity_recovery_ms: None,
+        liquidity_recovery_reason: None,
+        setup_outcome: None,
         follow_through_30s: Some(true),
         follow_through_2m: Some(true),
         follow_through_5m: Some(true),
@@ -111,13 +121,103 @@ fn contract_whale_outcome_summary_persists_shadow_markouts() {
             .unwrap(),
         1
     );
-    let summary = store.contract_whale_outcome_summary().unwrap();
+    let summary = store.contract_whale_outcome_summary("v1_shadow").unwrap();
 
     assert_eq!(summary.len(), 1);
     assert_eq!(summary[0].symbol, "BTC");
     assert_eq!(summary[0].sample_count, 1);
     assert_eq!(summary[0].avg_markout_5m_bps, Some(24.0));
     assert_eq!(summary[0].follow_through_5m_rate, Some(1.0));
+}
+
+#[test]
+fn contract_whale_outcome_summary_isolates_v2_metrics_by_version() {
+    let store = temp_store("contract-whale-outcome-v2-version-isolation");
+    let legacy = ContractWhaleSignalOutcome {
+        signal_id: "contract-whale:BTC:15:1700000000000:legacy".to_string(),
+        symbol: "BTC".to_string(),
+        signal_ts: 1_700_000_000_000,
+        signal_type: "aggressive_buy".to_string(),
+        classification_v2: "main_force_push_up".to_string(),
+        severity: "critical".to_string(),
+        impact_level: Some("A".to_string()),
+        window_sec: 15,
+        oi_context: "new_long_build".to_string(),
+        regime: "trend".to_string(),
+        entry_price: 100.0,
+        markout_30s_bps: Some(900.0),
+        markout_2m_bps: Some(900.0),
+        markout_5m_bps: Some(900.0),
+        mfe_5m_bps: Some(900.0),
+        mae_5m_bps: Some(0.0),
+        absolute_return_30s_bps: None,
+        absolute_return_2m_bps: None,
+        absolute_return_5m_bps: None,
+        realized_volatility_5m_bps: None,
+        max_absolute_excursion_5m_bps: None,
+        price_sample_count_5m: None,
+        liquidity_recovered_5m: None,
+        liquidity_recovery_ms: None,
+        liquidity_recovery_reason: None,
+        setup_outcome: None,
+        follow_through_30s: Some(true),
+        follow_through_2m: Some(true),
+        follow_through_5m: Some(true),
+        evaluated_at: 1_700_000_300_000,
+        outcome_version: "v1_shadow".to_string(),
+    };
+    let v2 = ContractWhaleSignalOutcome {
+        signal_id: "contract-whale:BTC:15:1700000300000:v2".to_string(),
+        signal_ts: 1_700_000_300_000,
+        markout_30s_bps: None,
+        markout_2m_bps: None,
+        markout_5m_bps: None,
+        mfe_5m_bps: None,
+        mae_5m_bps: None,
+        absolute_return_30s_bps: Some(120.0),
+        absolute_return_2m_bps: Some(240.0),
+        absolute_return_5m_bps: Some(180.0),
+        realized_volatility_5m_bps: Some(520.0),
+        max_absolute_excursion_5m_bps: Some(310.0),
+        price_sample_count_5m: Some(4),
+        liquidity_recovered_5m: None,
+        liquidity_recovery_ms: None,
+        liquidity_recovery_reason: Some("historical_l2_unavailable".to_string()),
+        setup_outcome: Some("unclear".to_string()),
+        follow_through_30s: None,
+        follow_through_2m: None,
+        follow_through_5m: None,
+        evaluated_at: 1_700_000_600_000,
+        outcome_version: CONTRACT_WHALE_OUTCOME_VERSION.to_string(),
+        ..legacy.clone()
+    };
+
+    assert_eq!(
+        store
+            .upsert_contract_whale_signal_outcomes(&[legacy, v2])
+            .unwrap(),
+        2
+    );
+
+    let legacy_summary = store.contract_whale_outcome_summary("v1_shadow").unwrap();
+    let v2_summary = store
+        .contract_whale_outcome_summary(CONTRACT_WHALE_OUTCOME_VERSION)
+        .unwrap();
+
+    assert_eq!(legacy_summary.len(), 1);
+    assert_eq!(legacy_summary[0].sample_count, 1);
+    assert_eq!(legacy_summary[0].avg_markout_5m_bps, Some(900.0));
+    assert_eq!(legacy_summary[0].avg_absolute_return_5m_bps, None);
+
+    assert_eq!(v2_summary.len(), 1);
+    assert_eq!(v2_summary[0].sample_count, 1);
+    assert_eq!(v2_summary[0].avg_markout_5m_bps, None);
+    assert_eq!(v2_summary[0].avg_absolute_return_30s_bps, Some(120.0));
+    assert_eq!(v2_summary[0].avg_absolute_return_2m_bps, Some(240.0));
+    assert_eq!(v2_summary[0].avg_absolute_return_5m_bps, Some(180.0));
+    assert_eq!(v2_summary[0].avg_realized_volatility_5m_bps, Some(520.0));
+    assert_eq!(v2_summary[0].avg_max_absolute_excursion_5m_bps, Some(310.0));
+    assert_eq!(v2_summary[0].avg_price_sample_count_5m, Some(4.0));
 }
 
 #[test]

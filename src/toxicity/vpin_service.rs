@@ -16,6 +16,7 @@ use super::vpin_bucket_engine::VpinBucketEngine;
 pub struct VpinService {
     bus: MarketDataBus,
     engine: Arc<RwLock<VpinBucketEngine>>,
+    symbol: String,
     store: Option<SqliteStore>,
     persist_buckets: bool,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
@@ -23,6 +24,7 @@ pub struct VpinService {
 
 impl VpinService {
     pub fn new(bus: MarketDataBus, config: &AppConfig, store: Option<SqliteStore>) -> Self {
+        let symbol = config.symbol.trim().to_ascii_uppercase();
         let params = VpinParams {
             enabled: config.vpin_enabled,
             bucket_size_btc: config.vpin_bucket_size_btc,
@@ -37,7 +39,11 @@ impl VpinService {
 
         Self {
             bus,
-            engine: Arc::new(RwLock::new(VpinBucketEngine::new(params.clone()))),
+            engine: Arc::new(RwLock::new(VpinBucketEngine::new_for_symbol(
+                params.clone(),
+                symbol.clone(),
+            ))),
+            symbol,
             store,
             persist_buckets: params.persist_buckets,
             task: Arc::new(RwLock::new(None)),
@@ -54,11 +60,15 @@ impl VpinService {
         let store = self.store.clone();
         let persist_buckets = self.persist_buckets;
         let quality = self.bus.quality_tracker();
+        let symbol = self.symbol.clone();
 
         let handle = tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(MarketDataEvent::Trade(trade)) => {
+                        if !trade.symbol.trim().eq_ignore_ascii_case(&symbol) {
+                            continue;
+                        }
                         let completed = engine.write().on_trade(&trade);
                         if persist_buckets {
                             if let Some(store) = &store {
@@ -94,7 +104,12 @@ impl VpinService {
     pub fn recent_buckets(&self, limit: usize) -> anyhow::Result<Vec<VpinBucket>> {
         if self.persist_buckets {
             if let Some(store) = &self.store {
-                return store.list_recent_buckets(limit);
+                return Ok(store
+                    .list_recent_buckets(limit)?
+                    .into_iter()
+                    .filter(|bucket| bucket.symbol.trim().eq_ignore_ascii_case(&self.symbol))
+                    .take(limit)
+                    .collect());
             }
         }
         Ok(self.engine.read().recent_buckets(limit))

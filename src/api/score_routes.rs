@@ -12,9 +12,10 @@ use crate::{
         toxic_signal_history_routes::ensure_signal_history_snapshot,
         toxic_signal_inbox_routes::{
             build_recent, latest_cwm_signal_for_state, normalize_symbol_query,
+            observed_tof_snapshot_for_state,
         },
         toxic_signal_ws_routes::{
-            build_ws_snapshot_with_cwm, ToxicSignalWsItem, ToxicSignalWsSnapshot,
+            build_ws_snapshot_with_authoritative_state, ToxicSignalWsItem, ToxicSignalWsSnapshot,
         },
     },
     app::AppState,
@@ -344,8 +345,8 @@ pub async fn market_structure_latest_route(
     let items = snapshot
         .signals
         .iter()
+        .filter_map(project_market_structure_item)
         .take(limit)
-        .map(project_market_structure_item)
         .collect();
     Json(serde_json::json!(MarketStructureListResponse {
         read_only: true,
@@ -390,7 +391,13 @@ pub use main_force_event_routes::main_force_events_route as market_structure_eve
 fn build_score_snapshot(state: &AppState, symbol: &str) -> ToxicSignalWsSnapshot {
     let recent = build_recent(state, symbol);
     let cwm_signal = latest_cwm_signal_for_state(state, symbol);
-    build_ws_snapshot_with_cwm(&recent, cwm_signal.as_ref())
+    let tof_snapshot = observed_tof_snapshot_for_state(state, symbol);
+    build_ws_snapshot_with_authoritative_state(
+        &recent,
+        cwm_signal.as_ref(),
+        tof_snapshot.as_ref(),
+        state.runtime_started(),
+    )
 }
 
 fn best_toxic_short_signal(snapshot: &ToxicSignalWsSnapshot) -> Option<&ToxicSignalWsItem> {
@@ -402,21 +409,36 @@ fn best_toxic_short_signal(snapshot: &ToxicSignalWsSnapshot) -> Option<&ToxicSig
                     .partial_cmp(&right.toxic_decayed_score)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+            .then_with(|| left.confidence.total_cmp(&right.confidence))
+            .then_with(|| {
+                left.data_quality
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&right.data_quality.unwrap_or(f64::NEG_INFINITY))
+            })
             .then_with(|| left.created_at.cmp(&right.created_at))
     })
 }
 
 fn best_market_structure_signal(snapshot: &ToxicSignalWsSnapshot) -> Option<&ToxicSignalWsItem> {
-    snapshot.signals.iter().max_by(|left, right| {
-        left.main_force_score
-            .cmp(&right.main_force_score)
-            .then_with(|| left.extreme_impact_score.cmp(&right.extreme_impact_score))
-            .then_with(|| {
-                left.market_structure_confidence
-                    .total_cmp(&right.market_structure_confidence)
-            })
-            .then_with(|| left.created_at.cmp(&right.created_at))
-    })
+    snapshot
+        .signals
+        .iter()
+        .filter(|signal| signal.market_structure_score.is_some())
+        .max_by(|left, right| {
+            left.main_force_score
+                .cmp(&right.main_force_score)
+                .then_with(|| left.extreme_impact_score.cmp(&right.extreme_impact_score))
+                .then_with(|| {
+                    left.market_structure_confidence
+                        .unwrap_or(f64::NEG_INFINITY)
+                        .total_cmp(
+                            &right
+                                .market_structure_confidence
+                                .unwrap_or(f64::NEG_INFINITY),
+                        )
+                })
+                .then_with(|| left.created_at.cmp(&right.created_at))
+        })
 }
 
 fn toxic_short_summary_from_snapshot(
@@ -459,7 +481,7 @@ fn market_structure_summary_from_snapshot(
     symbol: &str,
     snapshot: &ToxicSignalWsSnapshot,
 ) -> MarketStructureSummaryResponse {
-    let item = best_market_structure_signal(snapshot).map(project_market_structure_item);
+    let item = best_market_structure_signal(snapshot).and_then(project_market_structure_item);
     MarketStructureSummaryResponse {
         read_only: true,
         runtime_modified: false,
@@ -515,8 +537,9 @@ fn project_toxic_short_item(signal: &ToxicSignalWsItem) -> ToxicShortScoreItem {
     }
 }
 
-fn project_market_structure_item(signal: &ToxicSignalWsItem) -> MarketStructureScoreItem {
-    MarketStructureScoreItem {
+fn project_market_structure_item(signal: &ToxicSignalWsItem) -> Option<MarketStructureScoreItem> {
+    let score = signal.market_structure_score.as_ref()?;
+    Some(MarketStructureScoreItem {
         signal_id: signal.id.clone(),
         symbol: signal.symbol.clone(),
         detector: signal.detector.clone(),
@@ -524,21 +547,21 @@ fn project_market_structure_item(signal: &ToxicSignalWsItem) -> MarketStructureS
         created_at: signal.created_at.clone(),
         final_result: signal.final_result.clone(),
         core_reason: signal.core_reason.clone(),
-        severity: signal.market_structure_severity.clone(),
-        regime_type: signal.regime_type.clone(),
-        main_force_score: signal.main_force_score,
-        extreme_impact_score: signal.extreme_impact_score,
-        structure_bias: signal.structure_bias,
-        confidence: signal.market_structure_confidence,
-        data_quality: signal.market_structure_data_quality,
-        main_force_confirmed: signal.main_force_confirmed,
-        extreme_impact_confirmed: signal.extreme_impact_confirmed,
+        severity: score.severity.clone(),
+        regime_type: score.regime_type.clone(),
+        main_force_score: score.main_force_score,
+        extreme_impact_score: score.extreme_impact_score,
+        structure_bias: score.structure_bias,
+        confidence: score.confidence,
+        data_quality: score.data_quality,
+        main_force_confirmed: score.main_force_confirmed,
+        extreme_impact_confirmed: score.extreme_impact_confirmed,
         liquidation_driven: signal.cwm_contribution.liquidation_suspected == Some(true),
-        components: market_structure_components(signal),
-        reasons: signal.market_structure_score.reasons.clone(),
+        components: market_structure_components_from_score(score),
+        reasons: score.reasons.clone(),
         alert_status: signal.alert_status.clone(),
         alert_reason: signal.alert_reason.clone(),
-    }
+    })
 }
 
 fn project_toxic_short_history_item(
@@ -576,7 +599,9 @@ fn project_market_structure_history_item(
     item: &ToxicSignalHistorySignalItem,
     signal: Option<&&ToxicSignalWsItem>,
 ) -> MarketStructureHistoryItem {
-    let current = signal.copied();
+    let current = signal
+        .copied()
+        .filter(|value| value.market_structure_score.is_some());
     MarketStructureHistoryItem {
         signal_id: item.signal_id.clone(),
         symbol: item.symbol.clone(),
@@ -588,18 +613,19 @@ fn project_market_structure_history_item(
         history_recorded_at_ms: item.history_recorded_at_ms,
         source: item.source.clone(),
         operator_action: item.operator_action.clone(),
-        regime_type: current.map(|value| value.regime_type.clone()),
-        main_force_score: current.map(|value| value.main_force_score),
-        extreme_impact_score: current.map(|value| value.extreme_impact_score),
-        structure_bias: current.map(|value| value.structure_bias),
-        data_quality: current.map(|value| value.market_structure_data_quality),
-        main_force_confirmed: current.map(|value| value.main_force_confirmed),
-        extreme_impact_confirmed: current.map(|value| value.extreme_impact_confirmed),
+        regime_type: current.and_then(|value| value.regime_type.clone()),
+        main_force_score: current.and_then(|value| value.main_force_score),
+        extreme_impact_score: current.and_then(|value| value.extreme_impact_score),
+        structure_bias: current.and_then(|value| value.structure_bias),
+        data_quality: current.and_then(|value| value.market_structure_data_quality),
+        main_force_confirmed: current.and_then(|value| value.main_force_confirmed),
+        extreme_impact_confirmed: current.and_then(|value| value.extreme_impact_confirmed),
         liquidation_driven: current
             .map(|value| value.cwm_contribution.liquidation_suspected == Some(true)),
-        components: current.map(market_structure_components),
+        components: current.and_then(market_structure_components),
         reasons: current
-            .map(|value| value.market_structure_score.reasons.clone())
+            .and_then(|value| value.market_structure_score.as_ref())
+            .map(|score| score.reasons.clone())
             .unwrap_or_default(),
         current_snapshot_available: current.is_some(),
     }
@@ -625,15 +651,24 @@ fn toxic_short_components(signal: &ToxicSignalWsItem) -> ToxicShortComponents {
     }
 }
 
-fn market_structure_components(signal: &ToxicSignalWsItem) -> MarketStructureComponents {
+fn market_structure_components(signal: &ToxicSignalWsItem) -> Option<MarketStructureComponents> {
+    signal
+        .market_structure_score
+        .as_ref()
+        .map(market_structure_components_from_score)
+}
+
+fn market_structure_components_from_score(
+    score: &crate::runtime::cwm_risk_fusion::MainForceStructureRisk,
+) -> MarketStructureComponents {
     MarketStructureComponents {
-        spot_score: signal.spot_score,
-        contract_score: signal.contract_score,
-        cross_confirm_score: signal.cross_confirm_score,
-        cwm_score: signal.cwm_score,
-        oi_score: signal.oi_score,
-        liquidation_score: signal.liquidation_score,
-        funding_crowding_score: signal.funding_crowding_score,
+        spot_score: score.spot_score,
+        contract_score: score.contract_score,
+        cross_confirm_score: score.cross_confirm_score,
+        cwm_score: score.cwm_score,
+        oi_score: score.oi_score,
+        liquidation_score: score.liquidation_score,
+        funding_crowding_score: score.funding_crowding_score,
     }
 }
 
@@ -666,10 +701,12 @@ fn parse_limit(value: Option<&str>, default: usize, max: usize) -> usize {
 mod tests {
     use super::{
         best_market_structure_signal, best_toxic_short_signal,
-        market_structure_summary_from_snapshot, toxic_short_summary_from_snapshot,
+        market_structure_summary_from_snapshot, project_market_structure_history_item,
+        project_toxic_short_history_item, toxic_short_summary_from_snapshot,
     };
     use crate::{
         api::toxic_signal_ws_routes::build_ws_snapshot,
+        types::toxic_signal_history::ToxicSignalHistorySignalItem,
         types::toxic_signal_inbox::{
             ToxicSignalInboxFusionSummary, ToxicSignalInboxGovernanceSummary, ToxicSignalInboxItem,
             ToxicSignalInboxMarkoutSummary, ToxicSignalInboxOperatorAction,
@@ -688,32 +725,47 @@ mod tests {
         assert!(summary.toxic_score.unwrap_or_default() >= 60);
         assert!(summary.short_pressure.unwrap_or_default() < 0);
         assert!(summary.severity.is_some());
-        assert!(summary.components.aggressive_sweep.is_some());
+        assert!(summary.components.aggressive_sweep.is_none());
     }
 
     #[test]
-    fn market_structure_summary_exposes_component_breakdown() {
+    fn market_structure_summary_is_unavailable_without_authoritative_evidence() {
         let snapshot = build_ws_snapshot(&sample_recent());
         let summary = market_structure_summary_from_snapshot("BTC", &snapshot);
 
-        assert!(summary.available);
-        assert!(summary.main_force_score.is_some());
-        assert!(summary.extreme_impact_score.is_some());
-        assert!(summary.structure_bias.is_some());
-        assert!(summary.regime_type.is_some());
-        let components = summary.components.expect("components");
-        assert!(components.contract_score > 0);
-        assert!(components.cross_confirm_score > 0);
+        assert!(!summary.available);
+        assert!(summary.main_force_score.is_none());
+        assert!(summary.extreme_impact_score.is_none());
+        assert!(summary.structure_bias.is_none());
+        assert!(summary.regime_type.is_none());
+        assert!(summary.components.is_none());
     }
 
     #[test]
     fn score_summary_selectors_choose_highest_signal_for_each_system() {
         let snapshot = build_ws_snapshot(&sample_recent());
         let short = best_toxic_short_signal(&snapshot).expect("short signal");
-        let market = best_market_structure_signal(&snapshot).expect("market signal");
 
         assert_eq!(short.id, "sig_scores_high");
-        assert_eq!(market.id, "sig_scores_high");
+        assert!(best_market_structure_signal(&snapshot).is_none());
+    }
+
+    #[test]
+    fn history_keeps_detector_current_but_filters_unavailable_market_structure() {
+        let snapshot = build_ws_snapshot(&sample_recent());
+        let signal = snapshot.signals.first().expect("snapshot signal");
+        let history = sample_history(&signal.id);
+
+        let toxic = project_toxic_short_history_item(&history, Some(&signal));
+        assert!(toxic.current_snapshot_available);
+        assert_eq!(toxic.toxic_score, Some(signal.toxic_score));
+        assert_eq!(toxic.short_pressure, Some(signal.short_pressure));
+
+        let market = project_market_structure_history_item(&history, Some(&signal));
+        assert!(!market.current_snapshot_available);
+        assert!(market.main_force_score.is_none());
+        assert!(market.components.is_none());
+        assert!(market.liquidation_driven.is_none());
     }
 
     fn sample_recent() -> ToxicSignalInboxRecentResponse {
@@ -761,6 +813,8 @@ mod tests {
             signal_kind: "spoofing_candidate".to_string(),
             direction_bias: direction_bias.to_string(),
             severity: severity.to_string(),
+            risk_score: 82,
+            data_quality_score: Some(82.0),
             confidence,
             created_at_ms: 1_700_000_000_000,
             fusion: ToxicSignalInboxFusionSummary {
@@ -799,6 +853,28 @@ mod tests {
             runtime_modified: false,
             analysis_only: true,
             execution_enabled: false,
+        }
+    }
+
+    fn sample_history(signal_id: &str) -> ToxicSignalHistorySignalItem {
+        ToxicSignalHistorySignalItem {
+            signal_id: signal_id.to_string(),
+            symbol: "BTC".to_string(),
+            signal_kind: "spoofing_candidate".to_string(),
+            direction_bias: "ask/sell".to_string(),
+            severity: "high".to_string(),
+            confidence: 0.92,
+            created_at_ms: 1_700_000_000_000,
+            markout_one_minute: "adverse".to_string(),
+            markout_five_minute: "adverse".to_string(),
+            markout_fifteen_minute: "aligned".to_string(),
+            markout_one_hour: "aligned".to_string(),
+            quality_bucket: "excellent".to_string(),
+            recommendation_action: "review_evidence".to_string(),
+            no_trade_only: false,
+            source: "test".to_string(),
+            history_recorded_at_ms: 1_700_000_000_100,
+            operator_action: "review_evidence".to_string(),
         }
     }
 }

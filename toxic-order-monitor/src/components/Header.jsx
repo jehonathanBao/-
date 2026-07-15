@@ -1,7 +1,8 @@
 import { Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { useEffect, useState } from "react";
+import RuntimeBoundaryBadge from "./RuntimeBoundaryBadge.jsx";
 
-export default function Header({ highUnhandledCount, discordConnected }) {
+export default function Header({ highUnhandledCount, discordConnected, runtimeBoundary }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -14,10 +15,13 @@ export default function Header({ highUnhandledCount, discordConnected }) {
       <div className="workspace-command-brand">
         <p>Toxic Order Monitor</p>
         <h2>盘口异常监控大屏</h2>
-        <span>READ-ONLY RISK WORKSPACE</span>
+        <span>RISK OBSERVATION WORKSPACE</span>
       </div>
 
       <div className="workspace-command-metrics">
+        <div className="workspace-command-metric">
+          <RuntimeBoundaryBadge runtimeBoundary={runtimeBoundary} />
+        </div>
         <div className="workspace-command-metric workspace-command-metric-danger">
           高风险未处理 <span className="font-bold text-red-300">{highUnhandledCount}</span>
         </div>

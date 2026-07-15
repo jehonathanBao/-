@@ -1,23 +1,31 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contract_whale_monitor::types::{
-    ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType,
+    ContractWhaleDirection, ContractWhaleEvidenceState, ContractWhaleSeverity, ContractWhaleSignal,
+    ContractWhaleSignalType,
 };
+use crate::normalizers::symbol::canonical_base_asset;
 use crate::runtime::{
+    metric_provenance::MetricLineage,
     score_config::{
         score_runtime_config, ContractWeights, CrossConfirmWeights,
         MarketStructureConfirmationConfig, MarketStructureRuntimeConfig, SpotWeights,
         ToxicShortDiscordConfig, ToxicShortWeights,
     },
-    tof_metrics::{TofDirection, TofMetrics},
+    tof_metrics::{relative_vpin_score, TofDirection, TofMetrics},
 };
 
 const MAIN_FORCE_CWM_WEIGHT: f64 = 0.25;
+const CWM_SIGNAL_TTL_MS: i64 = 120_000;
+const CWM_MAX_FUTURE_SKEW_MS: i64 = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CwmRiskContribution {
     pub available: bool,
+    pub observed_at_ms: Option<i64>,
+    pub fresh: bool,
+    pub unavailable_reason: Option<String>,
     pub source: String,
     pub formula: String,
     pub contribution_weight: f64,
@@ -38,10 +46,13 @@ pub struct CwmRiskContribution {
     pub liquidation_long_btc: Option<f64>,
     pub liquidation_short_btc: Option<f64>,
     pub liquidation_ratio: Option<f64>,
+    pub liquidation_lineage: MetricLineage,
     pub oi_change_pct: Option<f64>,
     pub oi_bias: Option<String>,
+    pub oi_lineage: MetricLineage,
     pub funding_rate: Option<f64>,
     pub funding_bias: Option<String>,
+    pub funding_lineage: MetricLineage,
     pub summary: String,
     pub discord_gate_independent: bool,
 }
@@ -60,8 +71,11 @@ pub struct ShortTermToxicRisk {
     pub ts: i64,
     pub symbol: String,
     pub toxic_score: u8,
+    pub toxicity_hazard_score: Option<f64>,
     pub short_pressure: i16,
     pub confidence: f64,
+    pub confidence_source: String,
+    pub direction_context: ToxicDirectionContext,
     pub data_quality: f64,
     pub severity: String,
     pub toxic_type: String,
@@ -75,6 +89,15 @@ pub struct ShortTermToxicRisk {
     pub timeframes: Vec<String>,
     pub formula: String,
     pub discord_gate: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToxicDirectionContext {
+    pub direction: String,
+    pub signed_pressure: i16,
+    pub confidence: f64,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,9 +249,12 @@ pub struct SplitRiskSystemsInput<'a> {
     pub short_direction: TofDirection,
     pub toxic_type: &'a str,
     pub data_quality: f64,
+    pub detector_confidence: f64,
+    pub direction_confidence: f64,
+    pub direction_source: &'a str,
     pub tof_metrics: &'a TofMetrics,
-    pub advanced_score: u8,
-    pub perp_score: u8,
+    pub advanced_score: Option<u8>,
+    pub perp_score: Option<u8>,
     pub metrics_direction: TofDirection,
     pub cwm_contribution: CwmRiskContribution,
 }
@@ -237,6 +263,9 @@ impl CwmRiskContribution {
     pub fn unavailable(symbol: &str) -> Self {
         Self {
             available: false,
+            observed_at_ms: None,
+            fresh: false,
+            unavailable_reason: Some("cwm_signal_unavailable".to_string()),
             source: "contract_whale_monitor".to_string(),
             formula: main_force_formula_label(),
             contribution_weight: MAIN_FORCE_CWM_WEIGHT,
@@ -257,14 +286,100 @@ impl CwmRiskContribution {
             liquidation_long_btc: None,
             liquidation_short_btc: None,
             liquidation_ratio: None,
+            liquidation_lineage: MetricLineage::unavailable("cwm_signal_unavailable"),
             oi_change_pct: None,
             oi_bias: None,
+            oi_lineage: MetricLineage::unavailable("cwm_signal_unavailable"),
             funding_rate: None,
             funding_bias: None,
+            funding_lineage: MetricLineage::unavailable("cwm_signal_unavailable"),
             summary: format!("No recent CWM signal for {symbol}; main-force structure uses spot/perp context only."),
             discord_gate_independent: true,
         }
     }
+
+    fn unavailable_with_reason(
+        symbol: &str,
+        observed_at_ms: Option<i64>,
+        reason: &str,
+        detail: &str,
+    ) -> Self {
+        let mut contribution = Self::unavailable(symbol);
+        contribution.observed_at_ms = observed_at_ms;
+        contribution.unavailable_reason = Some(reason.to_string());
+        contribution.liquidation_lineage = MetricLineage::unavailable(reason);
+        contribution.oi_lineage = MetricLineage::unavailable(reason);
+        contribution.funding_lineage = MetricLineage::unavailable(reason);
+        contribution.summary = format!(
+            "CWM evidence unavailable for {symbol}: {detail}; main-force structure uses spot/perp context only."
+        );
+        contribution
+    }
+}
+
+pub fn cwm_signal_is_fresh_at(signal_ts_ms: i64, now_ms: i64) -> bool {
+    signal_ts_ms > 0
+        && now_ms > 0
+        && signal_ts_ms <= now_ms.saturating_add(CWM_MAX_FUTURE_SKEW_MS)
+        && signal_ts_ms >= now_ms.saturating_sub(CWM_SIGNAL_TTL_MS)
+}
+
+pub fn build_cwm_risk_contribution_for_candidate(
+    symbol: &str,
+    signal: Option<&ContractWhaleSignal>,
+    candidate_at_ms: i64,
+    now_ms: i64,
+) -> CwmRiskContribution {
+    let Some(signal) = signal else {
+        return CwmRiskContribution::unavailable(symbol);
+    };
+    let symbols_match = match (
+        canonical_base_asset(symbol),
+        canonical_base_asset(&signal.symbol),
+    ) {
+        (Some(requested), Some(observed)) => requested == observed,
+        _ => false,
+    };
+    if !symbols_match {
+        return CwmRiskContribution::unavailable_with_reason(
+            symbol,
+            Some(signal.ts),
+            "symbol_mismatch",
+            "requested symbol does not match the CWM signal symbol",
+        );
+    }
+    if candidate_at_ms <= 0
+        || now_ms <= 0
+        || candidate_at_ms > now_ms.saturating_add(CWM_MAX_FUTURE_SKEW_MS)
+    {
+        return CwmRiskContribution::unavailable_with_reason(
+            symbol,
+            Some(signal.ts),
+            "invalid_time",
+            "candidate time or current time is invalid",
+        );
+    }
+    if signal.ts > candidate_at_ms.saturating_add(CWM_MAX_FUTURE_SKEW_MS)
+        || signal.ts < candidate_at_ms.saturating_sub(CWM_SIGNAL_TTL_MS)
+    {
+        return CwmRiskContribution::unavailable_with_reason(
+            symbol,
+            Some(signal.ts),
+            "candidate_time_mismatch",
+            "signal is outside the candidate time window",
+        );
+    }
+    if !cwm_signal_is_fresh_at(signal.ts, now_ms) {
+        return CwmRiskContribution::unavailable_with_reason(
+            symbol,
+            Some(signal.ts),
+            "ttl_expired",
+            "signal exceeded the 120-second TTL",
+        );
+    }
+    let mut contribution = build_cwm_risk_contribution(symbol, Some(signal));
+    contribution.fresh = true;
+    contribution
 }
 
 pub fn build_cwm_risk_contribution(
@@ -274,8 +389,22 @@ pub fn build_cwm_risk_contribution(
     let Some(signal) = signal else {
         return CwmRiskContribution::unavailable(symbol);
     };
+    let (oi_change_pct, oi_lineage) = observed_derivative_evidence(
+        &signal.classification_v2.evidence.oi,
+        "contract_whale_oi",
+        signal.ts,
+    );
+    let (funding_rate, funding_lineage) = observed_derivative_evidence(
+        &signal.classification_v2.evidence.funding,
+        "contract_whale_funding",
+        signal.ts,
+    );
+    let liquidation_lineage = liquidation_evidence_lineage(signal);
     CwmRiskContribution {
         available: true,
+        observed_at_ms: Some(signal.ts),
+        fresh: false,
+        unavailable_reason: None,
         source: "contract_whale_monitor".to_string(),
         formula: main_force_formula_label(),
         contribution_weight: MAIN_FORCE_CWM_WEIGHT,
@@ -293,16 +422,97 @@ pub fn build_cwm_risk_contribution(
         price_move_pct: signal.price_move_pct.map(round4),
         multi_exchange_confirmed: Some(signal.multi_exchange_confirmed),
         liquidation_suspected: Some(signal.liquidation_suspected),
-        liquidation_long_btc: Some(round4(signal.liquidation_long_btc)),
-        liquidation_short_btc: Some(round4(signal.liquidation_short_btc)),
-        liquidation_ratio: signal.liquidation_ratio.map(round4),
-        oi_change_pct: signal.oi_change_pct.map(round4),
-        oi_bias: signal.oi_bias.clone(),
-        funding_rate: signal.funding_rate.map(round4),
-        funding_bias: signal.funding_bias.clone(),
+        liquidation_long_btc: finite_non_negative(signal.liquidation_long_btc).map(round4),
+        liquidation_short_btc: finite_non_negative(signal.liquidation_short_btc).map(round4),
+        liquidation_ratio: signal
+            .liquidation_ratio
+            .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+            .map(round4),
+        liquidation_lineage,
+        oi_change_pct,
+        oi_bias: if oi_lineage.alert_eligible {
+            signal.oi_bias.clone()
+        } else {
+            None
+        },
+        oi_lineage,
+        funding_rate,
+        funding_bias: if funding_lineage.alert_eligible {
+            signal.funding_bias.clone()
+        } else {
+            None
+        },
+        funding_lineage,
         summary: signal.final_result.clone(),
         discord_gate_independent: true,
     }
+}
+
+fn observed_derivative_evidence(
+    evidence: &ContractWhaleEvidenceState<f64>,
+    source: &str,
+    observed_at_ms: i64,
+) -> (Option<f64>, MetricLineage) {
+    match evidence {
+        ContractWhaleEvidenceState::Available(value) if value.is_finite() => (
+            Some(round4(*value)),
+            MetricLineage::observed(source, observed_at_ms, true),
+        ),
+        ContractWhaleEvidenceState::Available(_) => {
+            (None, MetricLineage::unavailable("non_finite_observation"))
+        }
+        ContractWhaleEvidenceState::Missing => {
+            (None, MetricLineage::unavailable("evidence_missing"))
+        }
+        ContractWhaleEvidenceState::Stale => (None, MetricLineage::unavailable("evidence_stale")),
+        ContractWhaleEvidenceState::InsufficientSamples => {
+            (None, MetricLineage::unavailable("insufficient_samples"))
+        }
+        ContractWhaleEvidenceState::QueryFailed => {
+            (None, MetricLineage::unavailable("evidence_query_failed"))
+        }
+    }
+}
+
+fn liquidation_evidence_lineage(signal: &ContractWhaleSignal) -> MetricLineage {
+    let status = signal
+        .classification_v2
+        .evidence
+        .liquidation_status
+        .trim()
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "live" if live_liquidation_values_are_finite(signal) => {
+            MetricLineage::observed("contract_whale_liquidation", signal.ts, true)
+        }
+        "live" => MetricLineage::unavailable("non_finite_live_liquidation"),
+        "inferred" => MetricLineage::inferred("contract_whale_liquidation_proxy", signal.ts),
+        "unavailable" | "" => MetricLineage::unavailable(
+            signal
+                .classification_v2
+                .evidence
+                .liquidation_reason
+                .as_deref()
+                .unwrap_or("live_liquidation_unavailable"),
+        ),
+        _ => MetricLineage::unavailable("unknown_liquidation_evidence_status"),
+    }
+}
+
+fn live_liquidation_values_are_finite(signal: &ContractWhaleSignal) -> bool {
+    signal.liquidation_long_btc.is_finite()
+        && signal.liquidation_long_btc >= 0.0
+        && signal.liquidation_short_btc.is_finite()
+        && signal.liquidation_short_btc >= 0.0
+        && signal.liquidation_notional_usd.is_finite()
+        && signal.liquidation_notional_usd >= 0.0
+        && signal
+            .liquidation_ratio
+            .is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value))
+}
+
+fn finite_non_negative(value: f64) -> Option<f64> {
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
 pub fn build_split_risk_systems(input: SplitRiskSystemsInput<'_>) -> SplitRiskSystems {
@@ -311,15 +521,32 @@ pub fn build_split_risk_systems(input: SplitRiskSystemsInput<'_>) -> SplitRiskSy
     let market_structure_config = &score_config.market_structure;
     let ttl_sec = ttl_for_toxic_score();
     let half_life_sec = half_life_for_toxic_score();
+    let short_pressure = pressure_from_direction(input.short_direction, input.short_toxic_score);
+    let direction = direction_key(input.short_direction).to_string();
     let short_term_toxic = ShortTermToxicRisk {
         ts: input.ts_ms,
         symbol: input.symbol.to_string(),
         toxic_score: input.short_toxic_score,
-        short_pressure: pressure_from_direction(input.short_direction, input.short_toxic_score),
-        confidence: round2((input.short_tof_score + input.data_quality) / 2.0),
+        toxicity_hazard_score: metric_alert_eligible(input.tof_metrics, "hazard")
+            .then_some(round2(clamp_score(input.short_tof_score))),
+        short_pressure,
+        confidence: round2(clamp_score(input.detector_confidence)),
+        confidence_source: "detector".to_string(),
+        direction_context: ToxicDirectionContext {
+            direction,
+            signed_pressure: short_pressure,
+            confidence: round2(clamp_score(input.direction_confidence)),
+            source: input.direction_source.to_string(),
+        },
         data_quality: round2(input.data_quality),
         severity: toxic_short_severity(input.short_toxic_score).to_string(),
-        toxic_type: canonical_toxic_type(input.toxic_type, input.short_direction).to_string(),
+        toxic_type: canonical_toxic_type(
+            input.toxic_type,
+            input.short_direction,
+            metric_alert_eligible(input.tof_metrics, "sweep")
+                && input.tof_metrics.liquidity_vacuum_score > 0.0,
+        )
+        .to_string(),
         ttl_sec,
         expires_at: input
             .ts_ms
@@ -556,7 +783,11 @@ pub fn decayed_toxic_score(previous_score: u8, elapsed_sec: f64, half_life_sec: 
     round2(previous_score as f64 * (-elapsed_sec / half_life_sec as f64).exp())
 }
 
-fn canonical_toxic_type(candidate_type: &str, direction: TofDirection) -> &'static str {
+fn canonical_toxic_type(
+    candidate_type: &str,
+    direction: TofDirection,
+    sweep_alert_eligible: bool,
+) -> &'static str {
     let value = candidate_type.to_ascii_lowercase();
     if value.contains("spoof") {
         "spoofing"
@@ -570,12 +801,14 @@ fn canonical_toxic_type(candidate_type: &str, direction: TofDirection) -> &'stat
         "fake_breakout"
     } else if value.contains("adverse") {
         "adverse_selection"
-    } else {
+    } else if value.contains("sweep") && sweep_alert_eligible {
         match direction {
             TofDirection::Bullish => "toxic_buy_sweep",
             TofDirection::Bearish => "toxic_sell_sweep",
             TofDirection::Mixed | TofDirection::Neutral => "adverse_selection",
         }
+    } else {
+        "adverse_selection"
     }
 }
 
@@ -596,11 +829,7 @@ fn structure_bias(
     let spot_direction = market_direction_score(input.metrics_direction, components.spot_score);
     let contract_direction =
         contract_direction_score(input.cwm_contribution.direction, components.contract_score);
-    let oi_direction = oi_direction_score(
-        input.cwm_contribution.direction,
-        input.cwm_contribution.oi_change_pct,
-        components.oi_impulse,
-    );
+    let oi_direction = oi_direction_score(&input.cwm_contribution, components.oi_impulse);
     let price_response_direction = price_response_direction_score(
         &input.cwm_contribution,
         components.price_response_consistency,
@@ -635,15 +864,14 @@ fn contract_direction_score(direction: Option<ContractWhaleDirection>, score: u8
     }
 }
 
-fn oi_direction_score(
-    direction: Option<ContractWhaleDirection>,
-    oi_change_pct: Option<f64>,
-    oi_impulse: u8,
-) -> f64 {
-    let Some(change_pct) = oi_change_pct else {
+fn oi_direction_score(contribution: &CwmRiskContribution, oi_impulse: u8) -> f64 {
+    if !contribution.oi_lineage.alert_eligible {
+        return 0.0;
+    }
+    let Some(change_pct) = contribution.oi_change_pct.filter(|value| value.is_finite()) else {
         return 0.0;
     };
-    match (change_pct > 0.0, direction) {
+    match (change_pct > 0.0, contribution.direction) {
         (true, Some(ContractWhaleDirection::Buy)) => oi_impulse as f64,
         (true, Some(ContractWhaleDirection::Sell)) => -(oi_impulse as f64),
         (true, Some(ContractWhaleDirection::Absorption)) => oi_impulse as f64 * 0.15,
@@ -673,6 +901,9 @@ fn price_response_direction_score(
 }
 
 fn liquidation_direction_score(contribution: &CwmRiskContribution, liquidation_context: u8) -> f64 {
+    if !contribution.liquidation_lineage.alert_eligible {
+        return 0.0;
+    }
     if short_liquidation_dominant(contribution) {
         liquidation_context as f64 * 0.35
     } else if long_liquidation_dominant(contribution) {
@@ -703,105 +934,109 @@ fn build_toxic_reasons(
     weights: &ToxicShortWeights,
 ) -> Vec<ToxicReason> {
     let direction = direction_key(input.short_direction).to_string();
+    let mut reasons = vec![toxic_reason(
+        "DetectorSignal",
+        input.short_toxic_score as f64,
+        1.0,
+        0,
+        &direction,
+        "authoritative detector risk; market microstructure claims require separate observed lineage",
+    )];
+    if !input.tof_metrics.lineage.alert_eligible {
+        return reasons;
+    }
     let metrics = input.tof_metrics;
-    let toxic_order_cluster =
-        clamp_score(0.55 * input.short_toxic_score as f64 + 0.45 * input.short_tof_score);
-    let aggressive_sweep = clamp_score(
-        (metrics.trade_imbalance.abs() * 100.0)
-            .max(metrics.trade_imbalance_score)
-            .max(input.short_tof_score * 0.35),
-    );
-    let orderbook_deformation = clamp_score(
-        metrics
-            .depth_withdrawal_score
-            .max(
-                metrics
-                    .bid_depth_withdrawal
-                    .max(metrics.ask_depth_withdrawal),
-            )
-            .max(metrics.spread_widening_score * 0.65),
-    );
-    let spoof_cancel = clamp_score(metrics.order_churn_score.max(
-        orderbook_deformation
-            * if input.toxic_type.to_ascii_lowercase().contains("spoof") {
-                0.95
-            } else {
-                0.65
-            },
-    ));
-    let adverse_move = clamp_score(
-        input.short_toxic_score as f64 * 0.45
-            + metrics.metrics_confidence * 0.35
-            + metrics.vpin_proxy * 0.20,
-    );
-    let liquidity_gap = clamp_score(
-        metrics
-            .liquidity_vacuum_score
-            .max(metrics.spread_widening_score),
-    );
-    let micro_volatility_shock = clamp_score(
-        metrics.spread_widening_score * 0.55
-            + metrics.trade_rate.min(100.0) * 0.25
-            + metrics.book_update_rate.min(100.0) * 0.20,
-    );
-    vec![
-        toxic_reason(
-            "ToxicOrderCluster",
-            toxic_order_cluster,
-            weights.toxic_order_cluster,
-            5,
-            &direction,
-            "1s/5s/15s abnormal order concentration and direction clustering",
-        ),
-        toxic_reason(
+    if metric_alert_eligible(metrics, "sweep") && metrics.liquidity_vacuum_score > 0.0 {
+        reasons.push(toxic_reason(
             "AggressiveSweep",
-            aggressive_sweep,
+            clamp_score(
+                (metrics.trade_imbalance.abs() * 100.0)
+                    .max(metrics.trade_imbalance_score)
+                    .max(metrics.liquidity_vacuum_score),
+            ),
             weights.aggressive_sweep,
             5,
             &direction,
-            "aggressive trades sweeping nearby book depth",
-        ),
-        toxic_reason(
+            "observed sweep evidence with aggressive trade and nearby-depth impact",
+        ));
+    }
+    if metric_alert_eligible(metrics, "depth") || metric_alert_eligible(metrics, "spread") {
+        reasons.push(toxic_reason(
             "OrderbookDeformation",
-            orderbook_deformation,
+            clamp_score(
+                metrics
+                    .depth_withdrawal_score
+                    .max(
+                        metrics
+                            .bid_depth_withdrawal
+                            .max(metrics.ask_depth_withdrawal),
+                    )
+                    .max(metrics.spread_widening_score * 0.65),
+            ),
             weights.orderbook_deformation,
             15,
             &direction,
-            "depth withdrawal, spread widening, and book imbalance deformation",
-        ),
-        toxic_reason(
+            "observed depth withdrawal or spread widening",
+        ));
+    }
+    if metric_alert_eligible(metrics, "cancel") {
+        reasons.push(toxic_reason(
             "SpoofCancel",
-            spoof_cancel,
+            clamp_score(metrics.order_churn_score),
             weights.spoof_cancel,
             15,
             &direction,
-            "fake wall, cancel ratio, wall move frequency, and near-touch cancel count",
-        ),
-        toxic_reason(
+            "observed cancel evidence consistent with spoofing behavior",
+        ));
+    }
+    if metric_alert_eligible(metrics, "markout") {
+        reasons.push(toxic_reason(
             "AdverseMove",
-            adverse_move,
+            clamp_score(input.short_toxic_score as f64),
             weights.adverse_move,
             60,
             &direction,
-            "price moves against the signal soon after it appears, adding adverse-selection risk",
-        ),
-        toxic_reason(
+            "observed markout shows adverse price movement after detection",
+        ));
+    }
+    if metric_alert_eligible(metrics, "liquidityVacuum")
+        && (metric_alert_eligible(metrics, "depth") || metric_alert_eligible(metrics, "sweep"))
+    {
+        reasons.push(toxic_reason(
             "LiquidityGap",
-            liquidity_gap,
+            clamp_score(
+                metrics
+                    .liquidity_vacuum_score
+                    .max(metrics.spread_widening_score),
+            ),
             weights.liquidity_gap,
             15,
             &direction,
-            "nearby 0.1%/0.2%/0.5% depth vacuum and removed resting liquidity",
-        ),
-        toxic_reason(
+            "observed nearby-depth vacuum or removed resting liquidity",
+        ));
+    }
+    if metric_alert_eligible(metrics, "microVolatility") {
+        reasons.push(toxic_reason(
             "MicroVolatilityShock",
-            micro_volatility_shock,
+            clamp_score(
+                metrics.spread_widening_score * 0.55
+                    + metrics.trade_rate.min(100.0) * 0.25
+                    + metrics.book_update_rate.min(100.0) * 0.20,
+            ),
             weights.micro_volatility_shock,
             1,
             &direction,
-            "1s micro volatility and update-rate shock",
-        ),
-    ]
+            "observed 1s micro-volatility shock",
+        ));
+    }
+    reasons
+}
+
+fn metric_alert_eligible(metrics: &TofMetrics, key: &str) -> bool {
+    metrics
+        .metric_lineage
+        .get(key)
+        .is_some_and(|lineage| lineage.alert_eligible)
 }
 
 fn toxic_reason(
@@ -832,6 +1067,14 @@ fn direction_key(direction: TofDirection) -> &'static str {
 }
 
 fn cross_confirm_components(input: &SplitRiskSystemsInput<'_>) -> CrossConfirmComponents {
+    if !input.cwm_contribution.available {
+        return CrossConfirmComponents {
+            spot_contract_direction_consistency: 0,
+            multi_window_consistency: 0,
+            price_response_consistency: 0,
+            source_coverage: 0,
+        };
+    }
     CrossConfirmComponents {
         spot_contract_direction_consistency: spot_contract_direction_consistency(input),
         multi_window_consistency: multi_window_consistency(input),
@@ -861,12 +1104,14 @@ fn signal_agreement(
         contract_components.oi_impulse,
     ) {
         92.0
-    } else if input.cwm_contribution.oi_change_pct.is_some() {
+    } else if input.cwm_contribution.oi_lineage.alert_eligible {
         46.0
     } else {
-        60.0
+        0.0
     };
-    let liquidation_penalty = if input.cwm_contribution.liquidation_suspected == Some(true) {
+    let liquidation_penalty = if input.cwm_contribution.liquidation_lineage.alert_eligible
+        && input.cwm_contribution.liquidation_suspected == Some(true)
+    {
         8.0
     } else {
         0.0
@@ -902,10 +1147,11 @@ fn spot_contract_direction_consistency(input: &SplitRiskSystemsInput<'_>) -> u8 
         } else {
             38.0
         };
-        if input
-            .cwm_contribution
-            .oi_change_pct
-            .is_some_and(|change_pct| change_pct > 0.0)
+        if input.cwm_contribution.oi_lineage.alert_eligible
+            && input
+                .cwm_contribution
+                .oi_change_pct
+                .is_some_and(|change_pct| change_pct > 0.0)
         {
             score += 4.0;
         }
@@ -945,10 +1191,12 @@ fn multi_window_consistency(input: &SplitRiskSystemsInput<'_>) -> u8 {
         Some(ContractWhaleSeverity::Medium) => 2.0,
         _ => 0.0,
     };
-    if input.advanced_score >= 80 && input.perp_score >= 80 {
+    if input.advanced_score.is_some_and(|score| score >= 80)
+        && input.perp_score.is_some_and(|score| score >= 80)
+    {
         score += 6.0;
     }
-    if input.cwm_contribution.oi_change_pct.is_some() {
+    if input.cwm_contribution.oi_lineage.alert_eligible {
         score += 4.0;
     }
     clamp_score(score).round() as u8
@@ -1012,6 +1260,15 @@ fn directions_align(left: TofDirection, right: TofDirection) -> bool {
 }
 
 fn spot_behavior_components(input: &SplitRiskSystemsInput<'_>) -> SpotBehaviorComponents {
+    if !input.tof_metrics.lineage.alert_eligible {
+        return SpotBehaviorComponents {
+            spot_cvd_score: 0,
+            spot_volume_anomaly: 0,
+            spot_absorption: 0,
+            spot_liquidity_shift: 0,
+            spot_price_response: 0,
+        };
+    }
     SpotBehaviorComponents {
         spot_cvd_score: spot_cvd_score(input),
         spot_volume_anomaly: spot_volume_anomaly(input.tof_metrics),
@@ -1062,11 +1319,12 @@ fn spot_cvd_score(input: &SplitRiskSystemsInput<'_>) -> u8 {
 fn spot_volume_anomaly(metrics: &TofMetrics) -> u8 {
     let bucket_intensity = (metrics.vpin_bucket_count as f64 * 12.0).min(100.0);
     let window_volume_intensity = (metrics.vpin_window_volume / 15_000.0 * 100.0).min(100.0);
+    let relative_vpin = relative_vpin_score(metrics.vpin_zscore, metrics.vpin_percentile);
     clamp_score(
         0.45 * metrics.trade_rate.min(100.0)
             + 0.25 * bucket_intensity
             + 0.20 * window_volume_intensity
-            + 0.10 * metrics.vpin_proxy,
+            + 0.10 * relative_vpin,
     )
     .round() as u8
 }
@@ -1137,20 +1395,14 @@ fn spot_price_response(input: &SplitRiskSystemsInput<'_>) -> u8 {
 }
 
 fn contract_behavior_components(input: &SplitRiskSystemsInput<'_>) -> ContractBehaviorComponents {
+    let advanced_score = input.advanced_score.unwrap_or(0);
+    let perp_score = input.perp_score.unwrap_or(0);
     ContractBehaviorComponents {
-        cwm_aggressive_flow: cwm_aggressive_flow(input.perp_score, &input.cwm_contribution),
-        oi_impulse: oi_impulse(
-            input.perp_score,
-            input.advanced_score,
-            &input.cwm_contribution,
-        ),
-        liquidation_context: liquidation_context(&input.cwm_contribution, input.advanced_score),
-        funding_crowding: funding_crowding(
-            input.perp_score,
-            input.advanced_score,
-            &input.cwm_contribution,
-        ),
-        basis_premium: basis_premium(input.perp_score, &input.cwm_contribution),
+        cwm_aggressive_flow: cwm_aggressive_flow(&input.cwm_contribution),
+        oi_impulse: oi_impulse(&input.cwm_contribution),
+        liquidation_context: liquidation_context(&input.cwm_contribution, advanced_score),
+        funding_crowding: funding_crowding(&input.cwm_contribution),
+        basis_premium: basis_premium(perp_score, &input.cwm_contribution),
         active_exchange_confirmation: active_exchange_confirmation(&input.cwm_contribution),
     }
 }
@@ -1170,11 +1422,14 @@ fn contract_behavior_score(
     .round() as u8
 }
 
-fn cwm_aggressive_flow(perp_score: u8, contribution: &CwmRiskContribution) -> u8 {
+fn cwm_aggressive_flow(contribution: &CwmRiskContribution) -> u8 {
+    if !contribution.available {
+        return 0;
+    }
     if let Some(score) = contribution.score {
         return cap_single_venue_cwm_score(score, contribution);
     }
-    clamp_score(perp_score as f64 * 0.65).round() as u8
+    0
 }
 
 fn cap_single_venue_cwm_score(score: u8, contribution: &CwmRiskContribution) -> u8 {
@@ -1189,10 +1444,12 @@ fn cap_single_venue_cwm_score(score: u8, contribution: &CwmRiskContribution) -> 
     }
 }
 
-fn oi_impulse(perp_score: u8, advanced_score: u8, contribution: &CwmRiskContribution) -> u8 {
-    let fallback = 0.65 * perp_score as f64 + 0.35 * advanced_score as f64;
-    let Some(oi_change_pct) = contribution.oi_change_pct else {
-        return clamp_score(fallback).round() as u8;
+fn oi_impulse(contribution: &CwmRiskContribution) -> u8 {
+    if !contribution.oi_lineage.alert_eligible {
+        return 0;
+    }
+    let Some(oi_change_pct) = contribution.oi_change_pct.filter(|value| value.is_finite()) else {
+        return 0;
     };
     let normalized_pct = if oi_change_pct.abs() <= 1.0 {
         oi_change_pct.abs() * 100.0
@@ -1212,6 +1469,9 @@ fn oi_impulse(perp_score: u8, advanced_score: u8, contribution: &CwmRiskContribu
 }
 
 fn liquidation_context(contribution: &CwmRiskContribution, advanced_score: u8) -> u8 {
+    if !contribution.liquidation_lineage.alert_eligible {
+        return 0;
+    }
     let cwm_score = contribution.score.unwrap_or(0);
     let base = if contribution.liquidation_suspected == Some(true) {
         0.75 * cwm_score as f64 + 0.25 * advanced_score as f64
@@ -1223,8 +1483,11 @@ fn liquidation_context(contribution: &CwmRiskContribution, advanced_score: u8) -
     clamp_score(base).round() as u8
 }
 
-fn funding_crowding(perp_score: u8, advanced_score: u8, contribution: &CwmRiskContribution) -> u8 {
-    if let Some(funding_rate) = contribution.funding_rate {
+fn funding_crowding(contribution: &CwmRiskContribution) -> u8 {
+    if !contribution.funding_lineage.alert_eligible {
+        return 0;
+    }
+    if let Some(funding_rate) = contribution.funding_rate.filter(|value| value.is_finite()) {
         let rate_bps = funding_rate.abs() * 10_000.0;
         let bias_bonus = match contribution.funding_bias.as_deref() {
             Some("long") | Some("short") => 8.0,
@@ -1232,12 +1495,12 @@ fn funding_crowding(perp_score: u8, advanced_score: u8, contribution: &CwmRiskCo
         };
         return clamp_score(42.0 + (rate_bps * 5.0).min(40.0) + bias_bonus).round() as u8;
     }
-    clamp_score(0.55 * perp_score as f64 + 0.45 * advanced_score as f64).round() as u8
+    0
 }
 
 fn basis_premium(perp_score: u8, contribution: &CwmRiskContribution) -> u8 {
     if !contribution.available {
-        return 50;
+        return 0;
     }
     let price_move_component = contribution
         .price_move_pct
@@ -1253,7 +1516,7 @@ fn basis_premium(perp_score: u8, contribution: &CwmRiskContribution) -> u8 {
 
 fn active_exchange_confirmation(contribution: &CwmRiskContribution) -> u8 {
     if !contribution.available {
-        return 35;
+        return 0;
     }
     if contribution.multi_exchange_confirmed == Some(true) {
         return 92;
@@ -1275,6 +1538,9 @@ fn market_structure_data_quality(
     input: &SplitRiskSystemsInput<'_>,
     components: &MarketStructureComponents,
 ) -> f64 {
+    if !input.cwm_contribution.available {
+        return round2(clamp_score(input.data_quality));
+    }
     let source_health = enabled_source_health_quality(&input.cwm_contribution)
         .unwrap_or_else(|| fallback_enabled_source_health(input.data_quality));
     let cwm_quality = input
@@ -1353,7 +1619,7 @@ fn normalized_main_exchange(contribution: &CwmRiskContribution) -> Option<String
 
 fn duration_score(contribution: &CwmRiskContribution, cross_confirm_score: u8) -> u8 {
     if !contribution.available {
-        return if cross_confirm_score >= 75 { 60 } else { 35 };
+        return 0;
     }
     let severity_floor = match contribution.severity {
         Some(ContractWhaleSeverity::S) => 100,
@@ -1375,7 +1641,9 @@ fn duration_score(contribution: &CwmRiskContribution, cross_confirm_score: u8) -
 }
 
 fn liquidation_penalty(contribution: &CwmRiskContribution) -> f64 {
-    if contribution.liquidation_suspected != Some(true) {
+    if !contribution.liquidation_lineage.alert_eligible
+        || contribution.liquidation_suspected != Some(true)
+    {
         return 0.0;
     }
     let ratio_penalty = contribution
@@ -1734,6 +2002,9 @@ fn oi_direction_consistent(
 }
 
 fn oi_direction_consistent_from_raw(contribution: &CwmRiskContribution, oi_impulse: u8) -> bool {
+    if !contribution.oi_lineage.alert_eligible {
+        return false;
+    }
     let oi_change_pct = contribution.oi_change_pct.unwrap_or(0.0);
     match contribution.direction {
         Some(ContractWhaleDirection::Buy | ContractWhaleDirection::Sell) => {
@@ -1765,22 +2036,24 @@ fn liquidation_is_primary_driver(
     components: &MarketStructureComponents,
     contribution: &CwmRiskContribution,
 ) -> bool {
-    contribution.liquidation_suspected == Some(true)
-        || components.liquidation_penalty >= 5.0
-        || contribution
-            .liquidation_ratio
-            .is_some_and(|ratio| ratio >= 0.50)
+    contribution.liquidation_lineage.alert_eligible
+        && (contribution.liquidation_suspected == Some(true)
+            || components.liquidation_penalty >= 5.0
+            || contribution
+                .liquidation_ratio
+                .is_some_and(|ratio| ratio >= 0.50))
 }
 
 fn extreme_impact_score(
-    advanced_score: u8,
-    perp_score: u8,
+    advanced_score: Option<u8>,
+    perp_score: Option<u8>,
     cwm_score: Option<u8>,
     components: &MarketStructureComponents,
     contribution: &CwmRiskContribution,
 ) -> u8 {
-    let base = [advanced_score, perp_score, cwm_score.unwrap_or(0)]
+    let base = [advanced_score, perp_score, cwm_score]
         .into_iter()
+        .flatten()
         .max()
         .unwrap_or(0) as f64;
     if liquidation_is_primary_driver(components, contribution)
@@ -2056,13 +2329,15 @@ fn is_range_rotation(
 }
 
 fn long_liquidation_dominant(contribution: &CwmRiskContribution) -> bool {
-    contribution.liquidation_long_btc.unwrap_or(0.0)
-        > contribution.liquidation_short_btc.unwrap_or(0.0)
+    contribution.liquidation_lineage.alert_eligible
+        && contribution.liquidation_long_btc.unwrap_or(0.0)
+            > contribution.liquidation_short_btc.unwrap_or(0.0)
 }
 
 fn short_liquidation_dominant(contribution: &CwmRiskContribution) -> bool {
-    contribution.liquidation_short_btc.unwrap_or(0.0)
-        > contribution.liquidation_long_btc.unwrap_or(0.0)
+    contribution.liquidation_lineage.alert_eligible
+        && contribution.liquidation_short_btc.unwrap_or(0.0)
+            > contribution.liquidation_long_btc.unwrap_or(0.0)
 }
 
 fn clamp_score(value: f64) -> f64 {

@@ -41,6 +41,7 @@ use crate::{
         },
         intelligence, log_events,
         merge::merge_contract_whale_signals,
+        outcome_calibration::CONTRACT_WHALE_OUTCOME_VERSION,
         trading,
         trajectory::apply_contract_whale_trajectories,
         types::{
@@ -640,14 +641,14 @@ pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>)
             "shadowOnly": true,
         })));
     };
-    match store.contract_whale_outcome_summary() {
+    match store.contract_whale_outcome_summary(CONTRACT_WHALE_OUTCOME_VERSION) {
         Ok(items) => Ok(Json(serde_json::json!({
             "items": items,
             "dataState": "fresh",
             "degraded": false,
             "servedAt": now_ms(),
             "shadowOnly": true,
-            "outcomeVersion": "v1_shadow",
+            "outcomeVersion": CONTRACT_WHALE_OUTCOME_VERSION,
         }))),
         Err(error) => {
             tracing::warn!(

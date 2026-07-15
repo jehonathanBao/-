@@ -28,6 +28,7 @@ pub mod manual_parameter_export_routes;
 pub mod manual_signoff_routes;
 pub mod manual_startup_routes;
 pub mod market_regime_routes;
+pub mod market_structure_transport;
 pub mod new_token_watch_routes;
 pub mod orderbook_wall_interpretation_routes;
 pub mod orderbook_wall_lifecycle_routes;

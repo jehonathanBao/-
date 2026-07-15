@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
 import { pushDiscordAlert, sendDiscordTestMessage } from "../api/discord.js";
-import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
+import { fetchSignalsSnapshot, mapInboxItemToSignal, runtimeFromPayload } from "../api/signals.js";
 import BinanceAltContractMonitor from "../components/BinanceAltContractMonitor.jsx";
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
@@ -38,6 +38,14 @@ export default function Dashboard() {
   const isAltContractView = viewMode === "alt-contract-monitor";
   const isNewTokenWatchView = viewMode === "new-token-watch";
   const isUsageGuideView = viewMode === "usage-guide";
+  const signalWsEnabled = !(
+    isContractWhaleView ||
+    isLiquidationCascadeView ||
+    isSpotWhaleView ||
+    isAltContractView ||
+    isNewTokenWatchView ||
+    isUsageGuideView
+  );
   const {
     rawInboxSignals,
     selectedSignal,
@@ -46,7 +54,11 @@ export default function Dashboard() {
     pushStatus,
     discordConnected,
     lastPushedAt,
+    signalsRequest,
+    runtimeBoundary,
+    applySignalsSnapshot,
     setSignals,
+    setRuntimeBoundary,
     setSelectedSignal,
     setRiskFilter,
     markAsPushed,
@@ -59,14 +71,19 @@ export default function Dashboard() {
   const [mediumExpanded, setMediumExpanded] = useState(false);
   const [pendingPushIds, setPendingPushIds] = useState(() => new Set());
   const pendingPushIdsRef = useRef(new Set());
+  const signalWsRuntimeUnavailableRef = useRef(false);
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
-    if (isContractWhaleView || isLiquidationCascadeView || isSpotWhaleView || isAltContractView || isNewTokenWatchView || isUsageGuideView) {
-      return;
-    }
-    fetchSignals().then((items) => {
-      setSignals(items);
+    fetchSignalsSnapshot().then((snapshot) => {
+      if (!signalWsEnabled) {
+        setRuntimeBoundary(snapshot.runtime);
+        return;
+      }
+      applySignalsSnapshot(snapshot);
+      if (signalWsRuntimeUnavailableRef.current) {
+        setRuntimeBoundary(runtimeFromPayload(null));
+      }
       const state = useSignalsStore.getState();
       if (!state.selectedSignal && state.rawInboxSignals.length > 0) {
         const firstHighRisk =
@@ -74,33 +91,42 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
-  }, [isAltContractView, isContractWhaleView, isLiquidationCascadeView, isNewTokenWatchView, isSpotWhaleView, isUsageGuideView, setSelectedSignal, setSignals]);
+  }, [applySignalsSnapshot, setRuntimeBoundary, setSelectedSignal, signalWsEnabled]);
 
   const handleSignalWsMessage = useCallback(
     (event) => {
       try {
         const payload = JSON.parse(event.data);
-        const items = Array.isArray(payload?.signals)
-          ? payload.signals
-          : Array.isArray(payload?.items)
-            ? payload.items
-            : [];
-        if (items.length > 0) {
-          setSignals(items.map(mapInboxItemToSignal));
+        const frameRuntime = runtimeFromPayload(payload);
+        signalWsRuntimeUnavailableRef.current = frameRuntime.phase !== "confirmed";
+        setRuntimeBoundary(frameRuntime);
+        const hasSignalSnapshot = Array.isArray(payload?.signals) || Array.isArray(payload?.items);
+        if (hasSignalSnapshot) {
+          const items = Array.isArray(payload?.signals) ? payload.signals : payload.items;
+          setSignals(items.map((item) => ({ ...mapInboxItemToSignal(item), runtimeBoundary: frameRuntime })));
         }
       } catch {
-        // Ignore malformed dashboard stream frames; HTTP polling remains the fallback.
+        signalWsRuntimeUnavailableRef.current = true;
+        setRuntimeBoundary(runtimeFromPayload(null));
       }
     },
-    [setSignals],
+    [setRuntimeBoundary, setSignals],
   );
 
   const { status: wsStatus } = useReconnectingWebSocket("/ws/signals", {
-    enabled: !isContractWhaleView && !isLiquidationCascadeView && !isSpotWhaleView && !isAltContractView && !isNewTokenWatchView && !isUsageGuideView,
+    enabled: signalWsEnabled,
     retryMs: 1000,
     maxRetryMs: 15000,
     onMessage: handleSignalWsMessage,
   });
+
+  useEffect(() => {
+    if (!signalWsEnabled || (wsStatus !== "reconnecting" && wsStatus !== "closed")) {
+      return;
+    }
+    signalWsRuntimeUnavailableRef.current = true;
+    setRuntimeBoundary(runtimeFromPayload(null));
+  }, [setRuntimeBoundary, signalWsEnabled, wsStatus]);
 
   const stats = useMemo(() => {
     const base = { high: 0, medium: 0, low: 0, all: rawInboxSignals.length, total: rawInboxSignals.length };
@@ -165,9 +191,7 @@ export default function Dashboard() {
   }, [activeRiskFilter, highRiskSignals, mediumRiskSignals, rawInboxSignals, sLevelSignals, viewMode]);
   const showMediumFoldout = viewMode !== "signals" && viewMode !== "history";
 
-  const highUnhandledCount = rawInboxSignals.filter(
-    (signal) => signal.risk === "high" && signal.status === "unhandled",
-  ).length;
+  const highUnhandledCount = countUnhandledHighRisk(rawInboxSignals);
   const focusedScoreSignal = selectedSignal ?? highRiskSignals[0] ?? rawInboxSignals[0] ?? null;
   const effectivePushStatus = useMemo(
     () => buildPushStatus(pushStatus, pendingPushIds),
@@ -254,23 +278,23 @@ export default function Dashboard() {
       return;
     }
     setTestPushPending(true);
-    setPushNotice({ type: "pending", message: "Discord 测试消息发送中..." });
+    setPushNotice({ type: "pending", message: "Discord 候选预览校验中..." });
     try {
-      const result = await sendDiscordTestMessage();
+      const result = await sendDiscordTestMessage(focusedScoreSignal);
       if (result.ok) {
-        setPushNotice({ type: "success", message: "Discord 测试消息发送成功" });
+        setPushNotice({ type: "success", message: "Discord 候选预览已通过；未发送 Webhook。" });
         return;
       }
       setPushNotice({
         type: "failed",
         message:
           result.reason === "DISCORD_NOT_CONFIGURED"
-            ? "Discord 未配置，测试消息未发送。"
-            : `Discord 测试消息失败：${discordFailureHint(result.reason || "DISCORD_TEST_FAILED")}`,
+            ? "Discord 未配置，候选预览未执行。"
+            : `Discord 候选预览失败：${discordFailureHint(result.reason || "DISCORD_PREVIEW_FAILED")}`,
       });
     } catch (error) {
       const reason = discordFailureHint(error?.response?.data?.reason || error?.message || "NETWORK_ERROR", error);
-      setPushNotice({ type: "failed", message: `Discord 测试消息失败：${reason}` });
+      setPushNotice({ type: "failed", message: `Discord 候选预览失败：${reason}` });
     } finally {
       setTestPushPending(false);
     }
@@ -281,7 +305,7 @@ export default function Dashboard() {
       className={`workspace-shell flex min-h-screen flex-col lg:flex-row ${isContractWhaleView ? "contract-workspace-shell" : ""}`}
       data-testid="workspace-shell"
     >
-      <Sidebar />
+      <Sidebar runtimeBoundary={runtimeBoundary} />
       <main
         className={[
           "workspace-main w-full min-w-0 flex-1",
@@ -294,7 +318,7 @@ export default function Dashboard() {
           <ContractWhalePage symbol={mainstreamSymbol} />
         ) : (
           <>
-            <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
+            <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} runtimeBoundary={runtimeBoundary} />
             <div className="workspace-content">
               {isLiquidationCascadeView ? (
                 <LiquidationCascadePage />
@@ -308,6 +332,11 @@ export default function Dashboard() {
                 <UsageGuidePage />
               ) : (
                 <>
+                  {signalsRequest.phase === "error" ? (
+                    <div className="mb-5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100" role="status">
+                      信号快照刷新失败（{signalsRequest.errorCode || "UNKNOWN"}）；已保留此前候选，运行边界视为未知，推送已关闭。
+                    </div>
+                  ) : null}
                   <RuleStatus
                     discordConnected={discordConnected}
                     lastPushedAt={lastPushedAt}
@@ -403,6 +432,13 @@ export default function Dashboard() {
   );
 }
 
+export function countUnhandledHighRisk(signals) {
+  return (Array.isArray(signals) ? signals : []).filter((signal) => {
+    const reviewed = signal?.reviewStatus === "acknowledged" || signal?.reviewStatus === "false_positive";
+    return signal?.risk === "high" && signal?.status === "unhandled" && signal?.isLive !== false && !reviewed;
+  }).length;
+}
+
 function buildPushStatus(pushStatus, pendingPushIds) {
   const next = { ...pushStatus };
   for (const signalId of pendingPushIds) {
@@ -435,8 +471,8 @@ function LiquidationCascadePage() {
   return (
     <>
       <WorkspacePageHeader
-        badge="只读预测 · 不推送 · 不下单"
-        description="独立展示杠杆集中、流动性缺口和市场状态，用于观察潜在强平瀑布窗口。"
+        badge="流动性簇风险代理 · 非真实清算源 · 不推送"
+        description="基于杠杆集中、流动性缺口和市场状态的估算，用于观察潜在波动窗口；不作为真实清算数据。"
         eyebrow="Liquidation Cascade Predictor"
         title="强平瀑布预测"
       />

@@ -1,62 +1,96 @@
 import axios from "axios";
 
 const DEFAULT_SYMBOL = "BTCUSDT";
+const lastSuccessByRequest = new Map();
 
 export async function fetchLiquidationCascade(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
+  return fetchWithState(
     "/api/liquidation/cascade",
     { symbol },
     (payload) => normalizeCascade(payload, symbol),
-    fallbackCascade(symbol),
+    isValidCascade,
   );
 }
 
 export async function fetchLiquidationLeverageMap(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
+  return fetchWithState(
     "/api/liquidation/leverage-map",
     { symbol },
     (payload) => normalizeLeverageMap(payload, symbol),
-    fallbackLeverageMap(symbol),
+    isValidLeverageMap,
   );
 }
 
 export async function fetchLiquidationLiquidityGap(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
+  return fetchWithState(
     "/api/liquidation/liquidity-gap",
     { symbol },
     (payload) => normalizeLiquidityGap(payload, symbol),
-    fallbackLiquidityGap(symbol),
+    isValidLiquidityGap,
   );
 }
 
 export async function fetchMarketRegime(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
+  return fetchWithState(
     "/api/regime/latest",
     { symbol },
     (payload) => normalizeRegime(payload, symbol),
-    fallbackRegime(symbol),
+    isValidRegime,
   );
 }
 
 export async function fetchBtcStructure(symbol = DEFAULT_SYMBOL) {
-  return fetchWithFallback(
+  return fetchWithState(
     "/api/btc/structure",
     { symbol },
     (payload) => normalizeBtcStructure(payload, symbol),
-    fallbackBtcStructure(symbol),
+    isValidBtcStructure,
   );
 }
 
-async function fetchWithFallback(path, params, normalize, fallback) {
+async function fetchWithState(path, params, normalize, validate) {
+  const fetchedAtMs = Date.now();
+  const requestKey = `${path}:${normalizeSymbol(params?.symbol)}`;
   try {
     const response = await axios.get(path, { params });
-    return { data: normalize(response.data || {}), error: null };
-  } catch (error) {
+    if (!validate(response.data)) {
+      return unavailableResult(requestKey, fetchedAtMs, "MALFORMED_RESPONSE");
+    }
+    const data = normalize(response.data);
+    if (!symbolsMatch(data?.symbol, params?.symbol)) {
+      return unavailableResult(requestKey, fetchedAtMs, "SYMBOL_MISMATCH");
+    }
+    lastSuccessByRequest.set(requestKey, fetchedAtMs);
     return {
-      data: fallback,
-      error: error?.response?.data?.reason || error?.message || "NETWORK_ERROR",
+      data,
+      error: null,
+      state: {
+        phase: "ready",
+        source: "backend",
+        fetchedAtMs,
+        lastSuccessAtMs: fetchedAtMs,
+      },
     };
+  } catch (error) {
+    return unavailableResult(
+      requestKey,
+      fetchedAtMs,
+      error?.response?.data?.reason || error?.message || "NETWORK_ERROR",
+    );
   }
+}
+
+function unavailableResult(requestKey, fetchedAtMs, error) {
+  return {
+    data: null,
+    error,
+    state: {
+      phase: "unavailable",
+      source: null,
+      fetchedAtMs,
+      lastSuccessAtMs: lastSuccessByRequest.get(requestKey) ?? null,
+    },
+  };
 }
 
 export function normalizeCascade(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
@@ -64,15 +98,15 @@ export function normalizeCascade(payload = {}, requestedSymbol = DEFAULT_SYMBOL)
   return {
     symbol,
     cascadeProbability: clamp01(payload.cascadeProbability),
-    status: String(payload.status || "CALM").toUpperCase(),
-    direction: String(payload.direction || "NEUTRAL").toUpperCase(),
-    estimatedMove: payload.estimatedMove || "< 0.5%",
-    timeWindow: payload.timeWindow || "no active cascade window",
-    riskZone: Array.isArray(payload.riskZone) ? payload.riskZone.map(numberOrZero) : null,
+    status: stringOrNull(payload.status)?.toUpperCase() ?? null,
+    direction: stringOrNull(payload.direction)?.toUpperCase() ?? null,
+    estimatedMove: stringOrNull(payload.estimatedMove),
+    timeWindow: stringOrNull(payload.timeWindow),
+    riskZone: Array.isArray(payload.riskZone) ? payload.riskZone.map(numberOrNull) : null,
     signals: normalizeStringArray(payload.signals),
     components: normalizeCascadeComponents(payload.components),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
+    readOnly: booleanOrNull(payload.readOnly),
+    runtimeModified: booleanOrNull(payload.runtimeModified),
   };
 }
 
@@ -83,8 +117,8 @@ export function normalizeLeverageMap(payload = {}, requestedSymbol = DEFAULT_SYM
     highRiskZones: Array.isArray(payload.highRiskZones)
       ? payload.highRiskZones.map(normalizePriceZone)
       : [],
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
+    readOnly: booleanOrNull(payload.readOnly),
+    runtimeModified: booleanOrNull(payload.runtimeModified),
   };
 }
 
@@ -93,39 +127,39 @@ export function normalizeLiquidityGap(payload = {}, requestedSymbol = DEFAULT_SY
     symbol: normalizeSymbol(payload.symbol || requestedSymbol),
     belowPrice: clamp01(payload.belowPrice),
     abovePrice: clamp01(payload.abovePrice),
-    dominantGap: String(payload.dominantGap || "NEUTRAL").toUpperCase(),
+    dominantGap: stringOrNull(payload.dominantGap)?.toUpperCase() ?? null,
     signals: normalizeStringArray(payload.signals),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
+    readOnly: booleanOrNull(payload.readOnly),
+    runtimeModified: booleanOrNull(payload.runtimeModified),
   };
 }
 
 export function normalizeRegime(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
   return {
     symbol: normalizeSymbol(payload.symbol || requestedSymbol),
-    regime: String(payload.regime || "ACCUMULATION").toUpperCase(),
+    regime: stringOrNull(payload.regime)?.toUpperCase() ?? null,
     confidence: clamp01(payload.confidence),
-    directionBias: String(payload.directionBias || "NEUTRAL").toUpperCase(),
+    directionBias: stringOrNull(payload.directionBias)?.toUpperCase() ?? null,
     signals: normalizeStringArray(payload.signals),
     metrics: normalizeMetricMap(payload.metrics),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
+    readOnly: booleanOrNull(payload.readOnly),
+    runtimeModified: booleanOrNull(payload.runtimeModified),
   };
 }
 
 export function normalizeBtcStructure(payload = {}, requestedSymbol = DEFAULT_SYMBOL) {
   return {
     symbol: normalizeSymbol(payload.symbol || requestedSymbol),
-    regime: String(payload.regime || "ACCUMULATION").toUpperCase(),
-    bias: String(payload.bias || "NEUTRAL").toUpperCase(),
+    regime: stringOrNull(payload.regime)?.toUpperCase() ?? null,
+    bias: stringOrNull(payload.bias)?.toUpperCase() ?? null,
     confidence: clamp01(payload.confidence),
     structureScore: clamp01(payload.structureScore),
     liquidationCascadeProbability: clamp01(payload.liquidationCascadeProbability),
     gammaPressure: clamp01(payload.gammaPressure),
     signals: normalizeStringArray(payload.signals),
     metrics: normalizeMetricMap(payload.metrics),
-    readOnly: payload.readOnly !== false,
-    runtimeModified: Boolean(payload.runtimeModified),
+    readOnly: booleanOrNull(payload.readOnly),
+    runtimeModified: booleanOrNull(payload.runtimeModified),
   };
 }
 
@@ -141,72 +175,95 @@ function normalizeCascadeComponents(components = {}) {
 
 function normalizeLeverageLevel(level = {}) {
   return {
-    price: numberOrZero(level.price),
-    side: level.side || "neutral",
+    price: numberOrNull(level.price),
+    side: stringOrNull(level.side),
     intensity: clamp01(level.intensity),
-    notionalUsd: numberOrZero(level.notionalUsd),
-    distanceBps: numberOrZero(level.distanceBps),
+    notionalUsd: numberOrNull(level.notionalUsd),
+    distanceBps: numberOrNull(level.distanceBps),
   };
 }
 
 function normalizePriceZone(zone = {}) {
   return {
-    low: numberOrZero(zone.low),
-    high: numberOrZero(zone.high),
+    low: numberOrNull(zone.low),
+    high: numberOrNull(zone.high),
     strength: clamp01(zone.strength),
-    side: zone.side || "neutral",
+    side: stringOrNull(zone.side),
   };
 }
 
 function normalizeMetricMap(metrics = {}) {
   return Object.fromEntries(
-    Object.entries(metrics || {}).map(([key, value]) => [key, numberOrZero(value)]),
+    Object.entries(metrics || {}).map(([key, value]) => [key, numberOrNull(value)]),
   );
-}
-
-function fallbackCascade(symbol) {
-  return normalizeCascade(
-    {
-      symbol,
-      status: "CALM",
-      direction: "NEUTRAL",
-      signals: ["CASCADE_UNAVAILABLE"],
-      components: {},
-      readOnly: true,
-    },
-    symbol,
-  );
-}
-
-function fallbackLeverageMap(symbol) {
-  return normalizeLeverageMap({ symbol, heatmap: [], highRiskZones: [], readOnly: true }, symbol);
-}
-
-function fallbackLiquidityGap(symbol) {
-  return normalizeLiquidityGap({ symbol, dominantGap: "NEUTRAL", signals: [], readOnly: true }, symbol);
-}
-
-function fallbackRegime(symbol) {
-  return normalizeRegime({ symbol, regime: "ACCUMULATION", directionBias: "NEUTRAL", readOnly: true }, symbol);
-}
-
-function fallbackBtcStructure(symbol) {
-  return normalizeBtcStructure({ symbol, signals: [], readOnly: true }, symbol);
 }
 
 function normalizeSymbol(value) {
   return String(value || DEFAULT_SYMBOL).toUpperCase();
 }
 
+function symbolsMatch(observedSymbol, requestedSymbol) {
+  const observed = canonicalSymbol(observedSymbol);
+  const requested = canonicalSymbol(requestedSymbol);
+  return Boolean(observed && requested && observed === requested);
+}
+
+function canonicalSymbol(value) {
+  let symbol = String(value || "").trim().toUpperCase();
+  if (!symbol) return null;
+  if (symbol.startsWith("T") && symbol.includes("F0")) symbol = symbol.slice(1);
+  symbol = symbol.split(/[-_/:]/)[0];
+  for (const suffix of ["PERP", "SWAP", "USDT", "USDC", "USD", "F0"]) {
+    symbol = symbol.replace(new RegExp(`${suffix}$`), "");
+  }
+  return symbol || null;
+}
+
 function normalizeStringArray(value) {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
 }
 
-function numberOrZero(value) {
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function clamp01(value) {
-  return Math.min(1, Math.max(0, numberOrZero(value)));
+  const number = numberOrNull(value);
+  return number === null ? null : Math.min(1, Math.max(0, number));
+}
+
+function booleanOrNull(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function isValidCascade(payload) {
+  return isRecord(payload) && numberOrNull(payload.cascadeProbability) !== null && stringOrNull(payload.status) !== null && stringOrNull(payload.direction) !== null;
+}
+
+function isValidLeverageMap(payload) {
+  return isRecord(payload) && Array.isArray(payload.heatmap) && Array.isArray(payload.highRiskZones);
+}
+
+function isValidLiquidityGap(payload) {
+  return isRecord(payload) && numberOrNull(payload.belowPrice) !== null && numberOrNull(payload.abovePrice) !== null && stringOrNull(payload.dominantGap) !== null;
+}
+
+function isValidRegime(payload) {
+  return isRecord(payload) && stringOrNull(payload.regime) !== null && stringOrNull(payload.directionBias) !== null;
+}
+
+function isValidBtcStructure(payload) {
+  return isRecord(payload) && stringOrNull(payload.regime) !== null && stringOrNull(payload.bias) !== null;
+}
+
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

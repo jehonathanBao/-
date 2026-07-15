@@ -560,6 +560,7 @@ fn clear_operator_env() {
 
 fn discord_request() -> DiscordNotificationRequest {
     DiscordNotificationRequest {
+        server_evidence_verified: true,
         alert_family: Some("short_toxic_order".to_string()),
         signal_id: Some("scan-log-high".to_string()),
         id: Some("scan-log-high".to_string()),

@@ -127,12 +127,12 @@ function ScoreBar({ label, value }) {
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="truncate text-slate-300">{label}</span>
-        <span className="shrink-0 font-semibold text-white">{safeValue}</span>
+        <span className="shrink-0 font-semibold text-white">{safeValue ?? "N/A"}</span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-slate-800">
         <div
           className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-amber-300"
-          style={{ width: `${safeValue}%` }}
+          style={{ width: `${safeValue ?? 0}%` }}
         />
       </div>
     </div>
@@ -145,22 +145,22 @@ function buildToxicCard(signal, nowMs) {
       eyebrow: "No focused signal",
       context: "当前没有可用的短线候选信号。",
       badge: "待数据",
-      severity: "Calm",
+      severity: "Unavailable",
       metrics: [
         { label: "毒性评分", value: "N/A", primary: true },
-        { label: "短线压力", value: "中性 0" },
+        { label: "短线压力", value: "不可用" },
         { label: "有效期", value: "等待数据" },
         { label: "置信度", value: "N/A" },
       ],
-      breakdowns: SHORT_BREAKDOWN_ORDER.map(([, label]) => ({ label, value: 0 })),
+      breakdowns: SHORT_BREAKDOWN_ORDER.map(([, label]) => ({ label, value: null })),
       reasons: ["暂无可用于短线评分的候选信号。"],
-      pressure: 0,
+      pressure: null,
       tags: [],
     };
   }
 
   const score = clampScore(signal.toxicScore ?? signal.finalRiskScore ?? signal.score);
-  const severity = signal.toxicSeverity || toxicSeverityLabel(score);
+  const severity = score === null ? "不可用" : signal.toxicSeverity || toxicSeverityLabel(score);
   const pressure = signedNumber(signal.shortPressure) ?? inferPressure(signal.side, score);
   const confidence = normalizePercent(signal.toxicShortScore?.confidence ?? signal.confidence);
   const remaining = remainingTtlText(signal, nowMs);
@@ -169,11 +169,14 @@ function buildToxicCard(signal, nowMs) {
   return {
     eyebrow: `${signal.symbol || "Unknown"} · ${signal.type || "candidate"} · ${shortTime(signal.time)}`,
     context: finalResultDescription(signal),
-    badge: `${score} / ${severity}`,
+    badge: score === null ? "N/A / 不可用" : `${score} / ${severity}`,
     severity,
     metrics: [
-      { label: "毒性评分", value: `${score} / ${severity}`, primary: true },
-      { label: "短线压力", value: `${pressureLabel(pressure)} ${formatSignedInteger(pressure)}` },
+      { label: "毒性评分", value: score === null ? "N/A / 不可用" : `${score} / ${severity}`, primary: true },
+      {
+        label: "短线压力",
+        value: pressure === null ? "不可用" : `${pressureLabel(pressure)} ${formatSignedInteger(pressure)}`,
+      },
       { label: "有效期", value: remaining },
       { label: "置信度", value: normalizeDisplay(confidence) },
     ],
@@ -190,24 +193,24 @@ function buildStructureCard(signal) {
       eyebrow: "No focused signal",
       context: "当前没有可用的主力结构候选信号。",
       badge: "待数据",
-      severity: "Calm",
+      severity: "Unavailable",
       metrics: [
         { label: "主力评分", value: "N/A", primary: true },
-        { label: "结构方向", value: "中性 0" },
+        { label: "结构方向", value: "不可用" },
         { label: "极端冲击", value: "N/A" },
         { label: "状态", value: "结构未明" },
         { label: "置信度", value: "N/A" },
       ],
-      breakdowns: STRUCTURE_BREAKDOWN_ITEMS.map(([, label]) => ({ label, value: 0 })),
+      breakdowns: STRUCTURE_BREAKDOWN_ITEMS.map(([, label]) => ({ label, value: null })),
       reasons: ["暂无可用于主力结构评分的候选信号。"],
       tags: [],
-      bias: 0,
+      bias: null,
     };
   }
 
   const mainForceScore = clampScore(signal.mainForceScore);
-  const severity = signal.marketStructureSeverity || structureSeverityLabel(mainForceScore);
-  const bias = signedNumber(signal.structureBias) ?? 0;
+  const severity = mainForceScore === null ? "不可用" : signal.marketStructureSeverity || structureSeverityLabel(mainForceScore);
+  const bias = signedNumber(signal.structureBias);
   const extremeImpact = clampScore(signal.extremeImpactScore);
   const regime = regimeTypeLabel(signal.regimeType);
   const confidence = normalizePercent(signal.marketStructureConfidence ?? signal.marketStructureScore?.confidence);
@@ -215,11 +218,15 @@ function buildStructureCard(signal) {
   return {
     eyebrow: `${signal.symbol || "Unknown"} · ${signal.type || "candidate"} · ${shortTime(signal.time)}`,
     context: finalResultDescription(signal),
-    badge: `${mainForceScore} / ${severity}`,
+    badge: mainForceScore === null ? "N/A / 不可用" : `${mainForceScore} / ${severity}`,
     severity,
     metrics: [
-      { label: "主力评分", value: `${mainForceScore} / ${severity}`, primary: true },
-      { label: "结构方向", value: `${biasLabel(bias)} ${formatSignedInteger(bias)}` },
+      {
+        label: "主力评分",
+        value: mainForceScore === null ? "N/A / 不可用" : `${mainForceScore} / ${severity}`,
+        primary: true,
+      },
+      { label: "结构方向", value: bias === null ? "不可用" : `${biasLabel(bias)} ${formatSignedInteger(bias)}` },
       { label: "极端冲击", value: normalizeDisplay(extremeImpact) },
       { label: "状态", value: regime },
       { label: "置信度", value: normalizeDisplay(confidence) },
@@ -246,7 +253,7 @@ function buildShortBreakdowns(signal, fallbackScore) {
     label,
     value:
       byType.get(key) ??
-      shortBreakdownFallback(key, metrics, fallbackScore, signal.toxicScore ?? signal.score ?? 0),
+      shortBreakdownFallback(key, metrics, fallbackScore, signal.toxicScore ?? signal.score),
   }));
 }
 
@@ -286,17 +293,17 @@ function buildShortReasons(signal, breakdowns) {
 }
 
 function buildStructureReasons(signal) {
-  const direction = signedNumber(signal.structureBias) ?? 0;
+  const direction = signedNumber(signal.structureBias);
   const reasons = [];
 
   if (clampScore(signal.contractScore) >= 70) {
-    reasons.push(direction >= 0 ? "合约主动买入显著放大" : "合约主动卖出显著放大");
+    reasons.push(direction === null ? "合约主动成交显著放大（方向不可用）" : direction >= 0 ? "合约主动买入显著放大" : "合约主动卖出显著放大");
   }
   if (clampScore(signal.oiScore ?? signal.oiImpulse) >= 70) {
-    reasons.push(direction >= 0 ? "OI 同步上升，偏新多开仓" : "OI 同步上升，偏新空开仓");
+    reasons.push(direction === null ? "OI 显著变化（方向不可用）" : direction >= 0 ? "OI 同步上升，偏新多开仓" : "OI 同步上升，偏新空开仓");
   }
   if (clampScore(signal.spotScore) >= 60) {
-    reasons.push(direction >= 0 ? "现货主动买入跟随" : "现货主动卖出跟随");
+    reasons.push(direction === null ? "现货主动流显著变化（方向不可用）" : direction >= 0 ? "现货主动买入跟随" : "现货主动卖出跟随");
   }
   if (signal.regimeType === "downside_absorption") {
     reasons.push("价格回调未破，出现下方承接");
@@ -317,7 +324,8 @@ function buildStructureTags(signal) {
   if (signal.mainForceConfirmed) {
     tags.push("主力确认");
   }
-  if (structureBreakdownValue(signal, "liquidationBlend") < 60 && signal.regimeType !== "long_liquidation_cascade") {
+  const liquidationBlend = structureBreakdownValue(signal, "liquidationBlend");
+  if (liquidationBlend !== null && liquidationBlend < 60 && signal.regimeType !== "long_liquidation_cascade") {
     tags.push("非清算驱动");
   }
   if (clampScore(signal.multiWindowConsistency) >= 70) {
@@ -339,21 +347,26 @@ function structureBreakdownValue(signal, key) {
 }
 
 function shortBreakdownFallback(key, metrics, fallbackScore, rawScore) {
+  const raw = number(rawScore);
   switch (key) {
     case "ToxicOrderCluster":
       return clampScore(fallbackScore);
-    case "AggressiveSweep":
-      return clampScore(Math.max(Math.abs(number(metrics.tradeImbalance)) * 100, number(metrics.tradeImbalanceScore)));
-    case "OrderbookDeformation":
-      return clampScore(Math.max(number(metrics.depthWithdrawalScore), number(metrics.spreadWideningScore) * 0.7));
+    case "AggressiveSweep": {
+      const imbalance = number(metrics.tradeImbalance);
+      return clampScore(maxAvailable(imbalance === null ? null : Math.abs(imbalance) * 100, metrics.tradeImbalanceScore));
+    }
+    case "OrderbookDeformation": {
+      const spread = number(metrics.spreadWideningScore);
+      return clampScore(maxAvailable(metrics.depthWithdrawalScore, spread === null ? null : spread * 0.7));
+    }
     case "SpoofCancel":
-      return clampScore(Math.max(number(metrics.orderChurnScore), rawScore * 0.45));
+      return clampScore(maxAvailable(metrics.orderChurnScore, raw === null ? null : raw * 0.45));
     case "AdverseMove":
-      return clampScore(rawScore * 0.85);
+      return clampScore(raw === null ? null : raw * 0.85);
     case "LiquidityGap":
-      return clampScore(Math.max(number(metrics.liquidityVacuumScore), number(metrics.spreadWideningScore)));
+      return clampScore(maxAvailable(metrics.liquidityVacuumScore, metrics.spreadWideningScore));
     default:
-      return 0;
+      return null;
   }
 }
 
@@ -433,6 +446,9 @@ function structureSeverityLabel(score) {
 }
 
 function regimeTypeLabel(value) {
+  if (value === null || value === undefined || value === "") {
+    return "不可用";
+  }
   return {
     main_force_long_build: "主力建多",
     main_force_short_build: "主力建空",
@@ -469,6 +485,9 @@ function biasLabel(value) {
 }
 
 function inferPressure(side, score) {
+  if (score === null) {
+    return null;
+  }
   const direction = String(side || "").toLowerCase();
   if (direction.includes("sell") || direction.includes("ask")) {
     return -clampScore(score);
@@ -476,7 +495,7 @@ function inferPressure(side, score) {
   if (direction.includes("buy") || direction.includes("bid")) {
     return clampScore(score);
   }
-  return 0;
+  return null;
 }
 
 function remainingTtlText(signal, nowMs) {
@@ -502,10 +521,13 @@ function shortTime(value) {
 
 function normalizeDisplay(value) {
   const safe = number(value);
-  return safe > 0 || safe === 0 ? `${Math.round(safe)}` : "N/A";
+  return safe === null ? "N/A" : `${Math.round(safe)}`;
 }
 
 function normalizePercent(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : null;
 }
@@ -513,38 +535,46 @@ function normalizePercent(value) {
 function formatSignedInteger(value) {
   const safe = signedNumber(value);
   if (safe === null) {
-    return "0";
+    return "N/A";
   }
   return safe > 0 ? `+${Math.round(safe)}` : `${Math.round(safe)}`;
 }
 
 function signedDecimal(value, digits = 1) {
   const safe = number(value);
-  if (!Number.isFinite(safe)) {
-    return "0";
+  if (safe === null) {
+    return "N/A";
   }
   const fixed = safe.toFixed(digits);
   return safe > 0 ? `+${fixed}` : fixed;
 }
 
 function round1(value) {
-  return Math.round(number(value) * 10) / 10;
+  const safe = number(value);
+  return safe === null ? "N/A" : Math.round(safe * 10) / 10;
 }
 
 function clampScore(value) {
   const safe = number(value);
-  if (!Number.isFinite(safe)) {
-    return 0;
+  if (safe === null) {
+    return null;
   }
   return Math.max(0, Math.min(100, Math.round(safe)));
 }
 
 function number(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function signedNumber(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return number(value);
+}
+
+function maxAvailable(...values) {
+  const numbers = values.map(number).filter((value) => value !== null);
+  return numbers.length > 0 ? Math.max(...numbers) : null;
 }

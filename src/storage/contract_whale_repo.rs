@@ -133,6 +133,12 @@ pub struct ContractWhaleOutcomeSummaryRow {
     pub regime: String,
     pub hour_utc: String,
     pub sample_count: usize,
+    pub avg_absolute_return_30s_bps: Option<f64>,
+    pub avg_absolute_return_2m_bps: Option<f64>,
+    pub avg_absolute_return_5m_bps: Option<f64>,
+    pub avg_realized_volatility_5m_bps: Option<f64>,
+    pub avg_max_absolute_excursion_5m_bps: Option<f64>,
+    pub avg_price_sample_count_5m: Option<f64>,
     pub avg_markout_30s_bps: Option<f64>,
     pub avg_markout_2m_bps: Option<f64>,
     pub avg_markout_5m_bps: Option<f64>,
@@ -258,8 +264,10 @@ pub trait ContractWhaleRepo {
         &self,
         outcomes: &[ContractWhaleSignalOutcome],
     ) -> anyhow::Result<usize>;
-    fn contract_whale_outcome_summary(&self)
-        -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>>;
+    fn contract_whale_outcome_summary(
+        &self,
+        outcome_version: &str,
+    ) -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>>;
     fn upsert_contract_whale_percentiles(
         &self,
         thresholds: &[ContractWhalePercentileThreshold],
@@ -1225,11 +1233,16 @@ impl ContractWhaleRepo for SqliteStore {
                   signal_id, symbol, signal_ts, signal_type, classification_v2, severity,
                   impact_level, window_sec, oi_context, regime, entry_price,
                   markout_30s_bps, markout_2m_bps, markout_5m_bps, mfe_5m_bps, mae_5m_bps,
+                  absolute_return_30s_bps, absolute_return_2m_bps, absolute_return_5m_bps,
+                  realized_volatility_5m_bps, max_absolute_excursion_5m_bps,
+                  price_sample_count_5m, liquidity_recovered_5m, liquidity_recovery_ms,
+                  liquidity_recovery_reason, setup_outcome,
                   follow_through_30s, follow_through_2m, follow_through_5m, evaluated_at,
                   outcome_version
                 ) VALUES (
                   ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                  ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                  ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+                  ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
                 )
                 ON CONFLICT(signal_id) DO UPDATE SET
                   classification_v2 = excluded.classification_v2,
@@ -1243,6 +1256,16 @@ impl ContractWhaleRepo for SqliteStore {
                   markout_5m_bps = excluded.markout_5m_bps,
                   mfe_5m_bps = excluded.mfe_5m_bps,
                   mae_5m_bps = excluded.mae_5m_bps,
+                  absolute_return_30s_bps = excluded.absolute_return_30s_bps,
+                  absolute_return_2m_bps = excluded.absolute_return_2m_bps,
+                  absolute_return_5m_bps = excluded.absolute_return_5m_bps,
+                  realized_volatility_5m_bps = excluded.realized_volatility_5m_bps,
+                  max_absolute_excursion_5m_bps = excluded.max_absolute_excursion_5m_bps,
+                  price_sample_count_5m = excluded.price_sample_count_5m,
+                  liquidity_recovered_5m = excluded.liquidity_recovered_5m,
+                  liquidity_recovery_ms = excluded.liquidity_recovery_ms,
+                  liquidity_recovery_reason = excluded.liquidity_recovery_reason,
+                  setup_outcome = excluded.setup_outcome,
                   follow_through_30s = excluded.follow_through_30s,
                   follow_through_2m = excluded.follow_through_2m,
                   follow_through_5m = excluded.follow_through_5m,
@@ -1269,6 +1292,18 @@ impl ContractWhaleRepo for SqliteStore {
                     outcome.markout_5m_bps,
                     outcome.mfe_5m_bps,
                     outcome.mae_5m_bps,
+                    outcome.absolute_return_30s_bps,
+                    outcome.absolute_return_2m_bps,
+                    outcome.absolute_return_5m_bps,
+                    outcome.realized_volatility_5m_bps,
+                    outcome.max_absolute_excursion_5m_bps,
+                    outcome
+                        .price_sample_count_5m
+                        .map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+                    outcome.liquidity_recovered_5m.map(bool_to_int),
+                    outcome.liquidity_recovery_ms,
+                    outcome.liquidity_recovery_reason,
+                    outcome.setup_outcome,
                     outcome.follow_through_30s.map(bool_to_int),
                     outcome.follow_through_2m.map(bool_to_int),
                     outcome.follow_through_5m.map(bool_to_int),
@@ -1285,6 +1320,7 @@ impl ContractWhaleRepo for SqliteStore {
 
     fn contract_whale_outcome_summary(
         &self,
+        outcome_version: &str,
     ) -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>> {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
@@ -1293,16 +1329,20 @@ impl ContractWhaleRepo for SqliteStore {
                        impact_level, window_sec, COALESCE(oi_context, ''), COALESCE(regime, ''),
                        strftime('%H', signal_ts / 1000, 'unixepoch') AS hour_utc,
                        COUNT(*) AS sample_count,
+                       AVG(absolute_return_30s_bps), AVG(absolute_return_2m_bps),
+                       AVG(absolute_return_5m_bps), AVG(realized_volatility_5m_bps),
+                       AVG(max_absolute_excursion_5m_bps), AVG(price_sample_count_5m),
                        AVG(markout_30s_bps), AVG(markout_2m_bps), AVG(markout_5m_bps),
                        AVG(follow_through_30s), AVG(follow_through_2m), AVG(follow_through_5m)
                 FROM contract_whale_signal_outcomes
+                WHERE outcome_version = ?1
                 GROUP BY symbol, signal_type, classification_v2, severity, impact_level,
                          window_sec, oi_context, regime, hour_utc
                 ORDER BY sample_count DESC, symbol ASC
                 LIMIT 500
                 "#,
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map([outcome_version], |row| {
                 Ok(ContractWhaleOutcomeSummaryRow {
                     symbol: row.get(0)?,
                     signal_type: row.get(1)?,
@@ -1314,12 +1354,18 @@ impl ContractWhaleRepo for SqliteStore {
                     regime: row.get(7)?,
                     hour_utc: row.get(8)?,
                     sample_count: row.get::<_, i64>(9)?.max(0) as usize,
-                    avg_markout_30s_bps: row.get(10)?,
-                    avg_markout_2m_bps: row.get(11)?,
-                    avg_markout_5m_bps: row.get(12)?,
-                    follow_through_30s_rate: row.get(13)?,
-                    follow_through_2m_rate: row.get(14)?,
-                    follow_through_5m_rate: row.get(15)?,
+                    avg_absolute_return_30s_bps: row.get(10)?,
+                    avg_absolute_return_2m_bps: row.get(11)?,
+                    avg_absolute_return_5m_bps: row.get(12)?,
+                    avg_realized_volatility_5m_bps: row.get(13)?,
+                    avg_max_absolute_excursion_5m_bps: row.get(14)?,
+                    avg_price_sample_count_5m: row.get(15)?,
+                    avg_markout_30s_bps: row.get(16)?,
+                    avg_markout_2m_bps: row.get(17)?,
+                    avg_markout_5m_bps: row.get(18)?,
+                    follow_through_30s_rate: row.get(19)?,
+                    follow_through_2m_rate: row.get(20)?,
+                    follow_through_5m_rate: row.get(21)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

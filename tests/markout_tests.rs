@@ -191,6 +191,86 @@ fn clear_removes_samples() {
     assert_eq!(engine.sample_count(), 0);
 }
 
+#[test]
+fn same_trade_id_on_different_symbols_does_not_collide() {
+    let mut engine = MarkoutEngine::new(vec![1000], 120_000, 5_000);
+    engine.on_trade(&trade_for_symbol(
+        Venue::Binance,
+        "BTC-PERP",
+        0,
+        100.0,
+        1.0,
+        AggressorSide::Buy,
+        "same",
+    ));
+    engine.on_trade(&trade_for_symbol(
+        Venue::Binance,
+        "ETH-PERP",
+        0,
+        200.0,
+        1.0,
+        AggressorSide::Buy,
+        "same",
+    ));
+
+    assert_eq!(engine.sample_count(), 2);
+    assert_eq!(
+        engine
+            .get_state_for_symbol("BTC-PERP", 0, true)
+            .quality
+            .pending_samples,
+        1
+    );
+    assert_eq!(
+        engine
+            .get_state_for_symbol("ETH-PERP", 0, true)
+            .quality
+            .pending_samples,
+        1
+    );
+}
+
+#[test]
+fn symbol_specific_resolution_does_not_cross_resolve_samples() {
+    let mut engine = MarkoutEngine::new(vec![1000], 120_000, 5_000);
+    engine.on_trade(&trade_for_symbol(
+        Venue::Binance,
+        "BTC-PERP",
+        0,
+        100.0,
+        1.0,
+        AggressorSide::Buy,
+        "btc",
+    ));
+    engine.on_trade(&trade_for_symbol(
+        Venue::Bybit,
+        "ETH-PERP",
+        0,
+        200.0,
+        1.0,
+        AggressorSide::Buy,
+        "eth",
+    ));
+
+    engine.resolve_due_samples_for_symbol("ETH-PERP", 1000, |_| Some(201.0));
+
+    let btc_pending = engine.get_state_for_symbol("BTC-PERP", 1000, true);
+    let eth_resolved = engine.get_state_for_symbol("ETH-PERP", 1000, true);
+    assert_eq!(btc_pending.quality.pending_samples, 1);
+    assert_eq!(btc_pending.quality.resolved_samples, 0);
+    assert_eq!(eth_resolved.quality.pending_samples, 0);
+    assert_eq!(eth_resolved.quality.resolved_samples, 1);
+
+    engine.resolve_due_samples_for_symbol("BTC-PERP", 1000, |_| Some(101.0));
+    let btc_resolved = engine.get_state_for_symbol("BTC-PERP", 1000, true);
+    assert_eq!(
+        btc_resolved.summaries["1000"]
+            .buy
+            .volume_weighted_markout_bps,
+        Some(100.0)
+    );
+}
+
 fn trade(
     venue: Venue,
     ts: i64,
@@ -199,9 +279,29 @@ fn trade(
     aggressor_side: AggressorSide,
     trade_id: &str,
 ) -> NormalizedTrade {
+    trade_for_symbol(
+        venue,
+        "BTC-PERP",
+        ts,
+        price,
+        size_btc,
+        aggressor_side,
+        trade_id,
+    )
+}
+
+fn trade_for_symbol(
+    venue: Venue,
+    symbol: &str,
+    ts: i64,
+    price: f64,
+    size_btc: f64,
+    aggressor_side: AggressorSide,
+    trade_id: &str,
+) -> NormalizedTrade {
     NormalizedTrade {
         venue,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         ts,
         price,
         size_btc,

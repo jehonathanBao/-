@@ -1,6 +1,8 @@
 mod support;
 use support::test_http_get;
 
+use std::collections::BTreeMap;
+
 use btc_toxic_flow_monitor_rs::{
     api::server::router,
     app::AppState,
@@ -8,7 +10,12 @@ use btc_toxic_flow_monitor_rs::{
         venues::{VenueConfig, VenueConfigs},
         AppConfig,
     },
-    types::{market::Venue, toxic::ToxicSeverity},
+    normalizers::trade::now_ms,
+    types::{
+        flow::{empty_venue_breakdown, DataQuality, FlowState, FlowWindow},
+        market::{AggressorSide, NormalizedBook, NormalizedTrade, Venue},
+        toxic::ToxicSeverity,
+    },
 };
 
 #[tokio::test]
@@ -35,6 +42,143 @@ async fn flow_state_api_returns_empty_windows() {
 
     state.stop().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn markout_runtime_filters_configured_symbol_and_uses_its_price_index() {
+    let mut config = test_config();
+    config.markout_horizons_ms = vec![20];
+    config.markout_resolve_interval_ms = 5;
+    let state = AppState::new(config);
+    state.start().await;
+
+    let base_ts = now_ms();
+    let flow_service = state.flow_service_for_tests();
+    flow_service.add_book_for_tests(book(Venue::Binance, "BTC-PERP", base_ts + 20, 101.0));
+    flow_service.add_book_for_tests(book(Venue::Bybit, "ETH-PERP", base_ts + 20, 201.0));
+
+    assert_eq!(
+        flow_service.get_mid_at_or_before_for_symbol(base_ts + 20, "BTC-PERP"),
+        Some(101.0)
+    );
+    assert_eq!(
+        flow_service.get_mid_at_or_before_for_symbol(base_ts + 20, "ETH-PERP"),
+        Some(201.0)
+    );
+
+    state.ingest_trade_event_for_tests(trade(Venue::Bybit, "ETH-PERP", base_ts, 200.0, "same"));
+    state.ingest_trade_event_for_tests(trade(Venue::Binance, "BTC-PERP", base_ts, 100.0, "same"));
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    let markout = state.markout_state();
+    assert_eq!(markout.symbol, "BTC-PERP");
+    assert_eq!(markout.summaries["20"].buy.count, 1);
+    assert_eq!(
+        markout.summaries["20"].buy.volume_weighted_markout_bps,
+        Some(100.0)
+    );
+
+    state.stop().await;
+}
+
+#[tokio::test]
+async fn liquidation_cascade_eth_request_does_not_reuse_btc_flow_state() {
+    let state = AppState::new(test_config());
+    *state.shared_flow_for_tests().write() = strong_buy_flow_state("BTC-PERP");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_get(format!(
+        "http://{addr}/api/liquidation/cascade?symbol=ETHUSDT"
+    ))
+    .await
+    .expect("response");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json");
+
+    assert_eq!(payload["symbol"], "ETH");
+    assert_eq!(payload["direction"], "NEUTRAL");
+    assert_eq!(payload["components"]["liquidityGap"], 0.0);
+    assert_eq!(payload["components"]["triggerProximity"], 0.0);
+
+    server.abort();
+}
+
+fn trade(venue: Venue, symbol: &str, ts: i64, price: f64, trade_id: &str) -> NormalizedTrade {
+    NormalizedTrade {
+        venue,
+        symbol: symbol.to_string(),
+        ts,
+        price,
+        size_btc: 1.0,
+        size_usd: price,
+        aggressor_side: AggressorSide::Buy,
+        trade_id: Some(trade_id.to_string()),
+    }
+}
+
+fn book(venue: Venue, symbol: &str, ts: i64, mid: f64) -> NormalizedBook {
+    NormalizedBook {
+        venue,
+        symbol: symbol.to_string(),
+        ts,
+        best_bid: mid - 0.5,
+        best_ask: mid + 0.5,
+        bids: vec![(mid - 0.5, 1.0)],
+        asks: vec![(mid + 0.5, 1.0)],
+        mid,
+        spread_bps: 1.0,
+        bid_depth_btc_10bps: 1.0,
+        ask_depth_btc_10bps: 1.0,
+        bid_depth_usd_10bps: mid,
+        ask_depth_usd_10bps: mid,
+        imbalance_10bps: 0.0,
+    }
+}
+
+fn strong_buy_flow_state(symbol: &str) -> FlowState {
+    FlowState {
+        symbol: symbol.to_string(),
+        updated_at: 5_000,
+        windows: BTreeMap::from([(
+            "5000".to_string(),
+            FlowWindow {
+                symbol: symbol.to_string(),
+                window_ms: 5_000,
+                now_ts: 5_000,
+                aggressive_buy_btc: 100.0,
+                aggressive_sell_btc: 0.0,
+                aggressive_buy_usd: 10_000_000.0,
+                aggressive_sell_usd: 0.0,
+                net_aggressive_btc: 100.0,
+                abs_aggressive_btc: 100.0,
+                trade_count: 10,
+                buy_trade_count: 10,
+                sell_trade_count: 0,
+                avg_trade_size_btc: 10.0,
+                max_trade_size_btc: 20.0,
+                venue_breakdown: empty_venue_breakdown(),
+                mid_start: Some(100_000.0),
+                mid_end: Some(100_100.0),
+                price_move_bps: Some(10.0),
+                spread_bps_median: Some(1.0),
+                imbalance_10bps_median: Some(1.0),
+                data_quality: DataQuality {
+                    has_trades: true,
+                    has_books: true,
+                    active_venues: vec!["binance".to_string()],
+                    stale_venues: Vec::new(),
+                },
+            },
+        )]),
+    }
 }
 
 fn test_config() -> AppConfig {

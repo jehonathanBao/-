@@ -21,6 +21,7 @@ pub struct MarkoutService {
     flow_service: FlowWindowService,
     engine: Arc<RwLock<MarkoutEngine>>,
     resolve_interval_ms: u64,
+    symbol: String,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
@@ -35,6 +36,7 @@ impl MarkoutService {
                 DEFAULT_MARKOUT_EXPIRE_GRACE_MS,
             ))),
             resolve_interval_ms: config.markout_resolve_interval_ms,
+            symbol: config.symbol.trim().to_ascii_uppercase(),
             task: Arc::new(RwLock::new(None)),
         }
     }
@@ -49,6 +51,7 @@ impl MarkoutService {
         let flow_service = self.flow_service.clone();
         let resolve_interval_ms = self.resolve_interval_ms;
         let quality = self.bus.quality_tracker();
+        let symbol = self.symbol.clone();
 
         let handle = tokio::spawn(async move {
             let mut interval =
@@ -57,7 +60,11 @@ impl MarkoutService {
                 tokio::select! {
                     event = rx.recv() => {
                         match event {
-                            Ok(MarketDataEvent::Trade(trade)) => engine.write().on_trade(&trade),
+                            Ok(MarketDataEvent::Trade(trade)) => {
+                                if trade.symbol.trim().eq_ignore_ascii_case(&symbol) {
+                                    engine.write().on_trade(&trade);
+                                }
+                            }
                             Ok(MarketDataEvent::Book(_)) | Ok(MarketDataEvent::VenueHealth(_)) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                 quality.record_markout_lagged(skipped);
@@ -67,9 +74,11 @@ impl MarkoutService {
                     }
                     _ = interval.tick() => {
                         let now = now_ms();
-                        engine.write().resolve_due_samples(now, |ts| {
-                            flow_service.get_mid_at_or_before(ts)
-                        });
+                        engine.write().resolve_due_samples_for_symbol(
+                            &symbol,
+                            now,
+                            |ts| flow_service.get_mid_at_or_before_for_symbol(ts, &symbol),
+                        );
                     }
                 }
             }
@@ -85,9 +94,11 @@ impl MarkoutService {
     }
 
     pub fn get_state(&self) -> MarkoutState {
-        self.engine
-            .read()
-            .get_state(now_ms(), self.flow_service.has_price_index())
+        self.engine.read().get_state_for_symbol(
+            &self.symbol,
+            now_ms(),
+            self.flow_service.has_price_index_for_symbol(&self.symbol),
+        )
     }
 
     pub fn shared_engine_for_tests(&self) -> Arc<RwLock<MarkoutEngine>> {

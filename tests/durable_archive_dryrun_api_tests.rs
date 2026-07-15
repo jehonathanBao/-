@@ -242,6 +242,8 @@ fn inbox_recent() -> ToxicSignalInboxRecentResponse {
             signal_kind: "short_bias_toxic_flow".to_string(),
             direction_bias: "short".to_string(),
             severity: "high".to_string(),
+            risk_score: 82,
+            data_quality_score: Some(82.0),
             confidence: 0.82,
             created_at_ms: 1_000,
             fusion: ToxicSignalInboxFusionSummary {

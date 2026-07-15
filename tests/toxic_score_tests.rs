@@ -3,7 +3,7 @@ use btc_toxic_flow_monitor_rs::runtime::tof_metrics::{
 };
 
 #[test]
-fn tof_score_uses_weighted_microstructure_metrics() {
+fn tof_score_uses_weighted_relative_vpin_and_microstructure_metrics() {
     let metrics = TofMetrics {
         trade_imbalance: -0.50,
         trade_imbalance_score: 50.0,
@@ -25,9 +25,14 @@ fn tof_score_uses_weighted_microstructure_metrics() {
         tof_score: 0.0,
         final_risk_score: 0,
         metrics_completeness: 0.9,
+        vpin_zscore: Some(2.0),
+        vpin_percentile: Some(0.95),
+        per_venue_vpin: Default::default(),
+        lineage: Default::default(),
+        metric_lineage: Default::default(),
     };
 
-    assert!((tof_score(&metrics) - 74.3).abs() < 0.2);
+    assert!((tof_score(&metrics) - 73.3).abs() < 0.2);
 }
 
 #[test]

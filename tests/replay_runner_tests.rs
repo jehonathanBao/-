@@ -40,6 +40,41 @@ fn replay_report_writes_markdown() {
     assert!(markdown.contains("Reason Code Frequency:"));
 }
 
+#[test]
+fn replay_runner_scopes_non_btc_books_prices_sweeps_and_events_to_configured_symbol() {
+    let fixture = fixture_path();
+    let mut config = test_config();
+    config.symbol = "ETH-PERP".to_string();
+    let mut runner = ReplayRunner::new(config);
+    let report = runner
+        .run_file(fixture.to_str().expect("utf8 path"))
+        .expect("run ETH replay");
+
+    assert!(!report.detected_events.is_empty());
+    assert!(report
+        .detected_events
+        .iter()
+        .all(|event| event.symbol == "ETH-PERP"));
+    assert!(report.detected_events.iter().any(|event| {
+        event.sweep_detected
+            && event
+                .liquidity
+                .as_ref()
+                .is_some_and(|liquidity| liquidity.symbol == "ETH-PERP")
+    }));
+    assert!(report
+        .detected_events
+        .iter()
+        .any(|event| event.markout_1s_bps.is_some() || event.markout_5s_bps.is_some()));
+    assert!(report
+        .liquidation_summary
+        .as_ref()
+        .is_some_and(|summary| summary
+            .evidence
+            .iter()
+            .all(|evidence| evidence.symbol == "ETH-PERP")));
+}
+
 fn fixture_path() -> std::path::PathBuf {
     let path = temp_dir("replay_fixture").join("sample-toxic.jsonl");
     fs::create_dir_all(path.parent().expect("parent")).expect("mkdirs");

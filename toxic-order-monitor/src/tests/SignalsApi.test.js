@@ -1,7 +1,7 @@
 import axios from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
-import { fetchSignals, mapInboxItemToSignal } from "../api/signals.js";
+import { fetchSignals, fetchSignalsSnapshot, mapInboxItemToSignal, runtimeFromPayload } from "../api/signals.js";
 
 vi.mock("axios", () => ({
   default: {
@@ -16,12 +16,25 @@ describe("signals api mapping", () => {
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
 
+  it("treats missing runtimeModified or analysisOnly as an unconfirmed runtime", () => {
+    expect(runtimeFromPayload({
+      readOnly: true,
+      monitoringStarted: true,
+      executionEnabled: false,
+    }).phase).toBe("unavailable");
+  });
+
   it("maps backend inbox items into persistent inbox signal shape", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
+        readOnly: true,
+        monitoringStarted: true,
+        executionEnabled: false,
+        runtimeModified: false,
+        analysisOnly: true,
         items: [
-          inboxItem({ signalId: "runtime-high", severity: "high", qualityBucket: "good" }),
-          inboxItem({ signalId: "runtime-medium", severity: "medium", qualityBucket: "mixed" }),
+          inboxItem({ signalId: "runtime-high", severity: "high", riskScore: 83, dataQualityScore: 82 }),
+          inboxItem({ signalId: "runtime-medium", severity: "medium", riskScore: 67, dataQualityScore: 74 }),
         ],
       },
     });
@@ -33,21 +46,189 @@ describe("signals api mapping", () => {
     expect(signals[0]).toMatchObject({
       risk: "high",
       level: "A",
-      score: 85,
+      score: 83,
       dataQuality: 82,
       status: "unhandled",
     });
     expect(signals[1]).toMatchObject({
       risk: "medium",
       level: "B",
-      score: 72,
+      score: 67,
       dataQuality: 74,
     });
-    expect(evaluateDiscordAlertGate(signals[0])).toEqual({ ok: true, reason: null });
+    expect(evaluateDiscordAlertGate(signals[0])).toEqual({
+      ok: false,
+      reason: "DISCORD_SUPPRESSED_INELIGIBLE_PROVENANCE",
+    });
     expect(evaluateDiscordAlertGate(signals[1])).toEqual({
       ok: false,
       reason: "DISCORD_SUPPRESSED_NON_HIGH_RISK",
     });
+  });
+
+  it("preserves the backend detector score exactly and never derives one from severity", () => {
+    const authoritative = mapInboxItemToSignal(
+      inboxItem({ signalId: "authoritative", severity: "critical", riskScore: 83, dataQualityScore: 79 }),
+    );
+    const missing = mapInboxItemToSignal(
+      inboxItem({ signalId: "missing", severity: "critical", riskScore: undefined, dataQualityScore: undefined }),
+    );
+
+    expect(authoritative.score).toBe(83);
+    expect(authoritative.authoritativeRiskScore).toBe(83);
+    expect(authoritative.dataQuality).toBe(79);
+    expect(missing.score).toBeNull();
+    expect(missing.dataQuality).toBeNull();
+  });
+
+  it("preserves per-metric TOF lineage and liquidation-specific perp lineage", () => {
+    const vpinLineage = {
+      provenance: "observed",
+      available: true,
+      fresh: true,
+      source: "vpin_service",
+      observedAtMs: 1_700_000_000_000,
+      unavailableReason: null,
+      alertEligible: true,
+    };
+    const inferredLiquidationLineage = {
+      provenance: "inferred",
+      available: true,
+      fresh: true,
+      source: "contract_whale_squeeze_proxy",
+      observedAtMs: 1_700_000_000_000,
+      unavailableReason: "inferred_not_alert_eligible",
+      alertEligible: false,
+    };
+    const signal = mapInboxItemToSignal({
+      ...inboxItem({ signalId: "lineaged-metrics" }),
+      tofMetrics: {
+        vpinProxy: 78,
+        metricLineage: { vpin: vpinLineage },
+      },
+      perpTofMetrics: {
+        observedLiquidationNotional: null,
+        squeezeRiskProxy: 63,
+        liquidationLineage: inferredLiquidationLineage,
+      },
+    });
+
+    expect(signal.tofMetrics.metricLineage).toEqual({ vpin: vpinLineage });
+    expect(signal.perpTofMetrics.observedLiquidationNotional).toBeNull();
+    expect(signal.perpTofMetrics.liquidationLineage).toEqual(inferredLiquidationLineage);
+  });
+
+  it("keeps explicit unavailable market-structure fields null instead of falling back to legacy zeroes", () => {
+    const signal = mapInboxItemToSignal({
+      ...inboxItem({ signalId: "market-structure-unavailable", riskScore: 83, dataQualityScore: 79 }),
+      marketStructureScore: null,
+      mainForceScore: null,
+      mainForceConfirmed: null,
+      mainForceConfirmationCount: null,
+      extremeImpactScore: null,
+      extremeImpactConfirmed: null,
+      structureBias: null,
+      marketStructureConfidence: null,
+      marketStructureDataQuality: null,
+      spotScore: null,
+      contractScore: null,
+      crossConfirmScore: null,
+      riskSystems: {
+        shortTermToxic: {
+          toxicScore: 83,
+          shortPressure: -83,
+          confidence: 82,
+          dataQuality: 79,
+        },
+        marketStructureScore: {
+          mainForceScore: 0,
+          mainForceConfirmed: false,
+          mainForceConfirmationCount: 0,
+          extremeImpactScore: 0,
+          extremeImpactConfirmed: false,
+          structureBias: 0,
+          confidence: 0,
+          dataQuality: 0,
+          spotScore: 0,
+          contractScore: 0,
+          crossConfirmScore: 0,
+        },
+        mainForceStructure: {
+          mainForceScore: 0,
+          mainForceConfirmed: false,
+          extremeImpactScore: 0,
+          extremeImpactConfirmed: false,
+        },
+      },
+    });
+
+    expect(signal.riskScore).toBe(83);
+    expect(signal.dataQualityScore).toBe(79);
+    expect(signal.shortPressure).toBe(-83);
+    expect(signal.marketStructureScore).toBeNull();
+    expect(signal.riskSystems.marketStructureScore).toBeNull();
+    expect(signal.riskSystems.mainForceStructure).toBeNull();
+    expect(signal.mainForceScore).toBeNull();
+    expect(signal.mainForceConfirmed).toBeNull();
+    expect(signal.mainForceConfirmationCount).toBeNull();
+    expect(signal.extremeImpactScore).toBeNull();
+    expect(signal.extremeImpactConfirmed).toBeNull();
+    expect(signal.structureBias).toBeNull();
+    expect(signal.marketStructureConfidence).toBeNull();
+    expect(signal.marketStructureDataQuality).toBeNull();
+    expect(signal.spotScore).toBeNull();
+    expect(signal.contractScore).toBeNull();
+    expect(signal.crossConfirmScore).toBeNull();
+  });
+
+  it("returns a ready snapshot for a successful empty inbox", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        items: [],
+        readOnly: true,
+        monitoringStarted: true,
+        executionEnabled: false,
+        runtimeModified: false,
+        analysisOnly: true,
+      },
+    });
+
+    const snapshot = await fetchSignalsSnapshot();
+
+    expect(snapshot.signals).toEqual([]);
+    expect(snapshot.request).toMatchObject({ phase: "ready", source: "backend", errorCode: null });
+    expect(snapshot.runtime).toMatchObject({
+      phase: "confirmed",
+      readOnly: true,
+      monitoringStarted: true,
+      executionEnabled: false,
+    });
+  });
+
+  it.each([
+    [401, "HTTP_401"],
+    [403, "HTTP_403"],
+    [404, "HTTP_404"],
+    [500, "HTTP_500"],
+  ])("keeps HTTP %s distinct from a successful empty inbox", async (status, errorCode) => {
+    axios.get.mockRejectedValueOnce({ response: { status } });
+
+    const snapshot = await fetchSignalsSnapshot();
+
+    expect(snapshot.signals).toEqual([]);
+    expect(snapshot.request).toMatchObject({ phase: "error", source: null, errorCode });
+    expect(snapshot.runtime.phase).toBe("unavailable");
+  });
+
+  it("reports network and malformed payload failures instead of converting them to empty success", async () => {
+    axios.get.mockRejectedValueOnce(new Error("network down"));
+    const network = await fetchSignalsSnapshot();
+
+    axios.get.mockResolvedValueOnce({ data: { items: "not-an-array" } });
+    const malformed = await fetchSignalsSnapshot();
+
+    expect(network.request).toMatchObject({ phase: "error", errorCode: "NETWORK_ERROR" });
+    expect(malformed.request).toMatchObject({ phase: "error", errorCode: "MALFORMED_RESPONSE" });
   });
 
   it("keeps final result to direction plus core reason", () => {
@@ -386,9 +567,9 @@ describe("signals api mapping", () => {
 
     expect(signal).toMatchObject({
       id: "tof-high",
-      score: 91,
+      score: 84,
       toxicScore: 91,
-      finalRiskScore: 91,
+      finalRiskScore: 84,
       shortPressure: -91,
       toxicSeverity: "Critical",
       toxicType: "spoofing",
@@ -683,6 +864,8 @@ function inboxItem({
   directionBias = "short_bias",
   fusionSummary = "runtime candidate",
   triggerPriceUsd,
+  riskScore,
+  dataQualityScore,
 } = {}) {
   return {
     signalId,
@@ -693,12 +876,15 @@ function inboxItem({
     confidence: 0.82,
     createdAtMs: 1_700_000_000_000,
     triggerPriceUsd,
+    riskScore,
+    dataQualityScore,
     fusion: { available: true, summary: fusionSummary },
     quality: { available: true, qualityBucket },
     recommendation: { action: "review_evidence" },
     readOnly: true,
     runtimeModified: false,
     analysisOnly: true,
+    monitoringStarted: true,
     executionEnabled: false,
   };
 }

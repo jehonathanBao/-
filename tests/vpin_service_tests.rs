@@ -43,13 +43,46 @@ async fn disabled_service_stays_noop() {
     service.stop();
 }
 
+#[tokio::test]
+async fn service_accepts_only_the_configured_normalized_symbol() {
+    let bus = MarketDataBus::new(128);
+    let service = VpinService::new(bus.clone(), &test_config_for_symbol(true, "eth-perp"), None);
+    service.start();
+
+    bus.publish(MarketDataEvent::Trade(trade_for_symbol(
+        1, 100.0, "BTC-PERP",
+    )));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let rejected = service.get_state();
+    assert_eq!(rejected.symbol, "ETH-PERP");
+    assert_eq!(rejected.metrics.active_bucket_progress_btc, 0.0);
+
+    bus.publish(MarketDataEvent::Trade(trade_for_symbol(
+        2, 60.0, "ETH-PERP",
+    )));
+    bus.publish(MarketDataEvent::Trade(trade_for_symbol(
+        3, 40.0, "ETH-PERP",
+    )));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let accepted = service.get_state();
+    assert_eq!(accepted.metrics.completed_bucket_count, 1);
+    assert_eq!(accepted.metrics.latest_bucket.unwrap().symbol, "ETH-PERP");
+
+    service.stop();
+}
+
 fn test_config(vpin_enabled: bool) -> AppConfig {
+    test_config_for_symbol(vpin_enabled, "BTC-PERP")
+}
+
+fn test_config_for_symbol(vpin_enabled: bool, symbol: &str) -> AppConfig {
     AppConfig {
         app_env: "test".to_string(),
         read_only: true,
         api_host: "127.0.0.1".parse().expect("valid ip"),
         api_port: 0,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         toxic_volume_alert_btc: 1000.0,
         windows_ms: vec![1000, 5000, 15000, 60000],
         markout_horizons_ms: vec![1000, 5000, 15000],
@@ -124,9 +157,13 @@ fn test_config(vpin_enabled: bool) -> AppConfig {
 }
 
 fn trade(ts: i64, size_btc: f64) -> NormalizedTrade {
+    trade_for_symbol(ts, size_btc, "BTC-PERP")
+}
+
+fn trade_for_symbol(ts: i64, size_btc: f64, symbol: &str) -> NormalizedTrade {
     NormalizedTrade {
         venue: Venue::Binance,
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         ts,
         price: 100_000.0,
         size_btc,

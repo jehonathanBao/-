@@ -45,12 +45,13 @@ impl MarkoutEngine {
             return;
         }
 
+        let symbol = normalized_symbol(&trade.symbol);
         for horizon_ms in &self.horizons_ms {
             let id = sample_id(trade, *horizon_ms);
             self.samples.entry(id.clone()).or_insert(MarkoutSample {
                 id,
                 venue: trade.venue,
-                symbol: trade.symbol.clone(),
+                symbol: symbol.clone(),
                 trade_ts: trade.ts,
                 horizon_ms: *horizon_ms,
                 direction: trade.aggressor_side,
@@ -69,7 +70,33 @@ impl MarkoutEngine {
     where
         F: Fn(i64) -> Option<f64>,
     {
+        self.resolve_due_samples_matching(None, now_ts, get_mid_at_or_before);
+    }
+
+    pub fn resolve_due_samples_for_symbol<F>(
+        &mut self,
+        symbol: &str,
+        now_ts: i64,
+        get_mid_at_or_before: F,
+    ) where
+        F: Fn(i64) -> Option<f64>,
+    {
+        let symbol = normalized_symbol(symbol);
+        self.resolve_due_samples_matching(Some(&symbol), now_ts, get_mid_at_or_before);
+    }
+
+    fn resolve_due_samples_matching<F>(
+        &mut self,
+        symbol: Option<&str>,
+        now_ts: i64,
+        get_mid_at_or_before: F,
+    ) where
+        F: Fn(i64) -> Option<f64>,
+    {
         for sample in self.samples.values_mut() {
+            if symbol.is_some_and(|symbol| sample.symbol != symbol) {
+                continue;
+            }
             if sample.status != MarkoutSampleStatus::Pending {
                 continue;
             }
@@ -96,16 +123,26 @@ impl MarkoutEngine {
     }
 
     pub fn get_state(&self, now_ts: i64, has_price_index: bool) -> MarkoutState {
+        self.get_state_for_symbol("BTC-PERP", now_ts, has_price_index)
+    }
+
+    pub fn get_state_for_symbol(
+        &self,
+        symbol: &str,
+        now_ts: i64,
+        has_price_index: bool,
+    ) -> MarkoutState {
+        let symbol = normalized_symbol(symbol);
         let mut summaries = BTreeMap::new();
         for horizon_ms in &self.horizons_ms {
             summaries.insert(
                 horizon_ms.to_string(),
-                self.summary_for_horizon(*horizon_ms),
+                self.summary_for_horizon(&symbol, *horizon_ms),
             );
         }
 
         MarkoutState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: symbol.clone(),
             updated_at: now_ts,
             horizons_ms: self.horizons_ms.clone(),
             summaries,
@@ -113,17 +150,23 @@ impl MarkoutEngine {
                 pending_samples: self
                     .samples
                     .values()
-                    .filter(|sample| sample.status == MarkoutSampleStatus::Pending)
+                    .filter(|sample| {
+                        sample.symbol == symbol && sample.status == MarkoutSampleStatus::Pending
+                    })
                     .count(),
                 resolved_samples: self
                     .samples
                     .values()
-                    .filter(|sample| sample.status == MarkoutSampleStatus::Resolved)
+                    .filter(|sample| {
+                        sample.symbol == symbol && sample.status == MarkoutSampleStatus::Resolved
+                    })
                     .count(),
                 expired_samples: self
                     .samples
                     .values()
-                    .filter(|sample| sample.status == MarkoutSampleStatus::Expired)
+                    .filter(|sample| {
+                        sample.symbol == symbol && sample.status == MarkoutSampleStatus::Expired
+                    })
                     .count(),
                 has_price_index,
             },
@@ -138,7 +181,11 @@ impl MarkoutEngine {
         self.samples.len()
     }
 
-    fn summary_for_horizon(&self, horizon_ms: MarkoutHorizonMs) -> MarkoutWindowSummary {
+    fn summary_for_horizon(
+        &self,
+        symbol: &str,
+        horizon_ms: MarkoutHorizonMs,
+    ) -> MarkoutWindowSummary {
         let mut buy_acc = StatsAccumulator::default();
         let mut sell_acc = StatsAccumulator::default();
         let mut venue_acc: BTreeMap<String, VenueMarkoutAccumulator> = Venue::ALL
@@ -152,7 +199,10 @@ impl MarkoutEngine {
             .collect();
 
         for sample in self.samples.values() {
-            if sample.horizon_ms != horizon_ms || sample.status != MarkoutSampleStatus::Resolved {
+            if sample.symbol != symbol
+                || sample.horizon_ms != horizon_ms
+                || sample.status != MarkoutSampleStatus::Resolved
+            {
                 continue;
             }
             let Some(markout_bps) = sample.markout_bps else {
@@ -193,14 +243,19 @@ pub fn calculate_markout_bps(direction: AggressorSide, trade_price: f64, future_
 }
 
 fn sample_id(trade: &NormalizedTrade, horizon_ms: MarkoutHorizonMs) -> String {
+    let symbol = normalized_symbol(&trade.symbol);
     if let Some(trade_id) = &trade.trade_id {
-        format!("{}:{trade_id}:{horizon_ms}", trade.venue)
+        format!("{}:{symbol}:{trade_id}:{horizon_ms}", trade.venue)
     } else {
         format!(
-            "{}:{}:{}:{}:{:?}:{}",
+            "{}:{symbol}:{}:{}:{}:{:?}:{}",
             trade.venue, trade.ts, trade.price, trade.size_btc, trade.aggressor_side, horizon_ms
         )
     }
+}
+
+fn normalized_symbol(symbol: &str) -> String {
+    symbol.trim().to_ascii_uppercase()
 }
 
 #[derive(Debug, Default)]

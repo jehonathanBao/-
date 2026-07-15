@@ -10,9 +10,35 @@ import Dashboard from "../pages/Dashboard.jsx";
 import { useSignalsStore } from "../store/signalsStore.js";
 
 vi.mock("../api/signals.js", async () => {
+  const actual = await vi.importActual("../api/signals.js");
   const { mockSignals } = await import("../data/mockSignals.js");
+  const runtime = {
+    phase: "confirmed",
+    readOnly: true,
+    monitoringStarted: true,
+    executionEnabled: false,
+    runtimeModified: false,
+    analysisOnly: true,
+    checkedAtMs: Date.now(),
+  };
+  const safeSignals = mockSignals.map((signal) => ({
+    ...signal,
+    riskScore: signal.score,
+    dataQualityScore: signal.dataQuality,
+    alertEligible: true,
+    isLive: true,
+    runtimeBoundary: runtime,
+  }));
   return {
-    fetchSignals: vi.fn(() => Promise.resolve(mockSignals)),
+    ...actual,
+    fetchSignals: vi.fn(() => Promise.resolve(safeSignals)),
+    fetchSignalsSnapshot: vi.fn(() =>
+      Promise.resolve({
+        signals: safeSignals,
+        request: { phase: "ready", source: "backend", errorCode: null, fetchedAtMs: 1 },
+        runtime,
+      }),
+    ),
   };
 });
 
@@ -72,19 +98,22 @@ describe("Discord push safety", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends test push through an isolated test payload", async () => {
+  it("previews the selected authoritative candidate without sending a webhook", async () => {
     const user = userEvent.setup();
     sendDiscordTestMessage.mockResolvedValueOnce({ ok: true });
     renderDashboard();
 
-    await user.click(screen.getByRole("button", { name: /测试 Discord 推送/ }));
+    await user.click(screen.getByRole("button", { name: /预览 Discord 候选/ }));
 
-    expect(sendDiscordTestMessage).toHaveBeenCalledTimes(1);
+    expect(sendDiscordTestMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "sig_001" }),
+    );
     expect(pushDiscordAlert).not.toHaveBeenCalled();
     expect(useSignalsStore.getState().rawInboxSignals.find((signal) => signal.id === "sig_001").status).toBe(
       "unhandled",
     );
-    expect(await screen.findByRole("status")).toHaveTextContent("Discord 测试消息发送成功");
+    expect(await screen.findByRole("status")).toHaveTextContent("候选预览已通过");
+    expect(await screen.findByRole("status")).toHaveTextContent("未发送 Webhook");
   });
 
   it("explains Discord 403 test failures without leaking webhook details", async () => {
@@ -94,7 +123,7 @@ describe("Discord push safety", () => {
     });
     renderDashboard();
 
-    await user.click(screen.getByRole("button", { name: /测试 Discord 推送/ }));
+    await user.click(screen.getByRole("button", { name: /预览 Discord 候选/ }));
 
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("Discord Webhook 被拒绝(403)");
@@ -180,10 +209,11 @@ function renderDashboard() {
 }
 
 function resetSignalsStore() {
-  const firstHighRiskSignal = mockSignals.find((signal) => signal.risk === "high") ?? mockSignals[0];
+  const safeSignals = alertEligibleSignals();
+  const firstHighRiskSignal = safeSignals.find((signal) => signal.risk === "high") ?? safeSignals[0];
   useSignalsStore.setState({
-    rawInboxSignals: mockSignals,
-    signals: mockSignals,
+    rawInboxSignals: safeSignals,
+    signals: safeSignals,
     selectedSignal: firstHighRiskSignal,
     activeRiskFilter: "high",
     pushStatus: {},
@@ -193,5 +223,27 @@ function resetSignalsStore() {
     lastPushedAt: null,
     clearedAtMs: 0,
     clearedSignalKeys: [],
+    signalsRequest: { phase: "idle", source: null, errorCode: null, fetchedAtMs: 0 },
+    runtimeBoundary: firstHighRiskSignal.runtimeBoundary,
   });
+}
+
+function alertEligibleSignals() {
+  const runtimeBoundary = {
+    phase: "confirmed",
+    readOnly: true,
+    monitoringStarted: true,
+    executionEnabled: false,
+    runtimeModified: false,
+    analysisOnly: true,
+    checkedAtMs: Date.now(),
+  };
+  return mockSignals.map((signal) => ({
+    ...signal,
+    riskScore: signal.score,
+    dataQualityScore: signal.dataQuality,
+    alertEligible: true,
+    isLive: true,
+    runtimeBoundary,
+  }));
 }

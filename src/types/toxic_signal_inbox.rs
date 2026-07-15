@@ -68,6 +68,8 @@ pub struct ToxicSignalInboxItem {
     pub signal_kind: String,
     pub direction_bias: String,
     pub severity: String,
+    pub risk_score: u8,
+    pub data_quality_score: Option<f64>,
     pub confidence: f64,
     pub created_at_ms: u64,
     pub fusion: ToxicSignalInboxFusionSummary,

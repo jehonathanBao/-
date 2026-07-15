@@ -192,6 +192,8 @@ fn inbox_item(
         signal_kind: signal_kind.to_string(),
         direction_bias: "short".to_string(),
         severity: severity.to_string(),
+        risk_score: 82,
+        data_quality_score: Some(82.0),
         confidence,
         created_at_ms: 1_000,
         fusion: ToxicSignalInboxFusionSummary {

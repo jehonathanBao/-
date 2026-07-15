@@ -6,9 +6,13 @@ use btc_toxic_flow_monitor_rs::api::discord_notification_routes::{
     NormalizedDiscordDirection,
 };
 use btc_toxic_flow_monitor_rs::runtime::{
-    perp_tof_metrics::PerpTofMetrics, tof_metrics::TofDirection,
+    perp_tof_metrics::PerpTofMetrics,
+    tof_metrics::{
+        build_tof_metrics_from_observed, enhance_signal_summary, ObservedTofSnapshot, TofDirection,
+        TofSummaryInput,
+    },
 };
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -53,6 +57,52 @@ fn auto_push_high_critical_candidate_passes_gate() {
 
     assert!(decision.allowed);
     assert_eq!(decision.reason, "passed");
+
+    clear_alert_env();
+}
+
+#[test]
+fn inferred_or_client_forged_evidence_cannot_pass_short_toxic_gate() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    set_alert_env();
+
+    let mut inferred = high_request();
+    inferred.server_evidence_verified = false;
+    let decision = evaluate_discord_alert_gate(&inferred, DiscordAlertMode::Auto);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "authoritative_evidence_unavailable");
+
+    let forged: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
+        "alertFamily": "short_toxic_order",
+        "signalId": "forged",
+        "level": "critical",
+        "score": 99,
+        "confidence": 99,
+        "dataQuality": 99,
+        "serverEvidenceVerified": true
+    }))
+    .expect("request deserializes");
+    assert!(!forged.server_evidence_verified);
+    let forged_decision = evaluate_discord_alert_gate(&forged, DiscordAlertMode::Auto);
+    assert_eq!(forged_decision.reason, "authoritative_evidence_unavailable");
+
+    let forged_market: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
+        "alertFamily": "market_structure",
+        "signalId": "forged-market",
+        "mainForceScore": 99,
+        "marketStructureConfidence": 99,
+        "marketStructureDataQuality": 99,
+        "mainForceConfirmed": true,
+        "serverEvidenceVerified": true
+    }))
+    .expect("market request deserializes");
+    assert!(!forged_market.server_evidence_verified);
+    let forged_market_decision =
+        evaluate_discord_alert_gate(&forged_market, DiscordAlertMode::Auto);
+    assert_eq!(
+        forged_market_decision.reason,
+        "authoritative_evidence_unavailable"
+    );
 
     clear_alert_env();
 }
@@ -315,6 +365,9 @@ fn short_toxic_discord_payload_excludes_perp_and_advanced_context() {
         candidate_type: "OpenInterestCandidate".to_string(),
         explain_tags: vec!["OI long increase".to_string()],
         confidence: 87.0,
+        observed_liquidation_notional: None,
+        lineage: Default::default(),
+        liquidation_lineage: Default::default(),
     });
 
     let payload = discord_payload_for_tests(&request);
@@ -339,6 +392,78 @@ fn short_toxic_discord_payload_excludes_perp_and_advanced_context() {
 }
 
 #[test]
+fn unavailable_tof_payload_does_not_claim_sweep_spike_book_or_l2_evidence() {
+    let mut request = high_request();
+    request.signal_type = Some("unclassified_toxic_flow".to_string());
+    request.candidate_type = None;
+    request.tof_metrics = Some(
+        enhance_signal_summary(&TofSummaryInput {
+            signal_kind: "unclassified_toxic_flow",
+            direction_bias: "bearish",
+            severity: "critical",
+            confidence: 0.9,
+            quality_bucket: "unavailable",
+            summary: "detector-only",
+            existing_risk_score: 92,
+            existing_data_quality: 88.0,
+        })
+        .tof_metrics,
+    );
+
+    let payload = discord_payload_for_tests(&request);
+    let text = serde_json::to_string(&payload).expect("payload json");
+
+    assert!(text.contains("短线毒性风险升高"));
+    for unsupported in ["扫盘", "插针", "扫穿", "L2"] {
+        assert!(
+            !text.contains(unsupported),
+            "unavailable TOF must not claim {unsupported} evidence"
+        );
+    }
+}
+
+#[test]
+fn discord_tof_field_respects_per_metric_lineage() {
+    let mut request = high_request();
+    let metrics = build_tof_metrics_from_observed(
+        &ObservedTofSnapshot {
+            symbol: "BTC-PERP".to_string(),
+            observed_at_ms: 10_000,
+            buy_volume: 300.0,
+            sell_volume: 100.0,
+            trade_count: 40,
+            window_ms: 5_000,
+            vpin: Some(0.82),
+            vpin_zscore: Some(2.4),
+            vpin_percentile: Some(0.96),
+            vpin_bucket_count: 20,
+            vpin_window_volume: 2_000.0,
+            per_venue_vpin: BTreeMap::from([("binance".to_string(), 0.82)]),
+            bid_depth_withdrawal: Some(12.0),
+            ask_depth_withdrawal: Some(60.0),
+            spread_bps: None,
+            book_update_rate: None,
+            sweep_score: None,
+        },
+        "BTC-PERP",
+        9_500,
+        10_000,
+        92,
+    );
+    assert!(metrics.lineage.alert_eligible);
+    assert!(!metrics.metric_lineage["spread"].available);
+    request.tof_score = Some(metrics.tof_score);
+    request.tof_metrics = Some(metrics);
+
+    let payload = discord_payload_for_tests(&request);
+    let text = serde_json::to_string(&payload).expect("payload json");
+
+    assert!(text.contains("Spread N/A"));
+    assert!(!text.contains("Spread 0.0bps"));
+    assert!(text.contains("Depth 60"));
+}
+
+#[test]
 fn market_structure_main_force_gate_passes_with_separate_family() {
     let _guard = ENV_LOCK.lock().expect("env lock");
     set_market_structure_env();
@@ -350,6 +475,8 @@ fn market_structure_main_force_gate_passes_with_separate_family() {
     request.market_structure_confidence = Some(76.0);
     request.market_structure_data_quality = Some(74.0);
     request.extreme_impact_score = Some(58);
+    request.structure_bias = Some(62);
+    request.main_force_confirmed = Some(true);
 
     let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
     assert!(decision.allowed);
@@ -370,6 +497,8 @@ fn market_structure_extreme_gate_passes_without_main_force_confirmation() {
     request.market_structure_confidence = Some(52.0);
     request.market_structure_data_quality = Some(76.0);
     request.extreme_impact_score = Some(91);
+    request.structure_bias = Some(-68);
+    request.main_force_confirmed = Some(false);
 
     let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
     assert!(decision.allowed);
@@ -390,6 +519,8 @@ fn market_structure_impact_level_a_enters_discord_gate_without_extreme_score() {
     request.market_structure_confidence = Some(52.0);
     request.market_structure_data_quality = Some(76.0);
     request.extreme_impact_score = Some(64);
+    request.structure_bias = Some(20);
+    request.main_force_confirmed = Some(false);
     request.impact_level = Some("A".to_string());
 
     let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
@@ -412,6 +543,8 @@ fn market_structure_impact_level_b_enters_discord_gate_without_extreme_score() {
     request.market_structure_confidence = Some(52.0);
     request.market_structure_data_quality = Some(76.0);
     request.extreme_impact_score = Some(64);
+    request.structure_bias = Some(-20);
+    request.main_force_confirmed = Some(false);
     request.impact_level = Some("B".to_string());
 
     let decision = evaluate_discord_alert_gate(&request, DiscordAlertMode::Auto);
@@ -452,6 +585,7 @@ fn market_structure_discord_payload_uses_main_force_wording() {
     assert!(text.contains("合约评分"));
     assert!(text.contains("现货合约确认"));
     assert!(text.contains("高概率主力建多，不是单纯清算推动。"));
+    assert!(!text.contains("现货主动买入跟随"));
 }
 
 #[test]
@@ -480,10 +614,12 @@ fn market_structure_discord_payload_uses_extreme_impact_wording() {
     assert!(text.contains("多头清算瀑布"));
     assert!(text.contains("极端冲击"));
     assert!(text.contains("暂不确认是主力建空"));
+    assert!(!text.contains("多头清算显著增加"));
 }
 
 fn high_request() -> DiscordNotificationRequest {
     DiscordNotificationRequest {
+        server_evidence_verified: true,
         alert_family: Some("short_toxic_order".to_string()),
         signal_id: Some("manual-high-direction-color".to_string()),
         id: None,

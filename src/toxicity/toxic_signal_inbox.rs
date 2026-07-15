@@ -36,6 +36,7 @@ pub fn build_toxic_signal_inbox_recent(
         .map(|signal| {
             build_item(
                 signal,
+                fusion_recent,
                 replay_recent,
                 markout_recent,
                 quality_summary,
@@ -46,14 +47,14 @@ pub fn build_toxic_signal_inbox_recent(
         .collect::<Vec<_>>();
 
     ToxicSignalInboxRecentResponse {
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: fusion_recent.read_only,
+        runtime_modified: fusion_recent.runtime_modified,
+        analysis_only: fusion_recent.analysis_only,
+        execution_enabled: fusion_recent.execution_enabled,
         manual_review_required: true,
         runtime_weight_modified: false,
         config_modified: false,
-        mode: "analysis_only".to_string(),
+        mode: fusion_recent.mode.clone(),
         selected_symbol: requested_symbol.to_string(),
         status: if items.is_empty() {
             "empty_signal_inbox".to_string()
@@ -75,24 +76,24 @@ pub fn build_toxic_signal_inbox_status(
     recent: &ToxicSignalInboxRecentResponse,
 ) -> ToxicSignalInboxStatusResponse {
     ToxicSignalInboxStatusResponse {
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: recent.read_only,
+        runtime_modified: recent.runtime_modified,
+        analysis_only: recent.analysis_only,
+        execution_enabled: recent.execution_enabled,
         manual_review_required: true,
         runtime_weight_modified: false,
         config_modified: false,
         enabled: true,
-        mode: "analysis_only".to_string(),
+        mode: recent.mode.clone(),
         selected_symbol: recent.selected_symbol.clone(),
         status: recent.status.clone(),
         item_count: recent.items.len(),
         last_signal_at_ms: recent.items.iter().map(|item| item.created_at_ms).max(),
         safety_boundary: vec![
-            "readOnly=true".to_string(),
-            "runtimeModified=false".to_string(),
-            "analysisOnly=true".to_string(),
-            "executionEnabled=false".to_string(),
+            format!("readOnly={}", recent.read_only),
+            format!("runtimeModified={}", recent.runtime_modified),
+            format!("analysisOnly={}", recent.analysis_only),
+            format!("executionEnabled={}", recent.execution_enabled),
             "manualReviewRequired=true".to_string(),
             "No order placement".to_string(),
             "No cancel/amend".to_string(),
@@ -114,14 +115,14 @@ pub fn build_toxic_signal_inbox_detail(
         .find(|item| item.signal_id == signal_id)
         .cloned();
     ToxicSignalInboxDetailResponse {
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: recent.read_only,
+        runtime_modified: recent.runtime_modified,
+        analysis_only: recent.analysis_only,
+        execution_enabled: recent.execution_enabled,
         manual_review_required: true,
         runtime_weight_modified: false,
         config_modified: false,
-        mode: "analysis_only".to_string(),
+        mode: recent.mode.clone(),
         selected_symbol: requested_symbol.to_string(),
         available: item.is_some(),
         reason: item
@@ -133,6 +134,7 @@ pub fn build_toxic_signal_inbox_detail(
 
 fn build_item(
     signal: &ToxicSignal,
+    fusion_recent: &ToxicSignalRecentResponse,
     replay_recent: &ToxicReplayRecentResponse,
     markout_recent: &ToxicMarkoutRecentResponse,
     quality_summary: &ToxicQualityScorecardSummaryResponse,
@@ -174,7 +176,9 @@ fn build_item(
         signal_kind: signal_kind.clone(),
         direction_bias: direction_bias(signal.direction),
         severity: severity_for(signal.toxicity_score),
-        confidence: confidence_score(signal.confidence),
+        risk_score: signal.toxicity_score,
+        data_quality_score: signal.data_quality,
+        confidence: toxic_confidence_score(signal.confidence),
         created_at_ms: signal.ts_ms,
         fusion: ToxicSignalInboxFusionSummary {
             available: true,
@@ -192,10 +196,10 @@ fn build_item(
         recommendation,
         governance,
         operator_action,
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: fusion_recent.read_only,
+        runtime_modified: fusion_recent.runtime_modified,
+        analysis_only: fusion_recent.analysis_only,
+        execution_enabled: fusion_recent.execution_enabled,
     }
 }
 
@@ -367,7 +371,7 @@ fn severity_for(score: u8) -> String {
     }
 }
 
-fn confidence_score(confidence: ToxicConfidence) -> f64 {
+pub fn toxic_confidence_score(confidence: ToxicConfidence) -> f64 {
     match confidence {
         ToxicConfidence::Low => 0.35,
         ToxicConfidence::Medium => 0.62,
