@@ -56,7 +56,9 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
         "deploy/nginx-site.toxic-order-monitor.conf",
         "toxic-order-monitor/nginx.conf.template",
     ] {
-        let nginx = fs::read_to_string(root.join(relative)).expect("nginx config");
+        let nginx = fs::read_to_string(root.join(relative))
+            .expect("nginx config")
+            .replace("\r\n", "\n");
         assert!(
             nginx.contains("gzip on;"),
             "gzip must be enabled by {relative}"
@@ -75,13 +77,26 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
             nginx.contains("max-age=31536000, immutable"),
             "hashed frontend assets must be cached immutably by {relative}"
         );
+        for operator_only_path in [
+            "/api/binance-alt-contract/runtime-debug",
+            "/api/new-token-watch/runtime-debug",
+        ] {
+            assert!(
+                nginx.contains(&format!(
+                    "location = {operator_only_path} {{\n        return 404;\n    }}"
+                )) || nginx.contains(&format!(
+                    "location = {operator_only_path} {{\n    return 404;\n  }}"
+                )),
+                "operator-only route {operator_only_path} must not be forwarded by {relative}"
+            );
+        }
         assert!(
             nginx.contains(
-                "location = /api/binance-alt-contract/runtime-debug {\n        return 404;\n    }"
+                "location /api/ {\n        if ($request_method = POST) {\n            return 403;\n        }"
             ) || nginx.contains(
-                "location = /api/binance-alt-contract/runtime-debug {\n    return 404;\n  }"
+                "location /api/ {\n    if ($request_method = POST) {\n      return 403;\n    }"
             ),
-            "operator-only BACM diagnostics must not be forwarded by {relative}"
+            "public API proxy must reject mutation requests in {relative}"
         );
     }
 

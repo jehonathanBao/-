@@ -40,6 +40,10 @@ describe("frontend production deployment", () => {
     expect(nginxConfig).toContain("location = /api/contract-whale/pipeline-debug");
     expect(nginxConfig).toContain("location = /api/contract-whale/raw-flow-debug");
     expect(nginxConfig).toContain("location = /api/contract-whale/latency-debug");
+    expect(nginxConfig).toContain("location = /api/binance-alt-contract/runtime-debug");
+    expect(nginxConfig).toContain("location = /api/new-token-watch/runtime-debug");
+    expect(nginxConfig).toContain("if ($request_method = POST)");
+    expect(nginxConfig).toContain("return 403;");
     expect(nginxConfig).toContain("location /ws/");
     expect(nginxConfig).toContain("try_files $uri $uri/ /index.html");
     expect(nginxConfig).toContain("X-Operator-Api-Token ${OPERATOR_TOKEN}");
@@ -109,6 +113,10 @@ describe("frontend production deployment", () => {
     expect(ingressTemplate).toContain("location = /api/contract-whale/pipeline-debug");
     expect(ingressTemplate).toContain("location = /api/contract-whale/raw-flow-debug");
     expect(ingressTemplate).toContain("location = /api/contract-whale/latency-debug");
+    expect(ingressTemplate).toContain("location = /api/binance-alt-contract/runtime-debug");
+    expect(ingressTemplate).toContain("location = /api/new-token-watch/runtime-debug");
+    expect(ingressTemplate).toContain("if ($request_method = POST)");
+    expect(ingressTemplate).toContain("return 403;");
     expect(ingressTemplate).toContain("location /ws/");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
     expect(ingressTemplate).toContain("proxy_buffering off;");

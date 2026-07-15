@@ -32,7 +32,14 @@ server {
     return 404;
   }
 
+  location = /api/new-token-watch/runtime-debug {
+    return 404;
+  }
+
   location /api/ {
+    if ($request_method = POST) {
+      return 403;
+    }
     proxy_pass http://backend:3000;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
