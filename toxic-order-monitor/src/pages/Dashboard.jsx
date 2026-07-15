@@ -276,10 +276,15 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#07111f] lg:flex-row">
-      <Sidebar />
-      <main className="w-full min-w-0 flex-1 p-4 lg:p-6">
-        <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
+    <div className={`flex min-h-screen flex-col lg:flex-row ${isContractWhaleView ? "contract-workspace-shell" : "bg-[#07111f]"}`}>
+      <Sidebar compact={isContractWhaleView} />
+      <main
+        className={isContractWhaleView ? "contract-workspace-main w-full min-w-0 flex-1" : "w-full min-w-0 flex-1 p-4 lg:p-6"}
+        data-testid={isContractWhaleView ? "contract-workspace-main" : undefined}
+      >
+        {!isContractWhaleView ? (
+          <Header discordConnected={discordConnected} highUnhandledCount={highUnhandledCount} />
+        ) : null}
         {isContractWhaleView ? (
           <ContractWhalePage symbol={mainstreamSymbol} />
         ) : isLiquidationCascadeView ? (
@@ -411,23 +416,7 @@ function discordFailureHint(reason, error = null) {
 
 function ContractWhalePage({ symbol }) {
   const asset = normalizeMainstreamSymbol(symbol);
-  return (
-    <>
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">{asset} CONTRACT WHALE FLOW</p>
-          <h2 className="mt-2 text-2xl font-bold text-white">{asset} 合约监控</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            聚合已启用交易所的 {asset} 永续合约主动成交流，识别主动买压、主动卖压、吸收和压制信号。
-          </p>
-        </div>
-        <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-sm font-semibold text-cyan-100">
-          只读提醒 · 不下单 · CWM Discord gate 独立
-        </div>
-      </div>
-      <ContractWhaleMonitor lockedSymbol={asset} />
-    </>
-  );
+  return <ContractWhaleMonitor lockedSymbol={asset} />;
 }
 
 function LiquidationCascadePage() {

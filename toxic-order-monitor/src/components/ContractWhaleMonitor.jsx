@@ -576,11 +576,23 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   }, [filters]);
 
   useEffect(() => {
-    const scopedItems = filterContractItemsBySymbol(state.items, assetSymbol);
-    if (selectedSignalId && !scopedItems.some((item) => item.id === selectedSignalId)) {
+    const scopedItems = [
+      ...filterContractItemsBySymbol(state.items, assetSymbol),
+      ...filterContractItemsBySymbol(state.contractEvents, assetSymbol),
+      ...filterContractItemsBySymbol(state.finalEvents.active, assetSymbol),
+      ...filterContractItemsBySymbol(state.finalEvents.closed, assetSymbol),
+    ];
+    if (selectedSignalId && !scopedItems.some((item) => matchesSignalIdentity(item, selectedSignalId))) {
       setSelectedSignalId(null);
     }
-  }, [assetSymbol, selectedSignalId, state.items]);
+  }, [
+    assetSymbol,
+    selectedSignalId,
+    state.contractEvents,
+    state.finalEvents.active,
+    state.finalEvents.closed,
+    state.items,
+  ]);
 
   useEffect(() => {
     const scopedItems = filterContractItemsBySymbol(state.items, assetSymbol);
@@ -727,7 +739,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const eventsSyncLag = latestSignalTs > 0 &&
     Number.isFinite(state.contractEventsLastEventTs) &&
     latestSignalTs - state.contractEventsLastEventTs > EVENTS_SYNC_LAG_MS;
-  const selectedSignal = detailItems.find((item) => item.id === selectedSignalId) || null;
+  const selectedSignal = detailItems.find((item) => matchesSignalIdentity(item, selectedSignalId)) || null;
   const whaleEntities = buildWhaleEntities(latestItems);
   const showCoinbaseSpotOnlyNotice =
     filters.exchange === "coinbase" || state.meta?.reason === "coinbase_perp_disabled";
@@ -810,43 +822,40 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   }
 
   return (
-    <section className="console-panel mb-5 overflow-x-hidden p-4 md:p-5">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="max-w-3xl">
-          <p className="console-label text-cyan-300">Contract Whale Flow</p>
-          <h3 className="mt-2 text-lg font-bold text-white">主力合约监控</h3>
-          <p className="mt-1 text-sm leading-6 text-slate-400">
-            {assetSymbol} 永续合约主动成交流异常，Critical / S 才进入外部告警判断。
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-7">
-          <StatusPill label="当前状态" value={statusLabel(summary.status)} tone={statusTone(summary.status)} />
-          <StatusPill label="健康状态" value={healthStatusLabel(summary.healthStatus)} tone={healthStatusTone(summary.healthStatus)} />
-          <StatusPill label="当前方向" value={directionLabel(summary.latestDirection || summary.direction)} tone="cyan" />
-          <StatusPill label="最新等级" value={severityLabel(summary.latestSeverity)} tone={severityTone(summary.latestSeverity)} />
-          <StatusPill label="阈值模式" value={thresholdProfileLabel(summary.thresholdProfile)} tone="cyan" />
-          <StatusPill label="运行模式" value={modeLabel(summary)} tone={summary.enabled ? (summary.dryRun ? "yellow" : "cyan") : "slate"} />
-          <StatusPill label="最近推送" value={summary.lastDiscordSentAt ? relativeAge(summary.lastDiscordSentAt) : "暂无"} tone="slate" />
-        </div>
-      </div>
-      <EventFirstJumpNavigation />
-
-      <ContractWhaleFilters
-        filters={filters}
-        lockedSymbol={assetSymbol}
-        onChange={(nextFilters) => {
-          setSelectedSignalId(null);
-          setSelectedWhaleId(null);
-          setFilters({ ...nextFilters, symbol: assetSymbol });
-        }}
+    <section className="contract-workspace overflow-x-hidden" data-testid="contract-workspace">
+      <ContractWorkspaceCommandBar
+        contractEvents={contractEvents}
+        latestItems={latestItems}
+        summary={summary}
+        symbol={assetSymbol}
       />
-      <p className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-100">
-        已隐藏价格偏离超过 {CWM_MAX_PRICE_DEVIATION_PCT}% 的合约信号；当前过滤：{displayFilterLabel}。低于阈值的事件仍保留在原始数据里。
-      </p>
-      <DataHealthBanner dataSlices={state.dataSlices} />
+      <ContractWorkspaceStatusRibbon
+        displayFilterLabel={displayFilterLabel}
+        intelligence={currentDisplayIntelligence}
+        summary={summary}
+      />
+
+      <div className="contract-filter-dock">
+        <ContractWhaleFilters
+          filters={filters}
+          lockedSymbol={assetSymbol}
+          onChange={(nextFilters) => {
+            setSelectedSignalId(null);
+            setSelectedWhaleId(null);
+            setFilters({ ...nextFilters, symbol: assetSymbol });
+          }}
+        />
+        <p className="contract-filter-note">
+          <span className="text-slate-300">VISIBLE GATE</span>
+          <span>{displayFilterLabel}</span>
+          <span>价格偏离 ≤ {CWM_MAX_PRICE_DEVIATION_PCT}%</span>
+          <span>原始事件保留</span>
+        </p>
+        <DataHealthBanner dataSlices={state.dataSlices} />
+      </div>
 
       <section
-        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)] 2xl:items-start"
+        className="contract-primary-grid"
         data-testid="primary-analysis-grid"
       >
         <div className="min-w-0">
@@ -883,13 +892,20 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           />
         </div>
 
-        <MarketStructureDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
+        <ContractDeskInsightRail
+          intelligence={currentDisplayIntelligence}
+          latestItems={latestItems}
+          summary={summary}
+        />
       </section>
 
+      <EventFirstJumpNavigation />
+
       <section
-        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(280px,0.85fr)_minmax(0,1.15fr)] 2xl:items-start"
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(280px,0.75fr)_minmax(280px,0.75fr)_minmax(0,1.15fr)] 2xl:items-start"
         data-testid="secondary-analysis-grid"
       >
+        <MarketStructureDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
         <LiquidityMapDeskPanel intelligence={currentDisplayIntelligence} />
         <TradeSetupsDeskPanel
           intelligence={currentDisplayIntelligence}
@@ -973,6 +989,223 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       ) : null}
     </section>
   );
+}
+
+function ContractWorkspaceCommandBar({ contractEvents, latestItems, summary, symbol }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const latest = latestItems[0] || contractEvents[0] || null;
+  const price = signalTriggerPrice(latest);
+  const priceMovePct = numberOrNull(latest?.priceMovePct);
+  const fundingRate = numberOrNull(latest?.fundingRate ?? latest?.sourceSignal?.fundingRate);
+  const oiDeltaBtc = numberOrNull(
+    latest?.oiDelta
+      ?? latest?.sourceSignal?.oiDelta
+      ?? latest?.eventLifecycle?.netOiDeltaBtc,
+  );
+  const notional24h = contractEvents.reduce(
+    (sum, item) => sum + finiteNumber(item?.notionalUsd ?? item?.totalNotionalUsd ?? item?.notional, 0),
+    0,
+  );
+  const sourceCount = contractSourceLabels(summary).length;
+  const healthy = !["unavailable", "offline", "error"].includes(String(summary?.healthStatus || "healthy").toLowerCase());
+
+  return (
+    <header className="contract-command-bar" data-testid="contract-workspace-command-bar">
+      <div className="contract-market-selector">
+        <span className="contract-market-symbol">₿</span>
+        <div>
+          <p className="contract-market-title">{symbol} / PERP</p>
+          <p className="contract-market-subtitle">{symbol} CONTRACT WHALE FLOW</p>
+        </div>
+      </div>
+
+      <div className="contract-price-block">
+        <p className="contract-price-value">{price === null ? "N/A" : formatPrice(price)}</p>
+        <p className={priceMovePct === null ? "text-slate-500" : signedMetricClass(priceMovePct)}>
+          {priceMovePct === null ? "PRICE N/A" : formatSignedPct(priceMovePct)}
+        </p>
+      </div>
+
+      <div className="contract-command-metrics">
+        <ContractWorkspaceMetric label="资金费率" value={fundingRate === null ? "N/A" : formatFundingPercent(fundingRate)} tone={fundingRate} />
+        <ContractWorkspaceMetric label="持仓量 Δ" value={oiDeltaBtc === null ? "N/A" : formatSignedBaseVolume(oiDeltaBtc, symbol)} tone={oiDeltaBtc} />
+        <ContractWorkspaceMetric label="事件名义价值 (24H)" value={notional24h > 0 ? formatUsd(notional24h) : "N/A"} />
+        <ContractWorkspaceMetric label="覆盖交易所" value={sourceCount > 0 ? `${sourceCount}` : "N/A"} />
+      </div>
+
+      <div className="contract-command-status">
+        <div className="text-right">
+          <p className="font-mono text-[11px] text-slate-400">UTC+8 · {now.toLocaleTimeString("zh-CN", { hour12: false })}</p>
+          <p className="mt-1 text-[10px] uppercase tracking-[0.16em] text-slate-600">主力合约监控</p>
+        </div>
+        <div className={healthy ? "contract-live-state text-emerald-300" : "contract-live-state text-amber-300"}>
+          <span className={healthy ? "bg-emerald-400" : "bg-amber-400"} />
+          {healthy ? "LIVE" : "RECOVERING"}
+        </div>
+        <span className="contract-readonly-badge">只读监控</span>
+        <span className="sr-only">只读提醒 · 不下单 · CWM Discord gate 独立</span>
+      </div>
+    </header>
+  );
+}
+
+function ContractWorkspaceMetric({ label, value, tone = null }) {
+  return (
+    <div className="contract-command-metric">
+      <p>{label}</p>
+      <strong className={tone === null ? "text-slate-200" : signedMetricClass(tone)}>{value}</strong>
+    </div>
+  );
+}
+
+function ContractWorkspaceStatusRibbon({ displayFilterLabel, intelligence, summary }) {
+  const regime = intelligence?.marketRegime?.regime || summary?.marketStructureLite?.regimeType || "UNKNOWN";
+  const regimeConfidence = numberOrNull(intelligence?.marketRegime?.confidence ?? summary?.marketStructureLite?.confidence);
+  return (
+    <section className="contract-status-ribbon" data-testid="contract-workspace-status-ribbon">
+      <WorkspaceStatusItem label="REGIME" value={String(regime).toUpperCase()} detail={regimeConfidence === null ? "未确认" : `${Math.round(regimeConfidence)}% confidence`} tone="amber" />
+      <WorkspaceStatusItem label="DIRECTION" value={directionLabel(summary.latestDirection || summary.direction)} detail={biasText(summary?.marketStructureLite?.structureBias)} tone="emerald" />
+      <WorkspaceStatusItem label="SIGNAL" value={severityLabel(summary.latestSeverity)} detail={statusLabel(summary.status)} tone="cyan" />
+      <WorkspaceStatusItem label="HEALTH" value={healthStatusLabel(summary.healthStatus)} detail={modeLabel(summary)} tone="emerald" />
+      <WorkspaceStatusItem label="THRESHOLD" value={thresholdProfileLabel(summary.thresholdProfile)} detail={displayFilterLabel} tone="slate" wide />
+      <WorkspaceStatusItem label="LAST PUSH" value={summary.lastDiscordSentAt ? relativeAge(summary.lastDiscordSentAt) : "暂无"} detail="Discord gate 独立" tone="slate" />
+    </section>
+  );
+}
+
+function WorkspaceStatusItem({ detail, label, tone, value, wide = false }) {
+  const toneClass = {
+    amber: "text-amber-300",
+    cyan: "text-cyan-200",
+    emerald: "text-emerald-300",
+    slate: "text-slate-200",
+  }[tone] || "text-slate-200";
+  return (
+    <div className={`contract-status-item ${wide ? "contract-status-item-wide" : ""}`}>
+      <p>{label}</p>
+      <strong className={toneClass}>{value}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
+function ContractDeskInsightRail({ intelligence, latestItems, summary }) {
+  const regime = intelligence?.marketRegime || {};
+  const liquidityBehaviors = Array.isArray(intelligence?.liquidityBehaviors) ? intelligence.liquidityBehaviors : [];
+  const riskContext = intelligence?.riskContext || {};
+  const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones : [];
+  const setup = deriveDeskTradeIdeas(intelligence, summary)[0] || null;
+  const latest = latestItems[0] || null;
+  const oiDelta = numberOrNull(latest?.oiDelta ?? latest?.sourceSignal?.oiDelta ?? latest?.eventLifecycle?.netOiDeltaBtc);
+  const structureBias = summary?.marketStructureLite?.structureBias;
+  const strength = Math.max(0, Math.min(100, Math.round(numberOrNull(regime.confidence) ?? 0)));
+
+  return (
+    <aside className="contract-insight-rail" data-testid="contract-insight-rail">
+      <section className="contract-insight-panel" id="contract-whale-structure-snapshot">
+        <div className="contract-insight-heading">
+          <div>
+            <p>MARKET STRUCTURE</p>
+            <h4>市场结构</h4>
+          </div>
+          <span>{strength}%</span>
+        </div>
+        <div className="contract-insight-two-col">
+          <WorkspaceMiniMetric label="Regime 当前" value={String(regime.regime || "UNKNOWN").toUpperCase()} tone="amber" />
+          <WorkspaceMiniMetric label="方向偏置" value={biasText(structureBias)} tone={finiteNumber(structureBias, 0) >= 0 ? "emerald" : "red"} />
+        </div>
+        <DeskStrengthBar value={strength} />
+        <p className="contract-insight-copy">{regime.reason || "当前结构证据不足，保持只读观察。"}</p>
+      </section>
+
+      <section className="contract-insight-panel">
+        <div className="contract-insight-heading">
+          <div>
+            <p>LIQUIDITY &amp; OI</p>
+            <h4>流动性与 OI</h4>
+          </div>
+          <span>{liquidityBehaviors.length} signals</span>
+        </div>
+        <div className="contract-liquidity-balance">
+          <span style={{ width: `${Math.max(16, Math.min(84, 50 + finiteNumber(structureBias, 0) / 2))}%` }} />
+        </div>
+        <div className="contract-insight-two-col">
+          <WorkspaceMiniMetric
+            label="主导行为"
+            value={liquidityBehaviors[0]?.label ? `主导 · ${liquidityBehaviors[0].label}` : "暂无明确结构"}
+            tone="cyan"
+          />
+          <WorkspaceMiniMetric label="持仓量 Δ" value={oiDelta === null ? "N/A" : formatSignedBaseVolume(oiDelta, latest?.symbol || "BTC")} tone={oiDelta !== null && oiDelta < 0 ? "red" : "emerald"} />
+        </div>
+        <p className="contract-insight-copy">{latest ? oiStatus(latest) : "等待 OI 证据"}</p>
+      </section>
+
+      <section className="contract-insight-panel">
+        <div className="contract-insight-heading">
+          <div>
+            <p>OPPORTUNITY &amp; RISK</p>
+            <h4>交易机会 / 风险</h4>
+          </div>
+          <span className={riskBadgeClass(riskContext.fakeBreakoutRisk)}>{riskLabel(riskContext.fakeBreakoutRisk)}</span>
+        </div>
+        <div className="contract-opportunity-card">
+          <p>首选结构</p>
+          <strong>{setup?.setupType ? `#1 · ${setup.setupType}` : "暂无明确结构"}</strong>
+          <span>{setup ? `${setup.directionLabel} · ${setup.score}/100 · ${setup.confidence}%` : "等待事件确认"}</span>
+        </div>
+        <div className="contract-risk-card">
+          <p>失效 / No-trade</p>
+          <strong>{noTradeZones[0]?.label || "暂无明确风险区"}</strong>
+          <span>{noTradeZones[0]?.rangeLabel || riskContext.summary || "结构风险保持受控"}</span>
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function WorkspaceMiniMetric({ label, tone, value }) {
+  const toneClass = {
+    amber: "text-amber-300",
+    cyan: "text-cyan-200",
+    emerald: "text-emerald-300",
+    red: "text-rose-300",
+  }[tone] || "text-slate-200";
+  return (
+    <div className="contract-insight-metric">
+      <p>{label}</p>
+      <strong className={toneClass}>{value}</strong>
+    </div>
+  );
+}
+
+function DeskStrengthBar({ value }) {
+  return (
+    <div className="contract-strength-bar" aria-label={`结构强度 ${value}%`} role="img">
+      <span className="bg-rose-400" />
+      <span className="bg-amber-400" />
+      <span className="bg-slate-500" />
+      <span className="bg-lime-400" />
+      <span className="bg-emerald-300" />
+      <i style={{ left: `${Math.max(2, Math.min(98, value))}%` }} />
+    </div>
+  );
+}
+
+function signedMetricClass(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "text-slate-300";
+  return number > 0 ? "text-emerald-300" : "text-rose-300";
+}
+
+function formatFundingPercent(value) {
+  const number = numberOrNull(value);
+  if (number === null) return "N/A";
+  return `${number >= 0 ? "+" : ""}${(number * 100).toFixed(4)}%`;
 }
 
 function WhaleTrajectoryDashboard({
@@ -1239,11 +1472,11 @@ function EventFirstJumpNavigation() {
   return (
     <nav
       aria-label="Contract whale section navigation"
-      className="mt-4 flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-950/35 px-3 py-3"
+      className="contract-workspace-tabs"
     >
       {items.map((item) => (
         <a
-          className="rounded-full border border-cyan-500/25 bg-cyan-500/5 px-3 py-1 text-xs font-semibold text-cyan-100 transition hover:border-cyan-400/50 hover:bg-cyan-500/10"
+          className="contract-workspace-tab"
           href={item.href}
           key={item.href}
         >
@@ -1364,7 +1597,7 @@ function DataHealthBanner({ dataSlices }) {
 
   return (
     <aside
-      className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs leading-5 text-amber-100"
+      className="contract-data-health"
       data-testid="data-health-banner"
       role="status"
     >
@@ -1424,49 +1657,55 @@ function HistoricalEventStreamPanel({
 
   return (
     <section
-      className={`mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 ${visibleContractEvents.length > 0 ? "min-h-[50vh]" : ""}`}
+      className={`contract-event-panel ${visibleContractEvents.length > 0 ? "min-h-[50vh]" : ""}`}
       data-testid="historical-events-primary"
       id="contract-whale-events"
     >
-      <div className="flex flex-col gap-2 px-4 py-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="console-label text-cyan-300">Contract Event Feed</p>
-          <h4 className="mt-1 text-base font-bold text-white">合约市场事件</h4>
-          <p className="mt-1 text-xs leading-5 text-slate-400">
+      <div className="contract-event-tape" data-testid="contract-event-tape">
+      <div className="contract-event-header">
+        <div className="min-w-0">
+          <p className="contract-event-kicker">CONTRACT EVENT TAPE</p>
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h4 className="text-sm font-semibold text-slate-100">合约市场事件</h4>
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">HISTORICAL EVENTS (24h stream)</span>
+          </div>
+          <p className="sr-only">
             当前列表为历史事件流，不是 latest 快照。latest 只用于顶部实时状态；历史事件来自 contract_whale_signals，ACTIVE/CLOSED 是生命周期投影视图。
           </p>
         </div>
-        <span className="rounded-full border border-cyan-500/30 px-3 py-1 text-xs font-semibold text-cyan-100">
-          已加载 {contractEvents.length} 条
-        </span>
+        <div className="contract-event-controls">
+          <span className="contract-live-state text-emerald-300"><i className="bg-emerald-400" /> LIVE</span>
+          <span>{contractEvents.length} EVENTS</span>
+          <span>24H</span>
+          <span>已加载 {contractEvents.length} 条</span>
+        </div>
       </div>
-      <div className="space-y-4 border-t border-slate-800 p-3">
-        <div className="rounded-xl border border-cyan-500/15 bg-cyan-500/5 px-3 py-3 text-xs leading-5 text-cyan-100">
-          <p>先看事件流，再用下方分析面板解释市场状态；latest 只服务顶部实时状态，不会直接覆盖这里的历史事件。</p>
-          <p className="mt-1 text-[11px] text-cyan-200/90">
-            当前过滤：{displayFilterLabel}。
+      <div className="contract-event-body">
+        <div className="contract-event-meta">
+          <span>当前过滤：{displayFilterLabel}</span>
+          <span>
             {hiddenDisplayFilteredCount > 0 ? ` 本页额外隐藏 ${hiddenDisplayFilteredCount} 条未达展示门槛事件。` : " 低于阈值的事件不会进入默认事件流。"}
-          </p>
+          </span>
           {debugCounts && !debugCounts.error ? (
-            <p className="mt-1 text-[11px] text-cyan-200/90">
+            <span>
               历史可见 {diagnostics.visibleCount} 条 / 后端返回 {diagnostics.backendReturnedCount} 条。
               {diagnostics.showLatestHistoryDriftHint ? " 当前页面已改为 canonical timeline，对比时请以 Market Time 为准。" : ""}
-            </p>
+            </span>
           ) : null}
           {diagnostics.showStaleLatestOnlyWarning ? (
-            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+            <span className="contract-event-warning">
               {symbol} latest 为旧快照，最近 24h 没有新的 {symbol} 主力历史信号。
-            </p>
+            </span>
           ) : null}
           {diagnostics.showRawFlowDiagnosis ? (
-            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+            <span className="contract-event-warning">
               上游诊断：{rawFlowDebug.diagnosis.primaryReason}
-            </p>
+            </span>
           ) : null}
           {eventsSyncLag ? (
-            <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-100">
+            <span className="contract-event-warning">
               数据延迟：latest 已更新到 {formatDateTime(latestSignalTs)}，历史事件流当前只同步到 {formatDateTime(contractEventsLastEventTs)}。
-            </p>
+            </span>
           ) : null}
         </div>
         {loading ? (
@@ -1480,18 +1719,9 @@ function HistoricalEventStreamPanel({
             当前历史事件已接入，但都低于 {displayFilterLabel} 展示阈值。
           </p>
         ) : (
-          <div className="rounded-xl border border-slate-800 bg-slate-950/40">
-            <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-              <p className="text-xs font-bold tracking-[0.18em] text-cyan-200">HISTORICAL EVENTS (24h stream)</p>
-              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300">
-                已显示 {visibleContractEvents.length} 条
-              </span>
-            </div>
-            <p className="border-b border-slate-800 px-3 py-2 text-[11px] leading-5 text-slate-500" title={volumeTooltip}>
-              口径：{historicalVolumeLabel}。{volumeTooltip}
-            </p>
-            <div className="max-h-[58vh] overflow-auto">
-              <RawSignalDebugTable
+          <div className="contract-event-table-shell" title={volumeTooltip}>
+            <div className="max-h-[62vh] overflow-auto">
+              <ContractEventTapeTable
                 items={visibleContractEvents}
                 onOpenSignal={onOpenSignal}
                 testId="raw-contract-whale-signals"
@@ -1512,6 +1742,7 @@ function HistoricalEventStreamPanel({
             ) : null}
           </div>
         )}
+      </div>
       </div>
     </section>
   );
@@ -2304,6 +2535,145 @@ function EventLifecycleFeedGroup({ emptyText, hasMore, items, onLoadMore, onOpen
   );
 }
 
+const ContractEventTapeTable = memo(function ContractEventTapeTable({
+  items,
+  onOpenSignal,
+  testId = "raw-contract-whale-signals",
+  volumeLabel = "总流量",
+  volumeTooltip,
+}) {
+  return (
+    <table className="contract-event-table" data-testid={testId}>
+      <thead>
+        <tr>
+          <TapeHeaderCell>时间</TapeHeaderCell>
+          <TapeHeaderCell>市场 / 事件</TapeHeaderCell>
+          <TapeHeaderCell>方向</TapeHeaderCell>
+          <TapeHeaderCell>等级</TapeHeaderCell>
+          <TapeHeaderCell title={volumeTooltip}>{volumeLabel}</TapeHeaderCell>
+          <TapeHeaderCell>净流量</TapeHeaderCell>
+          <TapeHeaderCell>名义价值</TapeHeaderCell>
+          <TapeHeaderCell>价格 Δ</TapeHeaderCell>
+          <TapeHeaderCell title={OI_CONTEXT_TOOLTIP}>OI 背景</TapeHeaderCell>
+          <TapeHeaderCell>来源 / Discord</TapeHeaderCell>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item, index) => {
+          const netVolume = finiteNumber(item.netVolumeBtc, 0);
+          const priceMove = numberOrNull(item.priceMovePct);
+          const rowTone = netVolume > 0 ? "contract-event-row-buy" : netVolume < 0 ? "contract-event-row-sell" : "contract-event-row-neutral";
+          return (
+            <tr
+              className={`${rowTone} ${index === 0 ? "contract-event-row-latest" : ""}`}
+              data-testid={`contract-whale-row-${item.eventId || item.finalEventId || item.id}`}
+              key={item.eventId || item.finalEventId || item.id}
+              onClick={() => onOpenSignal(signalDetailTargetId(item))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onOpenSignal(signalDetailTargetId(item));
+                }
+              }}
+              tabIndex={0}
+            >
+              <TapeCell>
+                <span className="block font-mono text-[11px] text-slate-200">{formatTime(item.ts)}</span>
+                <span className="mt-1 block text-[10px] text-slate-600">{formatDate(item.ts)}</span>
+                <span className="mt-1 block text-[10px] text-slate-500">{relativeAge(item.ts)}</span>
+              </TapeCell>
+              <TapeCell>
+                <span className="mb-1 flex items-center gap-1.5 font-mono text-[11px] font-semibold text-slate-100">
+                  <span>{item.symbol}</span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-cyan-200">{formatUsd(item.totalNotionalUsd ?? item.notionalUsd ?? item.notional)}</span>
+                </span>
+                <SignalTypeSummary item={item} />
+                <span className="mt-1 block font-mono text-[11px] text-slate-300">{formatPrice(signalTriggerPrice(item))}</span>
+              </TapeCell>
+              <TapeCell>
+                <span className={`contract-direction-mark ${signedMetricClass(netVolume)}`}>
+                  {netVolume > 0 ? "买入 →" : netVolume < 0 ? "卖出 →" : "中性 —"}
+                </span>
+                <span className="mt-1 block text-[10px] text-slate-500">{netDirection(item.netVolumeBtc, item.symbol)}</span>
+              </TapeCell>
+              <TapeCell>
+                {impactNormalizationBadge(item)}
+                <span className="mt-1 block text-[10px]">{eventQualityBadge(item)}</span>
+              </TapeCell>
+              <TapeCell>
+                <LifecycleVolumeCell item={item} volumeLabel={volumeLabel} />
+              </TapeCell>
+              <TapeCell>
+                <span className={`font-mono font-semibold ${signedMetricClass(netVolume)}`}>
+                  {formatSignedBaseVolume(netVolume, item.symbol)}
+                </span>
+                <span className="mt-1 block text-[10px] text-slate-500">{formatPct(finiteNumber(item.dominance, 0) * 100)} dominance</span>
+              </TapeCell>
+              <TapeCell>
+                <span className="font-mono font-semibold text-slate-200">
+                  TOTAL {formatUsd(item.totalNotionalUsd ?? item.notionalUsd ?? item.notional)}
+                </span>
+                <span className="mt-1 block text-[10px] text-slate-500">{item.windowSec || "—"}s window</span>
+              </TapeCell>
+              <TapeCell>
+                <EventImpactTrace value={priceMove} />
+                <span className={`mt-1 block font-mono text-[11px] ${priceMove === null ? "text-slate-500" : signedMetricClass(priceMove)}`}>
+                  {priceMove === null ? "N/A" : formatSignedPct(priceMove)}
+                </span>
+                <span className="mt-1 block text-[10px] text-slate-500">{liquidationStatus(item)}</span>
+              </TapeCell>
+              <TapeCell>
+                <LifecycleOiCell item={item} />
+                <span className="mt-1 block text-[10px] text-slate-500">{fundingStatus(item)}</span>
+                {oiEvidenceSummary(item) ? <span className="mt-1 block text-[10px] text-amber-300">{oiEvidenceSummary(item)}</span> : null}
+              </TapeCell>
+              <TapeCell>
+                <span className="block text-slate-200">{item.mainExchange || item.source || "N/A"}</span>
+                <span className="mt-1 block text-[10px] text-slate-500">{discordStatus(item)}</span>
+                <button
+                  aria-label={`查看主力合约信号详情 ${signalDetailTargetId(item)} ${testId}`}
+                  className="contract-detail-link"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenSignal(signalDetailTargetId(item));
+                  }}
+                  type="button"
+                >
+                  详情 ↗
+                </button>
+              </TapeCell>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+});
+
+function TapeHeaderCell({ children, title }) {
+  return <th title={title}>{children}</th>;
+}
+
+function TapeCell({ children }) {
+  return <td>{children}</td>;
+}
+
+function EventImpactTrace({ value }) {
+  const numeric = finiteNumber(value, 0);
+  const magnitude = Math.min(1, Math.abs(numeric) / 1.5);
+  const rising = numeric >= 0;
+  const samples = [0.26, 0.48, 0.36, 0.62, 0.52, 0.84, 0.68, 0.94, 0.74, 1];
+  return (
+    <span className={`contract-impact-trace ${rising ? "contract-impact-trace-up" : "contract-impact-trace-down"}`} aria-hidden="true">
+      {samples.map((sample, index) => {
+        const normalized = rising ? sample : samples[samples.length - index - 1];
+        return <i key={index} style={{ height: `${Math.max(18, normalized * (40 + magnitude * 55))}%` }} />;
+      })}
+    </span>
+  );
+}
+
 const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSignal, testId = "raw-contract-whale-signals", volumeLabel = "总流量", volumeTooltip }) {
   return (
     <table className="min-w-full table-fixed text-left text-xs" data-testid={testId}>
@@ -2492,6 +2862,14 @@ function LifecycleOiCell({ item }) {
 
 function signalDetailTargetId(item) {
   return item?.sourceSignalId || item?.id;
+}
+
+function matchesSignalIdentity(item, signalId) {
+  if (!item || !signalId) return false;
+  const target = String(signalId);
+  return [item.id, item.sourceSignalId, item.eventId, item.finalEventId]
+    .filter(Boolean)
+    .some((value) => String(value) === target);
 }
 
 function MainForceEventsSection({ events, symbol }) {
@@ -2960,6 +3338,7 @@ function TradeMetric({ label, value }) {
 
 function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) {
   const quantityUnit = baseAssetSymbol(signal.symbol);
+  const signalExchanges = Array.isArray(signal.exchanges) ? signal.exchanges : [];
   const windowRows = [5, 15, 60].map((windowSec) => {
     const match = relatedSignals.find(
       (item) =>
@@ -3207,8 +3586,8 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
 
         <DetailSection title="平台拆分" className="mt-4">
           <div className="grid gap-2 md:grid-cols-3">
-            {signal.exchanges.length ? (
-              signal.exchanges.map((exchange) => (
+            {signalExchanges.length ? (
+              signalExchanges.map((exchange) => (
                 <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3" key={exchange.exchange}>
                   <p className="font-bold text-slate-100">{exchangeLabel(exchange.exchange)}</p>
                   <div className="mt-2 space-y-1 text-xs text-slate-300">
@@ -3506,7 +3885,7 @@ function ProgressRow({ label, value }) {
 function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
   return (
-    <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4 xl:grid-cols-8">
+    <div className="contract-filter-grid">
       <LockedAssetField symbol={lockedSymbol || filters.symbol} />
       <FilterSelect label="等级" value={filters.severity} onChange={(value) => update("severity", value)}>
         <option value="all">全部</option>
@@ -3558,9 +3937,9 @@ function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
 function LockedAssetField({ symbol }) {
   const asset = normalizeMainstreamSymbol(symbol);
   return (
-    <div className="block">
-      <span className="mb-1 block text-[11px] font-medium text-slate-400">币种</span>
-      <div className="console-field border-cyan-500/25 bg-cyan-500/5 font-semibold text-cyan-100">
+    <div className="contract-filter-field">
+      <span>币种</span>
+      <div className="contract-filter-locked">
         币种：{asset}（当前页面固定）
       </div>
     </div>
@@ -3569,10 +3948,10 @@ function LockedAssetField({ symbol }) {
 
 function FilterSelect({ label, value, onChange, children }) {
   return (
-    <label className="block">
-      <span className="mb-1 block text-[11px] font-medium text-slate-400">{label}</span>
+    <label className="contract-filter-field">
+      <span>{label}</span>
       <select
-        className="console-field font-semibold"
+        className="contract-filter-select"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -5133,7 +5512,12 @@ function scoringBreakdown(item) {
   const priceScore = item.priceMovePct === null || item.priceMovePct === undefined
     ? 0
     : Math.min(15, (Math.abs(Number(item.priceMovePct)) / 0.25) * 15);
-  const exchangeScore = item.exchanges.length >= 3 ? 10 : item.exchanges.length === 2 ? 8 : item.exchanges.length === 1 ? 4 : 0;
+  const exchangeCount = Array.isArray(item.exchanges)
+    ? item.exchanges.length
+    : item.mainExchange
+      ? 1
+      : 0;
+  const exchangeScore = exchangeCount >= 3 ? 10 : exchangeCount === 2 ? 8 : exchangeCount === 1 ? 4 : 0;
   const dataQualityScore = Math.min(5, (Number(item.dataQuality || 0) / 100) * 5);
   const dominantNetFlowScore = Math.max(0, Math.min(5, ((dominantNetFlowShare(item) - 0.7) / 0.3) * 5));
   return [

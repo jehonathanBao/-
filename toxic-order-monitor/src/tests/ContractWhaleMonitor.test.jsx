@@ -1557,7 +1557,18 @@ describe("ContractWhaleMonitor", () => {
     const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
     const monitorPanel = screen.getByText("主力合约监控").closest("section");
+    const commandBar = screen.getByTestId("contract-workspace-command-bar");
+    const statusRibbon = screen.getByTestId("contract-workspace-status-ribbon");
+    const eventTape = screen.getByTestId("contract-event-tape");
+    const insightRail = screen.getByTestId("contract-insight-rail");
 
+    expect(commandBar).toHaveTextContent("BTC / PERP");
+    expect(commandBar).toHaveTextContent("只读监控");
+    expect(statusRibbon).toHaveTextContent("REGIME");
+    expect(eventTape).toContainElement(screen.getByTestId("raw-contract-whale-signals"));
+    expect(insightRail).toHaveTextContent("市场结构");
+    expect(insightRail).toHaveTextContent("流动性与 OI");
+    expect(insightRail).toHaveTextContent("交易机会 / 风险");
     expect(historical.compareDocumentPosition(proDesk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(proDesk.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(historical.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1565,7 +1576,7 @@ describe("ContractWhaleMonitor", () => {
     expect(setups.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(monitorPanel).toHaveClass("overflow-x-hidden");
     expect(historicalPanel).toHaveClass("min-h-[50vh]");
-    expect(screen.getByTestId("primary-analysis-grid")).toHaveClass("2xl:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.95fr)]");
+    expect(screen.getByTestId("primary-analysis-grid")).toHaveClass("contract-primary-grid");
     expect(screen.getByTestId("secondary-analysis-grid").className).toContain("2xl:grid-cols-");
     expect(screen.getByTestId("lifecycle-risk-grid").className).toContain("2xl:grid-cols-");
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
@@ -1806,6 +1817,9 @@ describe("ContractWhaleMonitor", () => {
     const marketText = marketCell.textContent || "";
     expect(marketText.indexOf("BTC")).toBeLessThan(marketText.indexOf("$22M"));
     expect(marketText.indexOf("$22M")).toBeLessThan(marketText.indexOf("$59,500"));
+
+    await userEvent.click(within(row).getByRole("button", { name: /查看主力合约信号详情 contract-whale-notional-inline/ }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("BTC 主力合约信号详情");
   });
 
   it("hides sub-500 BTC contract events and linked setups from the default desk view", async () => {
