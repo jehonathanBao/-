@@ -1494,6 +1494,16 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
   });
 
+  it("never starts retention table scans from a normal page mount", async () => {
+    vi.useFakeTimers();
+
+    render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(3_001);
+
+    expect(fetchContractRetentionStatus).not.toHaveBeenCalled();
+    expect(screen.getByText(/详细统计不在页面加载链路执行/)).toBeInTheDocument();
+  });
+
   it("promotes historical events into the pro desk primary view", async () => {
     render(<ContractWhaleMonitor />);
 

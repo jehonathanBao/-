@@ -4,6 +4,7 @@ pub mod btc_structure_routes;
 pub mod calibration_routes;
 pub(crate) mod contract_event_projection_runtime;
 pub mod contract_event_routes;
+pub mod contract_retention_runtime;
 pub mod contract_timeline_routes;
 pub mod contract_whale_routes;
 pub mod dev_alert_routes;

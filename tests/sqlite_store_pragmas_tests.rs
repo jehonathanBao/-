@@ -43,6 +43,26 @@ fn sqlite_connections_use_busy_timeout_and_wal() {
         "expected busy_timeout to be at least 5000ms, got {busy_timeout_ms}"
     );
     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    assert_eq!(
+        store.journal_mode_initializations(),
+        1,
+        "WAL mode must be initialized once when the store opens"
+    );
+
+    for _ in 0..5 {
+        store
+            .with_connection(|conn| {
+                conn.query_row("SELECT 1", [], |_row| Ok(()))?;
+                Ok(())
+            })
+            .expect("open operation connection");
+    }
+
+    assert_eq!(
+        store.journal_mode_initializations(),
+        1,
+        "ordinary operations must not rewrite journal_mode"
+    );
 }
 
 #[test]
