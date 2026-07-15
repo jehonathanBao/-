@@ -843,6 +843,36 @@ describe("contract whale api", () => {
     }
   });
 
+  it("retries the initial summary snapshot once after a transient timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      axios.get
+        .mockImplementationOnce((_url, config = {}) => {
+          expect(config.signal).toBeDefined();
+          return new Promise(() => {});
+        })
+        .mockResolvedValueOnce({
+          data: {
+            enabled: true,
+            status: "calm",
+            healthStatus: "healthy",
+            latestDirection: "neutral",
+          },
+        });
+
+      const request = fetchContractWhaleSummary("BTC");
+      await vi.advanceTimersByTimeAsync(6_251);
+
+      await expect(request).resolves.toMatchObject({
+        error: null,
+        summary: expect.objectContaining({ enabled: true, healthStatus: "healthy" }),
+      });
+      expect(axios.get).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps contract event history requests alive beyond six seconds", async () => {
     vi.useFakeTimers();
     try {
