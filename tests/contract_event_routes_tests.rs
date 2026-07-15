@@ -943,7 +943,7 @@ async fn contract_event_cache_stays_fresh_across_frontend_poll_interval() {
 }
 
 #[test]
-fn summary_and_latest_routes_offload_blocking_sqlite_work() {
+fn summary_and_latest_routes_use_nonblocking_singleflight_projection_runtime() {
     const SOURCE: &str = include_str!("../src/api/contract_whale_routes.rs");
 
     let summary_route = SOURCE
@@ -958,12 +958,12 @@ fn summary_and_latest_routes_offload_blocking_sqlite_work() {
         .expect("latest route source");
 
     assert!(
-        summary_route.contains("tokio::task::spawn_blocking"),
-        "summary route must not run synchronous SQLite work on an async worker"
+        summary_route.contains("contract_whale_projection_runtime"),
+        "summary route must use the nonblocking projection runtime"
     );
     assert!(
-        latest_route.contains("tokio::task::spawn_blocking"),
-        "latest route must not run synchronous SQLite work on an async worker"
+        latest_route.contains("contract_whale_projection_runtime"),
+        "latest route must use the nonblocking projection runtime"
     );
 }
 
@@ -1173,6 +1173,57 @@ async fn equivalent_contract_event_requests_execute_projection_once() {
     let stats = state.contract_event_projection_stats_for_tests();
     assert_eq!(stats.started, 1);
     assert_eq!(stats.max_running, 1);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn equivalent_summary_and_latest_requests_execute_each_projection_once() {
+    let state = seeded_contract_event_state();
+    state.set_contract_whale_projection_delay_for_tests(Duration::from_millis(150));
+    state.set_contract_whale_projection_wait_budget_for_tests(Duration::from_secs(1));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let mut requests = Vec::new();
+    for _ in 0..8 {
+        let summary_client = client.clone();
+        requests.push(tokio::spawn(async move {
+            summary_client
+                .get(format!(
+                    "http://{addr}/api/contract-whale/summary?symbol=BTC"
+                ))
+                .send()
+                .await
+                .expect("summary response")
+        }));
+        let latest_client = client.clone();
+        requests.push(tokio::spawn(async move {
+            latest_client
+                .get(format!(
+                    "http://{addr}/api/contract-whale/latest?symbol=BTC&limit=50"
+                ))
+                .send()
+                .await
+                .expect("latest response")
+        }));
+    }
+
+    for request in requests {
+        assert_eq!(
+            request.await.expect("request task").status(),
+            StatusCode::OK
+        );
+    }
+    let stats = state.contract_whale_projection_stats_for_tests();
+    assert_eq!(stats.started, 2);
+    assert_eq!(stats.max_running, 2);
 
     server.abort();
 }
