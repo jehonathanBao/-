@@ -92,6 +92,14 @@ pub(crate) enum ContractEventProjectionValue {
 
 pub(crate) type ContractEventProjectionRuntime = ProjectionRuntime<ContractEventProjectionValue>;
 
+#[derive(Debug, Clone)]
+pub(crate) enum ContractWhaleProjectionValue {
+    Summary(serde_json::Value),
+    Latest(serde_json::Value),
+}
+
+pub(crate) type ContractWhaleProjectionRuntime = ProjectionRuntime<ContractWhaleProjectionValue>;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProjectionRuntimeStats {
     pub started: usize,

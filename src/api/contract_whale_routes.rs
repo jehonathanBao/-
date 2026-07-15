@@ -10,6 +10,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Deserialize;
 
 use crate::{
+    api::contract_event_projection_runtime::{
+        ContractWhaleProjectionValue, ProjectionFailure, ProjectionKey, ProjectionOutcome,
+        ProjectionUnavailable,
+    },
     api::contract_event_routes::{
         contract_event_page_for_query_nonblocking, final_events_v2_for_query_nonblocking,
     },
@@ -370,53 +374,72 @@ pub async fn contract_whale_summary_route(
     headers: HeaderMap,
 ) -> ApiJsonResult {
     log_summary_access(&headers);
-    tokio::task::spawn_blocking(move || {
-        let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
-        let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
-        let config = state.config().contract_whale_monitor;
-        let runtime_config = contract_whale_runtime_config();
-        let symbol_enabled =
-            config.enabled && contract_whale_runtime_config().symbol_enabled(&symbol);
-        let flow_state = state.flow_state_for_symbol(&symbol);
-        let venue_health = state.venue_health();
-        let baselines = state
-            .contract_whale_store()
-            .map(|store| load_quality_baselines(&store, &flow_state, &symbol))
-            .unwrap_or_default();
-        let liquidations = state
-            .contract_whale_store()
-            .map(|store| load_liquidation_contexts(&store, &flow_state, &symbol))
-            .unwrap_or_default();
-        let market_context = state
-            .contract_whale_store()
-            .map(|store| load_market_context(&store, &flow_state, &symbol))
-            .unwrap_or_default();
-        let mut response = build_contract_whale_response_with_runtime_and_baselines(
-            &flow_state,
-            &symbol,
-            50,
-            None,
-            symbol_enabled,
-            config.dry_run,
-            ContractWhaleResponseRuntime {
-                venue_health: Some(&venue_health),
-                baselines: &baselines,
-                liquidations: &liquidations,
-                market_context: &market_context,
-                booted_at_ms: Some(state.booted_at_ms()),
-            },
-        );
-        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        let mut summary = response.summary;
-        summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
-        Ok(Json(serde_json::json!(summary)))
-    })
-    .await
-    .map_err(|error| {
-        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
-            "contract whale summary projection join failed: {error}"
-        ))
-    })?
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+    let key = contract_whale_projection_key(
+        "summary",
+        &symbol,
+        50,
+        None,
+        exchange_filter.as_deref(),
+        false,
+    );
+    let runtime = state.contract_whale_projection_runtime();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            build_contract_whale_summary_value(state, query)
+                .map(ContractWhaleProjectionValue::Summary)
+                .map_err(|_| ProjectionFailure::new("contract_whale_summary_projection_failed"))
+        })
+        .await
+        .map_err(contract_whale_projection_unavailable_api_error)?;
+    contract_whale_projection_value(outcome, true)
+        .map(Json)
+        .map_err(contract_whale_projection_unavailable_api_error)
+}
+
+fn build_contract_whale_summary_value(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+    let config = state.config().contract_whale_monitor;
+    let runtime_config = contract_whale_runtime_config();
+    let symbol_enabled = config.enabled && runtime_config.symbol_enabled(&symbol);
+    let flow_state = state.flow_state_for_symbol(&symbol);
+    let venue_health = state.venue_health();
+    let baselines = state
+        .contract_whale_store()
+        .map(|store| load_quality_baselines(&store, &flow_state, &symbol))
+        .unwrap_or_default();
+    let liquidations = state
+        .contract_whale_store()
+        .map(|store| load_liquidation_contexts(&store, &flow_state, &symbol))
+        .unwrap_or_default();
+    let market_context = state
+        .contract_whale_store()
+        .map(|store| load_market_context(&store, &flow_state, &symbol))
+        .unwrap_or_default();
+    let mut response = build_contract_whale_response_with_runtime_and_baselines(
+        &flow_state,
+        &symbol,
+        50,
+        None,
+        symbol_enabled,
+        config.dry_run,
+        ContractWhaleResponseRuntime {
+            venue_health: Some(&venue_health),
+            baselines: &baselines,
+            liquidations: &liquidations,
+            market_context: &market_context,
+            booted_at_ms: Some(state.booted_at_ms()),
+        },
+    );
+    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+    let mut summary = response.summary;
+    summary.meta = contract_market_mismatch_meta(&runtime_config, exchange_filter.as_deref());
+    Ok(serde_json::json!(summary))
 }
 
 fn log_summary_access(headers: &HeaderMap) {
@@ -443,86 +466,167 @@ pub async fn contract_whale_latest_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult {
-    tokio::task::spawn_blocking(move || {
-        let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
-        let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
-        let hide_stale =
-            parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
-        let range = query.range.clone().or_else(|| Some("24h".to_string()));
-        let stale_after_ts = parse_range_start_ms(range.as_deref())?;
-        let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
-        let flow_state = state.flow_state_for_symbol(&symbol);
-        let venue_health = state.venue_health();
-        let config = state.config().contract_whale_monitor;
-        let cwm_runtime_config = contract_whale_runtime_config();
-        if let Some(meta) =
-            contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
-        {
-            let mut response = build_contract_whale_history_response(
-                Vec::new(),
-                &symbol,
-                limit,
-                None,
-                config.enabled,
-                config.dry_run,
-                Some(meta),
-            );
-            enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-            return Ok(Json(with_latest_stale_annotations(
-                &state,
-                &symbol,
-                response,
-                stale_after_ts,
-                range.as_deref(),
-                hide_stale,
-            )));
-        }
-        if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
-            let mut response = build_contract_whale_response_with_runtime(
-                &flow_state,
-                &symbol,
-                limit,
-                None,
-                false,
-                config.dry_run,
-                Some(&venue_health),
-            );
-            enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-            return Ok(Json(with_latest_stale_annotations(
-                &state,
-                &symbol,
-                response,
-                stale_after_ts,
-                range.as_deref(),
-                hide_stale,
-            )));
-        }
-        let mut response = build_contract_whale_terminal_live_or_persisted_response(
-            &state,
-            &flow_state,
-            &venue_health,
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+    let hide_stale =
+        parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
+    let range = query.range.clone().or_else(|| Some("24h".to_string()));
+    parse_range_start_ms(range.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+    let key = contract_whale_projection_key(
+        "latest",
+        &symbol,
+        limit,
+        range.as_deref(),
+        exchange_filter.as_deref(),
+        hide_stale,
+    );
+    let runtime = state.contract_whale_projection_runtime();
+    let outcome = runtime
+        .get_or_spawn(key, move || {
+            build_contract_whale_latest_value(state, query)
+                .map(ContractWhaleProjectionValue::Latest)
+                .map_err(|_| ProjectionFailure::new("contract_whale_latest_projection_failed"))
+        })
+        .await
+        .map_err(contract_whale_projection_unavailable_api_error)?;
+    contract_whale_projection_value(outcome, false)
+        .map(Json)
+        .map_err(contract_whale_projection_unavailable_api_error)
+}
+
+fn build_contract_whale_latest_value(
+    state: AppState,
+    query: ContractWhaleQuery,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    let symbol = parse_symbol_for_latest(query.symbol.as_deref())?;
+    let limit = parse_limit(query.limit.as_deref(), 50, 200)?;
+    let hide_stale =
+        parse_optional_bool(query.hide_stale.as_deref(), "hide_stale")?.unwrap_or(false);
+    let range = query.range.clone().or_else(|| Some("24h".to_string()));
+    let stale_after_ts = parse_range_start_ms(range.as_deref())?;
+    let exchange_filter = parse_exchange_filter(query.exchange.as_deref())?;
+    let flow_state = state.flow_state_for_symbol(&symbol);
+    let venue_health = state.venue_health();
+    let config = state.config().contract_whale_monitor;
+    let cwm_runtime_config = contract_whale_runtime_config();
+    if let Some(meta) =
+        contract_market_mismatch_meta(&cwm_runtime_config, exchange_filter.as_deref())
+    {
+        let mut response = build_contract_whale_history_response(
+            Vec::new(),
             &symbol,
             limit,
-            exchange_filter.as_deref(),
+            None,
             config.enabled,
             config.dry_run,
+            Some(meta),
         );
         enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
-        Ok(Json(with_latest_stale_annotations(
+        return Ok(with_latest_stale_annotations(
             &state,
             &symbol,
             response,
             stale_after_ts,
             range.as_deref(),
             hide_stale,
-        )))
-    })
-    .await
-    .map_err(|error| {
-        crate::api::contract_event_routes::internal_error(anyhow::anyhow!(
-            "contract whale latest projection join failed: {error}"
-        ))
-    })?
+        ));
+    }
+    if !config.enabled || !cwm_runtime_config.symbol_enabled(&symbol) {
+        let mut response = build_contract_whale_response_with_runtime(
+            &flow_state,
+            &symbol,
+            limit,
+            None,
+            false,
+            config.dry_run,
+            Some(&venue_health),
+        );
+        enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+        return Ok(with_latest_stale_annotations(
+            &state,
+            &symbol,
+            response,
+            stale_after_ts,
+            range.as_deref(),
+            hide_stale,
+        ));
+    }
+    let mut response = build_contract_whale_terminal_live_or_persisted_response(
+        &state,
+        &flow_state,
+        &venue_health,
+        &symbol,
+        limit,
+        exchange_filter.as_deref(),
+        config.enabled,
+        config.dry_run,
+    );
+    enrich_contract_whale_response_with_state(&mut response, &state, &symbol);
+    Ok(with_latest_stale_annotations(
+        &state,
+        &symbol,
+        response,
+        stale_after_ts,
+        range.as_deref(),
+        hide_stale,
+    ))
+}
+
+fn contract_whale_projection_key(
+    view: &str,
+    symbol: &str,
+    limit: usize,
+    range: Option<&str>,
+    exchange: Option<&str>,
+    hide_stale: bool,
+) -> ProjectionKey {
+    ProjectionKey::new(
+        serde_json::json!({
+            "view": view,
+            "symbol": symbol,
+            "limit": limit,
+            "range": range.map(|value| value.trim().to_ascii_lowercase()).unwrap_or_default(),
+            "exchange": exchange.unwrap_or_default(),
+            "hideStale": hide_stale,
+        })
+        .to_string(),
+    )
+}
+
+fn contract_whale_projection_value(
+    outcome: ProjectionOutcome<ContractWhaleProjectionValue>,
+    expect_summary: bool,
+) -> Result<serde_json::Value, ProjectionUnavailable> {
+    let value = match outcome {
+        ProjectionOutcome::Fresh { value, .. } | ProjectionOutcome::Stale { value, .. } => value,
+    };
+    match (value, expect_summary) {
+        (ContractWhaleProjectionValue::Summary(value), true)
+        | (ContractWhaleProjectionValue::Latest(value), false) => Ok(value),
+        _ => Err(ProjectionUnavailable {
+            reason:
+                crate::api::contract_event_projection_runtime::ProjectionUnavailableReason::Failed,
+            retry_after_ms: 2_000,
+        }),
+    }
+}
+
+fn contract_whale_projection_unavailable_api_error(
+    error: ProjectionUnavailable,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": error.error_code(),
+            "lastKnownDataAvailable": false,
+            "retryAfterMs": error.retry_after_ms,
+            "readOnly": true,
+            "executionEnabled": false,
+        })),
+    )
 }
 
 pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>) -> ApiJsonResult {

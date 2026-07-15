@@ -15,7 +15,9 @@ use crate::{
         alert_types::AlertState,
     },
     api::{
-        contract_event_projection_runtime::ContractEventProjectionRuntime,
+        contract_event_projection_runtime::{
+            ContractEventProjectionRuntime, ContractWhaleProjectionRuntime,
+        },
         contract_retention_runtime::ContractRetentionRuntime,
         contract_whale_routes::{
             build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
@@ -182,6 +184,7 @@ struct AppStateInner {
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
     contract_event_projection_runtime: ContractEventProjectionRuntime,
+    contract_whale_projection_runtime: ContractWhaleProjectionRuntime,
     contract_retention_runtime: ContractRetentionRuntime,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
@@ -469,6 +472,7 @@ impl AppState {
                     std::collections::BTreeMap::new(),
                 )),
                 contract_event_projection_runtime: ContractEventProjectionRuntime::new(),
+                contract_whale_projection_runtime: ContractWhaleProjectionRuntime::new(),
                 contract_retention_runtime: ContractRetentionRuntime::new(),
                 signal_history_service,
                 whale_flow_candidate_history_service,
@@ -1859,6 +1863,29 @@ impl AppState {
 
     pub fn contract_event_projection_stats_for_tests(&self) -> ProjectionRuntimeStats {
         self.inner.contract_event_projection_runtime.stats()
+    }
+
+    pub(crate) fn contract_whale_projection_runtime(&self) -> ContractWhaleProjectionRuntime {
+        self.inner.contract_whale_projection_runtime.clone()
+    }
+
+    pub fn set_contract_whale_projection_delay_for_tests(&self, delay: std::time::Duration) {
+        self.inner
+            .contract_whale_projection_runtime
+            .set_forced_delay(delay);
+    }
+
+    pub fn set_contract_whale_projection_wait_budget_for_tests(
+        &self,
+        wait_budget: std::time::Duration,
+    ) {
+        self.inner
+            .contract_whale_projection_runtime
+            .set_wait_budget(wait_budget);
+    }
+
+    pub fn contract_whale_projection_stats_for_tests(&self) -> ProjectionRuntimeStats {
+        self.inner.contract_whale_projection_runtime.stats()
     }
 
     pub(crate) fn contract_retention_runtime(&self) -> ContractRetentionRuntime {
