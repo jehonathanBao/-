@@ -1404,6 +1404,34 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByTestId("data-health-banner")).not.toBeInTheDocument();
   });
 
+  it("does not flash the recovery banner while usable projections refresh in the background", async () => {
+    const historicalPayload = await fetchContractEvents.getMockImplementation()();
+    const lifecyclePayload = await fetchFinalEventsV2.getMockImplementation()();
+    fetchContractEvents.mockResolvedValueOnce({
+      ...historicalPayload,
+      dataState: "stale",
+      degraded: true,
+      errorCode: "contract_projection_refresh_in_progress",
+      lastKnownDataAvailable: true,
+      error: null,
+    });
+    fetchFinalEventsV2.mockResolvedValueOnce({
+      ...lifecyclePayload,
+      dataState: "stale",
+      degraded: true,
+      errorCode: "contract_projection_refresh_in_progress",
+      lastKnownDataAvailable: true,
+      error: null,
+    });
+
+    render(<ContractWhaleMonitor />);
+
+    await waitFor(() => expect(fetchFinalEventsV2).toHaveBeenCalledTimes(1));
+    expect(within(screen.getByTestId("raw-contract-whale-signals")).getAllByRole("row").length)
+      .toBeGreaterThan(1);
+    expect(screen.queryByTestId("data-health-banner")).not.toBeInTheDocument();
+  });
+
   it("masks stale intelligence as UNKNOWN while keeping the previous context secondary", async () => {
     fetchContractWhaleIntelligenceTerminal.mockResolvedValueOnce({
       symbol: "ETH",
