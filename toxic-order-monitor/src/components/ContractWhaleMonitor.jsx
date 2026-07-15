@@ -3352,30 +3352,57 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
   const scoringRows = scoringBreakdown(signal);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6">
+    <div className="contract-detail-backdrop fixed inset-0 z-50 flex items-center justify-center px-4 py-6">
       <div
         aria-label="主力合约信号详情"
         aria-modal="true"
-        className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-cyan-500/30 bg-slate-950 p-5 shadow-glow"
+        className="workspace-dialog contract-detail-inspector"
         role="dialog"
       >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.26em] text-cyan-300">Contract Whale Detail</p>
-            <h3 className="mt-2 text-lg font-bold text-white">{signal.symbol} 主力合约信号详情</h3>
-            <p className="mt-1 text-sm text-slate-400">{signal.finalResult}</p>
+        <div className="contract-detail-header" data-testid="contract-detail-header">
+          <div className="contract-detail-heading">
+            <p>
+              <span>Contract Whale Detail</span>
+              <span aria-hidden="true"> / EVENT INSPECTOR</span>
+            </p>
+            <div className="contract-detail-title-row">
+              <h3>{signal.symbol} 主力合约信号详情</h3>
+              <span>{signalDisplayType(signal)}</span>
+              <span>{directionLabel(signal.direction)}</span>
+            </div>
+            <p className="contract-detail-conclusion">{signal.finalResult}</p>
           </div>
-          <button
-            aria-label="关闭主力合约信号详情"
-            className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:border-cyan-400 hover:text-cyan-100"
-            onClick={onClose}
-            type="button"
-          >
-            关闭
-          </button>
+          <div className="contract-detail-actions">
+            <span className="contract-detail-readonly">READ ONLY</span>
+            <button
+              aria-label="关闭主力合约信号详情"
+              className="contract-detail-close"
+              onClick={onClose}
+              type="button"
+            >
+              <span aria-hidden="true">×</span>
+              关闭
+            </button>
+          </div>
         </div>
 
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <div className="contract-detail-summary" data-testid="contract-detail-summary">
+          <ContractDetailMetric label="SEVERITY" value={severityLabel(signal.severity)} />
+          <ContractDetailMetric label="事件状态" value={eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"} />
+          <ContractDetailMetric
+            label={signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || `总流量 ${quantityUnit}`}
+            value={formatOptionalBaseVolume(signal.displayVolumeBtc ?? signal.finalEvent?.displayVolumeBtc ?? signal.totalVolumeBtc, signal.symbol)}
+          />
+          <ContractDetailMetric
+            label={`净方向 ${quantityUnit}`}
+            value={signal.netVolumeBtc === null || signal.netVolumeBtc === undefined ? "—" : netDirection(signal.netVolumeBtc, signal.symbol)}
+          />
+          <ContractDetailMetric label="名义金额" value={formatUsd(signal.totalNotionalUsd)} />
+          <ContractDetailMetric label="触发价格" value={formatPrice(signalTriggerPrice(signal))} />
+        </div>
+
+        <div className="contract-detail-layout">
+          <main className="contract-detail-body" data-testid="contract-detail-body">
         <DetailSection title="基础信息">
           <DetailGrid
             rows={[
@@ -3441,36 +3468,6 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ]}
             />
           </DetailSection>
-
-          <DetailSection title="Discord Gate">
-            <DetailGrid
-              rows={[
-                ["信号等级", severityLabel(signal.severity)],
-                ["市场冲击", discordImpactLabel(signal)],
-                ["推送原因", discordReasonLabel(signal)],
-                ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
-                ["Would Send", signal.discordWouldSend ? "dry-run 会推送" : "不会推送"],
-                ["Discord Sent", signal.discordSent ? "已推送" : "未推送"],
-                ["Skip Reason", signal.discordSent ? "sent" : signal.discordReason],
-                ["多平台确认", signal.multiExchangeConfirmed ? "是" : "否"],
-                ["疑似强平", signal.liquidationSuspected ? "是" : "否"],
-                ["合并来源", signal.mergedFrom?.length ? signal.mergedFrom.join(", ") : "无"],
-              ]}
-            />
-          </DetailSection>
-        </div>
-
-        <DetailSection title="核心判断" className="mt-4">
-          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm leading-6 text-cyan-50">
-            <p className="font-semibold text-slate-100">{signal.finalResult}</p>
-            <p className="mt-1 text-xs text-cyan-100">{priceResponseNarrative(signal)}</p>
-            {signal.cluster?.signalCount > 1 ? (
-              <p className="mt-1 text-xs text-cyan-100">
-                {clusterTrajectoryNarrative(signal)}
-              </p>
-            ) : null}
-          </div>
-        </DetailSection>
 
         <DetailSection title="Full Market Driver Engine" className="mt-4">
           <MarketDriverPanel signal={signal} />
@@ -3649,15 +3646,59 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <p>净流贡献 = 该平台对本轮信号同方向净流的贡献比例，用来判断主导平台。</p>
           </div>
         </DetailSection>
+          </main>
+
+          <aside className="contract-detail-rail" data-testid="contract-detail-rail">
+            <div className="contract-detail-rail-block contract-detail-decision">
+              <p className="contract-detail-rail-eyebrow">DESK DECISION</p>
+              <h4>核心判断</h4>
+              <strong>{signal.finalResult}</strong>
+              <p>{priceResponseNarrative(signal)}</p>
+              {signal.cluster?.signalCount > 1 ? <p>{clusterTrajectoryNarrative(signal)}</p> : null}
+            </div>
+
+            <DetailSection title="Discord Gate">
+              <DetailGrid
+                rows={[
+                  ["信号等级", severityLabel(signal.severity)],
+                  ["市场冲击", discordImpactLabel(signal)],
+                  ["推送原因", discordReasonLabel(signal)],
+                  ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
+                  ["Would Send", signal.discordWouldSend ? "dry-run 会推送" : "不会推送"],
+                  ["Discord Sent", signal.discordSent ? "已推送" : "未推送"],
+                  ["Skip Reason", signal.discordSent ? "sent" : signal.discordReason],
+                  ["多平台确认", signal.multiExchangeConfirmed ? "是" : "否"],
+                  ["疑似强平", signal.liquidationSuspected ? "是" : "否"],
+                  ["合并来源", signal.mergedFrom?.length ? signal.mergedFrom.join(", ") : "无"],
+                ]}
+              />
+            </DetailSection>
+
+            <div className="contract-detail-rail-block contract-detail-boundary">
+              <p className="contract-detail-rail-eyebrow">EXECUTION BOUNDARY</p>
+              <h4>只读事件审查</h4>
+              <p>该详情仅解释监控证据，不执行交易、不签名，也不会改变 Discord 推送状态。</p>
+            </div>
+          </aside>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function ContractDetailMetric({ label, value }) {
+  return (
+    <div className="contract-detail-summary-cell">
+      <p>{label}</p>
+      <strong>{value ?? "N/A"}</strong>
     </div>
   );
 }
 
 function DetailSection({ title, children, className = "" }) {
   return (
-    <section className={className}>
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{title}</p>
+    <section className={`contract-detail-section ${className}`.trim()}>
+      <p className="contract-detail-section-title">{title}</p>
       {children}
     </section>
   );
@@ -3665,11 +3706,11 @@ function DetailSection({ title, children, className = "" }) {
 
 function DetailGrid({ rows }) {
   return (
-    <div className="grid grid-cols-1 gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 text-sm md:grid-cols-2">
+    <div className="contract-detail-grid">
       {rows.map(([label, value]) => (
-        <div key={label}>
-          <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">{label}</p>
-          <p className="mt-1 break-words font-semibold text-slate-100">{value ?? "N/A"}</p>
+        <div className="contract-detail-field" key={label}>
+          <p>{label}</p>
+          <strong>{value ?? "N/A"}</strong>
         </div>
       ))}
     </div>
