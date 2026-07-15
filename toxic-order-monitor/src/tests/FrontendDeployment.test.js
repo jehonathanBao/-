@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "jsdom";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(testDir, "..", "..");
@@ -43,6 +44,48 @@ describe("frontend production deployment", () => {
     expect(nginxConfig).toContain("try_files $uri $uri/ /index.html");
     expect(nginxConfig).toContain("X-Operator-Api-Token ${OPERATOR_TOKEN}");
     expect(nginxConfig).toContain("Origin ${INTERNAL_API_ORIGIN}");
+  });
+
+  it("does not cache the SPA entry document across hashed deployments", () => {
+    const nginxConfig = readFile("toxic-order-monitor/nginx.conf.template");
+
+    expect(nginxConfig).toContain("location = /index.html");
+    expect(nginxConfig).toContain('Cache-Control "no-cache, no-store, must-revalidate"');
+  });
+
+  it("keeps a visible boot shell and arms one guarded retry for failed build assets", () => {
+    const html = readFile("toxic-order-monitor/index.html");
+    const dom = new JSDOM(html, {
+      runScripts: "outside-only",
+      url: "http://127.0.0.1:5173/contract-whale/btc",
+    });
+    const recoveryScript = dom.window.document.querySelector("script[data-bootstrap-recovery]");
+    const shell = dom.window.document.querySelector("[data-bootstrap-shell]");
+
+    expect(shell).not.toBeNull();
+    expect(recoveryScript).not.toBeNull();
+    if (!shell || !recoveryScript) {
+      dom.window.close();
+      return;
+    }
+
+    dom.window.eval(recoveryScript.textContent);
+    const failedScript = dom.window.document.createElement("script");
+    failedScript.src = "/assets/app-stale.js";
+    dom.window.document.head.appendChild(failedScript);
+    failedScript.dispatchEvent(new dom.window.Event("error"));
+
+    expect(shell.getAttribute("data-bootstrap-failed")).toBe("true");
+    expect(shell.textContent).toContain("正在自动重试");
+    expect(dom.window.sessionStorage.getItem("toxic-order-monitor.boot-retry.v1")).toBe("1");
+    expect(dom.window.__toxicOrderMonitorMarkBooted).toEqual(expect.any(Function));
+
+    dom.window.__toxicOrderMonitorMarkBooted();
+    expect(dom.window.sessionStorage.getItem("toxic-order-monitor.boot-retry.v1")).toBeNull();
+
+    failedScript.dispatchEvent(new dom.window.Event("error"));
+    expect(dom.window.sessionStorage.getItem("toxic-order-monitor.boot-retry.v1")).toBeNull();
+    dom.window.close();
   });
 
   it("keeps the frontend container on loopback-only upstream ports with health supervision", () => {

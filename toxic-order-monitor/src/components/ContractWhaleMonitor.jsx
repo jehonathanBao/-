@@ -18,7 +18,7 @@ const EVENT_REFRESH_MS = 15_000;
 const EVENT_RECOVERY_RETRY_MS = 2_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_CONTRACT_EVENT_LIMIT = 50;
-const ETH_INITIAL_CONTRACT_EVENT_LIMIT = 20;
+const INITIAL_CONTRACT_EVENT_LIMIT = 20;
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
 const OPERATOR_DIAGNOSTICS_ENABLED =
   import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
@@ -90,7 +90,7 @@ function deriveDataSlice(previous, payload, hasPreviousData, retryIntervalMs) {
   });
 }
 
-function eventRecoveryRetryDelay(payloads) {
+function recoveryRetryDelay(payloads, refreshIntervalMs) {
   const affected = payloads.filter((payload) => {
     const dataState = String(payload?.dataState || (payload?.error ? "unavailable" : "fresh")).toLowerCase();
     return payload?.error || ["stale", "degraded", "unavailable"].includes(dataState);
@@ -100,7 +100,10 @@ function eventRecoveryRetryDelay(payloads) {
   const hintedDelays = affected
     .map((payload) => Number(payload?.retryAfterMs))
     .filter((delay) => Number.isFinite(delay) && delay > 0);
-  return Math.min(EVENT_REFRESH_MS, hintedDelays.length > 0 ? Math.min(...hintedDelays) : EVENT_RECOVERY_RETRY_MS);
+  return Math.min(
+    refreshIntervalMs,
+    hintedDelays.length > 0 ? Math.min(...hintedDelays) : EVENT_RECOVERY_RETRY_MS,
+  );
 }
 
 export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
@@ -165,6 +168,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   useEffect(() => {
     let cancelled = false;
     let statusTimer = null;
+    let statusRetryTimer = null;
     let eventTimer = null;
     let eventRetryTimer = null;
     let statusRefreshInFlight = false;
@@ -334,7 +338,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       }));
     };
 
-    const refreshStatusViews = async () => {
+    const refreshStatusViews = async ({ allowRecoveryRetry = true } = {}) => {
       if (statusRefreshInFlight) return;
       statusRefreshInFlight = true;
       try {
@@ -380,6 +384,19 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             ),
           },
         }));
+        const retryDelay = allowRecoveryRetry
+          ? recoveryRetryDelay([statusPayload], STATUS_REFRESH_MS)
+          : null;
+        if (statusRetryTimer) {
+          window.clearTimeout(statusRetryTimer);
+          statusRetryTimer = null;
+        }
+        if (retryDelay !== null && document.visibilityState !== "hidden") {
+          statusRetryTimer = window.setTimeout(() => {
+            statusRetryTimer = null;
+            void refreshStatusViews({ allowRecoveryRetry: false });
+          }, retryDelay);
+        }
       } finally {
         statusRefreshInFlight = false;
       }
@@ -389,11 +406,13 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       if (eventRefreshInFlight) return;
       eventRefreshInFlight = true;
       try {
-        const contractEventLimit = initialEventViewPending && filters.symbol === "ETH"
-          ? ETH_INITIAL_CONTRACT_EVENT_LIMIT
+        const contractEventLimit = initialEventViewPending
+          ? INITIAL_CONTRACT_EVENT_LIMIT
           : DEFAULT_CONTRACT_EVENT_LIMIT;
         const contractEventsPayload = await refreshContractEvents(contractEventLimit);
-        initialEventViewPending = false;
+        if (isUsableDataPayload(contractEventsPayload)) {
+          initialEventViewPending = false;
+        }
         const secondaryResults = await Promise.allSettled([
           refreshFinalEvents(30),
           refreshIntelligenceTerminal(),
@@ -404,7 +423,9 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             .filter((result) => result.status === "fulfilled")
             .map((result) => result.value),
         ];
-        const retryDelay = allowRecoveryRetry ? eventRecoveryRetryDelay(projectionPayloads) : null;
+        const retryDelay = allowRecoveryRetry
+          ? recoveryRetryDelay(projectionPayloads, EVENT_REFRESH_MS)
+          : null;
         if (eventRetryTimer) {
           window.clearTimeout(eventRetryTimer);
           eventRetryTimer = null;
@@ -422,9 +443,11 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
 
     const clearTimers = () => {
       if (statusTimer) window.clearInterval(statusTimer);
+      if (statusRetryTimer) window.clearTimeout(statusRetryTimer);
       if (eventTimer) window.clearInterval(eventTimer);
       if (eventRetryTimer) window.clearTimeout(eventRetryTimer);
       statusTimer = null;
+      statusRetryTimer = null;
       eventTimer = null;
       eventRetryTimer = null;
     };

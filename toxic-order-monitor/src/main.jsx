@@ -6,7 +6,9 @@ import PageErrorBoundary from "./components/PageErrorBoundary.jsx";
 import PageShellSkeleton from "./components/PageShellSkeleton.jsx";
 import "./index.css";
 
-ReactDOM.createRoot(document.getElementById("root")).render(
+const rootElement = document.getElementById("root");
+
+ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <BrowserRouter>
       <PageErrorBoundary>
@@ -17,3 +19,5 @@ ReactDOM.createRoot(document.getElementById("root")).render(
     </BrowserRouter>
   </React.StrictMode>,
 );
+
+window.__toxicOrderMonitorMarkBooted?.();
