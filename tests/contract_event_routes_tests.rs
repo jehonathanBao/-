@@ -903,8 +903,41 @@ async fn final_events_v2_reuses_recent_projection_within_cache_ttl() {
 
     assert_eq!(second_generated_at, first_generated_at);
     assert!(second_payload["cacheAgeSec"].as_i64().unwrap_or_default() >= 0);
-    assert_eq!(second_payload["cacheTtlSec"], 10);
+    assert_eq!(second_payload["cacheTtlSec"], 30);
     assert!(second_payload["timeline"].is_object());
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn contract_event_cache_stays_fresh_across_frontend_poll_interval() {
+    let state = seeded_contract_event_state();
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let url = format!("http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20");
+
+    let first = client.get(&url).send().await.expect("first response");
+    assert_eq!(first.status(), StatusCode::OK);
+    state
+        .expire_contract_event_projection_cache_for_tests(Duration::from_secs(16))
+        .await;
+
+    let second = client.get(&url).send().await.expect("second response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let payload: serde_json::Value = second.json().await.expect("second json");
+    assert_eq!(payload["dataState"], "fresh");
+    assert_eq!(payload["degraded"], false);
+    assert!(
+        payload["cacheTtlSec"].as_i64().unwrap_or_default() > 15,
+        "cache TTL must exceed the frontend's 15-second event polling interval"
+    );
 
     server.abort();
 }
@@ -1212,7 +1245,7 @@ async fn contract_events_timeout_serves_stale_payload() {
     assert!(!first_ids.is_empty());
 
     state
-        .expire_contract_event_projection_cache_for_tests(Duration::from_secs(20))
+        .expire_contract_event_projection_cache_for_tests(Duration::from_secs(45))
         .await;
     state.set_contract_event_projection_wait_budget_for_tests(Duration::from_millis(50));
     state.set_contract_event_projection_delay_for_tests(Duration::from_millis(300));
