@@ -1255,7 +1255,8 @@ function deriveEventFeedDiagnostics({
 
 function DataHealthBanner({ dataSlices }) {
   const affected = Object.entries(dataSlices || {}).filter(([, slice]) =>
-    slice?.state === "stale" || slice?.state === "unavailable",
+    (slice?.state === "stale" || slice?.state === "unavailable")
+      && !(slice?.state === "stale" && slice?.errorCode === "contract_projection_refresh_in_progress"),
   );
   if (affected.length === 0) return null;
 
