@@ -21,12 +21,16 @@ pub struct RollingWindowStatsOptions<'a> {
 }
 
 pub fn aggregate_1s_buckets(trades: &[ContractTrade]) -> Vec<ContractFlowBucket> {
+    // Keep one coherent runtime-config view for the whole input batch. Besides
+    // avoiding per-trade lock/clone overhead, this prevents a single bucket
+    // batch from mixing source roles if configuration changes mid-aggregation.
+    let config = contract_whale_runtime_config();
     let mut buckets: BTreeMap<(i64, String, String), ContractFlowBucket> = BTreeMap::new();
     for trade in trades {
         let ts_bucket = trade.ts - (trade.ts % 1000);
         let exchange = trade.exchange.as_key().to_string();
         let key = (ts_bucket, exchange.clone(), trade.symbol.clone());
-        let source_role = contract_whale_runtime_config()
+        let source_role = config
             .exchange_platform(&exchange)
             .map(|platform| platform.market_role(ContractWhaleMarketType::Perp))
             .unwrap_or_default();

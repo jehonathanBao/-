@@ -165,11 +165,11 @@ fn liquidity_impact_score(
     market_impact_ratio: f64,
 ) -> f64 {
     let dynamic = stats.dynamic_multiple.unwrap_or_default().max(0.0);
-    let dynamic_score = if dynamic > 0.0 && dynamic >= 6.0 {
+    let dynamic_score = if dynamic >= 6.0 {
         24.0 + ((dynamic - 6.0) / 6.0 * 6.0).clamp(0.0, 6.0)
-    } else if dynamic > 0.0 && dynamic >= 4.0 {
+    } else if dynamic >= 4.0 {
         16.0 + ((dynamic - 4.0) / 2.0 * 8.0)
-    } else if dynamic > 0.0 && dynamic >= 2.0 {
+    } else if dynamic >= 2.0 {
         8.0 + ((dynamic - 2.0) / 2.0 * 8.0)
     } else if dynamic > 0.0 {
         (dynamic / 2.0 * 8.0).clamp(0.0, 8.0)
