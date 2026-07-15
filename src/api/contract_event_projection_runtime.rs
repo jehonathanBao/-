@@ -13,7 +13,7 @@ use super::contract_event_routes::{ContractEventPage, FinalEventsV2Response};
 
 const MAX_RUNNING: usize = 2;
 const MAX_ENTRIES: usize = 64;
-const FRESH_TTL: Duration = Duration::from_secs(10);
+const FRESH_TTL: Duration = Duration::from_secs(30);
 const STALE_TTL: Duration = Duration::from_secs(300);
 const WAIT_BUDGET: Duration = Duration::from_secs(4);
 const RETRY_AFTER_MS: u64 = 2_000;

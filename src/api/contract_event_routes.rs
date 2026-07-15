@@ -53,7 +53,7 @@ use crate::{
 };
 
 type ApiJsonResult<T = serde_json::Value> = Result<Json<T>, (StatusCode, Json<serde_json::Value>)>;
-const FINAL_EVENTS_V2_CACHE_TTL_SEC: i64 = 10;
+const FINAL_EVENTS_V2_CACHE_TTL_SEC: i64 = 30;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
