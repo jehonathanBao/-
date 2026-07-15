@@ -216,7 +216,7 @@ export default function NewTokenWatch() {
 
   return (
     <section className="space-y-4">
-      <div className="rounded-2xl border border-slate-700/70 bg-slate-900/80 p-5 shadow-glow">
+      <div className="workspace-panel p-5">
         <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-3">
@@ -299,7 +299,7 @@ export default function NewTokenWatch() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="rounded-2xl border border-slate-700/70 bg-slate-900/80 p-4 shadow-glow">
+        <aside className="workspace-panel p-4">
           <div className="mb-3 flex items-center justify-between">
             <h4 className="text-sm font-black text-white">监控列表</h4>
             <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-400">
@@ -327,7 +327,7 @@ export default function NewTokenWatch() {
           )}
         </aside>
 
-        <main className="min-w-0 rounded-2xl border border-slate-700/70 bg-slate-900/80 p-4 shadow-glow">
+        <main className="workspace-panel min-w-0 p-4">
           {!selectedSymbol ? (
             <EmptyState />
           ) : detailLoading && !reconstruction ? (

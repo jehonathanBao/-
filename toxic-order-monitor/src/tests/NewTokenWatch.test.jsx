@@ -621,7 +621,7 @@ describe("NewTokenWatch", () => {
 
   it("renders a flow-only observation surface without unverified intent claims", async () => {
     const user = userEvent.setup();
-    render(<NewTokenWatch />);
+    const { container } = render(<NewTokenWatch />);
 
     expect(await screen.findByText("新币合约流量与盘口观察")).toBeInTheDocument();
     expect(screen.getByText("ABCUSDT")).toBeInTheDocument();

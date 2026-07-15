@@ -24,7 +24,7 @@ export class PageErrorBoundary extends React.Component {
       return (
         <div data-testid="page-error-boundary">
           <PageShellSkeleton />
-          <div className="mx-auto -mt-28 max-w-3xl rounded-2xl border border-yellow-500/30 bg-slate-950/95 px-4 py-3 text-sm text-yellow-100 shadow-2xl">
+          <div className="workspace-dialog mx-auto -mt-28 max-w-3xl px-4 py-3 text-sm text-yellow-100">
             <p className="font-semibold">页面加载失败</p>
             <p className="mt-1 text-xs leading-5 text-yellow-100/80">
               当前页面壳已保留，你可以重试或稍后刷新。下面的错误只影响这一页，不会让整站白屏。

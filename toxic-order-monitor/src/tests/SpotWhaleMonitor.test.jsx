@@ -117,6 +117,26 @@ describe("SpotWhaleMonitor", () => {
     expect(screen.getByText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/)).toBeInTheDocument();
   });
 
+  it("uses the shared workspace panel, fields, and interactive row primitives", async () => {
+    const user = userEvent.setup();
+    render(<SpotWhaleMonitor lockedSymbol="BTC" />);
+
+    const heading = await screen.findByRole("heading", { name: "BTC 现货监控" });
+    expect(heading.closest("section")).toHaveClass("workspace-monitor-panel", "console-panel");
+    expect(await screen.findByTestId("spot-whale-row-spot-whale-BTC")).toHaveClass("console-row");
+
+    await user.click(screen.getByTestId("spot-whale-row-spot-whale-BTC"));
+    expect(screen.getByText("Spot Candidate Review").closest(".workspace-dialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+
+    await user.click(screen.getByRole("button", { name: "历史查询" }));
+
+    for (const label of ["等级", "类型", "Discord", "净方向", "开始时间", "结束时间"]) {
+      expect(screen.getByLabelText(label)).toHaveClass("console-field");
+    }
+
+  });
+
   it("filters visible spot signals by absolute net direction threshold", async () => {
     const user = userEvent.setup();
     render(<SpotWhaleMonitor />);

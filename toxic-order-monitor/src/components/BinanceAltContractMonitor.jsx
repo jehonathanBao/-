@@ -781,7 +781,7 @@ function AltSignalDetail({ signal, summary, onClose }) {
   const explainTags = Array.isArray(signal.explainTags) ? signal.explainTags : [];
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
-      <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-cyan-400/30 bg-slate-950 p-5 shadow-glow">
+      <div className="workspace-dialog max-h-[90vh] w-full max-w-4xl overflow-y-auto p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Alt Contract Review</p>

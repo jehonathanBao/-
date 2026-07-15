@@ -13,7 +13,7 @@ export default function RiskCard({ risk, count, percentage, active, onClick }) {
       aria-label={`筛选 ${risk} 风险`}
       aria-pressed={active}
       className={[
-        "rounded-2xl border border-slate-700/60 bg-slate-900/80 p-5 text-left shadow-glow transition",
+        "workspace-risk-card border p-5 text-left transition",
         config.border,
         active ? "ring-2 ring-cyan-300/60" : "",
       ].join(" ")}

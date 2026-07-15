@@ -108,7 +108,7 @@ export default function LiquidationCascadeDashboard() {
 
   return (
     <section className="space-y-5">
-      <div className="rounded-2xl border border-slate-700/70 bg-slate-900/80 p-5 shadow-glow">
+      <div className="workspace-panel p-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Liquidation Cascade Predictor</p>
@@ -143,7 +143,7 @@ export default function LiquidationCascadeDashboard() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
-        <section className="rounded-2xl border border-slate-700/70 bg-slate-900/80 p-5 shadow-glow">
+        <section className="workspace-panel p-5">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Cascade State</p>
@@ -240,7 +240,7 @@ export default function LiquidationCascadeDashboard() {
         </section>
       </div>
 
-      <section className="rounded-2xl border border-slate-700/70 bg-slate-900/80 shadow-glow">
+      <section className="workspace-panel">
         <div className="flex items-center justify-between gap-3 border-b border-slate-700/70 px-5 py-4">
           <div>
             <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">Leverage Heatmap</p>
@@ -321,7 +321,7 @@ export default function LiquidationCascadeDashboard() {
 
 function Panel({ title, children }) {
   return (
-    <section className="rounded-2xl border border-slate-700/70 bg-slate-900/80 p-5 shadow-glow">
+    <section className="workspace-panel p-5">
       <h4 className="mb-4 text-sm font-black uppercase tracking-[0.25em] text-cyan-300">{title}</h4>
       {children}
     </section>
