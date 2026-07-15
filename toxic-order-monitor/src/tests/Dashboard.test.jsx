@@ -237,6 +237,9 @@ describe("Dashboard interactions", () => {
   it("opens the BTC contract monitor from the dedicated sidebar route", async () => {
     renderDashboard("/contract-whale/btc");
 
+    expect(screen.getByTestId("contract-workspace-main")).toHaveClass("contract-workspace-main");
+    expect(screen.getByTestId("contract-workspace-sidebar")).toBeInTheDocument();
+    expect(screen.queryByText("盘口异常监控大屏")).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("link", { name: "BTC 合约监控" })).toHaveAttribute("href", "/contract-whale/btc");
