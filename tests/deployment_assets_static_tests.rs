@@ -24,6 +24,8 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
 
     let backend = fs::read_to_string(root.join("Dockerfile.backend")).expect("backend dockerfile");
     assert!(backend.contains("cargo build --release --bin btc-toxic-flow-monitor-rs"));
+    assert!(backend.contains("ARG CARGO_BUILD_JOBS=2"));
+    assert!(backend.contains("ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"));
     assert!(backend.contains("READ_ONLY=true"));
     assert!(backend.contains("API_HOST=0.0.0.0"));
     assert!(backend.contains("CMD [\"./btc-toxic-flow-monitor-rs\"]"));
@@ -39,6 +41,14 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(compose.contains("./config"));
     assert!(compose.contains("/app/config"));
     assert!(compose.contains("8000:3000"));
+    assert!(compose.contains("mem_limit: ${BACKEND_MEMORY_LIMIT:-3g}"));
+    assert!(compose.contains("mem_reservation: ${BACKEND_MEMORY_RESERVATION:-512m}"));
+    assert!(compose.contains("memswap_limit: ${BACKEND_MEMORY_SWAP_LIMIT:-4g}"));
+    assert!(compose.contains("pids_limit: ${BACKEND_PIDS_LIMIT:-256}"));
+    assert!(compose.contains("mem_limit: ${FRONTEND_MEMORY_LIMIT:-256m}"));
+    assert!(compose.contains("mem_reservation: ${FRONTEND_MEMORY_RESERVATION:-32m}"));
+    assert!(compose.contains("memswap_limit: ${FRONTEND_MEMORY_SWAP_LIMIT:-384m}"));
+    assert!(compose.contains("pids_limit: ${FRONTEND_PIDS_LIMIT:-64}"));
     assert!(!compose.contains("VITE_OPERATOR_TOKEN"));
     assert!(!compose.contains("VITE_API_TOKEN"));
 
@@ -95,6 +105,9 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(runbook.contains("http://<server-ip>:5173"));
     assert!(runbook.contains("`/ws/signals` streams redacted toxic signal snapshots"));
     assert!(runbook.contains("Browser refreshes and Vite HMR reloads"));
+    assert!(runbook.contains("Do not use `drop_caches` as a recurring memory fix"));
+    assert!(runbook.contains("docker builder prune -af --keep-storage 2GB"));
+    assert!(runbook.contains("MemoryMax=3G"));
 
     let smoke_script = fs::read_to_string(root.join("scripts/smoke-compose.sh")).expect("smoke");
     assert!(smoke_script.contains("backend StartedAt before frontend refresh"));

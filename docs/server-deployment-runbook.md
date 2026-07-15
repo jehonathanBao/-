@@ -84,6 +84,54 @@ The Dashboard scan log panel displays sanitized startup, scan, candidate, and Di
 
 For live notification deployment, see `docs/live-data-deployment-checklist.md`.
 
+## Host Memory And Cache Guardrails
+
+Linux page cache is reclaimable memory. A large `buff/cache` value is normal when
+`MemAvailable` remains healthy. Do not use `drop_caches` as a recurring memory fix;
+it discards useful filesystem cache and does not constrain the process that caused
+memory pressure.
+
+For an 8 GiB host, keep a 4 GiB swap file enabled with `vm.swappiness=10`. The
+Compose defaults cap the Rust backend at 3 GiB RAM / 4 GiB RAM-plus-swap and the
+frontend at 256 MiB RAM / 384 MiB RAM-plus-swap. Override these values only after
+measuring the service working set:
+
+```env
+BACKEND_MEMORY_LIMIT=3g
+BACKEND_MEMORY_RESERVATION=512m
+BACKEND_MEMORY_SWAP_LIMIT=4g
+BACKEND_PIDS_LIMIT=256
+FRONTEND_MEMORY_LIMIT=256m
+FRONTEND_MEMORY_RESERVATION=32m
+FRONTEND_MEMORY_SWAP_LIMIT=384m
+FRONTEND_PIDS_LIMIT=64
+```
+
+Apply equivalent systemd cgroup limits to non-Compose workloads. The heavy
+scheduler should use a reclaim threshold and a hard ceiling, for example:
+
+```ini
+[Service]
+MemoryHigh=2500M
+MemoryMax=3G
+MemorySwapMax=1G
+```
+
+Reclaim only unused build cache. This does not remove running containers,
+mounted application data, or active images:
+
+```bash
+docker builder prune -af --keep-storage 2GB
+journalctl --vacuum-size=512M
+```
+
+Run the cache prune weekly and alert before intervention:
+
+- warning when `MemAvailable` is below 20% or root disk usage exceeds 80%
+- critical when `MemAvailable` is below 10%, swap usage exceeds 50%, or root disk usage exceeds 90%
+- investigate a process whose RSS grows continuously; do not hide it by dropping page cache
+- give SQLite databases, event archives, and other application data an explicit retention policy before deleting anything
+
 ## Persistent Data
 
 The Compose file mounts:
