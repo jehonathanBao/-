@@ -19,6 +19,9 @@ const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_CONTRACT_EVENT_LIMIT = 50;
 const INITIAL_CONTRACT_EVENT_LIMIT = 20;
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
+const EVENT_FEED_SESSION_CACHE_VERSION = 1;
+const EVENT_FEED_SESSION_CACHE_TTL_MS = 10 * 60 * 1_000;
+const EVENT_FEED_SESSION_CACHE_PREFIX = "contract-whale:event-feed";
 const OPERATOR_DIAGNOSTICS_ENABLED =
   import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
 const DEFAULT_FILTERS = {
@@ -58,6 +61,76 @@ function createDataSlices() {
     lifecycle: createDataSlice(),
     intelligence: createDataSlice(),
   };
+}
+
+function eventFeedSessionCacheKey(filters) {
+  const identity = [
+    filters.symbol || "BTC",
+    filters.severity || "all",
+    filters.signal_type || "all",
+    filters.direction || "all",
+    filters.net_direction || "all",
+    filters.discord_sent || "all",
+    filters.window_sec || "all",
+    filters.exchange || "all",
+  ]
+    .map((value) => String(value).trim().toLowerCase())
+    .join(":");
+  return `${EVENT_FEED_SESSION_CACHE_PREFIX}:v${EVENT_FEED_SESSION_CACHE_VERSION}:${identity}`;
+}
+
+function readEventFeedSessionCache(filters) {
+  if (typeof window === "undefined") return null;
+  const key = eventFeedSessionCacheKey(filters);
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    const savedAt = Number(cached?.savedAt);
+    const cacheAgeMs = Date.now() - savedAt;
+    if (
+      cached?.version !== EVENT_FEED_SESSION_CACHE_VERSION
+      || !Array.isArray(cached?.items)
+      || cached.items.length === 0
+      || !Number.isFinite(savedAt)
+      || cacheAgeMs < 0
+      || cacheAgeMs > EVENT_FEED_SESSION_CACHE_TTL_MS
+    ) {
+      window.sessionStorage.removeItem(key);
+      return null;
+    }
+    return { ...cached, cacheAgeMs };
+  } catch {
+    return null;
+  }
+}
+
+function writeEventFeedSessionCache(filters, payload) {
+  if (typeof window === "undefined" || !Array.isArray(payload?.items) || payload.items.length === 0) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      eventFeedSessionCacheKey(filters),
+      JSON.stringify({
+        version: EVENT_FEED_SESSION_CACHE_VERSION,
+        savedAt: Date.now(),
+        items: payload.items.slice(0, DEFAULT_CONTRACT_EVENT_LIMIT),
+        nextCursor: payload.nextCursor ?? null,
+        hasMore: Boolean(payload.hasMore),
+        serverTime: payload.serverTime ?? null,
+        lastEventTs: payload.lastEventTs ?? null,
+        maxEventTs: payload.maxEventTs ?? null,
+        historyLagSec: payload.historyLagSec ?? null,
+        latestLagSec: payload.latestLagSec ?? null,
+        cacheAgeSec: payload.cacheAgeSec ?? null,
+        cacheTtlSec: payload.cacheTtlSec ?? null,
+        timeline: payload.timeline ?? null,
+      }),
+    );
+  } catch {
+    // Session storage is a best-effort first-paint cache; network refresh remains authoritative.
+  }
 }
 
 function isUsableDataPayload(payload) {
@@ -107,50 +180,64 @@ function recoveryRetryDelay(payloads, refreshIntervalMs) {
 
 export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
-  const [state, setState] = useState({
-    loading: true,
-    contractEventsLoading: true,
-    dataSlices: createDataSlices(),
-    summary: null,
-    items: [],
-    contractEvents: [],
-    contractEventsCursor: null,
-    contractEventsHasMore: false,
-    contractEventsServerTime: null,
-    contractEventsLastEventTs: null,
-    contractEventsMaxEventTs: null,
-    contractEventsHistoryLagSec: null,
-    contractEventsLatestLagSec: null,
-    contractEventsCacheAgeSec: null,
-    contractEventsCacheTtlSec: null,
-    contractEventsTimeline: null,
-    contractEventDebugCounts: null,
-    rawFlowDebug: null,
-    latencyDebug: null,
-    finalEvents: { active: [], closed: [] },
-    finalEventsCursor: null,
-    finalEventsHasMore: false,
-    finalEventsServerTime: null,
-    finalEventsLastEventTs: null,
-    finalEventsMaxEventTs: null,
-    finalEventsGeneratedAt: null,
-    finalEventsProjectionLagSec: null,
-    finalEventsCacheAgeSec: null,
-    finalEventsCacheTtlSec: null,
-    finalEventsTimeline: null,
-    intelligenceTerminal: null,
-    events: [],
-    hiddenContractEvents: [],
-    hiddenContractEventsLoaded: false,
-    hiddenContractEventsExpanded: false,
-    hiddenContractEventsLoading: false,
-    retentionStatus: null,
-    latestServerTime: null,
-    latestMaxTs: null,
-    latestMaxAgeSec: null,
-    latestStaleCount: null,
-    latestTimeline: null,
-    meta: null,
+  const [state, setState] = useState(() => {
+    const cachedEventFeed = readEventFeedSessionCache({ ...DEFAULT_FILTERS, symbol: assetSymbol });
+    const dataSlices = createDataSlices();
+    if (cachedEventFeed) {
+      dataSlices.historical = createDataSlice({
+        state: "stale",
+        errorCode: "event_feed_session_cache",
+        lastSuccessAt: cachedEventFeed.savedAt,
+        nextRetryAt: Date.now(),
+        cacheAgeSec: Math.floor(cachedEventFeed.cacheAgeMs / 1_000),
+        cacheTtlSec: Math.floor(EVENT_FEED_SESSION_CACHE_TTL_MS / 1_000),
+      });
+    }
+    return {
+      loading: true,
+      contractEventsLoading: !cachedEventFeed,
+      dataSlices,
+      summary: null,
+      items: [],
+      contractEvents: cachedEventFeed?.items || [],
+      contractEventsCursor: cachedEventFeed?.nextCursor ?? null,
+      contractEventsHasMore: cachedEventFeed?.hasMore ?? false,
+      contractEventsServerTime: cachedEventFeed?.serverTime ?? null,
+      contractEventsLastEventTs: cachedEventFeed?.lastEventTs ?? null,
+      contractEventsMaxEventTs: cachedEventFeed?.maxEventTs ?? null,
+      contractEventsHistoryLagSec: cachedEventFeed?.historyLagSec ?? null,
+      contractEventsLatestLagSec: cachedEventFeed?.latestLagSec ?? null,
+      contractEventsCacheAgeSec: cachedEventFeed?.cacheAgeSec ?? null,
+      contractEventsCacheTtlSec: cachedEventFeed?.cacheTtlSec ?? null,
+      contractEventsTimeline: cachedEventFeed?.timeline ?? null,
+      contractEventDebugCounts: null,
+      rawFlowDebug: null,
+      latencyDebug: null,
+      finalEvents: { active: [], closed: [] },
+      finalEventsCursor: null,
+      finalEventsHasMore: false,
+      finalEventsServerTime: null,
+      finalEventsLastEventTs: null,
+      finalEventsMaxEventTs: null,
+      finalEventsGeneratedAt: null,
+      finalEventsProjectionLagSec: null,
+      finalEventsCacheAgeSec: null,
+      finalEventsCacheTtlSec: null,
+      finalEventsTimeline: null,
+      intelligenceTerminal: null,
+      events: [],
+      hiddenContractEvents: [],
+      hiddenContractEventsLoaded: false,
+      hiddenContractEventsExpanded: false,
+      hiddenContractEventsLoading: false,
+      retentionStatus: null,
+      latestServerTime: null,
+      latestMaxTs: null,
+      latestMaxAgeSec: null,
+      latestStaleCount: null,
+      latestTimeline: null,
+      meta: null,
+    };
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
   const [selectedWhaleId, setSelectedWhaleId] = useState(null);
@@ -179,16 +266,22 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       setState((previous) => updater(previous));
     };
 
-    updateState((previous) => ({
-      ...previous,
-      loading: true,
-      contractEventsLoading: true,
-      dataSlices: createDataSlices(),
-      hiddenContractEvents: [],
-      hiddenContractEventsLoaded: false,
-      hiddenContractEventsExpanded: false,
-      hiddenContractEventsLoading: false,
-    }));
+    updateState((previous) => {
+      const dataSlices = createDataSlices();
+      if (previous.contractEvents.length > 0) {
+        dataSlices.historical = previous.dataSlices.historical;
+      }
+      return {
+        ...previous,
+        loading: true,
+        contractEventsLoading: previous.contractEvents.length === 0,
+        dataSlices,
+        hiddenContractEvents: [],
+        hiddenContractEventsLoaded: false,
+        hiddenContractEventsExpanded: false,
+        hiddenContractEventsLoading: false,
+      };
+    });
 
     const refreshSummary = () => fetchContractWhaleSummary(filters.symbol);
 
@@ -197,6 +290,9 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     const refreshContractEvents = async (limit = 50) => {
       const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
       const usable = isUsableDataPayload(payload);
+      if (usable) {
+        writeEventFeedSessionCache(filters, payload);
+      }
       updateState((previous) => {
         return {
           ...previous,

@@ -1237,6 +1237,7 @@ vi.mock("../api/contractWhale.js", () => ({
 describe("ContractWhaleMonitor", () => {
   afterEach(() => {
     cleanup();
+    window.sessionStorage.clear();
     vi.clearAllMocks();
     vi.useRealTimers();
   });
@@ -1266,6 +1267,20 @@ describe("ContractWhaleMonitor", () => {
     await screen.findByText("主力合约监控");
     expect(screen.getByText("主力合约监控载入中...")).toBeInTheDocument();
     expect(screen.queryByText("暂无主力合约异动")).not.toBeInTheDocument();
+  });
+
+  it("restores the last successful event feed immediately across a page refresh", async () => {
+    window.sessionStorage.clear();
+    const firstRender = render(<ContractWhaleMonitor />);
+
+    expect(await screen.findByTestId("raw-contract-whale-signals")).toHaveTextContent("69,917");
+    firstRender.unmount();
+
+    fetchContractEvents.mockReturnValueOnce(new Promise(() => {}));
+    render(<ContractWhaleMonitor />);
+
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("69,917");
+    expect(screen.queryByText("暂无可用的历史事件缓存。")).not.toBeInTheDocument();
   });
 
   it("prioritizes a compact ETH event page before secondary event views", async () => {
