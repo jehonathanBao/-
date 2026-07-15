@@ -3178,7 +3178,14 @@ describe("ContractWhaleMonitor", () => {
     await screen.findByText("主力合约监控");
     await user.click(screen.getAllByRole("button", { name: /查看主力合约信号详情 contract-whale-row raw-contract-whale-signals/ })[0]);
 
-    expect(screen.getByRole("dialog", { name: "主力合约信号详情" })).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "主力合约信号详情" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveClass("workspace-dialog", "contract-detail-inspector");
+    expect(screen.getByTestId("contract-detail-header")).toHaveTextContent("EVENT INSPECTOR");
+    expect(screen.getByTestId("contract-detail-summary")).toHaveTextContent("事件状态");
+    expect(screen.getByTestId("contract-detail-body")).toBeInTheDocument();
+    expect(screen.getByTestId("contract-detail-rail")).toHaveTextContent("Discord Gate");
+    expect(dialog).toHaveTextContent("READ ONLY");
     expect(screen.getByText("Contract Whale Detail")).toBeInTheDocument();
     expect(screen.getByText("Discord Gate")).toBeInTheDocument();
     expect(screen.getByText("可进入推送判断")).toBeInTheDocument();
