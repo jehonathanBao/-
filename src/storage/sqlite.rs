@@ -1,6 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -13,6 +17,7 @@ use crate::storage::spot_whale_repo::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOL
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
     path: PathBuf,
+    journal_mode_initializations: Arc<AtomicUsize>,
 }
 
 impl SqliteStore {
@@ -25,13 +30,22 @@ impl SqliteStore {
                 })?;
             }
         }
-        let store = Self { path };
+        let store = Self {
+            path,
+            journal_mode_initializations: Arc::new(AtomicUsize::new(0)),
+        };
+        store.initialize_database()?;
         store.health_check()?;
         Ok(store)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[doc(hidden)]
+    pub fn journal_mode_initializations(&self) -> usize {
+        self.journal_mode_initializations.load(Ordering::SeqCst)
     }
 
     pub fn migrate(&self) -> anyhow::Result<()> {
@@ -80,9 +94,16 @@ impl SqliteStore {
             .with_context(|| format!("failed to open sqlite {}", self.path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))
             .context("failed to set sqlite busy_timeout")?;
+        Ok(conn)
+    }
+
+    fn initialize_database(&self) -> anyhow::Result<()> {
+        let conn = self.open_connection()?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("failed to enable sqlite WAL journal mode")?;
-        Ok(conn)
+        self.journal_mode_initializations
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 

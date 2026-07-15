@@ -13,6 +13,7 @@ use crate::{
         ContractEventProjectionValue, ProjectionFailure, ProjectionKey, ProjectionOutcome,
         ProjectionUnavailable, ProjectionUnavailableReason,
     },
+    api::contract_retention_runtime::ContractRetentionSnapshotOutcome,
     api::contract_timeline_routes::{build_canonical_timeline_meta, CanonicalTimelineMeta},
     api::contract_whale_routes::{
         build_contract_whale_items_response, decorate_contract_whale_oi_contexts,
@@ -152,6 +153,13 @@ pub struct ContractRetentionStatusResponse {
     pub signal_protect_net_volume_btc: f64,
     pub cleanup_interval_hours: i64,
     pub tables: ContractRetentionTables,
+    pub data_state: String,
+    pub degraded: bool,
+    pub last_known_data_available: bool,
+    pub generated_at: Option<i64>,
+    pub cache_age_sec: Option<u64>,
+    pub retry_after_ms: Option<u64>,
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -619,10 +627,84 @@ pub async fn contract_retention_status_route(
     State(state): State<AppState>,
 ) -> ApiJsonResult<ContractRetentionStatusResponse> {
     let retention = contract_whale_runtime_config().retention;
-    let tables = match state.contract_whale_store() {
-        Some(store) => retention_tables(store, retention.flow_1s_days, retention.signals_days)
-            .map_err(internal_error)?,
-        None => unavailable_retention_tables("query_failed"),
+    let (
+        tables,
+        data_state,
+        degraded,
+        last_known_data_available,
+        generated_at,
+        cache_age_sec,
+        retry_after_ms,
+        error_code,
+    ) = match state.contract_whale_store() {
+        Some(store) => {
+            let flow_days = retention.flow_1s_days;
+            let signal_days = retention.signals_days;
+            match state
+                .contract_retention_runtime()
+                .get_or_spawn(move || retention_tables(store, flow_days, signal_days))
+                .await
+            {
+                ContractRetentionSnapshotOutcome::Fresh {
+                    value,
+                    cache_age,
+                    generated_at_ms,
+                } => (
+                    value,
+                    "fresh",
+                    false,
+                    true,
+                    Some(generated_at_ms),
+                    Some(cache_age.as_secs()),
+                    None,
+                    None,
+                ),
+                ContractRetentionSnapshotOutcome::Stale {
+                    value,
+                    cache_age,
+                    generated_at_ms,
+                } => (
+                    value,
+                    "stale",
+                    true,
+                    true,
+                    Some(generated_at_ms),
+                    Some(cache_age.as_secs()),
+                    Some(2_000),
+                    Some("contract_retention_refresh_in_progress".to_string()),
+                ),
+                ContractRetentionSnapshotOutcome::Refreshing => (
+                    unavailable_retention_tables("refresh_in_progress"),
+                    "degraded",
+                    true,
+                    false,
+                    None,
+                    None,
+                    Some(2_000),
+                    Some("contract_retention_refresh_in_progress".to_string()),
+                ),
+                ContractRetentionSnapshotOutcome::RefreshFailed => (
+                    unavailable_retention_tables("refresh_failed"),
+                    "degraded",
+                    true,
+                    false,
+                    None,
+                    None,
+                    Some(2_000),
+                    Some("contract_retention_refresh_failed".to_string()),
+                ),
+            }
+        }
+        None => (
+            unavailable_retention_tables("query_failed"),
+            "degraded",
+            true,
+            false,
+            None,
+            None,
+            None,
+            Some("contract_retention_store_unavailable".to_string()),
+        ),
     };
 
     Ok(Json(ContractRetentionStatusResponse {
@@ -632,6 +714,13 @@ pub async fn contract_retention_status_route(
         signal_protect_net_volume_btc: CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
         cleanup_interval_hours: 1,
         tables,
+        data_state: data_state.to_string(),
+        degraded,
+        last_known_data_available,
+        generated_at,
+        cache_age_sec,
+        retry_after_ms,
+        error_code,
     }))
 }
 

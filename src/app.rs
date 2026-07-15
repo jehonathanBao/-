@@ -7,6 +7,7 @@ use axum::http::{header, HeaderMap};
 use parking_lot::RwLock;
 
 pub use crate::api::contract_event_projection_runtime::ProjectionRuntimeStats;
+pub use crate::api::contract_retention_runtime::ContractRetentionRuntimeStats;
 
 use crate::{
     alerts::{
@@ -15,6 +16,7 @@ use crate::{
     },
     api::{
         contract_event_projection_runtime::ContractEventProjectionRuntime,
+        contract_retention_runtime::ContractRetentionRuntime,
         contract_whale_routes::{
             build_contract_whale_response_with_runtime_and_baselines, load_liquidation_contexts,
             load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
@@ -180,6 +182,7 @@ struct AppStateInner {
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
     contract_event_projection_runtime: ContractEventProjectionRuntime,
+    contract_retention_runtime: ContractRetentionRuntime,
     signal_history_service: ToxicSignalHistoryService,
     whale_flow_candidate_history_service: WhaleFlowCandidateHistoryService,
     spot_whale_service: SpotWhaleService,
@@ -466,6 +469,7 @@ impl AppState {
                     std::collections::BTreeMap::new(),
                 )),
                 contract_event_projection_runtime: ContractEventProjectionRuntime::new(),
+                contract_retention_runtime: ContractRetentionRuntime::new(),
                 signal_history_service,
                 whale_flow_candidate_history_service,
                 spot_whale_service,
@@ -1855,6 +1859,20 @@ impl AppState {
 
     pub fn contract_event_projection_stats_for_tests(&self) -> ProjectionRuntimeStats {
         self.inner.contract_event_projection_runtime.stats()
+    }
+
+    pub(crate) fn contract_retention_runtime(&self) -> ContractRetentionRuntime {
+        self.inner.contract_retention_runtime.clone()
+    }
+
+    pub fn set_contract_retention_delay_for_tests(&self, delay: std::time::Duration) {
+        self.inner
+            .contract_retention_runtime
+            .set_forced_delay(delay);
+    }
+
+    pub fn contract_retention_stats_for_tests(&self) -> ContractRetentionRuntimeStats {
+        self.inner.contract_retention_runtime.stats()
     }
 
     pub fn recent_toxic_events(

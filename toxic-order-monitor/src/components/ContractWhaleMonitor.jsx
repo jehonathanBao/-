@@ -3,7 +3,6 @@ import {
   CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractEventDebugCounts,
   fetchContractEvents,
-  fetchContractRetentionStatus,
   fetchContractWhaleIntelligenceTerminal,
   fetchContractWhaleLatencyDebug,
   fetchContractWhaleEvents,
@@ -174,7 +173,6 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     let statusRefreshInFlight = false;
     let eventRefreshInFlight = false;
     let initialEventViewPending = true;
-    let retentionTimer = null;
 
     const updateState = (updater) => {
       if (cancelled) return;
@@ -330,14 +328,6 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       }));
     };
 
-    const refreshRetention = async () => {
-      const payload = await fetchContractRetentionStatus();
-      updateState((previous) => ({
-        ...previous,
-        retentionStatus: payload?.error ? previous.retentionStatus : payload,
-      }));
-    };
-
     const refreshStatusViews = async ({ allowRecoveryRetry = true } = {}) => {
       if (statusRefreshInFlight) return;
       statusRefreshInFlight = true;
@@ -479,16 +469,12 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       void refreshLatencyDebug();
     }
     void refreshWhaleEvents();
-    retentionTimer = window.setTimeout(() => {
-      void refreshRetention();
-    }, 3000);
     configurePolling();
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       cancelled = true;
       clearTimers();
-      if (retentionTimer) window.clearTimeout(retentionTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [filters]);
@@ -1643,7 +1629,7 @@ function ContractWhaleSystemStatusPanel({
                 retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
               </p>
             ) : (
-              <p className="mt-2 text-slate-500">retention: 延迟加载中，先展示实时事件与最新快照。</p>
+              <p className="mt-2 text-slate-500">retention: 后台维护中；详细统计不在页面加载链路执行。</p>
             )}
           </div>
 

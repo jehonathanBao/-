@@ -966,6 +966,119 @@ async fn slow_contract_projection_does_not_delay_summary_or_latest() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn contract_retention_status_returns_immediately_and_coalesces_slow_refreshes() {
+    let state = seeded_contract_event_state();
+    state.set_contract_retention_delay_for_tests(Duration::from_millis(1_200));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+    let url = format!("http://{addr}/api/contract-retention-status");
+
+    let first_started = Instant::now();
+    let first = client
+        .get(&url)
+        .send()
+        .await
+        .expect("first retention response");
+    let first_elapsed = first_started.elapsed();
+
+    assert_eq!(first.status(), StatusCode::OK);
+    assert!(
+        first_elapsed < Duration::from_millis(250),
+        "retention route waited for background refresh: {first_elapsed:?}"
+    );
+    let first_payload: serde_json::Value = first.json().await.expect("first retention json");
+    assert_eq!(first_payload["dataState"], "degraded");
+    assert_eq!(
+        first_payload["errorCode"],
+        "contract_retention_refresh_in_progress"
+    );
+    assert_eq!(first_payload["lastKnownDataAvailable"], false);
+
+    wait_for_retention_running(&state).await;
+    let responses = futures_util::future::join_all((0..8).map(|_| client.get(&url).send())).await;
+    for response in responses {
+        assert_eq!(
+            response.expect("coalesced retention response").status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(state.contract_retention_stats_for_tests().started, 1);
+
+    wait_for_retention_idle(&state).await;
+    let cached = client
+        .get(&url)
+        .send()
+        .await
+        .expect("cached retention response");
+    assert_eq!(cached.status(), StatusCode::OK);
+    let cached_payload: serde_json::Value = cached.json().await.expect("cached retention json");
+    assert_eq!(cached_payload["dataState"], "fresh");
+    assert_eq!(cached_payload["degraded"], false);
+    assert_eq!(cached_payload["lastKnownDataAvailable"], true);
+    assert!(cached_payload["generatedAt"].as_i64().is_some());
+    assert!(cached_payload["tables"]["contractWhaleSignals"]["rowCount"]
+        .as_i64()
+        .is_some());
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn slow_contract_retention_refresh_does_not_delay_summary_or_latest() {
+    let state = seeded_contract_event_state();
+    state.set_contract_retention_delay_for_tests(Duration::from_millis(1_200));
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+
+    let retention = client
+        .get(format!("http://{addr}/api/contract-retention-status"))
+        .send()
+        .await
+        .expect("retention response");
+    assert_eq!(retention.status(), StatusCode::OK);
+    wait_for_retention_running(&state).await;
+
+    let light_started = Instant::now();
+    let (summary, latest) = tokio::join!(
+        client
+            .get(format!(
+                "http://{addr}/api/contract-whale/summary?symbol=BTC"
+            ))
+            .send(),
+        client
+            .get(format!(
+                "http://{addr}/api/contract-whale/latest?symbol=BTC&limit=50"
+            ))
+            .send(),
+    );
+    let light_elapsed = light_started.elapsed();
+
+    assert_eq!(summary.expect("summary response").status(), StatusCode::OK);
+    assert_eq!(latest.expect("latest response").status(), StatusCode::OK);
+    assert!(
+        light_elapsed < Duration::from_millis(800),
+        "light routes waited {light_elapsed:?} for retention refresh"
+    );
+    wait_for_retention_idle(&state).await;
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn equivalent_contract_event_requests_execute_projection_once() {
     let state = seeded_contract_event_state();
     state.set_contract_event_projection_delay_for_tests(Duration::from_millis(150));
@@ -1585,6 +1698,26 @@ async fn wait_for_projection_idle(state: &AppState) {
     })
     .await
     .expect("projection did not become idle");
+}
+
+async fn wait_for_retention_running(state: &AppState) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.contract_retention_stats_for_tests().running == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retention refresh did not start");
+}
+
+async fn wait_for_retention_idle(state: &AppState) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while state.contract_retention_stats_for_tests().running > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("retention refresh did not finish");
 }
 
 fn seeded_pipeline_debug_state() -> AppState {
