@@ -909,6 +909,31 @@ async fn final_events_v2_reuses_recent_projection_within_cache_ttl() {
     server.abort();
 }
 
+#[test]
+fn summary_and_latest_routes_offload_blocking_sqlite_work() {
+    const SOURCE: &str = include_str!("../src/api/contract_whale_routes.rs");
+
+    let summary_route = SOURCE
+        .split_once("pub async fn contract_whale_summary_route")
+        .and_then(|(_, rest)| rest.split_once("fn log_summary_access"))
+        .map(|(route, _)| route)
+        .expect("summary route source");
+    let latest_route = SOURCE
+        .split_once("pub async fn contract_whale_latest_route")
+        .and_then(|(_, rest)| rest.split_once("pub async fn contract_whale_outcome_summary_route"))
+        .map(|(route, _)| route)
+        .expect("latest route source");
+
+    assert!(
+        summary_route.contains("tokio::task::spawn_blocking"),
+        "summary route must not run synchronous SQLite work on an async worker"
+    );
+    assert!(
+        latest_route.contains("tokio::task::spawn_blocking"),
+        "latest route must not run synchronous SQLite work on an async worker"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn slow_contract_projection_does_not_delay_summary_or_latest() {
     let state = seeded_contract_event_state();
