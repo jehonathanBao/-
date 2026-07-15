@@ -1295,6 +1295,65 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractWhaleIntelligenceTerminal).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the compact BTC history request after a transient first failure", async () => {
+    fetchContractEvents.mockResolvedValueOnce({
+      items: [],
+      dataState: "unavailable",
+      errorCode: "contract_events_unavailable",
+      lastKnownDataAvailable: false,
+      retryAfterMs: 2_000,
+      error: "contract_events_unavailable",
+    });
+    vi.useFakeTimers();
+
+    render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchContractEvents).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ symbol: "BTC", range: "24h", limit: 20 }),
+    );
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchContractEvents).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ symbol: "BTC", range: "24h", limit: 20 }),
+    );
+  });
+
+  it("retries an unavailable status slice after two seconds", async () => {
+    fetchContractWhaleSummary.mockResolvedValueOnce({
+      summary: null,
+      meta: null,
+      error: "summary_unavailable",
+    });
+    fetchContractWhaleLatest.mockResolvedValueOnce({
+      summary: null,
+      items: [],
+      dataState: "unavailable",
+      errorCode: "latest_unavailable",
+      lastKnownDataAvailable: false,
+      retryAfterMs: 2_000,
+      error: "latest_unavailable",
+    });
+    vi.useFakeTimers();
+
+    render(<ContractWhaleMonitor />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchContractWhaleLatest).toHaveBeenCalledTimes(2);
+    expect(fetchContractWhaleSummary).toHaveBeenCalledTimes(2);
+  });
+
   it("replaces the loading state with a recoverable event-feed error", async () => {
     fetchContractEvents.mockResolvedValueOnce({
       items: [],
@@ -2160,7 +2219,7 @@ describe("ContractWhaleMonitor", () => {
       expect.objectContaining({
         symbol: "BTC",
         range: "24h",
-        limit: 50,
+        limit: 20,
       }),
     );
     expect(fetchFinalEventsV2).toHaveBeenCalledWith(
@@ -2496,7 +2555,7 @@ describe("ContractWhaleMonitor", () => {
           severity: "critical",
           net_direction: "abs500",
           range: "24h",
-          limit: 50,
+          limit: 20,
         }),
       ),
     );
@@ -3038,7 +3097,7 @@ describe("ContractWhaleMonitor", () => {
           symbol: "BTC",
           exchange: "coinbase",
           range: "24h",
-          limit: 50,
+          limit: 20,
         }),
       ),
     );

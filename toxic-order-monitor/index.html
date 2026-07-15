@@ -4,9 +4,131 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>有毒订单监控系统</title>
+    <style>
+      html,
+      body,
+      #root {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: linear-gradient(135deg, #061927 0%, #071323 55%, #111222 100%);
+        color: #d8f7ff;
+        font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+
+      [data-bootstrap-shell] {
+        box-sizing: border-box;
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        padding: 24px;
+      }
+
+      [data-bootstrap-card] {
+        width: min(440px, 100%);
+        border: 1px solid rgba(34, 211, 238, 0.25);
+        border-radius: 18px;
+        background: rgba(2, 12, 27, 0.88);
+        padding: 22px;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+      }
+
+      [data-bootstrap-kicker] {
+        margin: 0 0 8px;
+        color: #67e8f9;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+      }
+
+      [data-bootstrap-title] {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      [data-bootstrap-status] {
+        margin: 10px 0 0;
+        color: #94a3b8;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      [data-bootstrap-failed="true"] [data-bootstrap-card] {
+        border-color: rgba(251, 191, 36, 0.42);
+      }
+    </style>
+    <script data-bootstrap-recovery>
+      (() => {
+        const retryKey = "toxic-order-monitor.boot-retry.v1";
+        let booted = false;
+        let retryTimer = null;
+
+        const shell = () => document.querySelector("[data-bootstrap-shell]");
+        const clearRetryMarker = () => {
+          try {
+            window.sessionStorage.removeItem(retryKey);
+          } catch {
+            // Storage may be disabled; boot completion still cancels the in-page timer.
+          }
+        };
+
+        window.__toxicOrderMonitorMarkBooted = () => {
+          booted = true;
+          if (retryTimer !== null) {
+            window.clearTimeout(retryTimer);
+            retryTimer = null;
+          }
+          clearRetryMarker();
+        };
+
+        window.addEventListener("error", (event) => {
+          if (booted) {
+            return;
+          }
+          const target = event.target;
+          const tagName = String(target?.tagName || "").toUpperCase();
+          const assetUrl = String(target?.src || target?.href || "");
+          if (!(["SCRIPT", "LINK"].includes(tagName) && assetUrl.includes("/assets/"))) {
+            return;
+          }
+
+          const bootstrapShell = shell();
+          bootstrapShell?.setAttribute("data-bootstrap-failed", "true");
+          const status = bootstrapShell?.querySelector("[data-bootstrap-status]");
+          if (status) {
+            status.textContent = "页面资源连接中断，正在自动重试…";
+          }
+
+          let alreadyRetried = true;
+          try {
+            alreadyRetried = window.sessionStorage.getItem(retryKey) === "1";
+            if (!alreadyRetried) {
+              window.sessionStorage.setItem(retryKey, "1");
+            }
+          } catch {
+            // Avoid an unbounded reload loop when storage is unavailable.
+          }
+
+          if (!alreadyRetried && retryTimer === null) {
+            retryTimer = window.setTimeout(() => window.location.reload(), 750);
+          }
+        }, true);
+      })();
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div data-bootstrap-shell>
+        <div data-bootstrap-card role="status" aria-live="polite">
+          <p data-bootstrap-kicker>Toxic Order Monitor</p>
+          <h1 data-bootstrap-title>监控页面连接中</h1>
+          <p data-bootstrap-status>正在加载页面资源与只读监控数据…</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
