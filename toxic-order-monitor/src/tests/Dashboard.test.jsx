@@ -9,9 +9,26 @@ import Dashboard from "../pages/Dashboard.jsx";
 import { useSignalsStore } from "../store/signalsStore.js";
 
 vi.mock("../api/signals.js", async () => {
+  const actual = await vi.importActual("../api/signals.js");
   const { mockSignals } = await import("../data/mockSignals.js");
   return {
+    ...actual,
     fetchSignals: vi.fn(() => Promise.resolve(mockSignals)),
+    fetchSignalsSnapshot: vi.fn(() =>
+      Promise.resolve({
+        signals: mockSignals,
+        request: { phase: "ready", source: "backend", errorCode: null, fetchedAtMs: 1 },
+        runtime: {
+          phase: "confirmed",
+          readOnly: true,
+          monitoringStarted: true,
+          executionEnabled: false,
+          runtimeModified: false,
+          analysisOnly: true,
+          checkedAtMs: 1,
+        },
+      }),
+    ),
   };
 });
 

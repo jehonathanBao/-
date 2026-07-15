@@ -40,8 +40,8 @@ pub async fn toxic_markout_status_route(
     Json(serde_json::json!(toxic_markout_status(
         &requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, &requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, &requested_symbol),
     )))
 }
 
@@ -82,8 +82,8 @@ pub(crate) fn build_recent(state: &AppState, requested_symbol: &str) -> ToxicMar
     toxic_markout_recent(
         requested_symbol,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     )
 }
 
@@ -97,8 +97,8 @@ fn build_signal(
         requested_symbol,
         signal_id,
         &fusion_recent,
-        |ts| state.price_snapshot_at_or_before(ts),
-        |ts| state.price_snapshots_since(ts),
+        |ts| state.price_snapshot_at_or_before_for_symbol(ts, requested_symbol),
+        |ts| state.price_snapshots_since_for_symbol(ts, requested_symbol),
     )
 }
 

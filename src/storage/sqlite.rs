@@ -182,6 +182,20 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "evidence_degraded_reason",
         "TEXT",
     )?;
+    for (column, definition) in [
+        ("absolute_return_30s_bps", "REAL"),
+        ("absolute_return_2m_bps", "REAL"),
+        ("absolute_return_5m_bps", "REAL"),
+        ("realized_volatility_5m_bps", "REAL"),
+        ("max_absolute_excursion_5m_bps", "REAL"),
+        ("price_sample_count_5m", "INTEGER"),
+        ("liquidity_recovered_5m", "INTEGER"),
+        ("liquidity_recovery_ms", "INTEGER"),
+        ("liquidity_recovery_reason", "TEXT"),
+        ("setup_outcome", "TEXT"),
+    ] {
+        ensure_column(conn, "contract_whale_signal_outcomes", column, definition)?;
+    }
     ensure_contract_flow_market_type_primary_key(conn)?;
     Ok(())
 }

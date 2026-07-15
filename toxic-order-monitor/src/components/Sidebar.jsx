@@ -12,6 +12,7 @@ import {
   SignalIcon,
 } from "@heroicons/react/24/outline";
 import { NavLink, useLocation } from "react-router-dom";
+import RuntimeBoundaryBadge from "./RuntimeBoundaryBadge.jsx";
 
 const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"], icon: HomeIcon },
@@ -29,7 +30,7 @@ const menuItems = [
   { label: "系统设置", path: "/settings", icon: Cog6ToothIcon },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ runtimeBoundary }) {
   const location = useLocation();
   return (
     <aside
@@ -67,12 +68,8 @@ export default function Sidebar() {
       <div className="contract-sidebar-health mt-4 hidden border-t px-2 pt-4 text-[10px] lg:block">
         <div className="flex items-center justify-between gap-3">
           <span className="uppercase tracking-[0.16em] text-slate-600">Workspace</span>
-          <span className="inline-flex items-center gap-1.5 text-emerald-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            READ ONLY
-          </span>
         </div>
-        <p className="mt-2 leading-4 text-slate-600">No execution · No signing</p>
+        <RuntimeBoundaryBadge runtimeBoundary={runtimeBoundary} showDetail />
       </div>
     </aside>
   );

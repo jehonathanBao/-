@@ -10,6 +10,7 @@ use crate::{
         trade_ring_buffer::TradeRingBuffer,
     },
     normalizers::book::{normalize_book, RawBookInput},
+    normalizers::symbol::canonical_perp_symbol,
     toxicity::{
         liq_hunt_detector::{LiqHuntDetector, LiqHuntDetectorInput},
         liquidation_cluster_engine::LiquidationClusterEngine,
@@ -24,7 +25,7 @@ use crate::{
     types::{
         liq_hunt::LiqHuntState,
         liquidation::empty_liquidation_state,
-        market::NormalizedTrade,
+        market::{venue_symbol_mapping, NormalizedTrade},
         sweep::{SweepQuality, SweepState},
         toxic::{ToxicEvent, ToxicState},
     },
@@ -53,54 +54,58 @@ impl ReplayRunner {
         let event_count = events.len();
         events.sort_by_key(event_ts);
 
-        let mut trade_buffer = TradeRingBuffer::new(self.config.max_buffer_age_ms.max(120_000));
+        let mut config = self.config.clone();
+        if let Some(symbol) = canonical_perp_symbol(&config.symbol) {
+            config.symbol = symbol;
+        }
+
+        let mut trade_buffer = TradeRingBuffer::new(config.max_buffer_age_ms.max(120_000));
         let mut book_state = BookState::default();
-        let mut price_index = PriceIndex::new(
-            self.config.max_buffer_age_ms.max(120_000),
-            self.config.book_stale_ms,
-        );
+        let mut price_index =
+            PriceIndex::new(config.max_buffer_age_ms.max(120_000), config.book_stale_ms);
         let mut markout_engine = MarkoutEngine::new(
-            self.config.markout_horizons_ms.clone(),
-            self.config
-                .max_buffer_age_ms
-                .max(DEFAULT_MARKOUT_MAX_AGE_MS),
+            config.markout_horizons_ms.clone(),
+            config.max_buffer_age_ms.max(DEFAULT_MARKOUT_MAX_AGE_MS),
             DEFAULT_MARKOUT_EXPIRE_GRACE_MS,
         );
         let sweep_detector = SweepDetector::new(SweepParams::default());
         let liquidity = LiquidityThinness::default();
         let toxic_engine = ToxicVolumeEngine::new(ToxicVolumeParams {
-            threshold_btc: self.config.toxic_volume_alert_btc,
+            threshold_btc: config.toxic_volume_alert_btc,
             ..ToxicVolumeParams::default()
         });
         let liq_hunt_detector = LiqHuntDetector::new(LiqHuntParams {
-            cluster_large_notional_usd: self.config.liq_hunt_cluster_large_notional_usd,
-            near_distance_bps: self.config.liq_hunt_near_distance_bps,
-            active_score: self.config.liq_hunt_active_score,
-            likely_score: self.config.liq_hunt_likely_score,
-            watch_score: self.config.liq_hunt_watch_score,
+            cluster_large_notional_usd: config.liq_hunt_cluster_large_notional_usd,
+            near_distance_bps: config.liq_hunt_near_distance_bps,
+            active_score: config.liq_hunt_active_score,
+            likely_score: config.liq_hunt_likely_score,
+            watch_score: config.liq_hunt_watch_score,
             ..LiqHuntParams::default()
         });
         let liquidation_engine = LiquidationClusterEngine::new(LiquidationClusterParams {
-            enabled: self.config.liquidation_enabled,
-            lookback_ms: self.config.liquidation_lookback_ms,
-            cluster_band_bps: self.config.liquidation_cluster_band_bps,
-            min_cluster_distance_bps: self.config.liquidation_min_cluster_distance_bps,
-            max_cluster_distance_bps: self.config.liquidation_max_cluster_distance_bps,
-            proximity_threshold_bps: self.config.liquidation_proximity_threshold_bps,
-            min_touches: self.config.liquidation_min_cluster_touches,
-            pressure_threshold: self.config.liquidation_pressure_threshold,
+            enabled: config.liquidation_enabled,
+            lookback_ms: config.liquidation_lookback_ms,
+            cluster_band_bps: config.liquidation_cluster_band_bps,
+            min_cluster_distance_bps: config.liquidation_min_cluster_distance_bps,
+            max_cluster_distance_bps: config.liquidation_max_cluster_distance_bps,
+            proximity_threshold_bps: config.liquidation_proximity_threshold_bps,
+            min_touches: config.liquidation_min_cluster_touches,
+            pressure_threshold: config.liquidation_pressure_threshold,
         });
-        let mut vpin_engine = VpinBucketEngine::new(VpinParams {
-            enabled: self.config.vpin_enabled,
-            bucket_size_btc: self.config.vpin_bucket_size_btc,
-            lookback_buckets: self.config.vpin_lookback_buckets,
-            min_buckets: self.config.vpin_min_buckets,
-            spike_zscore: self.config.vpin_spike_zscore,
-            high_threshold: self.config.vpin_high_threshold,
-            extreme_threshold: self.config.vpin_extreme_threshold,
-            persist_buckets: self.config.vpin_persist_buckets,
-            ..VpinParams::default()
-        });
+        let mut vpin_engine = VpinBucketEngine::new_for_symbol(
+            VpinParams {
+                enabled: config.vpin_enabled,
+                bucket_size_btc: config.vpin_bucket_size_btc,
+                lookback_buckets: config.vpin_lookback_buckets,
+                min_buckets: config.vpin_min_buckets,
+                spike_zscore: config.vpin_spike_zscore,
+                high_threshold: config.vpin_high_threshold,
+                extreme_threshold: config.vpin_extreme_threshold,
+                persist_buckets: config.vpin_persist_buckets,
+                ..VpinParams::default()
+            },
+            config.symbol.clone(),
+        );
 
         let mut detected_events = Vec::new();
         let mut seen_ids = BTreeSet::new();
@@ -124,7 +129,7 @@ impl ReplayRunner {
                     trade_count += 1;
                     let trade = NormalizedTrade {
                         venue: trade_record.venue,
-                        symbol: "BTC-PERP".to_string(),
+                        symbol: config.symbol.clone(),
                         ts: trade_record.ts,
                         price: trade_record.price,
                         size_btc: trade_record.size_btc,
@@ -135,12 +140,13 @@ impl ReplayRunner {
                     trade_buffer.add_trade(trade.clone());
                     vpin_engine.on_trade(&trade);
                     markout_engine.on_trade(&trade);
-                    markout_engine
-                        .resolve_due_samples(trade.ts, |ts| price_index.mid_at_or_before(ts));
+                    markout_engine.resolve_due_samples_for_symbol(&config.symbol, trade.ts, |ts| {
+                        price_index.mid_at_or_before_for_symbol(ts, &config.symbol)
+                    });
                     vpin_accumulator.observe(&vpin_engine.get_state(trade.ts).metrics);
                     collect_events(
                         trade.ts,
-                        &self.config,
+                        &config,
                         &trade_buffer,
                         &book_state,
                         &price_index,
@@ -171,7 +177,9 @@ impl ReplayRunner {
                     }
                     if let Some(book) = normalize_book(RawBookInput {
                         venue: book_record.venue,
-                        symbol: replay_symbol_for_venue(book_record.venue).to_string(),
+                        symbol: venue_symbol_mapping(book_record.venue, &config.symbol)
+                            .venue_symbol
+                            .unwrap_or_else(|| config.symbol.clone()),
                         ts: book_record.ts,
                         bids,
                         asks,
@@ -179,11 +187,14 @@ impl ReplayRunner {
                         book_state.update_book(book.clone());
                         price_index.update_book(book);
                     }
-                    markout_engine
-                        .resolve_due_samples(book_record.ts, |ts| price_index.mid_at_or_before(ts));
+                    markout_engine.resolve_due_samples_for_symbol(
+                        &config.symbol,
+                        book_record.ts,
+                        |ts| price_index.mid_at_or_before_for_symbol(ts, &config.symbol),
+                    );
                     collect_events(
                         book_record.ts,
-                        &self.config,
+                        &config,
                         &trade_buffer,
                         &book_state,
                         &price_index,
@@ -248,15 +259,22 @@ fn collect_events(
     reason_code_frequency: &mut BTreeMap<String, usize>,
     threshold_buckets: &mut BTreeMap<String, usize>,
 ) {
-    let flow_state = RollingWindows::new(
+    let flow_state = RollingWindows::new_for_symbol(
         trade_buffer,
         book_state,
         price_index,
         &config.windows_ms,
         config.book_stale_ms,
+        &config.symbol,
     )
     .compute_all(now_ts);
-    let markout_state = markout_engine.get_state(now_ts, price_index.current_mid(now_ts).is_some());
+    let markout_state = markout_engine.get_state_for_symbol(
+        &config.symbol,
+        now_ts,
+        price_index
+            .current_snapshot_for_symbol(now_ts, &config.symbol)
+            .is_some(),
+    );
     let vpin_state = vpin_engine.get_state(now_ts);
     let sweep_state = compute_sweep_state(
         now_ts,
@@ -267,22 +285,22 @@ fn collect_events(
         sweep_detector,
         liquidity,
     );
+    let liquidation_snapshots = price_index
+        .snapshots_since_for_symbol(now_ts - config.liquidation_lookback_ms, &config.symbol);
     let liquidation_state = if config.liquidation_enabled {
         liquidation_engine.compute(
             now_ts,
             &flow_state,
             &sweep_state,
             &vpin_state,
-            &price_index.snapshots_since(now_ts - config.liquidation_lookback_ms),
+            &liquidation_snapshots,
         )
     } else {
         empty_liquidation_state(now_ts)
     };
     liquidation_accumulator.observe(
         &liquidation_state,
-        price_index
-            .snapshots_since(now_ts - config.liquidation_lookback_ms)
-            .len(),
+        liquidation_snapshots.len(),
         &config.symbol,
         0.65,
     );
@@ -361,27 +379,29 @@ fn compute_sweep_state(
     let mut results = BTreeMap::new();
     for window_ms in &config.sweep_windows_ms {
         let since_ts = now_ts - *window_ms as i64;
-        let flow_window = RollingWindows::new(
+        let flow_window = RollingWindows::new_for_symbol(
             trade_buffer,
             book_state,
             price_index,
             &[*window_ms],
             config.book_stale_ms,
+            &config.symbol,
         )
         .compute_window(*window_ms, now_ts);
         let liq = liquidity.detect(
-            "BTC-PERP",
+            &config.symbol,
             *window_ms,
-            price_index.snapshot_at_or_before(since_ts),
-            price_index.latest_snapshot(),
+            price_index.snapshot_at_or_before_for_symbol(since_ts, &config.symbol),
+            price_index.current_snapshot_for_symbol(now_ts, &config.symbol),
         );
         let result = sweep_detector.detect(SweepInput {
-            symbol: "BTC-PERP".to_string(),
+            symbol: config.symbol.clone(),
             window_ms: *window_ms,
             trades: trade_buffer
                 .get_trades_since(since_ts)
                 .into_iter()
                 .filter(|trade| trade.ts <= now_ts)
+                .filter(|trade| trade.symbol.eq_ignore_ascii_case(&config.symbol))
                 .collect(),
             flow_window,
             liquidity: Some(liq),
@@ -389,18 +409,25 @@ fn compute_sweep_state(
         results.insert(window_ms.to_string(), result);
     }
     SweepState {
-        symbol: "BTC-PERP".to_string(),
+        symbol: config.symbol.clone(),
         updated_at: now_ts,
         windows_ms: config.sweep_windows_ms.clone(),
         results,
         quality: SweepQuality {
-            has_trades: !trade_buffer.is_empty(),
-            has_books: price_index.latest_snapshot().is_some(),
+            has_trades: trade_buffer
+                .get_trades_since(now_ts - config.max_buffer_age_ms)
+                .iter()
+                .any(|trade| {
+                    trade.ts <= now_ts && trade.symbol.eq_ignore_ascii_case(&config.symbol)
+                }),
+            has_books: price_index
+                .current_snapshot_for_symbol(now_ts, &config.symbol)
+                .is_some(),
             active_venues: crate::types::market::Venue::ALL
                 .into_iter()
                 .filter(|venue| {
                     book_state
-                        .latest_books()
+                        .latest_books_for_symbol(&config.symbol)
                         .get(venue)
                         .is_some_and(|book| now_ts - book.ts <= config.book_stale_ms)
                 })
@@ -409,7 +436,7 @@ fn compute_sweep_state(
                 .into_iter()
                 .filter(|venue| {
                     book_state
-                        .latest_books()
+                        .latest_books_for_symbol(&config.symbol)
                         .get(venue)
                         .is_some_and(|book| now_ts - book.ts > config.book_stale_ms)
                 })
@@ -481,14 +508,5 @@ fn event_ts(event: &ReplayEvent) -> i64 {
         ReplayEvent::Trade(record) => record.ts,
         ReplayEvent::Book(record) => record.ts,
         ReplayEvent::ExpectToxic(record) => record.ts,
-    }
-}
-
-fn replay_symbol_for_venue(venue: crate::types::market::Venue) -> &'static str {
-    match venue {
-        crate::types::market::Venue::Binance => "BTCUSDT",
-        crate::types::market::Venue::Bybit => "BTCUSDT",
-        crate::types::market::Venue::Okx => "BTC-USDT-SWAP",
-        crate::types::market::Venue::Bitfinex => "tBTCF0:USTF0",
     }
 }

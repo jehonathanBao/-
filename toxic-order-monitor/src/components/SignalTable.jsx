@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { evaluateDiscordAlertGate } from "../api/alertGate.js";
+import useRuntimeBoundaryClock from "../hooks/useRuntimeBoundaryClock.js";
 import AdvancedTofPanel from "./AdvancedTofPanel.jsx";
 import CandidateExplanation from "./CandidateExplanation.jsx";
 import PerpTofPanel from "./PerpTofPanel.jsx";
@@ -29,6 +30,9 @@ export default function SignalTable({
 }) {
   const [reviewSignal, setReviewSignal] = useState(null);
   const [replaySignal, setReplaySignal] = useState(null);
+  const runtimeNow = useRuntimeBoundaryClock(
+    (Array.isArray(signals) ? signals : []).map((signal) => signal?.runtimeBoundary),
+  );
   const latestUpdatedAt = latestSignalTimeLabel(signals);
 
   return (
@@ -73,6 +77,7 @@ export default function SignalTable({
                 pushStatus={pushStatus}
                 selected={selectedSignal?.id === signal.id}
                 signal={signal}
+                runtimeNow={runtimeNow}
               />
             ))}
           </div>
@@ -92,10 +97,10 @@ export default function SignalTable({
   );
 }
 
-function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pushStatus }) {
+function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pushStatus, runtimeNow }) {
   const finalResult = finalResultDescription(signal);
   const titlePrice = signalTitlePrice(signal);
-  const gate = evaluateDiscordAlertGate(signal);
+  const gate = evaluateDiscordAlertGate(signal, runtimeNow);
   const status = pushStatus?.[signal.id];
   const pending = status?.status === "pending";
   const pushed = status?.status === "success" || signal.status === "pushed" || signal.alertStatus === "sent";
@@ -129,6 +134,11 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
             <span className={`rounded-full border px-2.5 py-1 text-xs ${directionClass(signal)}`}>
               {signal.side || "N/A"}
             </span>
+            {signal.isLive === false ? (
+              <span className="rounded-full border border-slate-600 bg-slate-800/70 px-2.5 py-1 text-xs font-semibold text-slate-300">
+                历史 / 非实时
+              </span>
+            ) : null}
             {signal.reviewStatus ? (
               <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${reviewStatusClass(signal.reviewStatus)}`}>
                 {reviewStatusLabel(signal.reviewStatus)}
@@ -167,24 +177,26 @@ function SignalCard({ signal, selected, onSelect, onPush, onReview, onReplay, pu
             <span
               className={[
                 "rounded-full border px-2 py-1",
-                signal.mainForceConfirmed
+                (signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed) === true
                   ? "border-emerald-500/60 text-emerald-200"
-                  : "border-amber-500/60 text-amber-200",
+                  : (signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed) === false
+                    ? "border-amber-500/60 text-amber-200"
+                    : "border-slate-700 text-slate-300",
               ].join(" ")}
             >
-              主力确认 {signal.mainForceConfirmed ? "已确认" : "待确认"} ·{" "}
+              主力确认 {triStateText(signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed, "已确认", "待确认", "不可用")} ·{" "}
               {formatMetric(signal.mainForceConfirmationCount ?? signal.marketStructureScore?.mainForceConfirmationCount)}/
               {formatMetric(signal.mainForceConfirmationTotal ?? signal.marketStructureScore?.mainForceConfirmationTotal)}
             </span>
             <span
               className={[
                 "rounded-full border px-2 py-1",
-                signal.extremeImpactConfirmed
+                (signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed) === true
                   ? "border-rose-500/60 text-rose-200"
                   : "border-slate-700 text-slate-300",
               ].join(" ")}
             >
-              极端行情 {signal.extremeImpactConfirmed ? "是" : "否"}
+              极端行情 {triStateText(signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed, "是", "否", "不可用")}
             </span>
             <span className="rounded-full border border-emerald-800 px-2 py-1 text-emerald-200">
               CWM {formatMetric(signal.cwmContribution?.score)} · 独立
@@ -600,27 +612,42 @@ function redactReplaySnapshot(value) {
 }
 
 function formatMetric(value) {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(number) : "N/A";
 }
 
 function formatDecimalMetric(value) {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(2).replace(/\.00$/, "") : "N/A";
 }
 
 function formatContribution(value) {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
   const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(1) : "0.0";
+  return Number.isFinite(number) ? number.toFixed(1) : "N/A";
 }
 
 function formatSignedMetric(value) {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
   const number = Number(value);
   if (!Number.isFinite(number)) return "N/A";
   return `${number >= 0 ? "+" : ""}${Math.round(number)}`;
 }
 
 function formatDuration(value) {
+  if (value === null || value === undefined || value === "") {
+    return "N/A";
+  }
   const number = Number(value);
   return Number.isFinite(number) ? `${Math.round(number)}s` : "N/A";
 }
@@ -677,7 +704,14 @@ function discordButtonText(gate) {
 }
 
 function booleanText(value) {
-  return value ? "Yes" : "No";
+  return triStateText(value, "Yes", "No", "N/A");
+}
+
+function triStateText(value, trueLabel, falseLabel, unavailableLabel) {
+  if (typeof value !== "boolean") {
+    return unavailableLabel;
+  }
+  return value ? trueLabel : falseLabel;
 }
 
 function regimeTypeText(value) {

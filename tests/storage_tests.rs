@@ -21,7 +21,7 @@ use btc_toxic_flow_monitor_rs::{
     storage::{
         runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
         snapshots_repo::SnapshotsRepo,
-        sqlite::SqliteStore,
+        sqlite::{column_exists, SqliteStore},
         storage_health::{StorageHealthGuardConfig, StorageHealthTracker},
         toxic_events_repo::ToxicEventsRepo,
         venue_health_repo::VenueHealthRepo,
@@ -81,6 +81,100 @@ fn migration_is_idempotent_and_repos_work() {
         .expect("snapshots");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0]["symbol"], "BTC-PERP");
+}
+
+#[test]
+fn contract_whale_outcome_v2_migration_is_additive_idempotent_and_keeps_legacy_nulls() {
+    let path = unique_path("contract-whale-outcome-v2/legacy.sqlite");
+    let conn = rusqlite::Connection::open(&path).expect("open legacy sqlite");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE contract_whale_signal_outcomes (
+          signal_id TEXT PRIMARY KEY,
+          symbol TEXT NOT NULL,
+          signal_ts INTEGER NOT NULL,
+          signal_type TEXT NOT NULL,
+          classification_v2 TEXT,
+          severity TEXT NOT NULL,
+          impact_level TEXT,
+          window_sec INTEGER NOT NULL,
+          oi_context TEXT,
+          regime TEXT,
+          entry_price REAL,
+          markout_30s_bps REAL,
+          markout_2m_bps REAL,
+          markout_5m_bps REAL,
+          mfe_5m_bps REAL,
+          mae_5m_bps REAL,
+          follow_through_30s INTEGER,
+          follow_through_2m INTEGER,
+          follow_through_5m INTEGER,
+          evaluated_at INTEGER,
+          outcome_version TEXT NOT NULL
+        );
+        INSERT INTO contract_whale_signal_outcomes (
+          signal_id, symbol, signal_ts, signal_type, severity, window_sec,
+          entry_price, markout_5m_bps, evaluated_at, outcome_version
+        ) VALUES (
+          'legacy-signal', 'BTC', 1700000000000, 'aggressive_buy', 'critical', 15,
+          70000.0, 24.0, 1700000300000, 'v1_shadow'
+        );
+        "#,
+    )
+    .expect("create legacy outcome schema");
+    drop(conn);
+
+    let store = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open store");
+    store.migrate().expect("first v2 migration");
+    store.migrate().expect("second v2 migration");
+
+    let v2_columns = [
+        "absolute_return_30s_bps",
+        "absolute_return_2m_bps",
+        "absolute_return_5m_bps",
+        "realized_volatility_5m_bps",
+        "max_absolute_excursion_5m_bps",
+        "price_sample_count_5m",
+        "liquidity_recovered_5m",
+        "liquidity_recovery_ms",
+        "liquidity_recovery_reason",
+        "setup_outcome",
+    ];
+    store
+        .with_connection(|conn| {
+            for column in v2_columns {
+                assert!(
+                    column_exists(conn, "contract_whale_signal_outcomes", column)?,
+                    "missing additive v2 outcome column {column}"
+                );
+            }
+
+            let (version, markout, all_v2_null): (String, Option<f64>, i64) = conn.query_row(
+                r#"
+                SELECT outcome_version, markout_5m_bps,
+                       CASE WHEN absolute_return_30s_bps IS NULL
+                              AND absolute_return_2m_bps IS NULL
+                              AND absolute_return_5m_bps IS NULL
+                              AND realized_volatility_5m_bps IS NULL
+                              AND max_absolute_excursion_5m_bps IS NULL
+                              AND price_sample_count_5m IS NULL
+                              AND liquidity_recovered_5m IS NULL
+                              AND liquidity_recovery_ms IS NULL
+                              AND liquidity_recovery_reason IS NULL
+                              AND setup_outcome IS NULL
+                            THEN 1 ELSE 0 END
+                FROM contract_whale_signal_outcomes
+                WHERE signal_id = 'legacy-signal'
+                "#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(version, "v1_shadow");
+            assert_eq!(markout, Some(24.0));
+            assert_eq!(all_v2_null, 1, "legacy row must retain NULL v2 fields");
+            Ok(())
+        })
+        .expect("inspect migrated legacy outcome");
 }
 
 #[test]

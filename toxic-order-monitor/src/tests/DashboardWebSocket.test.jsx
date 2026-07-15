@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { evaluateDiscordAlertGate } from "../api/alertGate.js";
 import Dashboard from "../pages/Dashboard.jsx";
 import { useSignalsStore } from "../store/signalsStore.js";
 
@@ -16,6 +17,21 @@ vi.mock("../api/signals.js", async () => {
   return {
     ...actual,
     fetchSignals: vi.fn(() => Promise.resolve([])),
+    fetchSignalsSnapshot: vi.fn(() =>
+      Promise.resolve({
+        signals: [],
+        request: { phase: "ready", source: "backend", errorCode: null, fetchedAtMs: 1 },
+        runtime: {
+          phase: "confirmed",
+          readOnly: true,
+          monitoringStarted: true,
+          executionEnabled: false,
+          runtimeModified: false,
+          analysisOnly: true,
+          checkedAtMs: 1,
+        },
+      }),
+    ),
   };
 });
 
@@ -181,8 +197,11 @@ describe("Dashboard websocket signal stream", () => {
     }
   });
 
-  it("shows reconnecting status without clearing existing signals", async () => {
-    wsMock.status = "reconnecting";
+  it.each([
+    ["reconnecting", "reconnecting"],
+    ["closed", "disconnected"],
+  ])("fails runtime closed on websocket status %s without deleting cached signals", async (status, label) => {
+    wsMock.status = status;
     useSignalsStore.getState().setSignals([wsItem({ signalId: "ws-existing", severity: "high" })].map((item) => ({
       id: item.id,
       dedupeKey: item.id,
@@ -209,10 +228,144 @@ describe("Dashboard websocket signal stream", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("reconnecting").length).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(screen.getAllByText(label).length).toBeGreaterThanOrEqual(1));
     expect(screen.getByTestId("signal-card-ws-existing")).toBeInTheDocument();
+    expect(useSignalsStore.getState().runtimeBoundary.phase).toBe("unavailable");
+    expect(useSignalsStore.getState().rawInboxSignals[0].isLive).toBe(false);
+  });
+
+  it("fails the runtime closed when an authoritative websocket frame cannot be parsed", async () => {
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    useSignalsStore.getState().setSignals([
+      {
+        ...liveGateSignal("ws-malformed"),
+        runtimeBoundary: safeRuntimeBoundary(),
+      },
+    ]);
+    wsMock.optionsByPath.get("/ws/signals").onMessage({ data: "{not-json" });
+
+    expect(useSignalsStore.getState().runtimeBoundary.phase).toBe("unavailable");
+    expect(useSignalsStore.getState().rawInboxSignals.find((signal) => signal.id === "ws-malformed").isLive).toBe(false);
+  });
+
+  it("turns an authoritative empty websocket snapshot into historical display-only signals", async () => {
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    useSignalsStore.getState().setSignals([
+      {
+        ...liveGateSignal("ws-empty-safe"),
+        runtimeBoundary: safeRuntimeBoundary(),
+      },
+    ]);
+    wsMock.optionsByPath.get("/ws/signals").onMessage({
+      data: JSON.stringify({
+        type: "signal_snapshot",
+        signals: [],
+        readOnly: true,
+        monitoringStarted: true,
+        executionEnabled: false,
+        runtimeModified: false,
+        analysisOnly: true,
+      }),
+    });
+
+    const cachedSignal = useSignalsStore.getState().rawInboxSignals.find((signal) => signal.id === "ws-empty-safe");
+    expect(cachedSignal.isLive).toBe(false);
+    expect(evaluateDiscordAlertGate(cachedSignal)).toEqual({
+      ok: false,
+      reason: "DISCORD_SUPPRESSED_NOT_LIVE",
+    });
+  });
+
+  it("fails cached signals closed when an empty websocket frame stops monitoring", async () => {
+    render(
+      <MemoryRouter>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(wsMock.optionsByPath.get("/ws/signals")?.onMessage).toBeTypeOf("function"));
+    useSignalsStore.getState().setSignals([
+      {
+        ...liveGateSignal("ws-cached-safe"),
+        runtimeBoundary: safeRuntimeBoundary(),
+      },
+    ]);
+    expect(evaluateDiscordAlertGate(useSignalsStore.getState().rawInboxSignals[0]).ok).toBe(true);
+
+    wsMock.optionsByPath.get("/ws/signals").onMessage({
+      data: JSON.stringify({
+        type: "signal_snapshot",
+        signals: [],
+        readOnly: true,
+        monitoringStarted: false,
+        executionEnabled: false,
+        runtimeModified: false,
+        analysisOnly: true,
+      }),
+    });
+
+    const cachedSignal = useSignalsStore.getState().rawInboxSignals.find((signal) => signal.id === "ws-cached-safe");
+    expect(cachedSignal.runtimeBoundary).toMatchObject({
+      phase: "confirmed",
+      monitoringStarted: false,
+    });
+    expect(evaluateDiscordAlertGate(cachedSignal)).toEqual({
+      ok: false,
+      reason: "DISCORD_SUPPRESSED_RUNTIME_CONFLICT",
+    });
   });
 });
+
+function safeRuntimeBoundary() {
+  return {
+    phase: "confirmed",
+    readOnly: true,
+    monitoringStarted: true,
+    executionEnabled: false,
+    runtimeModified: false,
+    analysisOnly: true,
+    checkedAtMs: Date.now(),
+  };
+}
+
+function liveGateSignal(id) {
+  return {
+    id,
+    dedupeKey: id,
+    time: "2023-11-14 22:13:20",
+    exchange: "Runtime",
+    symbol: "ETH-PERP",
+    type: "spoofing_candidate",
+    side: "Ask/Sell",
+    reason: "cached authoritative signal",
+    finalResult: "Ask/Sell · cached authoritative signal",
+    level: "A",
+    risk: "high",
+    score: 91,
+    riskScore: 91,
+    authoritativeRiskScore: 91,
+    confidence: 90,
+    detectorConfidence: 90,
+    dataQuality: 90,
+    dataQualityScore: 90,
+    authoritativeDataQuality: 90,
+    alertEligible: true,
+    status: "unhandled",
+    isLive: true,
+  };
+}
 
 function resetSignalsStore() {
   useSignalsStore.setState({

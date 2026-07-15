@@ -1,9 +1,10 @@
 use std::sync::Mutex;
 
 use btc_toxic_flow_monitor_rs::runtime::{
+    metric_provenance::{MetricLineage, MetricProvenance},
     perp_tof_metrics::{
-        build_perp_tof_metrics, classify_open_interest, merge_spot_perp_candidate, PerpTofInput,
-        PerpTofMetrics,
+        build_perp_tof_metrics, build_perp_tof_metrics_from_observed, classify_open_interest,
+        merge_spot_perp_candidate, ObservedPerpSnapshot, PerpTofInput, PerpTofMetrics,
     },
     tof_metrics::TofDirection,
 };
@@ -53,10 +54,8 @@ fn spot_and_perp_merge_boosts_aligned_high_risk_candidate() {
 }
 
 #[test]
-fn perp_tof_disabled_returns_neutral_safe_summary() {
+fn perp_builder_without_observed_evidence_returns_null_unavailable_metrics() {
     let _guard = ENV_LOCK.lock().expect("env lock");
-    std::env::set_var("PERP_TOF_ENABLED", "false");
-
     let metrics = build_perp_tof_metrics(&PerpTofInput {
         symbol: "BTC-PERP",
         spot_candidate_type: "SpoofingCandidate",
@@ -67,12 +66,136 @@ fn perp_tof_disabled_returns_neutral_safe_summary() {
         summary: "safe summary",
     });
 
-    std::env::remove_var("PERP_TOF_ENABLED");
+    let json = serde_json::to_value(&metrics).expect("perp json");
 
-    assert_eq!(metrics.candidate_type, "PerpTofDisabled");
+    assert_eq!(metrics.candidate_type, "PerpEvidenceUnavailable");
     assert_eq!(metrics.metrics_direction, TofDirection::Neutral);
     assert_eq!(metrics.risk_score, 0);
-    assert_eq!(metrics.data_quality, 86.0);
+    assert_eq!(metrics.data_quality, 0.0);
+    assert_eq!(metrics.lineage.provenance, MetricProvenance::Unavailable);
+    assert_eq!(json["oiChange"], serde_json::Value::Null);
+    assert_eq!(json["fundingRate"], serde_json::Value::Null);
+    assert_eq!(json["liquidationPressure"], serde_json::Value::Null);
+}
+
+#[test]
+fn observed_perp_flow_calculates_volume_but_inferred_liquidation_stays_ineligible() {
+    let metrics = build_perp_tof_metrics_from_observed(
+        &ObservedPerpSnapshot {
+            symbol: "BTC-PERP".to_string(),
+            observed_at_ms: 10_000,
+            price_change_bps: Some(25.0),
+            oi_change: Some(0.40),
+            funding_rate: Some(-0.0002),
+            total_volume: 1_800_000.0,
+            net_volume: 1_000_000.0,
+            observed_liquidation_notional: None,
+            squeeze_risk_proxy: Some(82.0),
+            data_quality: Some(88.0),
+        },
+        "BTC-PERP",
+        9_500,
+        10_000,
+    );
+
+    assert_eq!(metrics.agg_buy_volume, 1_400_000.0);
+    assert_eq!(metrics.agg_sell_volume, 400_000.0);
+    assert_eq!(metrics.liquidation_pressure, 82.0);
+    assert_eq!(
+        metrics.lineage.provenance,
+        MetricProvenance::CalculatedFromObserved
+    );
+    assert!(!metrics.liquidation_lineage.alert_eligible);
+    assert!(metrics.lineage.alert_eligible);
+    assert!(
+        metrics.risk_score >= 40,
+        "real CWM units must contribute to risk"
+    );
+}
+
+#[test]
+fn observed_perp_without_price_change_cannot_infer_direction_or_be_alert_eligible() {
+    let metrics = build_perp_tof_metrics_from_observed(
+        &ObservedPerpSnapshot {
+            symbol: "BTC-PERP".to_string(),
+            observed_at_ms: 10_000,
+            price_change_bps: None,
+            oi_change: Some(140_000.0),
+            funding_rate: Some(-0.06),
+            total_volume: 1_800_000.0,
+            net_volume: 1_000_000.0,
+            observed_liquidation_notional: None,
+            squeeze_risk_proxy: None,
+            data_quality: Some(88.0),
+        },
+        "BTC-PERP",
+        9_500,
+        10_000,
+    );
+
+    assert_eq!(metrics.metrics_direction, TofDirection::Neutral);
+    assert!(!metrics.lineage.alert_eligible);
+    assert_eq!(metrics.risk_score, 0);
+}
+
+#[test]
+fn observed_perp_beyond_candidate_future_skew_is_unavailable() {
+    let metrics = build_perp_tof_metrics_from_observed(
+        &ObservedPerpSnapshot {
+            symbol: "BTC-PERP".to_string(),
+            observed_at_ms: 15_001,
+            price_change_bps: Some(25.0),
+            oi_change: Some(0.40),
+            funding_rate: Some(-0.0002),
+            total_volume: 1_800_000.0,
+            net_volume: 1_000_000.0,
+            observed_liquidation_notional: None,
+            squeeze_risk_proxy: Some(82.0),
+            data_quality: Some(88.0),
+        },
+        "BTC-PERP",
+        10_000,
+        15_001,
+    );
+
+    assert_eq!(metrics.lineage.provenance, MetricProvenance::Unavailable);
+    assert!(!metrics.lineage.alert_eligible);
+    assert_eq!(
+        metrics.lineage.unavailable_reason.as_deref(),
+        Some("observed_perp_stale")
+    );
+    assert_eq!(metrics.metrics_direction, TofDirection::Neutral);
+    assert_eq!(metrics.risk_score, 0);
+}
+
+#[test]
+fn future_candidate_cannot_bind_current_perp_observation() {
+    let metrics = build_perp_tof_metrics_from_observed(
+        &ObservedPerpSnapshot {
+            symbol: "BTC-PERP".to_string(),
+            observed_at_ms: 10_000,
+            price_change_bps: Some(25.0),
+            oi_change: Some(0.40),
+            funding_rate: Some(-0.0002),
+            total_volume: 1_800_000.0,
+            net_volume: 1_000_000.0,
+            observed_liquidation_notional: None,
+            squeeze_risk_proxy: Some(82.0),
+            data_quality: Some(88.0),
+        },
+        "BTC-PERP",
+        15_001,
+        10_000,
+    );
+
+    assert_eq!(metrics.lineage.provenance, MetricProvenance::Unavailable);
+    assert!(!metrics.lineage.alert_eligible);
+    assert_eq!(
+        metrics.lineage.unavailable_reason.as_deref(),
+        Some("observed_perp_stale")
+    );
+    assert_eq!(metrics.metrics_direction, TofDirection::Neutral);
+    assert_eq!(metrics.risk_score, 0);
 }
 
 fn perp_metrics(candidate_type: &str, direction: TofDirection, risk_score: u8) -> PerpTofMetrics {
@@ -92,5 +215,8 @@ fn perp_metrics(candidate_type: &str, direction: TofDirection, risk_score: u8) -
         candidate_type: candidate_type.to_string(),
         explain_tags: vec!["OI long increase".to_string()],
         confidence: 86.0,
+        observed_liquidation_notional: None,
+        lineage: MetricLineage::calculated("test_perp", 10_000, true),
+        liquidation_lineage: MetricLineage::inferred("test_proxy", 10_000),
     }
 }

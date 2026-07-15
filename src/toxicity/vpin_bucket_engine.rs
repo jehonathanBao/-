@@ -38,6 +38,7 @@ impl ActiveBucket {
 #[derive(Debug, Clone)]
 pub struct VpinBucketEngine {
     params: VpinParams,
+    symbol: String,
     active_bucket: Option<ActiveBucket>,
     completed_buckets: VecDeque<VpinBucket>,
     next_bucket_id: u64,
@@ -45,8 +46,13 @@ pub struct VpinBucketEngine {
 
 impl VpinBucketEngine {
     pub fn new(params: VpinParams) -> Self {
+        Self::new_for_symbol(params, "BTC-PERP")
+    }
+
+    pub fn new_for_symbol(params: VpinParams, symbol: impl Into<String>) -> Self {
         Self {
             params,
+            symbol: normalized_symbol(&symbol.into()),
             active_bucket: None,
             completed_buckets: VecDeque::new(),
             next_bucket_id: 1,
@@ -58,7 +64,11 @@ impl VpinBucketEngine {
     }
 
     pub fn on_trade(&mut self, trade: &NormalizedTrade) -> Vec<VpinBucket> {
-        if !self.params.enabled || trade.size_btc <= 0.0 || trade.price <= 0.0 {
+        if normalized_symbol(&trade.symbol) != self.symbol
+            || !self.params.enabled
+            || trade.size_btc <= 0.0
+            || trade.price <= 0.0
+        {
             return Vec::new();
         }
 
@@ -173,26 +183,32 @@ impl VpinBucketEngine {
         } else {
             None
         };
+        let per_venue_vpin = if lookback.len() >= self.params.min_buckets {
+            relative_vpin_by_venue(&lookback)
+        } else {
+            BTreeMap::new()
+        };
 
         let vpin_extreme = vpin.is_some_and(|value| value >= self.params.extreme_threshold);
         let vpin_spike = vpin_zscore.is_some_and(|value| value >= self.params.spike_zscore);
         let vpin_high =
             !vpin_extreme && vpin.is_some_and(|value| value >= self.params.high_threshold);
 
+        if vpin_spike {
+            reason_codes.push("vpin_spike".to_string());
+        }
         if vpin_extreme {
             reason_codes.push("vpin_extreme".to_string());
-        } else if vpin_spike {
-            reason_codes.push("vpin_spike".to_string());
         } else if vpin_high {
             reason_codes.push("vpin_high".to_string());
         }
 
         let dominant_direction = dominant_direction(&lookback);
         VpinState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: self.symbol.clone(),
             updated_at: now_ts,
             metrics: VpinMetrics {
-                symbol: "BTC-PERP".to_string(),
+                symbol: self.symbol.clone(),
                 updated_at: now_ts,
                 enabled: self.params.enabled,
                 bucket_size_btc: self.params.bucket_size_btc,
@@ -205,6 +221,7 @@ impl VpinBucketEngine {
                 vpin,
                 vpin_zscore,
                 vpin_percentile,
+                per_venue_vpin,
                 latest_bucket_imbalance_ratio,
                 avg_bucket_imbalance_ratio,
                 vpin_high,
@@ -246,7 +263,7 @@ impl VpinBucketEngine {
         let imbalance_btc = net_btc.abs();
         let bucket = VpinBucket {
             id: active.id,
-            symbol: "BTC-PERP".to_string(),
+            symbol: self.symbol.clone(),
             start_ts: active.start_ts,
             end_ts: active.end_ts,
             bucket_size_btc: self.params.bucket_size_btc,
@@ -265,6 +282,27 @@ impl VpinBucketEngine {
         }
         Some(bucket)
     }
+}
+
+fn normalized_symbol(symbol: &str) -> String {
+    symbol.trim().to_ascii_uppercase()
+}
+
+fn relative_vpin_by_venue(buckets: &[VpinBucket]) -> BTreeMap<String, f64> {
+    let mut contributions = BTreeMap::<String, (f64, f64)>::new();
+    for bucket in buckets {
+        for (venue, breakdown) in &bucket.venue_breakdown {
+            let entry = contributions.entry(venue.clone()).or_default();
+            entry.0 += breakdown.net_btc.abs();
+            entry.1 += breakdown.total_btc;
+        }
+    }
+    contributions
+        .into_iter()
+        .filter_map(|(venue, (imbalance_btc, total_btc))| {
+            (total_btc > EPSILON).then_some((venue, imbalance_btc / total_btc))
+        })
+        .collect()
 }
 
 fn direction_for(buy_btc: f64, sell_btc: f64) -> VpinDirection {

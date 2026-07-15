@@ -65,8 +65,11 @@ impl TradeRingBuffer {
 }
 
 fn dedupe_key(trade: &NormalizedTrade) -> Option<String> {
-    trade
-        .trade_id
-        .as_ref()
-        .map(|trade_id| format!("{}:{trade_id}", trade.venue))
+    trade.trade_id.as_ref().map(|trade_id| {
+        format!(
+            "{}:{}:{trade_id}",
+            trade.venue,
+            trade.symbol.trim().to_ascii_uppercase()
+        )
+    })
 }

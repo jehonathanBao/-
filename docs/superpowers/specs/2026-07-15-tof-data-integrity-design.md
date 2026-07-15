@@ -148,7 +148,7 @@ cargo test -j 1 --all-targets
 npm --prefix toxic-order-monitor test
 npm --prefix toxic-order-monitor run build
 npm --prefix toxic-order-monitor audit --audit-level=high
-docker compose config
+docker compose config --quiet
 git diff --check
 ```
 

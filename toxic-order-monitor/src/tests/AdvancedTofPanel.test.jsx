@@ -28,4 +28,31 @@ describe("AdvancedTofPanel", () => {
     expect(screen.getByText("Heatmap")).toBeInTheDocument();
     expect(screen.getByText("89")).toBeInTheDocument();
   });
+
+  it("does not coerce unavailable advanced metrics to zero", () => {
+    render(
+      <AdvancedTofPanel
+        metrics={{
+          vpinEnhanced: null,
+          largeOrderFlowCluster: null,
+          historicalFundingOiTrend: null,
+          marketPressureHeatmap: null,
+          finalRiskScore: null,
+          dataQuality: null,
+          metricsCompleteness: null,
+          freshDataCoverage: null,
+          lineage: {
+            provenance: "unavailable",
+            available: false,
+            fresh: false,
+            alertEligible: false,
+            source: "advanced_tof",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("不可用").length).toBeGreaterThanOrEqual(8);
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+  });
 });

@@ -1,6 +1,51 @@
 import { create } from "zustand";
 
-export const SIGNAL_INBOX_STORAGE_KEY = "toxic-order-monitor.signal-inbox.v1";
+export const SIGNAL_INBOX_STORAGE_KEY = "toxic-order-monitor.signal-inbox.v2";
+const LEGACY_SIGNAL_INBOX_STORAGE_KEY = "toxic-order-monitor.signal-inbox.v1";
+
+const LEGACY_MARKET_STRUCTURE_FIELDS = [
+  "mainForceScore",
+  "mainForceConfirmed",
+  "mainForceConfirmationCount",
+  "mainForceConfirmationTotal",
+  "mainForceConfirmationThreshold",
+  "structureBias",
+  "extremeImpactScore",
+  "extremeImpactConfirmed",
+  "regimeType",
+  "marketStructureSeverity",
+  "marketStructureConfidence",
+  "marketStructureDataQuality",
+  "structureRaw",
+  "spotContractFloor",
+  "durationScore",
+  "liquidationPenalty",
+  "crowdingPenalty",
+  "spotScore",
+  "spotCvdScore",
+  "spotVolumeAnomaly",
+  "spotAbsorption",
+  "spotLiquidityShift",
+  "spotPriceResponse",
+  "contractScore",
+  "cwmAggressiveFlow",
+  "oiImpulse",
+  "liquidationContext",
+  "fundingCrowding",
+  "basisPremium",
+  "activeExchangeConfirmation",
+  "crossConfirmScore",
+  "spotContractDirectionConsistency",
+  "multiWindowConsistency",
+  "priceResponseConsistency",
+  "sourceCoverage",
+  "signalAgreement",
+  "oiScore",
+  "liquidationScore",
+  "fundingCrowdingScore",
+  "cwmScore",
+  "marketStructureReasons",
+];
 
 function signalKey(signal) {
   return signal?.dedupeKey || signal?.dedupe_key || signal?.id;
@@ -23,24 +68,61 @@ function loadInboxState() {
   }
 
   try {
-    const raw = window.localStorage.getItem(SIGNAL_INBOX_STORAGE_KEY);
-    if (!raw) {
+    const current = readPersistedInbox(SIGNAL_INBOX_STORAGE_KEY);
+    const legacy = current ? null : readPersistedInbox(LEGACY_SIGNAL_INBOX_STORAGE_KEY);
+    const parsed = current ?? legacy;
+    if (!parsed) {
       return null;
     }
-    const parsed = JSON.parse(raw);
-    if (!hasPersistedInboxPayload(parsed)) {
-      return null;
-    }
-    return {
-      rawInboxSignals: parsed.rawInboxSignals.map((signal) => normalizeSignal(signal)),
+    const state = {
+      rawInboxSignals: parsed.rawInboxSignals.map((signal) => ({
+        ...normalizeSignal(legacy ? sanitizeLegacySignal(signal) : signal),
+        isLive: false,
+      })),
       clearedAtMs: Number(parsed.clearedAtMs || 0),
       clearedSignalKeys: Array.isArray(parsed.clearedSignalKeys)
         ? parsed.clearedSignalKeys
         : [],
     };
+    if (legacy) {
+      persistInboxState(state);
+    }
+    return state;
   } catch {
     return null;
   }
+}
+
+function readPersistedInbox(storageKey) {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return hasPersistedInboxPayload(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeLegacySignal(signal) {
+  const sanitized = {
+    ...(signal && typeof signal === "object" ? signal : {}),
+    marketStructureScore: null,
+    mainForceStructure: null,
+  };
+  for (const field of LEGACY_MARKET_STRUCTURE_FIELDS) {
+    sanitized[field] = null;
+  }
+  if (sanitized.riskSystems && typeof sanitized.riskSystems === "object") {
+    sanitized.riskSystems = {
+      ...sanitized.riskSystems,
+      marketStructureScore: null,
+      mainForceStructure: null,
+    };
+  }
+  return sanitized;
 }
 
 function hasPersistedInboxPayload(parsed) {
@@ -53,7 +135,7 @@ function persistInboxState(state) {
   }
 
   const payload = {
-    rawInboxSignals: state.rawInboxSignals,
+    rawInboxSignals: state.rawInboxSignals.map(stripTransientSignalState),
     clearedAtMs: state.clearedAtMs,
     clearedSignalKeys: state.clearedSignalKeys,
   };
@@ -63,6 +145,36 @@ function persistInboxState(state) {
   } catch {
     return "LOCAL_STORAGE_WRITE_FAILED";
   }
+}
+
+function stripTransientSignalState(signal) {
+  const {
+    runtimeBoundary: _runtimeBoundary,
+    request: _request,
+    isLive: _isLive,
+    ...persisted
+  } = signal || {};
+  return { ...persisted, isLive: false };
+}
+
+function runtimeAllowsLiveSignals(runtimeBoundary) {
+  return Boolean(
+    runtimeBoundary &&
+      runtimeBoundary.phase === "confirmed" &&
+      runtimeBoundary.readOnly === true &&
+      runtimeBoundary.monitoringStarted === true &&
+      runtimeBoundary.executionEnabled === false &&
+      runtimeBoundary.runtimeModified === false &&
+      runtimeBoundary.analysisOnly === true,
+  );
+}
+
+function attachRuntimeBoundary(signal, runtimeBoundary) {
+  return {
+    ...signal,
+    runtimeBoundary,
+    isLive: runtimeAllowsLiveSignals(runtimeBoundary) ? signal?.isLive === true : false,
+  };
 }
 
 function mergeIncomingSignals(currentSignals, incomingSignals, clearedSignalKeys = []) {
@@ -85,12 +197,17 @@ function mergeIncomingSignals(currentSignals, incomingSignals, clearedSignalKeys
       return;
     }
     const existing = byKey.get(key);
+    const hasExplicitRuntimeBoundary = Boolean(
+      signal?.runtimeBoundary && typeof signal.runtimeBoundary === "object",
+    );
     byKey.set(key, {
       ...existing,
       ...signal,
       firstSeenAt: existing?.firstSeenAt ?? signal.firstSeenAt ?? now,
       lastSeenAt: now,
-      isLive: true,
+      isLive: hasExplicitRuntimeBoundary
+        ? runtimeAllowsLiveSignals(signal.runtimeBoundary) && signal.isLive === true
+        : true,
     });
   });
 
@@ -140,6 +257,82 @@ export const useSignalsStore = create((set, get) => ({
     })),
   discordConnected: false,
   lastPushedAt: firstHighRiskSignal?.pushedAt ?? null,
+  signalsRequest: { phase: "idle", source: null, errorCode: null, fetchedAtMs: 0 },
+  runtimeBoundary: {
+    phase: "unavailable",
+    readOnly: null,
+    monitoringStarted: null,
+    executionEnabled: null,
+    runtimeModified: null,
+    analysisOnly: null,
+    checkedAtMs: 0,
+  },
+  applySignalsSnapshot: (snapshot) =>
+    set((state) => {
+      const request = snapshot?.request && typeof snapshot.request === "object"
+        ? snapshot.request
+        : { phase: "error", source: null, errorCode: "MALFORMED_SNAPSHOT", fetchedAtMs: Date.now() };
+      const runtimeBoundary = snapshot?.runtime && typeof snapshot.runtime === "object"
+        ? snapshot.runtime
+        : {
+            phase: "unavailable",
+            readOnly: null,
+            monitoringStarted: null,
+            executionEnabled: null,
+            checkedAtMs: Date.now(),
+      };
+      if (request.phase !== "ready" || !Array.isArray(snapshot?.signals)) {
+        const rawInboxSignals = state.rawInboxSignals.map((signal) => attachRuntimeBoundary(signal, runtimeBoundary));
+        const selectedSignal = state.selectedSignal
+          ? attachRuntimeBoundary(state.selectedSignal, runtimeBoundary)
+          : state.selectedSignal;
+        return {
+          rawInboxSignals,
+          signals: rawInboxSignals,
+          selectedSignal,
+          signalsRequest: request,
+          runtimeBoundary,
+        };
+      }
+      const rawInboxSignals = mergeIncomingSignals(
+        state.rawInboxSignals,
+        snapshot.signals,
+        state.clearedSignalKeys,
+      );
+      const selectedKey = signalKey(state.selectedSignal);
+      const selectedSignal =
+        (selectedKey ? rawInboxSignals.find((signal) => signalKey(signal) === selectedKey) : null) ??
+        rawInboxSignals.find((signal) => signal.risk === "high") ??
+        rawInboxSignals[0] ??
+        null;
+      const nextState = {
+        rawInboxSignals,
+        signals: rawInboxSignals,
+        selectedSignal,
+        signalsRequest: request,
+        runtimeBoundary,
+      };
+      const storageWarning = persistInboxState({ ...state, ...nextState });
+      return { ...nextState, storageWarning };
+    }),
+  setRuntimeBoundary: (runtimeBoundary) =>
+    set((state) => {
+      const rawInboxSignals = state.rawInboxSignals.map((signal) =>
+        attachRuntimeBoundary(signal, runtimeBoundary),
+      );
+      const selectedKey = signalKey(state.selectedSignal);
+      const selectedSignal = selectedKey
+        ? rawInboxSignals.find((signal) => signalKey(signal) === selectedKey) ?? null
+        : state.selectedSignal
+          ? attachRuntimeBoundary(state.selectedSignal, runtimeBoundary)
+          : null;
+      return {
+        runtimeBoundary,
+        rawInboxSignals,
+        signals: rawInboxSignals,
+        selectedSignal,
+      };
+    }),
   setSignals: (signals) =>
     set((state) => {
       const rawInboxSignals = mergeIncomingSignals(

@@ -1910,9 +1910,10 @@ fn classification_uses_recent_1s_vwap_micro_volatility_for_price_thresholds() {
     assert!(classification.dynamic_thresholds.follow_pct > 0.12);
 }
 
-#[test]
-fn outcome_calibration_records_signed_markout_from_v2_flow_direction() {
-    let now = 1_700_000_000_000;
+fn outcome_test_signal(
+    now: i64,
+    direction: ContractWhaleActiveFlowDirection,
+) -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal {
     let detection_trades = vec![
         normalize_binance_agg_trade(now, 70_000.0, 2_000.0, false).expect("buy trade"),
         normalize_bitfinex_trade(now, 70_000.0, 500.0).expect("confirming buy trade"),
@@ -1930,13 +1931,79 @@ fn outcome_calibration_records_signed_markout_from_v2_flow_direction() {
     stats.percentile_level = Some(99.5);
     let mut signal = detect_contract_whale_signal(&stats).expect("signal");
     signal.order_price_usd = Some(100.0);
-    signal.classification_v2.flow_direction = ContractWhaleActiveFlowDirection::BuyDominant;
+    signal.classification_v2.flow_direction = direction;
+    signal
+}
+
+#[test]
+fn outcome_calibration_measures_direction_free_volatility_for_unknown_direction() {
+    let now = 1_700_000_000_000;
+    let signal = outcome_test_signal(now, ContractWhaleActiveFlowDirection::Unknown);
+    let outcome_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
+        normalize_binance_agg_trade(now + 30_000, 103.0, 1.0, false).expect("30s price"),
+        normalize_binance_agg_trade(now + 60_000, 97.0, 1.0, false).expect("60s price"),
+        normalize_binance_agg_trade(now + 120_000, 104.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 180_000, 96.0, 1.0, false).expect("3m price"),
+        normalize_binance_agg_trade(now + 300_000, 102.0, 1.0, false).expect("5m price"),
+    ];
+
+    let outcome = evaluate_contract_whale_signal_outcome(
+        &signal,
+        &aggregate_1s_buckets(&outcome_trades),
+        now + 300_000,
+    )
+    .expect("direction-free outcome");
+
+    assert!(
+        (outcome
+            .absolute_return_30s_bps
+            .expect("30s absolute return")
+            - 300.0)
+            .abs()
+            < 1e-6
+    );
+    assert!((outcome.absolute_return_2m_bps.expect("2m absolute return") - 400.0).abs() < 1e-6);
+    assert!((outcome.absolute_return_5m_bps.expect("5m absolute return") - 200.0).abs() < 1e-6);
+    assert!(
+        outcome
+            .realized_volatility_5m_bps
+            .expect("realized volatility")
+            > 1_000.0
+    );
+    assert!(
+        (outcome
+            .max_absolute_excursion_5m_bps
+            .expect("max absolute excursion")
+            - 400.0)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(outcome.price_sample_count_5m, Some(6));
+    assert_eq!(outcome.markout_30s_bps, None);
+    assert_eq!(outcome.markout_2m_bps, None);
+    assert_eq!(outcome.markout_5m_bps, None);
+    assert_eq!(outcome.follow_through_5m, None);
+    assert_eq!(outcome.setup_outcome.as_deref(), Some("unclear"));
+    assert_eq!(outcome.liquidity_recovered_5m, None);
+    assert_eq!(outcome.liquidity_recovery_ms, None);
+    assert_eq!(
+        outcome.liquidity_recovery_reason.as_deref(),
+        Some("historical_l2_unavailable")
+    );
+    assert_eq!(outcome.outcome_version, "v2_volatility_shadow");
+}
+
+#[test]
+fn outcome_calibration_keeps_directional_reversal_secondary_to_volatility() {
+    let now = 1_700_000_000_000;
+    let signal = outcome_test_signal(now, ContractWhaleActiveFlowDirection::BuyDominant);
 
     let markout_trades = vec![
         normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
-        normalize_binance_agg_trade(now + 30_000, 101.0, 1.0, false).expect("30s price"),
-        normalize_binance_agg_trade(now + 120_000, 102.0, 1.0, false).expect("2m price"),
-        normalize_binance_agg_trade(now + 300_000, 103.0, 1.0, false).expect("5m price"),
+        normalize_binance_agg_trade(now + 30_000, 106.0, 1.0, false).expect("30s price"),
+        normalize_binance_agg_trade(now + 120_000, 94.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 300_000, 98.0, 1.0, false).expect("5m price"),
     ];
     let outcome = evaluate_contract_whale_signal_outcome(
         &signal,
@@ -1946,7 +2013,103 @@ fn outcome_calibration_records_signed_markout_from_v2_flow_direction() {
     .expect("outcome");
 
     assert!(outcome.markout_30s_bps.expect("30s markout") > 0.0);
-    assert_eq!(outcome.follow_through_5m, Some(true));
-    assert_eq!(outcome.classification_v2, "main_force_push_up");
-    assert!(outcome.mfe_5m_bps.expect("mfe") >= outcome.markout_5m_bps.expect("5m"));
+    assert!(outcome.markout_5m_bps.expect("5m markout") < 0.0);
+    assert_eq!(outcome.follow_through_5m, Some(false));
+    assert_eq!(outcome.setup_outcome.as_deref(), Some("reversal"));
+    assert!((outcome.absolute_return_5m_bps.expect("5m absolute return") - 200.0).abs() < 1e-6);
+    assert!(
+        outcome
+            .realized_volatility_5m_bps
+            .expect("realized volatility")
+            > 1_000.0
+    );
+    assert!(
+        (outcome
+            .max_absolute_excursion_5m_bps
+            .expect("max absolute excursion")
+            - 600.0)
+            .abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn outcome_calibration_flat_path_has_zero_realized_volatility() {
+    let now = 1_700_000_000_000;
+    let signal = outcome_test_signal(now, ContractWhaleActiveFlowDirection::Unknown);
+    let flat_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
+        normalize_binance_agg_trade(now + 30_000, 100.0, 1.0, false).expect("30s price"),
+        normalize_binance_agg_trade(now + 120_000, 100.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 300_000, 100.0, 1.0, false).expect("5m price"),
+    ];
+
+    let outcome = evaluate_contract_whale_signal_outcome(
+        &signal,
+        &aggregate_1s_buckets(&flat_trades),
+        now + 300_000,
+    )
+    .expect("flat outcome");
+
+    assert_eq!(outcome.realized_volatility_5m_bps, Some(0.0));
+    assert_eq!(outcome.max_absolute_excursion_5m_bps, Some(0.0));
+    assert_eq!(outcome.price_sample_count_5m, Some(4));
+}
+
+#[test]
+fn outcome_calibration_requires_fresh_horizon_prices_and_hides_future_values() {
+    let now = 1_700_000_000_000;
+    let signal = outcome_test_signal(now, ContractWhaleActiveFlowDirection::Unknown);
+    let sparse_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
+        normalize_binance_agg_trade(now + 120_000, 102.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 300_000, 104.0, 1.0, false).expect("5m price"),
+    ];
+    let buckets = aggregate_1s_buckets(&sparse_trades);
+
+    assert!(evaluate_contract_whale_signal_outcome(&signal, &buckets, now + 29_999).is_none());
+
+    let at_30s = evaluate_contract_whale_signal_outcome(&signal, &buckets, now + 30_000)
+        .expect("30s evaluation shell");
+    assert_eq!(at_30s.absolute_return_30s_bps, None);
+    assert_eq!(at_30s.markout_30s_bps, None);
+    assert_eq!(at_30s.absolute_return_2m_bps, None);
+    assert_eq!(at_30s.absolute_return_5m_bps, None);
+    assert_eq!(at_30s.realized_volatility_5m_bps, None);
+
+    let at_2m = evaluate_contract_whale_signal_outcome(&signal, &buckets, now + 120_000)
+        .expect("2m evaluation shell");
+    assert_eq!(at_2m.absolute_return_30s_bps, None);
+    assert!((at_2m.absolute_return_2m_bps.expect("fresh 2m price") - 200.0).abs() < 1e-6);
+    assert_eq!(at_2m.absolute_return_5m_bps, None);
+}
+
+#[test]
+fn detection_time_builders_do_not_reference_future_outcome_fields() {
+    let detection_sources = [
+        include_str!("../src/contract_whale_monitor/scoring.rs"),
+        include_str!("../src/contract_whale_monitor/detector.rs"),
+        include_str!("../src/contract_whale_monitor/classification.rs"),
+    ];
+    let future_outcome_fields = [
+        "absolute_return_30s_bps",
+        "absolute_return_2m_bps",
+        "absolute_return_5m_bps",
+        "realized_volatility_5m_bps",
+        "max_absolute_excursion_5m_bps",
+        "price_sample_count_5m",
+        "liquidity_recovered_5m",
+        "liquidity_recovery_ms",
+        "liquidity_recovery_reason",
+        "setup_outcome",
+    ];
+
+    for source in detection_sources {
+        for field in future_outcome_fields {
+            assert!(
+                !source.contains(field),
+                "detection-time source must not consume future outcome field {field}"
+            );
+        }
+    }
 }

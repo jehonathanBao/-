@@ -82,4 +82,39 @@ describe("CandidateExplanation", () => {
     expect(screen.queryByText("hidden markout")).not.toBeInTheDocument();
     expect(screen.queryByText("hidden raw payload")).not.toBeInTheDocument();
   });
+
+  it("does not coerce nullable candidate evidence into neutral zeroes", () => {
+    render(
+      <CandidateExplanation
+        signal={{
+          type: "candidate",
+          directionLabel: null,
+          side: null,
+          directionConfidence: null,
+          toxicScore: null,
+          finalRiskScore: null,
+          score: null,
+          dataQuality: null,
+          mainForceScore: null,
+          structureBias: null,
+          mainForceConfirmed: null,
+          mainForceConfirmationCount: null,
+          mainForceConfirmationTotal: null,
+          extremeImpactConfirmed: null,
+          extremeImpactScore: null,
+          marketStructureConfidence: null,
+          marketStructureDataQuality: null,
+          regimeType: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("方向不可用")).toBeInTheDocument();
+    expect(screen.getByText("Toxic N/A / Quality N/A")).toBeInTheDocument();
+    expect(screen.getByText("Main Force N/A")).toBeInTheDocument();
+    expect(screen.getByText("Bias N/A")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed N/A · N/A/N/A")).toBeInTheDocument();
+    expect(screen.getByText("极端行情 N/A · N/A")).toBeInTheDocument();
+    expect(screen.queryByText(/\+0|中性 \/ 未知/)).not.toBeInTheDocument();
+  });
 });

@@ -159,8 +159,21 @@ impl FlowWindowService {
         self.price_index.read().mid_at_or_before(ts)
     }
 
+    pub fn get_mid_at_or_before_for_symbol(&self, ts: i64, symbol: &str) -> Option<f64> {
+        self.price_index
+            .read()
+            .mid_at_or_before_for_symbol(ts, symbol)
+    }
+
     pub fn has_price_index(&self) -> bool {
         self.price_index.read().current_mid(now_ms()).is_some()
+    }
+
+    pub fn has_price_index_for_symbol(&self, symbol: &str) -> bool {
+        self.price_index
+            .read()
+            .current_snapshot_for_symbol(now_ms(), symbol)
+            .is_some()
     }
 
     pub fn get_trades_since(&self, ts: i64) -> Vec<NormalizedTrade> {
@@ -171,12 +184,32 @@ impl FlowWindowService {
         self.price_index.read().snapshot_at_or_before(ts)
     }
 
+    pub fn get_price_snapshot_at_or_before_for_symbol(
+        &self,
+        ts: i64,
+        symbol: &str,
+    ) -> Option<PriceSnapshot> {
+        self.price_index
+            .read()
+            .snapshot_at_or_before_for_symbol(ts, symbol)
+    }
+
     pub fn get_latest_price_snapshot(&self) -> Option<PriceSnapshot> {
         self.price_index.read().latest_snapshot()
     }
 
     pub fn get_price_snapshots_since(&self, ts: i64) -> Vec<PriceSnapshot> {
         self.price_index.read().snapshots_since(ts)
+    }
+
+    pub fn get_price_snapshots_since_for_symbol(
+        &self,
+        ts: i64,
+        symbol: &str,
+    ) -> Vec<PriceSnapshot> {
+        self.price_index
+            .read()
+            .snapshots_since_for_symbol(ts, symbol)
     }
 
     pub fn get_active_venues(&self, now_ts: i64) -> Vec<crate::types::market::Venue> {

@@ -55,6 +55,8 @@ pub struct VpinMetrics {
     pub vpin: Option<f64>,
     pub vpin_zscore: Option<f64>,
     pub vpin_percentile: Option<f64>,
+    #[serde(default)]
+    pub per_venue_vpin: BTreeMap<String, f64>,
     pub latest_bucket_imbalance_ratio: Option<f64>,
     pub avg_bucket_imbalance_ratio: Option<f64>,
     pub vpin_high: bool,

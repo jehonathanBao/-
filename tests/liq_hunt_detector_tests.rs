@@ -370,6 +370,7 @@ fn sample_vpin(spike: bool, extreme: bool) -> VpinState {
             vpin: Some(if extreme { 0.9 } else { 0.72 }),
             vpin_zscore: Some(if spike { 2.8 } else { 1.2 }),
             vpin_percentile: Some(0.9),
+            per_venue_vpin: BTreeMap::new(),
             latest_bucket_imbalance_ratio: Some(0.8),
             avg_bucket_imbalance_ratio: Some(0.65),
             vpin_high: true,

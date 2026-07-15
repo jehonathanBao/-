@@ -87,4 +87,33 @@ describe("RiskSystemSummaryCards", () => {
     expect(screen.getByText("多窗口确认")).toBeInTheDocument();
     expect(screen.getByText("Binance + Bitfinex 同向")).toBeInTheDocument();
   });
+
+  it("renders nullable risk inputs as unavailable instead of calm zeroes", () => {
+    render(
+      <RiskSystemSummaryCards
+        signal={{
+          symbol: "BTCUSDT",
+          type: "candidate",
+          time: "2026-07-15 12:00:00",
+          toxicScore: null,
+          finalRiskScore: null,
+          score: null,
+          shortPressure: null,
+          confidence: null,
+          toxicTtlSec: null,
+          toxicExpiresAt: null,
+          mainForceScore: null,
+          structureBias: null,
+          extremeImpactScore: null,
+          marketStructureConfidence: null,
+          regimeType: null,
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("N/A / 不可用")).toHaveLength(4);
+    expect(screen.getAllByText("不可用").length).toBeGreaterThan(2);
+    expect(screen.queryByText("0 / Calm")).not.toBeInTheDocument();
+    expect(screen.queryByText("中性 0")).not.toBeInTheDocument();
+  });
 });

@@ -3,12 +3,35 @@ import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import Dashboard from "../pages/Dashboard.jsx";
+import Header from "../components/Header.jsx";
+import Sidebar from "../components/Sidebar.jsx";
+import Dashboard, { countUnhandledHighRisk } from "../pages/Dashboard.jsx";
 import App from "../App.jsx";
+import { useSignalsStore } from "../store/signalsStore.js";
 
 vi.mock("../api/signals.js", () => ({
   fetchSignals: vi.fn(() => Promise.resolve([])),
+  fetchSignalsSnapshot: vi.fn(() =>
+    Promise.resolve({
+      signals: [],
+      request: { phase: "error", source: null, errorCode: "NETWORK_ERROR", fetchedAtMs: 1 },
+      runtime: {
+        phase: "unavailable",
+        readOnly: null,
+        monitoringStarted: null,
+        executionEnabled: null,
+        checkedAtMs: 1,
+      },
+    }),
+  ),
   mapInboxItemToSignal: vi.fn((item) => item),
+  runtimeFromPayload: vi.fn(() => ({
+    phase: "unavailable",
+    readOnly: null,
+    monitoringStarted: null,
+    executionEnabled: null,
+    checkedAtMs: 1,
+  })),
 }));
 
 vi.mock("../api/discord.js", () => ({
@@ -114,7 +137,8 @@ describe("Unified workspace shell", () => {
     expect(screen.getByTestId("workspace-shell")).toHaveClass("workspace-shell");
     expect(screen.getByTestId("workspace-main")).toHaveClass("workspace-main");
     expect(screen.getByTestId("workspace-sidebar")).toBeInTheDocument();
-    expect(screen.getByText("READ ONLY")).toBeInTheDocument();
+    expect(screen.getAllByText("RUNTIME UNKNOWN").length).toBeGreaterThan(0);
+    expect(screen.queryByText("READ ONLY")).not.toBeInTheDocument();
 
     if (activeLabel) {
       expect(screen.getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
@@ -126,6 +150,57 @@ describe("Unified workspace shell", () => {
     } else {
       expect(screen.getByTestId("workspace-command-header")).toBeInTheDocument();
     }
+  });
+
+  it("renders backend-confirmed read-only runtime truth in both shell surfaces", () => {
+    const runtimeBoundary = {
+      phase: "confirmed",
+      readOnly: true,
+      monitoringStarted: true,
+      executionEnabled: false,
+      runtimeModified: false,
+      analysisOnly: true,
+      checkedAtMs: Date.now(),
+    };
+    render(
+      <MemoryRouter>
+        <Sidebar runtimeBoundary={runtimeBoundary} />
+        <Header discordConnected={false} highUnhandledCount={0} runtimeBoundary={runtimeBoundary} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByText("READ ONLY")).toHaveLength(2);
+    expect(screen.getByText("Monitoring active · Execution disabled")).toBeInTheDocument();
+  });
+
+  it("renders an execution-enabled runtime as a visible conflict", () => {
+    render(
+      <Header
+        discordConnected={false}
+        highUnhandledCount={0}
+        runtimeBoundary={{
+          phase: "confirmed",
+          readOnly: false,
+          monitoringStarted: true,
+          executionEnabled: true,
+          checkedAtMs: 1,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("RUNTIME CONFLICT")).toBeInTheDocument();
+    expect(screen.queryByText("READ ONLY")).not.toBeInTheDocument();
+  });
+
+  it("does not count acknowledged, false-positive, or stale candidates as unhandled", () => {
+    expect(
+      countUnhandledHighRisk([
+        { risk: "high", status: "unhandled", reviewStatus: null, isLive: true },
+        { risk: "high", status: "unhandled", reviewStatus: "acknowledged", isLive: true },
+        { risk: "high", status: "unhandled", reviewStatus: "false_positive", isLive: true },
+        { risk: "high", status: "unhandled", reviewStatus: null, isLive: false },
+      ]),
+    ).toBe(1);
   });
 
   it.each(PAGE_INTROS)("uses the compact page intro on %s", (path, title) => {
@@ -159,6 +234,7 @@ describe("Unified workspace shell", () => {
 });
 
 function renderDashboard(path) {
+  resetRuntimeBoundary();
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Dashboard />
@@ -167,9 +243,23 @@ function renderDashboard(path) {
 }
 
 function renderApp(path) {
+  resetRuntimeBoundary();
   return render(
     <MemoryRouter initialEntries={[path]}>
       <App />
     </MemoryRouter>,
   );
+}
+
+function resetRuntimeBoundary() {
+  useSignalsStore.setState({
+    signalsRequest: { phase: "idle", source: null, errorCode: null, fetchedAtMs: 0 },
+    runtimeBoundary: {
+      phase: "unavailable",
+      readOnly: null,
+      monitoringStarted: null,
+      executionEnabled: null,
+      checkedAtMs: 0,
+    },
+  });
 }

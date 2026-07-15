@@ -14,8 +14,12 @@ use crate::{
         discord_alert_status_for_key, evaluate_discord_alert_gate, preferred_discord_alert_family,
         DiscordAlertMode, DiscordNotificationRequest,
     },
+    api::market_structure_transport::{
+        market_structure_evidence_available, SplitRiskSystemsTransport,
+    },
     api::toxic_signal_inbox_routes::{
         build_recent, latest_cwm_signal_for_state, normalize_symbol_query,
+        observed_tof_snapshot_for_state,
     },
     app::AppState,
     contract_whale_monitor::types::ContractWhaleSignal,
@@ -23,12 +27,18 @@ use crate::{
     runtime::{
         advanced_tof_metrics::{build_advanced_tof_metrics, AdvancedTofInput, AdvancedTofMetrics},
         cwm_risk_fusion::{
-            build_cwm_risk_contribution, build_split_risk_systems, CwmRiskContribution,
-            MainForceStructureRisk, ShortTermToxicRisk, SplitRiskSystems, SplitRiskSystemsInput,
+            build_cwm_risk_contribution_for_candidate, build_split_risk_systems,
+            CwmRiskContribution, MainForceStructureRisk, ShortTermToxicRisk, SplitRiskSystemsInput,
             ToxicReason,
         },
-        perp_tof_metrics::{build_perp_tof_metrics, PerpTofInput, PerpTofMetrics},
-        tof_metrics::{enhance_signal_summary, TofMetrics, TofSummaryInput},
+        perp_tof_metrics::{
+            build_perp_tof_metrics, build_perp_tof_metrics_from_observed,
+            observed_perp_snapshot_from_cwm, PerpTofInput, PerpTofMetrics,
+        },
+        tof_metrics::{
+            enhance_signal_summary, enhance_signal_with_observed, ObservedTofSnapshot, TofMetrics,
+            TofSummaryInput,
+        },
     },
     types::toxic_signal_inbox::{ToxicSignalInboxItem, ToxicSignalInboxRecentResponse},
 };
@@ -47,6 +57,7 @@ pub struct ToxicSignalWsSnapshot {
     pub runtime_modified: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,
+    pub monitoring_started: bool,
     pub selected_symbol: String,
     pub generated_at: String,
     pub signals: Vec<ToxicSignalWsItem>,
@@ -65,23 +76,24 @@ pub struct ToxicSignalWsItem {
     pub final_result: String,
     pub core_reason: String,
     pub risk_score: u8,
-    pub data_quality: f64,
+    pub data_quality: Option<f64>,
+    pub data_quality_score: Option<f64>,
     pub trigger_price_usd: Option<f64>,
     pub tof_metrics: TofMetrics,
-    pub tof_score: f64,
+    pub tof_score: Option<f64>,
     pub perp_tof_metrics: PerpTofMetrics,
-    pub perp_score: u8,
+    pub perp_score: Option<u8>,
     pub perp_candidate_type: String,
     pub final_candidate_type: String,
-    pub metrics_direction: crate::runtime::tof_metrics::TofDirection,
-    pub merged_confidence: f64,
+    pub metrics_direction: Option<crate::runtime::tof_metrics::TofDirection>,
+    pub merged_confidence: Option<f64>,
     pub advanced_tof_metrics: AdvancedTofMetrics,
-    pub advanced_score: u8,
+    pub advanced_score: Option<u8>,
     pub advanced_candidate_type: String,
     pub cwm_contribution: CwmRiskContribution,
-    pub risk_systems: SplitRiskSystems,
+    pub risk_systems: SplitRiskSystemsTransport,
     pub toxic_short_score: ShortTermToxicRisk,
-    pub market_structure_score: MainForceStructureRisk,
+    pub market_structure_score: Option<MainForceStructureRisk>,
     pub toxic_score: u8,
     pub short_pressure: i16,
     pub toxic_severity: String,
@@ -93,46 +105,46 @@ pub struct ToxicSignalWsItem {
     pub toxic_decayed_score: f64,
     pub toxic_decay_formula: String,
     pub toxic_reasons: Vec<ToxicReason>,
-    pub main_force_score: u8,
-    pub main_force_confirmed: bool,
-    pub main_force_confirmation_count: u8,
-    pub main_force_confirmation_total: u8,
-    pub main_force_confirmation_threshold: u8,
-    pub structure_bias: i16,
-    pub extreme_impact_score: u8,
-    pub extreme_impact_confirmed: bool,
-    pub regime_type: String,
-    pub market_structure_severity: String,
-    pub market_structure_confidence: f64,
-    pub market_structure_data_quality: f64,
-    pub structure_raw: f64,
-    pub spot_contract_floor: u8,
-    pub duration_score: u8,
-    pub liquidation_penalty: f64,
-    pub crowding_penalty: f64,
-    pub spot_score: u8,
-    pub spot_cvd_score: u8,
-    pub spot_volume_anomaly: u8,
-    pub spot_absorption: u8,
-    pub spot_liquidity_shift: u8,
-    pub spot_price_response: u8,
-    pub contract_score: u8,
-    pub cwm_aggressive_flow: u8,
-    pub oi_impulse: u8,
-    pub liquidation_context: u8,
-    pub funding_crowding: u8,
-    pub basis_premium: u8,
-    pub active_exchange_confirmation: u8,
-    pub cross_confirm_score: u8,
-    pub spot_contract_direction_consistency: u8,
-    pub multi_window_consistency: u8,
-    pub price_response_consistency: u8,
-    pub source_coverage: u8,
-    pub signal_agreement: u8,
-    pub oi_score: u8,
-    pub liquidation_score: u8,
-    pub funding_crowding_score: u8,
-    pub cwm_score: u8,
+    pub main_force_score: Option<u8>,
+    pub main_force_confirmed: Option<bool>,
+    pub main_force_confirmation_count: Option<u8>,
+    pub main_force_confirmation_total: Option<u8>,
+    pub main_force_confirmation_threshold: Option<u8>,
+    pub structure_bias: Option<i16>,
+    pub extreme_impact_score: Option<u8>,
+    pub extreme_impact_confirmed: Option<bool>,
+    pub regime_type: Option<String>,
+    pub market_structure_severity: Option<String>,
+    pub market_structure_confidence: Option<f64>,
+    pub market_structure_data_quality: Option<f64>,
+    pub structure_raw: Option<f64>,
+    pub spot_contract_floor: Option<u8>,
+    pub duration_score: Option<u8>,
+    pub liquidation_penalty: Option<f64>,
+    pub crowding_penalty: Option<f64>,
+    pub spot_score: Option<u8>,
+    pub spot_cvd_score: Option<u8>,
+    pub spot_volume_anomaly: Option<u8>,
+    pub spot_absorption: Option<u8>,
+    pub spot_liquidity_shift: Option<u8>,
+    pub spot_price_response: Option<u8>,
+    pub contract_score: Option<u8>,
+    pub cwm_aggressive_flow: Option<u8>,
+    pub oi_impulse: Option<u8>,
+    pub liquidation_context: Option<u8>,
+    pub funding_crowding: Option<u8>,
+    pub basis_premium: Option<u8>,
+    pub active_exchange_confirmation: Option<u8>,
+    pub cross_confirm_score: Option<u8>,
+    pub spot_contract_direction_consistency: Option<u8>,
+    pub multi_window_consistency: Option<u8>,
+    pub price_response_consistency: Option<u8>,
+    pub source_coverage: Option<u8>,
+    pub signal_agreement: Option<u8>,
+    pub oi_score: Option<u8>,
+    pub liquidation_score: Option<u8>,
+    pub funding_crowding_score: Option<u8>,
+    pub cwm_score: Option<u8>,
     pub final_risk_score: u8,
     pub candidate_type: String,
     pub explain_tags: Vec<String>,
@@ -146,6 +158,8 @@ pub struct ToxicSignalWsItem {
     pub runtime_modified: bool,
     pub analysis_only: bool,
     pub execution_enabled: bool,
+    pub monitoring_started: bool,
+    pub alert_eligible: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,7 +201,8 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
             _ = interval.tick() => {
                 let recent = build_recent(&state, &selected_symbol);
                 let cwm_signal = latest_cwm_signal_for_state(&state, &selected_symbol);
-                let snapshot = build_ws_snapshot_with_cwm_and_prices(&recent, cwm_signal.as_ref(), |item| {
+                let tof_snapshot = observed_tof_snapshot_for_state(&state, &selected_symbol);
+                let snapshot = build_ws_snapshot_with_runtime_and_prices(&recent, cwm_signal.as_ref(), tof_snapshot.as_ref(), state.runtime_started(), |item| {
                     trigger_price_for_item(&state, item)
                 });
                 let Ok(payload) = serde_json::to_string(&snapshot) else {
@@ -249,7 +264,7 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
                                 "info",
                                 "perp_candidate_generated",
                                 format!(
-                                    "{} perp candidate generated: type={} direction={:?} score={}",
+                                    "{} perp candidate generated: type={} direction={:?} score={:?}",
                                     signal.symbol,
                                     signal.perp_candidate_type,
                                     signal.metrics_direction,
@@ -262,7 +277,7 @@ async fn stream_signal_snapshots(socket: WebSocket, state: AppState, selected_sy
                                 "info",
                                 "advanced_metrics_computed",
                                 format!(
-                                    "{} advanced metrics computed: vpinEnhanced={:.0} flowCluster={:.0} fundingOiTrend={:.0} heatmap={:.0} toxicScore={} mainForceScore={}",
+                                "{} advanced metrics computed: vpinEnhanced={:.0} flowCluster={:.0} fundingOiTrend={:.0} heatmap={:.0} toxicScore={} mainForceScore={:?}",
                                     signal.symbol,
                                     signal.advanced_tof_metrics.vpin_enhanced,
                                     signal.advanced_tof_metrics.large_order_flow_cluster,
@@ -315,18 +330,65 @@ pub fn build_ws_snapshot_with_cwm_and_prices<F>(
 where
     F: Fn(&ToxicSignalInboxItem) -> Option<f64>,
 {
+    build_ws_snapshot_with_runtime_and_prices(recent, cwm_signal, None, false, trigger_price_for)
+}
+
+pub fn build_ws_snapshot_with_runtime_state(
+    recent: &ToxicSignalInboxRecentResponse,
+    cwm_signal: Option<&ContractWhaleSignal>,
+    monitoring_started: bool,
+) -> ToxicSignalWsSnapshot {
+    build_ws_snapshot_with_runtime_and_prices(recent, cwm_signal, None, monitoring_started, |_| {
+        None
+    })
+}
+
+pub fn build_ws_snapshot_with_authoritative_state(
+    recent: &ToxicSignalInboxRecentResponse,
+    cwm_signal: Option<&ContractWhaleSignal>,
+    tof_snapshot: Option<&ObservedTofSnapshot>,
+    monitoring_started: bool,
+) -> ToxicSignalWsSnapshot {
+    build_ws_snapshot_with_runtime_and_prices(
+        recent,
+        cwm_signal,
+        tof_snapshot,
+        monitoring_started,
+        |_| None,
+    )
+}
+
+pub fn build_ws_snapshot_with_runtime_and_prices<F>(
+    recent: &ToxicSignalInboxRecentResponse,
+    cwm_signal: Option<&ContractWhaleSignal>,
+    tof_snapshot: Option<&ObservedTofSnapshot>,
+    monitoring_started: bool,
+    trigger_price_for: F,
+) -> ToxicSignalWsSnapshot
+where
+    F: Fn(&ToxicSignalInboxItem) -> Option<f64>,
+{
     ToxicSignalWsSnapshot {
         message_type: "signal_snapshot",
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: recent.read_only,
+        runtime_modified: recent.runtime_modified,
+        analysis_only: recent.analysis_only,
+        execution_enabled: recent.execution_enabled,
+        monitoring_started,
         selected_symbol: recent.selected_symbol.clone(),
         generated_at: rfc3339_from_ms(now_ms()),
         signals: recent
             .items
             .iter()
-            .map(|item| redact_signal_item(item, cwm_signal, trigger_price_for(item)))
+            .map(|item| {
+                redact_signal_item(
+                    item,
+                    cwm_signal,
+                    tof_snapshot,
+                    monitoring_started,
+                    trigger_price_for(item),
+                )
+            })
             .collect(),
     }
 }
@@ -334,33 +396,54 @@ where
 fn redact_signal_item(
     item: &ToxicSignalInboxItem,
     cwm_signal: Option<&ContractWhaleSignal>,
+    tof_snapshot: Option<&ObservedTofSnapshot>,
+    monitoring_started: bool,
     trigger_price_usd: Option<f64>,
 ) -> ToxicSignalWsItem {
-    let enhancement = enhancement_for_item(item);
-    let existing_risk_score = risk_score_for(&item.severity);
-    let existing_data_quality = data_quality_for(&item.quality.quality_bucket);
-    let perp_metrics = build_perp_tof_metrics(&PerpTofInput {
+    let enhancement = enhancement_for_item(item, tof_snapshot);
+    let existing_risk_score = item.risk_score;
+    let existing_data_quality = item.data_quality_score;
+    let perp_input = PerpTofInput {
         symbol: &item.symbol,
         spot_candidate_type: &enhancement.candidate_type,
         spot_direction: enhancement.direction,
         spot_risk_score: enhancement.final_risk_score,
-        spot_data_quality: existing_data_quality,
+        spot_data_quality: existing_data_quality.unwrap_or(0.0),
         spot_confidence: item.confidence,
         summary: &item.fusion.summary,
-    });
+    };
+    let now_ms = now_ms();
+    let observed_perp =
+        cwm_signal.and_then(|signal| observed_perp_snapshot_from_cwm(&item.symbol, signal));
+    let perp_metrics = observed_perp
+        .as_ref()
+        .map(|snapshot| {
+            build_perp_tof_metrics_from_observed(
+                snapshot,
+                &item.symbol,
+                item.created_at_ms as i64,
+                now_ms,
+            )
+        })
+        .unwrap_or_else(|| build_perp_tof_metrics(&perp_input));
     let advanced_metrics = build_advanced_tof_metrics(&AdvancedTofInput {
         symbol: &item.symbol,
         spot_candidate_type: &enhancement.candidate_type,
         spot_direction: enhancement.direction,
         spot_risk_score: existing_risk_score,
-        spot_data_quality: existing_data_quality,
+        spot_data_quality: existing_data_quality.unwrap_or(0.0),
         spot_confidence: item.confidence,
         tof_metrics: &enhancement.tof_metrics,
         spot_tags: &enhancement.explain_tags,
         perp_metrics: &perp_metrics,
         summary: &item.fusion.summary,
     });
-    let cwm_contribution = build_cwm_risk_contribution(&item.symbol, cwm_signal);
+    let cwm_contribution = build_cwm_risk_contribution_for_candidate(
+        &item.symbol,
+        cwm_signal,
+        item.created_at_ms as i64,
+        now_ms,
+    );
     let risk_systems = build_split_risk_systems(SplitRiskSystemsInput {
         ts_ms: item.created_at_ms as i64,
         symbol: &item.symbol,
@@ -368,10 +451,19 @@ fn redact_signal_item(
         short_tof_score: enhancement.tof_score,
         short_direction: enhancement.direction,
         toxic_type: &enhancement.candidate_type,
-        data_quality: advanced_metrics.data_quality,
+        data_quality: existing_data_quality.unwrap_or(0.0),
+        detector_confidence: (item.confidence * 100.0).clamp(0.0, 100.0),
+        direction_confidence: enhancement.direction_confidence,
+        direction_source: &enhancement.direction_source,
         tof_metrics: &enhancement.tof_metrics,
-        advanced_score: advanced_metrics.final_risk_score,
-        perp_score: perp_metrics.risk_score,
+        advanced_score: advanced_metrics
+            .lineage
+            .alert_eligible
+            .then_some(advanced_metrics.final_risk_score),
+        perp_score: perp_metrics
+            .lineage
+            .alert_eligible
+            .then_some(perp_metrics.risk_score),
         metrics_direction: advanced_metrics.metrics_direction,
         cwm_contribution: cwm_contribution.clone(),
     });
@@ -387,56 +479,79 @@ fn redact_signal_item(
     let toxic_decay_formula = toxic_short_score.decay_formula.clone();
     let toxic_reasons = toxic_short_score.reasons.clone();
     let short_pressure = toxic_short_score.short_pressure;
-    let main_force_score = risk_systems.main_force_structure.main_force_score;
-    let main_force_confirmed = risk_systems.main_force_structure.main_force_confirmed;
-    let main_force_confirmation_count = risk_systems
-        .main_force_structure
-        .main_force_confirmation_count;
-    let main_force_confirmation_total = risk_systems
-        .main_force_structure
-        .main_force_confirmation_total;
-    let main_force_confirmation_threshold = risk_systems
-        .main_force_structure
-        .main_force_confirmation_threshold;
-    let structure_bias = risk_systems.main_force_structure.structure_bias;
-    let extreme_impact_score = risk_systems.main_force_structure.extreme_impact_score;
-    let extreme_impact_confirmed = risk_systems.main_force_structure.extreme_impact_confirmed;
-    let regime_type = risk_systems.main_force_structure.regime_type.clone();
-    let market_structure_score = risk_systems.market_structure_score.clone();
-    let market_structure_severity = market_structure_score.severity.clone();
-    let market_structure_confidence = market_structure_score.confidence;
-    let market_structure_data_quality = market_structure_score.data_quality;
-    let structure_raw = market_structure_score.structure_raw;
-    let spot_contract_floor = market_structure_score.spot_contract_floor;
-    let duration_score = market_structure_score.duration_score;
-    let liquidation_penalty = market_structure_score.liquidation_penalty;
-    let crowding_penalty = market_structure_score.crowding_penalty;
-    let spot_score = market_structure_score.spot_score;
-    let spot_cvd_score = market_structure_score.spot_cvd_score;
-    let spot_volume_anomaly = market_structure_score.spot_volume_anomaly;
-    let spot_absorption = market_structure_score.spot_absorption;
-    let spot_liquidity_shift = market_structure_score.spot_liquidity_shift;
-    let spot_price_response = market_structure_score.spot_price_response;
-    let contract_score = market_structure_score.contract_score;
-    let cwm_aggressive_flow = market_structure_score.cwm_aggressive_flow;
-    let oi_impulse = market_structure_score.oi_impulse;
-    let liquidation_context = market_structure_score.liquidation_context;
-    let funding_crowding = market_structure_score.funding_crowding;
-    let basis_premium = market_structure_score.basis_premium;
-    let active_exchange_confirmation = market_structure_score.active_exchange_confirmation;
-    let cross_confirm_score = market_structure_score.cross_confirm_score;
+    let market_structure_available =
+        market_structure_evidence_available(&enhancement.tof_metrics, &cwm_contribution);
+    let risk_systems_transport =
+        SplitRiskSystemsTransport::from_core(&risk_systems, market_structure_available);
+    let market_structure_score = risk_systems_transport.market_structure_score.clone();
+    let market_structure = market_structure_score.as_ref();
+    let main_force_score = market_structure.map(|score| score.main_force_score);
+    let main_force_confirmed = market_structure.map(|score| score.main_force_confirmed);
+    let main_force_confirmation_count =
+        market_structure.map(|score| score.main_force_confirmation_count);
+    let main_force_confirmation_total =
+        market_structure.map(|score| score.main_force_confirmation_total);
+    let main_force_confirmation_threshold =
+        market_structure.map(|score| score.main_force_confirmation_threshold);
+    let structure_bias = market_structure.map(|score| score.structure_bias);
+    let extreme_impact_score = market_structure.map(|score| score.extreme_impact_score);
+    let extreme_impact_confirmed = market_structure.map(|score| score.extreme_impact_confirmed);
+    let regime_type = market_structure.map(|score| score.regime_type.clone());
+    let market_structure_severity = market_structure.map(|score| score.severity.clone());
+    let market_structure_confidence = market_structure.map(|score| score.confidence);
+    let market_structure_data_quality = market_structure.map(|score| score.data_quality);
+    let structure_raw = market_structure.map(|score| score.structure_raw);
+    let spot_contract_floor = market_structure.map(|score| score.spot_contract_floor);
+    let duration_score = market_structure.map(|score| score.duration_score);
+    let liquidation_penalty = market_structure.map(|score| score.liquidation_penalty);
+    let crowding_penalty = market_structure.map(|score| score.crowding_penalty);
+    let spot_score = market_structure.map(|score| score.spot_score);
+    let spot_cvd_score = market_structure.map(|score| score.spot_cvd_score);
+    let spot_volume_anomaly = market_structure.map(|score| score.spot_volume_anomaly);
+    let spot_absorption = market_structure.map(|score| score.spot_absorption);
+    let spot_liquidity_shift = market_structure.map(|score| score.spot_liquidity_shift);
+    let spot_price_response = market_structure.map(|score| score.spot_price_response);
+    let contract_score = market_structure.map(|score| score.contract_score);
+    let cwm_aggressive_flow = market_structure.map(|score| score.cwm_aggressive_flow);
+    let oi_impulse = market_structure.map(|score| score.oi_impulse);
+    let liquidation_context = market_structure.map(|score| score.liquidation_context);
+    let funding_crowding = market_structure.map(|score| score.funding_crowding);
+    let basis_premium = market_structure.map(|score| score.basis_premium);
+    let active_exchange_confirmation =
+        market_structure.map(|score| score.active_exchange_confirmation);
+    let cross_confirm_score = market_structure.map(|score| score.cross_confirm_score);
     let spot_contract_direction_consistency =
-        market_structure_score.spot_contract_direction_consistency;
-    let multi_window_consistency = market_structure_score.multi_window_consistency;
-    let price_response_consistency = market_structure_score.price_response_consistency;
-    let source_coverage = market_structure_score.source_coverage;
-    let signal_agreement = market_structure_score.signal_agreement;
-    let oi_score = market_structure_score.oi_score;
-    let liquidation_score = market_structure_score.liquidation_score;
-    let funding_crowding_score = market_structure_score.funding_crowding_score;
-    let cwm_score = market_structure_score.cwm_score;
-    let final_data_quality = advanced_metrics.data_quality;
+        market_structure.map(|score| score.spot_contract_direction_consistency);
+    let multi_window_consistency = market_structure.map(|score| score.multi_window_consistency);
+    let price_response_consistency = market_structure.map(|score| score.price_response_consistency);
+    let source_coverage = market_structure.map(|score| score.source_coverage);
+    let signal_agreement = market_structure.map(|score| score.signal_agreement);
+    let oi_score = market_structure.map(|score| score.oi_score);
+    let liquidation_score = market_structure.map(|score| score.liquidation_score);
+    let funding_crowding_score = market_structure.map(|score| score.funding_crowding_score);
+    let cwm_score = market_structure.map(|score| score.cwm_score);
+    let final_data_quality = existing_data_quality;
+    let server_evidence_verified = monitoring_started
+        && final_data_quality.is_some()
+        && item.read_only
+        && !item.runtime_modified
+        && item.analysis_only
+        && !item.execution_enabled;
+    let tof_score_for_alert = enhancement
+        .tof_metrics
+        .lineage
+        .alert_eligible
+        .then_some(enhancement.tof_score);
+    let perp_score_for_alert = perp_metrics
+        .lineage
+        .alert_eligible
+        .then_some(perp_metrics.risk_score);
+    let advanced_score_for_alert = advanced_metrics
+        .lineage
+        .alert_eligible
+        .then_some(advanced_metrics.final_risk_score);
     let mut alert_request = DiscordNotificationRequest {
+        server_evidence_verified,
         alert_family: None,
         signal_id: Some(item.signal_id.clone()),
         id: Some(item.signal_id.clone()),
@@ -446,9 +561,9 @@ fn redact_signal_item(
         signal_type: Some(item.signal_kind.clone()),
         level: Some(item.severity.clone()),
         side: Some(enhancement.direction_label.clone()),
-        score: Some(toxic_score),
-        confidence: Some(toxic_short_score.confidence),
-        data_quality: Some(final_data_quality),
+        score: Some(existing_risk_score),
+        confidence: Some((item.confidence * 100.0).clamp(0.0, 100.0)),
+        data_quality: final_data_quality,
         reason: Some(item.fusion.summary.clone()),
         impact: None,
         impact_level: None,
@@ -466,38 +581,43 @@ fn redact_signal_item(
         markout_5s_bps: None,
         markout_30s_bps: None,
         tof_metrics: Some(enhancement.tof_metrics.clone()),
-        tof_score: Some(enhancement.tof_score),
+        tof_score: tof_score_for_alert,
         candidate_type: Some(advanced_metrics.candidate_type.clone()),
         explain_tags: Some(advanced_metrics.explain_tags.clone()),
         direction_confidence: Some(enhancement.direction_confidence),
         perp_tof_metrics: Some(perp_metrics.clone()),
-        perp_score: Some(perp_metrics.risk_score),
+        perp_score: perp_score_for_alert,
         perp_candidate_type: Some(perp_metrics.candidate_type.clone()),
         final_candidate_type: Some(advanced_metrics.final_candidate_type.clone()),
         metrics_direction: serde_json::to_value(advanced_metrics.metrics_direction)
             .ok()
             .and_then(|value| value.as_str().map(str::to_string)),
         advanced_tof_metrics: Some(advanced_metrics.clone()),
-        advanced_score: Some(advanced_metrics.final_risk_score),
+        advanced_score: advanced_score_for_alert,
         advanced_candidate_type: Some(advanced_metrics.candidate_type.clone()),
-        main_force_score: Some(main_force_score),
-        extreme_impact_score: Some(extreme_impact_score),
-        structure_bias: Some(structure_bias),
-        market_structure_confidence: Some(market_structure_confidence),
-        market_structure_data_quality: Some(market_structure_data_quality),
-        market_structure_severity: Some(market_structure_severity.clone()),
-        regime_type: Some(regime_type.clone()),
-        spot_score: Some(spot_score),
-        contract_score: Some(contract_score),
-        cross_confirm_score: Some(cross_confirm_score),
-        main_force_confirmed: Some(main_force_confirmed),
-        signal_agreement: Some(signal_agreement),
-        source_coverage: Some(source_coverage),
-        oi_score: Some(oi_score),
-        liquidation_score: Some(liquidation_score),
+        main_force_score,
+        extreme_impact_score,
+        structure_bias,
+        market_structure_confidence,
+        market_structure_data_quality,
+        market_structure_severity: market_structure_severity.clone(),
+        regime_type: regime_type.clone(),
+        spot_score,
+        contract_score,
+        cross_confirm_score,
+        main_force_confirmed,
+        signal_agreement,
+        source_coverage,
+        oi_score,
+        liquidation_score,
         test: None,
     };
     alert_request.alert_family = Some(preferred_discord_alert_family(&alert_request).to_string());
+    if alert_request.alert_family.as_deref() == Some("market_structure")
+        && !cwm_contribution.available
+    {
+        alert_request.server_evidence_verified = false;
+    }
     let alert_decision = evaluate_discord_alert_gate(&alert_request, DiscordAlertMode::Auto);
     let stored_alert = discord_alert_status_for_key(&item.signal_id);
     let alert_status = stored_alert
@@ -544,19 +664,26 @@ fn redact_signal_item(
             item.fusion.summary
         ),
         core_reason: item.fusion.summary.clone(),
-        risk_score: toxic_score,
+        risk_score: existing_risk_score,
         data_quality: final_data_quality,
+        data_quality_score: final_data_quality,
         trigger_price_usd,
         tof_metrics: enhancement.tof_metrics,
-        tof_score: enhancement.tof_score,
+        tof_score: tof_score_for_alert,
         perp_tof_metrics: perp_metrics.clone(),
-        perp_score: perp_metrics.risk_score,
+        perp_score: perp_score_for_alert,
         perp_candidate_type: perp_metrics.candidate_type,
         final_candidate_type: advanced_metrics.final_candidate_type.clone(),
-        metrics_direction: advanced_metrics.metrics_direction,
-        merged_confidence: advanced_metrics.confidence,
+        metrics_direction: advanced_metrics
+            .lineage
+            .available
+            .then_some(advanced_metrics.metrics_direction),
+        merged_confidence: advanced_metrics
+            .lineage
+            .available
+            .then_some(advanced_metrics.confidence),
         advanced_tof_metrics: advanced_metrics.clone(),
-        advanced_score: advanced_metrics.final_risk_score,
+        advanced_score: advanced_score_for_alert,
         advanced_candidate_type: advanced_metrics.candidate_type.clone(),
         cwm_contribution,
         toxic_short_score,
@@ -612,8 +739,8 @@ fn redact_signal_item(
         liquidation_score,
         funding_crowding_score,
         cwm_score,
-        risk_systems,
-        final_risk_score: toxic_score,
+        risk_systems: risk_systems_transport,
+        final_risk_score: existing_risk_score,
         candidate_type: advanced_metrics.candidate_type,
         explain_tags: advanced_metrics.explain_tags,
         direction_label: enhancement.direction_label,
@@ -622,16 +749,18 @@ fn redact_signal_item(
         alert_status,
         alert_reason,
         discord_alert,
-        read_only: true,
-        runtime_modified: false,
-        analysis_only: true,
-        execution_enabled: false,
+        read_only: item.read_only,
+        runtime_modified: item.runtime_modified,
+        analysis_only: item.analysis_only,
+        execution_enabled: item.execution_enabled,
+        monitoring_started,
+        alert_eligible: alert_request.server_evidence_verified,
     }
 }
 
 fn trigger_price_for_item(state: &AppState, item: &ToxicSignalInboxItem) -> Option<f64> {
     state
-        .price_snapshot_at_or_before(item.created_at_ms as i64)
+        .price_snapshot_at_or_before_for_symbol(item.created_at_ms as i64, &item.symbol)
         .map(|snapshot| snapshot.index_mid)
         .filter(|value| value.is_finite() && *value > 0.0)
         .map(round_price)
@@ -659,17 +788,23 @@ fn alert_status_from_reason(allowed: bool, reason: &str) -> &'static str {
 
 fn enhancement_for_item(
     item: &ToxicSignalInboxItem,
+    tof_snapshot: Option<&ObservedTofSnapshot>,
 ) -> crate::runtime::tof_metrics::TofSignalEnhancement {
-    enhance_signal_summary(&TofSummaryInput {
+    let input = TofSummaryInput {
         signal_kind: &item.signal_kind,
         direction_bias: &item.direction_bias,
         severity: &item.severity,
         confidence: item.confidence,
         quality_bucket: &item.quality.quality_bucket,
         summary: &item.fusion.summary,
-        existing_risk_score: risk_score_for(&item.severity),
-        existing_data_quality: data_quality_for(&item.quality.quality_bucket),
-    })
+        existing_risk_score: item.risk_score,
+        existing_data_quality: item.data_quality_score.unwrap_or(0.0),
+    };
+    tof_snapshot
+        .map(|snapshot| {
+            enhance_signal_with_observed(&input, snapshot, item.created_at_ms as i64, now_ms())
+        })
+        .unwrap_or_else(|| enhance_signal_summary(&input))
 }
 
 fn ws_signal_interval() -> Duration {
@@ -721,26 +856,6 @@ fn rfc3339_from_ms(ms: i64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn risk_score_for(severity: &str) -> u8 {
-    match severity.to_ascii_lowercase().as_str() {
-        "critical" => 92,
-        "high" => 85,
-        "medium" => 72,
-        _ => 45,
-    }
-}
-
-fn data_quality_for(bucket: &str) -> f64 {
-    match bucket.to_ascii_lowercase().as_str() {
-        "excellent" => 92.0,
-        "good" => 82.0,
-        "mixed" => 74.0,
-        "weak" => 62.0,
-        "bad" => 45.0,
-        _ => 70.0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::build_ws_snapshot;
@@ -757,9 +872,12 @@ mod tests {
         let json = serde_json::to_string(&snapshot).expect("snapshot json");
 
         assert!(json.contains("signal_snapshot"));
+        assert!(json.contains("\"monitoringStarted\":false"));
+        assert!(json.contains("\"alertEligible\":false"));
         assert!(json.contains("finalResult"));
         assert!(json.contains("riskScore"));
         assert!(json.contains("dataQuality"));
+        assert!(json.contains("dataQualityScore"));
         assert!(json.contains("tofMetrics"));
         assert!(json.contains("perpTofMetrics"));
         assert!(json.contains("perpCandidateType"));
@@ -767,6 +885,9 @@ mod tests {
         assert!(json.contains("metricsDirection"));
         assert!(json.contains("advancedTofMetrics"));
         assert!(json.contains("advancedCandidateType"));
+        let value: serde_json::Value = serde_json::from_str(&json).expect("snapshot value");
+        assert!(value["signals"][0]["metricsDirection"].is_null());
+        assert!(value["signals"][0]["mergedConfidence"].is_null());
         assert!(json.contains("advancedScore"));
         assert!(json.contains("cwmContribution"));
         assert!(json.contains("discordGateIndependent"));
@@ -786,7 +907,7 @@ mod tests {
             "apiKey",
         ] {
             assert!(
-                !json.contains(forbidden),
+                !json.contains(&format!("\"{forbidden}\"")),
                 "forbidden field leaked: {forbidden}"
             );
         }
@@ -811,6 +932,8 @@ mod tests {
                 signal_kind: "spoofing_candidate".to_string(),
                 direction_bias: "short_bias".to_string(),
                 severity: "high".to_string(),
+                risk_score: 82,
+                data_quality_score: Some(82.0),
                 confidence: 0.82,
                 created_at_ms: 1_700_000_000_000,
                 fusion: ToxicSignalInboxFusionSummary {

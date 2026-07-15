@@ -1,7 +1,7 @@
 use btc_toxic_flow_monitor_rs::{
     normalizers::{
         book::{normalize_book, RawBookInput},
-        symbol::normalize_symbol,
+        symbol::{canonical_base_asset, canonical_perp_symbol, normalize_symbol},
         trade::{
             normalize_binance_agg_trade, normalize_bitfinex_trade, normalize_bybit_trade,
             normalize_okx_trade, normalize_okx_trade_with_contract_value, BinanceAggTrade,
@@ -10,6 +10,29 @@ use btc_toxic_flow_monitor_rs::{
     },
     types::market::{AggressorSide, Venue},
 };
+
+#[test]
+fn canonical_symbol_aliases_share_one_perp_identity() {
+    for alias in [
+        "BTC-PERP",
+        "btcusdt",
+        "BTC/USDT",
+        "BTC-USDT-SWAP",
+        "tBTCF0:USTF0",
+    ] {
+        assert_eq!(canonical_base_asset(alias).as_deref(), Some("BTC"));
+        assert_eq!(canonical_perp_symbol(alias).as_deref(), Some("BTC-PERP"));
+    }
+    assert_eq!(
+        canonical_perp_symbol("ETHPERP").as_deref(),
+        Some("ETH-PERP")
+    );
+    assert_eq!(
+        canonical_perp_symbol("TRXUSDT").as_deref(),
+        Some("TRX-PERP")
+    );
+    assert_eq!(canonical_perp_symbol("   "), None);
+}
 
 #[test]
 fn symbol_normalizer_maps_btc_perps() {
@@ -26,6 +49,7 @@ fn symbol_normalizer_maps_btc_perps() {
         normalize_symbol(Venue::Binance, "ETHUSDT"),
         Some("ETH-PERP")
     );
+    assert_eq!(normalize_symbol(Venue::Bybit, "ETHUSDT"), Some("ETH-PERP"));
     assert_eq!(
         normalize_symbol(Venue::Okx, "ETH-USDT-SWAP"),
         Some("ETH-PERP")

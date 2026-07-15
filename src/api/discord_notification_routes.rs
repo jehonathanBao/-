@@ -14,11 +14,38 @@ use crate::runtime::score_config::score_runtime_config;
 use crate::runtime::tof_metrics::TofMetrics;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
+
+fn deserialize_available_metric<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if value
+        .get("lineage")
+        .and_then(|lineage| lineage.get("available"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        return Ok(None);
+    }
+    // Metrics in this request are display hints only and are always cleared
+    // before authoritative hydration. Wire DTOs may legitimately contain
+    // group-available metrics with unavailable (null) sub-fields, while the
+    // internal calculation model uses concrete numbers. Treat any shape that
+    // cannot round-trip into the internal model as absent instead of rejecting
+    // the entire canonical-signal request with a 422.
+    Ok(serde_json::from_value(value).ok())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscordNotificationRequest {
+    #[serde(default, skip_deserializing)]
+    pub server_evidence_verified: bool,
     pub alert_family: Option<String>,
     pub signal_id: Option<String>,
     pub id: Option<String>,
@@ -47,16 +74,19 @@ pub struct DiscordNotificationRequest {
     pub markout_1s_bps: Option<f64>,
     pub markout_5s_bps: Option<f64>,
     pub markout_30s_bps: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_available_metric")]
     pub tof_metrics: Option<TofMetrics>,
     pub tof_score: Option<f64>,
     pub candidate_type: Option<String>,
     pub explain_tags: Option<Vec<String>>,
     pub direction_confidence: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_available_metric")]
     pub perp_tof_metrics: Option<PerpTofMetrics>,
     pub perp_score: Option<u8>,
     pub perp_candidate_type: Option<String>,
     pub final_candidate_type: Option<String>,
     pub metrics_direction: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_available_metric")]
     pub advanced_tof_metrics: Option<AdvancedTofMetrics>,
     pub advanced_score: Option<u8>,
     pub advanced_candidate_type: Option<String>,
@@ -95,6 +125,7 @@ pub struct DiscordNotificationResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscordAlertMode {
     Manual,
+    Preview,
     Auto,
 }
 
@@ -114,7 +145,7 @@ pub struct AlertGateDecision {
     pub configured: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscordAlertPublicStatus {
     pub auto_eligible: bool,
@@ -127,15 +158,19 @@ pub struct DiscordAlertPublicStatus {
 
 pub async fn discord_notification_proxy(
     State(state): State<AppState>,
-    Json(body): Json<DiscordNotificationRequest>,
+    Json(mut body): Json<DiscordNotificationRequest>,
 ) -> impl IntoResponse {
+    hydrate_authoritative_short_toxic_request(&state, &mut body);
     let gate = AlertGate::from_env(alert_family(&body));
-    let is_test = body.test.unwrap_or(false);
-    let decision = evaluate_discord_alert_gate(&body, DiscordAlertMode::Manual);
-    if !is_test {
-        record_alert_gate_log(&state, &body, &decision, false);
-    }
-    if !is_test && !decision.allowed {
+    let mode = if body.test == Some(true) {
+        DiscordAlertMode::Preview
+    } else {
+        DiscordAlertMode::Manual
+    };
+    let decision = evaluate_discord_alert_gate(&body, mode);
+    let webhook_delivery_permitted = webhook_delivery_permitted(&body, &decision);
+    record_alert_gate_log(&state, &body, &decision, false);
+    if !decision.allowed {
         record_discord_alert_status(&body, &decision, false, None);
         record_discord_log(
             &state,
@@ -161,45 +196,83 @@ pub async fn discord_notification_proxy(
             .into_response();
     }
 
-    let Some(webhook_url) = discord_webhook_url(&body) else {
+    let webhook_url = if webhook_delivery_permitted {
+        let Some(webhook_url) = discord_webhook_url(&body) else {
+            record_discord_log(
+                &state,
+                "warn",
+                "discord_config_missing",
+                "Discord push skipped: Discord is not configured",
+                &body,
+            );
+            return (
+                StatusCode::OK,
+                Json(DiscordNotificationResponse {
+                    ok: false,
+                    configured: false,
+                    reason: "DISCORD_NOT_CONFIGURED",
+                    min_score: gate.min_score,
+                    min_confidence: gate.min_confidence,
+                    min_data_quality: gate.min_data_quality,
+                    sent: false,
+                    read_only: true,
+                    execution_enabled: false,
+                }),
+            )
+                .into_response();
+        };
+
+        if validate_discord_webhook_url(&webhook_url).is_err() {
+            record_discord_log(
+                &state,
+                "error",
+                "discord_push_failed",
+                "Discord push failed: configuration is invalid",
+                &body,
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DiscordNotificationResponse {
+                    ok: false,
+                    configured: true,
+                    reason: "DISCORD_WEBHOOK_URL_INVALID",
+                    min_score: gate.min_score,
+                    min_confidence: gate.min_confidence,
+                    min_data_quality: gate.min_data_quality,
+                    sent: false,
+                    read_only: true,
+                    execution_enabled: false,
+                }),
+            )
+                .into_response();
+        }
+        Some(webhook_url)
+    } else {
+        None
+    };
+
+    let push_key = canonical_manual_push_key(&body);
+    let cooldown_key = push_cooldown_key(&body);
+    if push_key.is_none() {
+        let failed_decision = AlertGateDecision {
+            allowed: false,
+            reason: "authoritative_signal_id_unavailable",
+            ..decision.clone()
+        };
+        record_discord_alert_status(&body, &failed_decision, false, None);
         record_discord_log(
             &state,
             "warn",
-            "discord_config_missing",
-            "Discord push skipped: Discord is not configured",
+            "discord_manual_push_skipped",
+            "Discord manual push skipped: canonical signal id is unavailable",
             &body,
         );
         return (
             StatusCode::OK,
             Json(DiscordNotificationResponse {
                 ok: false,
-                configured: false,
-                reason: "DISCORD_NOT_CONFIGURED",
-                min_score: gate.min_score,
-                min_confidence: gate.min_confidence,
-                min_data_quality: gate.min_data_quality,
-                sent: false,
-                read_only: true,
-                execution_enabled: false,
-            }),
-        )
-            .into_response();
-    };
-
-    if validate_discord_webhook_url(&webhook_url).is_err() {
-        record_discord_log(
-            &state,
-            "error",
-            "discord_push_failed",
-            "Discord push failed: configuration is invalid",
-            &body,
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(DiscordNotificationResponse {
-                ok: false,
-                configured: true,
-                reason: "DISCORD_WEBHOOK_URL_INVALID",
+                configured: decision.configured,
+                reason: failed_decision.reason,
                 min_score: gate.min_score,
                 min_confidence: gate.min_confidence,
                 min_data_quality: gate.min_data_quality,
@@ -210,27 +283,17 @@ pub async fn discord_notification_proxy(
         )
             .into_response();
     }
-
-    let push_key = if is_test {
-        None
-    } else {
-        push_dedupe_key(&body)
-    };
-    let cooldown_key = if is_test {
-        None
-    } else {
-        push_cooldown_key(&body)
-    };
     if let Some(key) = push_key.as_deref() {
-        if let Some(reason) = discord_push_limiter()
-            .lock()
-            .expect("discord limiter")
-            .reserve(
-                key,
-                cooldown_key.as_deref(),
-                Some(cooldown_duration_for_signal(&body)),
-            )
-        {
+        let limiter = if webhook_delivery_permitted {
+            discord_push_limiter()
+        } else {
+            discord_test_preview_limiter()
+        };
+        if let Some(reason) = limiter.lock().expect("discord limiter").reserve(
+            key,
+            cooldown_key.as_deref(),
+            Some(cooldown_duration_for_signal(&body)),
+        ) {
             let limited_decision = AlertGateDecision {
                 allowed: false,
                 reason,
@@ -248,7 +311,7 @@ pub async fn discord_notification_proxy(
                 StatusCode::OK,
                 Json(DiscordNotificationResponse {
                     ok: false,
-                    configured: true,
+                    configured: decision.configured,
                     reason,
                     min_score: gate.min_score,
                     min_confidence: gate.min_confidence,
@@ -262,6 +325,37 @@ pub async fn discord_notification_proxy(
         }
     }
 
+    // `test=true` is a payload preview that still requires authoritative
+    // hydration, runtime safety, score thresholds and isolated rate/cooldown
+    // limits. Delivery-only DRY_RUN and webhook configuration do not block a
+    // preview, because no HTTP client is built and no webhook is contacted.
+    if !webhook_delivery_permitted {
+        let _validated_payload = discord_candidate_payload(&body);
+        record_discord_log(
+            &state,
+            "info",
+            "discord_test_preview_ready",
+            "Discord test preview validated; webhook delivery was not attempted",
+            &body,
+        );
+        return (
+            StatusCode::OK,
+            Json(DiscordNotificationResponse {
+                ok: true,
+                configured: decision.configured,
+                reason: "TEST_PREVIEW_ONLY",
+                min_score: gate.min_score,
+                min_confidence: gate.min_confidence,
+                min_data_quality: gate.min_data_quality,
+                sent: false,
+                read_only: true,
+                execution_enabled: false,
+            }),
+        )
+            .into_response();
+    }
+
+    let webhook_url = webhook_url.expect("permitted Discord delivery must have a validated URL");
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(alert_http_timeout_secs()))
         .build()
@@ -381,6 +475,13 @@ pub async fn discord_notification_proxy(
                 .into_response()
         }
     }
+}
+
+fn webhook_delivery_permitted(
+    request: &DiscordNotificationRequest,
+    decision: &AlertGateDecision,
+) -> bool {
+    decision.allowed && request.test != Some(true)
 }
 
 pub async fn maybe_auto_push_discord(
@@ -637,10 +738,12 @@ fn read_u8_env(primary: String, fallback: &str) -> Option<u8> {
     std::env::var(&primary)
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value <= 100)
         .or_else(|| {
             std::env::var(fallback)
                 .ok()
                 .and_then(|value| value.parse::<u8>().ok())
+                .filter(|value| *value <= 100)
         })
 }
 
@@ -648,10 +751,12 @@ fn read_f64_env(primary: String, fallback: &str) -> Option<f64> {
     std::env::var(&primary)
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
         .or_else(|| {
             std::env::var(fallback)
                 .ok()
                 .and_then(|value| value.parse::<f64>().ok())
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
         })
 }
 
@@ -732,7 +837,15 @@ fn discord_channel_name(signal: &DiscordNotificationRequest) -> Option<String> {
 }
 
 fn discord_dry_run() -> bool {
-    parse_bool_env("DRY_RUN", true)
+    match std::env::var("DRY_RUN") {
+        Err(_) => true,
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            // An empty or malformed safety flag must not enable delivery.
+            _ => true,
+        },
+    }
 }
 
 fn discord_auto_push_enabled(family: &str) -> bool {
@@ -803,17 +916,35 @@ fn push_dedupe_key(signal: &DiscordNotificationRequest) -> Option<String> {
         .map(str::to_string)
 }
 
+fn canonical_manual_push_key(signal: &DiscordNotificationRequest) -> Option<String> {
+    if !signal.server_evidence_verified {
+        return None;
+    }
+    let signal_id = signal
+        .signal_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(format!(
+        "manual:{}:{}",
+        alert_family_label(signal),
+        signal_id
+    ))
+}
+
 fn push_cooldown_key(signal: &DiscordNotificationRequest) -> Option<String> {
     let symbol = signal.symbol.as_deref()?.trim();
     if symbol.is_empty() {
         return None;
     }
+    let canonical_symbol = crate::normalizers::symbol::canonical_base_asset(symbol)
+        .unwrap_or_else(|| symbol.to_ascii_uppercase());
     let side = signal.side.as_deref().unwrap_or("unknown").trim();
     let signal_type = signal.signal_type.as_deref().unwrap_or("unknown").trim();
     Some(format!(
         "{}:{}:{}:{}",
         alert_family_label(signal),
-        symbol.to_ascii_uppercase(),
+        canonical_symbol,
         signal_type.to_ascii_lowercase(),
         side.to_ascii_lowercase()
     ))
@@ -949,6 +1080,10 @@ fn discord_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload
         };
     }
 
+    discord_candidate_payload(signal)
+}
+
+fn discord_candidate_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPayload {
     match alert_family(signal) {
         "MARKET_STRUCTURE" => market_structure_payload(signal),
         _ => short_toxic_payload(signal),
@@ -1033,16 +1168,30 @@ fn short_toxic_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPay
             inline: true,
         });
     }
-    if let Some(tof_metrics) = signal.tof_metrics.as_ref() {
+    if let Some(tof_metrics) = authoritative_tof_metrics(signal) {
+        let vpin = authoritative_tof_metric(tof_metrics, "vpin", tof_metrics.vpin_proxy)
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "N/A".to_string());
+        let imbalance =
+            authoritative_tof_metric(tof_metrics, "tradeImbalance", tof_metrics.trade_imbalance)
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "N/A".to_string());
+        let spread = authoritative_tof_metric(tof_metrics, "spread", tof_metrics.spread_bps)
+            .map(|value| format!("{value:.1}bps"))
+            .unwrap_or_else(|| "N/A".to_string());
+        let depth =
+            authoritative_tof_metric(tof_metrics, "depth", tof_metrics.depth_withdrawal_score)
+                .map(|value| format!("{value:.0}"))
+                .unwrap_or_else(|| "N/A".to_string());
         fields.push(DiscordEmbedField {
             name: "TOF 指标".to_string(),
             value: format!(
-                "TOF {:.0} / VPIN {:.0} / Imbalance {:.2} / Spread {:.1}bps / Depth {:.0}",
+                "TOF {:.0} / VPIN {} / Imbalance {} / Spread {} / Depth {}",
                 signal.tof_score.unwrap_or(tof_metrics.tof_score),
-                tof_metrics.vpin_proxy,
-                tof_metrics.trade_imbalance,
-                tof_metrics.spread_bps,
-                tof_metrics.depth_withdrawal_score
+                vpin,
+                imbalance,
+                spread,
+                depth,
             ),
             inline: false,
         });
@@ -1055,14 +1204,19 @@ fn short_toxic_payload(signal: &DiscordNotificationRequest) -> DiscordWebhookPay
     fields.push(DiscordEmbedField {
         name: "最终结果".to_string(),
         value: format!(
-            "{}；短线扫盘 / 插针风险升高，不代表中长线趋势。",
+            "{}；短线毒性风险升高，不代表中长线趋势。",
             final_result.trim_end_matches('。')
         ),
         inline: false,
     });
     fields.push(DiscordEmbedField {
         name: "说明".to_string(),
-        value: "短线有毒订单 Candidate only，基于公开盘口 / L2 / 成交数据推断；只做提醒，不代表中长线趋势，不执行下单、拦截、封禁或资金操作。".to_string(),
+        value: if authoritative_tof_metrics(signal).is_some() {
+            "短线有毒订单 Candidate only，基于已验证的公开盘口 / L2 / 成交数据推断；只做提醒，不代表中长线趋势，不执行下单、拦截、封禁或资金操作。"
+        } else {
+            "短线有毒订单 Candidate only，基于服务端已验证的可用候选证据；只做提醒，不代表中长线趋势，不执行下单、拦截、封禁或资金操作。"
+        }
+        .to_string(),
         inline: false,
     });
 
@@ -1107,6 +1261,12 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
     let extreme_impact_score = market_structure_extreme_score(signal);
     let confidence = market_structure_confidence(signal);
     let data_quality = market_structure_data_quality(signal);
+    let authoritative_spot = authoritative_tof_metrics(signal).is_some();
+    let displayed_spot_score = if authoritative_spot {
+        signal.spot_score
+    } else {
+        None
+    };
     let structure_bias = signal.structure_bias.unwrap_or(0);
     let regime_type = signal.regime_type.as_deref().unwrap_or("unclear");
     let regime_label = market_structure_regime_label(regime_type);
@@ -1176,8 +1336,7 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
         },
         DiscordEmbedField {
             name: "现货评分".to_string(),
-            value: signal
-                .spot_score
+            value: displayed_spot_score
                 .map(|value| format!("{value}/100"))
                 .unwrap_or_else(|| "N/A".to_string()),
             inline: true,
@@ -1216,7 +1375,7 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
     });
     fields.push(DiscordEmbedField {
         name: "说明".to_string(),
-        value: "主力结构 Candidate only，基于现货、合约、OI、价格响应和公开成交上下文推断；只做提醒，不执行下单、拦截、封禁或资金操作。".to_string(),
+        value: "主力结构 Candidate only，仅使用已通过来源验证的可用现货、合约、OI、价格响应和公开成交上下文；只做提醒，不执行下单、拦截、封禁或资金操作。".to_string(),
         inline: false,
     });
 
@@ -1251,7 +1410,7 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
 
 fn short_toxic_type_label(
     signal: &DiscordNotificationRequest,
-    direction: NormalizedDiscordDirection,
+    _direction: NormalizedDiscordDirection,
 ) -> &'static str {
     let value = signal
         .candidate_type
@@ -1270,11 +1429,7 @@ fn short_toxic_type_label(
     } else if value.contains("breakout") {
         "假突破"
     } else {
-        match direction {
-            NormalizedDiscordDirection::Bullish => "主动买入扫盘",
-            NormalizedDiscordDirection::Bearish => "主动卖出扫盘",
-            NormalizedDiscordDirection::Neutral => "短线有毒流",
-        }
+        "短线有毒流"
     }
 }
 
@@ -1288,15 +1443,10 @@ fn short_pressure_label(direction: NormalizedDiscordDirection) -> &'static str {
 
 fn short_toxic_reasons(
     signal: &DiscordNotificationRequest,
-    direction: NormalizedDiscordDirection,
+    _direction: NormalizedDiscordDirection,
 ) -> String {
-    let mut reasons = Vec::new();
-    match direction {
-        NormalizedDiscordDirection::Bullish => reasons.push("主动买入扫穿近端卖盘".to_string()),
-        NormalizedDiscordDirection::Bearish => reasons.push("主动卖出扫穿近端买盘".to_string()),
-        NormalizedDiscordDirection::Neutral => reasons.push("短线成交流与盘口结构异常".to_string()),
-    }
-    if let Some(metrics) = signal.tof_metrics.as_ref() {
+    let mut reasons = vec!["检测器识别到短线毒性候选".to_string()];
+    if let Some(metrics) = authoritative_tof_metrics(signal) {
         if metrics.depth_withdrawal_score >= 60.0 {
             reasons.push("近端盘口深度快速消失".to_string());
         }
@@ -1307,12 +1457,14 @@ fn short_toxic_reasons(
             reasons.push(format!("主动成交方向不平衡 {:.2}", metrics.trade_imbalance));
         }
     }
-    if let Some(price_impact_bps) = signal.price_impact_bps {
-        reasons.push(format!("价格短线冲击 {:.2}bps", price_impact_bps));
-    }
-    if let Some(tags) = signal.explain_tags.as_ref() {
-        for tag in tags.iter().take(2) {
-            reasons.push(format!("解释标签：{tag}"));
+    if signal.server_evidence_verified {
+        if let Some(price_impact_bps) = signal.price_impact_bps {
+            reasons.push(format!("价格短线冲击 {:.2}bps", price_impact_bps));
+        }
+        if let Some(tags) = signal.explain_tags.as_ref() {
+            for tag in tags.iter().take(2) {
+                reasons.push(format!("解释标签：{tag}"));
+            }
         }
     }
     reasons
@@ -1321,6 +1473,26 @@ fn short_toxic_reasons(
         .map(|reason| format!("- {reason}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn authoritative_tof_metrics(signal: &DiscordNotificationRequest) -> Option<&TofMetrics> {
+    if !signal.server_evidence_verified {
+        return None;
+    }
+    signal
+        .tof_metrics
+        .as_ref()
+        .filter(|metrics| metrics.lineage.alert_eligible)
+}
+
+fn authoritative_tof_metric(metrics: &TofMetrics, key: &str, value: f64) -> Option<f64> {
+    metrics
+        .metric_lineage
+        .get(key)
+        .unwrap_or(&metrics.lineage)
+        .alert_eligible
+        .then_some(value)
+        .filter(|value| value.is_finite())
 }
 
 fn market_structure_regime_label(regime_type: &str) -> &'static str {
@@ -1390,36 +1562,52 @@ fn market_structure_reasons(
             NormalizedDiscordDirection::Neutral => "合约主动成交流异常放大".to_string(),
         });
     }
-    if signal.oi_score.unwrap_or(0) >= 70 {
-        reasons.push(match direction {
-            NormalizedDiscordDirection::Bullish => "OI 同步上升，偏新多开仓".to_string(),
-            NormalizedDiscordDirection::Bearish => "OI 同步上升，偏新空开仓".to_string(),
-            NormalizedDiscordDirection::Neutral => "OI 变化明显，结构进入再定价".to_string(),
-        });
-    } else if extreme_template {
-        reasons.push("OI 快速下降".to_string());
+    let authoritative_perp = signal.server_evidence_verified
+        && signal
+            .perp_tof_metrics
+            .as_ref()
+            .is_some_and(|metrics| metrics.lineage.alert_eligible);
+    let authoritative_liquidation = signal.server_evidence_verified
+        && signal
+            .perp_tof_metrics
+            .as_ref()
+            .is_some_and(|metrics| metrics.liquidation_lineage.alert_eligible);
+    let authoritative_spot = authoritative_tof_metrics(signal).is_some();
+    if authoritative_perp {
+        if signal.oi_score.unwrap_or(0) >= 70 {
+            reasons.push(match direction {
+                NormalizedDiscordDirection::Bullish => "OI 同步上升，偏新多开仓".to_string(),
+                NormalizedDiscordDirection::Bearish => "OI 同步上升，偏新空开仓".to_string(),
+                NormalizedDiscordDirection::Neutral => "OI 变化明显，结构进入再定价".to_string(),
+            });
+        } else if extreme_template {
+            reasons.push("OI 快速下降".to_string());
+        }
     }
-    if signal.spot_score.unwrap_or(0) >= 60 {
-        reasons.push(match regime_type {
-            "downside_absorption" => "现货买盘承接明显".to_string(),
-            "upside_resistance" => "现货卖盘压制明显".to_string(),
-            _ => match direction {
-                NormalizedDiscordDirection::Bullish => "现货主动买入跟随".to_string(),
-                NormalizedDiscordDirection::Bearish => "现货主动卖出跟随".to_string(),
-                NormalizedDiscordDirection::Neutral => "现货成交方向开始配合".to_string(),
-            },
-        });
-    } else if extreme_template {
-        reasons.push("现货卖出确认不足".to_string());
+    if authoritative_spot {
+        if signal.spot_score.unwrap_or(0) >= 60 {
+            reasons.push(match regime_type {
+                "downside_absorption" => "现货买盘承接明显".to_string(),
+                "upside_resistance" => "现货卖盘压制明显".to_string(),
+                _ => match direction {
+                    NormalizedDiscordDirection::Bullish => "现货主动买入跟随".to_string(),
+                    NormalizedDiscordDirection::Bearish => "现货主动卖出跟随".to_string(),
+                    NormalizedDiscordDirection::Neutral => "现货成交方向开始配合".to_string(),
+                },
+            });
+        } else if extreme_template {
+            reasons.push("现货卖出确认不足".to_string());
+        }
     }
-    if signal.price_impact_bps.unwrap_or_default().abs() > 0.0 {
+    if signal.server_evidence_verified
+        && signal
+            .price_impact_bps
+            .is_some_and(|value| value.is_finite() && value.abs() > 0.0)
+    {
         reasons.push("价格出现明显短线冲击".to_string());
-    } else if regime_type == "downside_absorption" {
-        reasons.push("价格回调未破，出现下方承接".to_string());
-    } else if regime_type == "upside_resistance" {
-        reasons.push("价格上冲未成，出现上方压制".to_string());
     }
-    if signal.liquidation_score.unwrap_or(0) >= 70 && extreme_template {
+    if authoritative_liquidation && signal.liquidation_score.unwrap_or(0) >= 70 && extreme_template
+    {
         reasons.push("多头清算显著增加".to_string());
     }
     reasons
@@ -1548,7 +1736,13 @@ fn evaluate_short_toxic_gate(
         configured,
     };
 
-    if matches!(mode, DiscordAlertMode::Auto) && !auto_push_enabled {
+    if !signal.server_evidence_verified {
+        decision.allowed = false;
+        decision.reason = "authoritative_evidence_unavailable";
+    } else if !short_toxic_evidence_is_valid(signal) {
+        decision.allowed = false;
+        decision.reason = "invalid_authoritative_evidence";
+    } else if matches!(mode, DiscordAlertMode::Auto) && !auto_push_enabled {
         decision.allowed = false;
         decision.reason = "auto_disabled";
     } else if !severity_allowed {
@@ -1563,15 +1757,290 @@ fn evaluate_short_toxic_gate(
     } else if data_quality < gate.min_data_quality {
         decision.allowed = false;
         decision.reason = "data_quality_below_threshold";
-    } else if dry_run {
+    } else if dry_run && !matches!(mode, DiscordAlertMode::Preview) {
         decision.allowed = false;
         decision.reason = "dry_run";
-    } else if !configured {
+    } else if !configured && !matches!(mode, DiscordAlertMode::Preview) {
         decision.allowed = false;
         decision.reason = "webhook_missing";
     }
 
     decision
+}
+
+fn short_toxic_evidence_is_valid(signal: &DiscordNotificationRequest) -> bool {
+    signal.score.is_none_or(|score| score <= 100)
+        && signal
+            .confidence
+            .or(signal.direction_confidence)
+            .unwrap_or(0.0)
+            .is_finite()
+        && (0.0..=100.0).contains(
+            &signal
+                .confidence
+                .or(signal.direction_confidence)
+                .unwrap_or(0.0),
+        )
+        && signal.data_quality.unwrap_or(0.0).is_finite()
+        && (0.0..=100.0).contains(&signal.data_quality.unwrap_or(0.0))
+}
+
+fn hydrate_authoritative_short_toxic_request(
+    state: &AppState,
+    request: &mut DiscordNotificationRequest,
+) {
+    let family = alert_family(request).to_string();
+    if family != "SHORT_TOXIC" && family != "MARKET_STRUCTURE" {
+        return;
+    }
+    let requested_signal_id = request
+        .signal_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let requested_symbol = request
+        .symbol
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&state.config().symbol)
+        .to_ascii_uppercase();
+
+    // The request body supplies only the canonical signal lookup key and the
+    // desired family. Every value that can affect a gate or Discord wording is
+    // cleared before the server reconstructs it from monitor state.
+    clear_client_controlled_alert_content(request);
+    request.alert_family = Some(
+        match family.as_str() {
+            "MARKET_STRUCTURE" => "market_structure",
+            _ => "short_toxic_order",
+        }
+        .to_string(),
+    );
+    let Some(signal_id) = requested_signal_id else {
+        return;
+    };
+    let recent =
+        crate::api::toxic_quality_scorecard_routes::build_fusion_recent(state, &requested_symbol);
+    if !state.runtime_started()
+        || !recent.read_only
+        || recent.runtime_modified
+        || !recent.analysis_only
+        || recent.execution_enabled
+    {
+        return;
+    }
+    let Some(signal) = recent.signals.iter().find(|signal| {
+        signal.signal_id == signal_id && signal.symbol.eq_ignore_ascii_case(&requested_symbol)
+    }) else {
+        return;
+    };
+    let Some(data_quality) = signal
+        .data_quality
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 100.0)
+    else {
+        return;
+    };
+    if family == "MARKET_STRUCTURE" {
+        let cwm_signal = crate::api::toxic_signal_inbox_routes::latest_cwm_signal_for_state(
+            state,
+            &requested_symbol,
+        );
+        let tof_snapshot = crate::api::toxic_signal_inbox_routes::observed_tof_snapshot_for_state(
+            state,
+            &requested_symbol,
+        );
+        let inbox_recent =
+            crate::api::toxic_signal_inbox_routes::build_recent(state, &requested_symbol);
+        let snapshot =
+            crate::api::toxic_signal_ws_routes::build_ws_snapshot_with_authoritative_state(
+                &inbox_recent,
+                cwm_signal.as_ref(),
+                tof_snapshot.as_ref(),
+                state.runtime_started(),
+            );
+        let Some(authoritative) = snapshot
+            .signals
+            .iter()
+            .find(|candidate| candidate.id == signal_id)
+        else {
+            return;
+        };
+        if !authoritative.alert_eligible || !authoritative.cwm_contribution.available {
+            return;
+        }
+        request.alert_family = Some("market_structure".to_string());
+        request.signal_id = Some(authoritative.id.clone());
+        request.id = Some(authoritative.id.clone());
+        request.exchange = authoritative.cwm_contribution.main_exchange.clone();
+        request.symbol = Some(authoritative.symbol.clone());
+        request.signal_type = Some(authoritative.detector.clone());
+        request.level = authoritative.market_structure_severity.clone();
+        request.side = Some(authoritative.direction_label.clone());
+        request.score = Some(authoritative.risk_score);
+        request.confidence = Some(authoritative.confidence * 100.0);
+        request.data_quality = Some(data_quality);
+        request.reason = Some(authoritative.core_reason.clone());
+        request.time = Some(authoritative.created_at.clone());
+        if authoritative.tof_metrics.lineage.alert_eligible {
+            request.tof_score = authoritative.tof_score;
+            request.tof_metrics = Some(authoritative.tof_metrics.clone());
+        }
+        if authoritative.perp_tof_metrics.lineage.alert_eligible {
+            request.perp_score = authoritative.perp_score;
+            request.perp_tof_metrics = Some(authoritative.perp_tof_metrics.clone());
+        }
+        request.main_force_score = authoritative.main_force_score;
+        request.extreme_impact_score = authoritative.extreme_impact_score;
+        request.structure_bias = authoritative.structure_bias;
+        request.market_structure_confidence = authoritative.market_structure_confidence;
+        request.market_structure_data_quality = authoritative.market_structure_data_quality;
+        request.market_structure_severity = authoritative.market_structure_severity.clone();
+        request.regime_type = authoritative.regime_type.clone();
+        request.spot_score = authoritative.spot_score;
+        request.contract_score = authoritative.contract_score;
+        request.cross_confirm_score = authoritative.cross_confirm_score;
+        request.main_force_confirmed = authoritative.main_force_confirmed;
+        request.signal_agreement = authoritative.signal_agreement;
+        request.source_coverage = authoritative.source_coverage;
+        request.oi_score = authoritative.oi_score;
+        request.liquidation_score = authoritative
+            .perp_tof_metrics
+            .liquidation_lineage
+            .alert_eligible
+            .then_some(authoritative.liquidation_score)
+            .flatten();
+        if !market_structure_evidence_is_valid(request) {
+            clear_client_controlled_alert_content(request);
+            request.alert_family = Some("market_structure".to_string());
+            return;
+        }
+        request.server_evidence_verified = true;
+        return;
+    }
+    request.alert_family = Some("short_toxic_order".to_string());
+    request.signal_id = Some(signal.signal_id.clone());
+    request.id = Some(signal.signal_id.clone());
+    request.score = Some(signal.toxicity_score);
+    request.data_quality = Some(data_quality);
+    request.confidence = Some(canonical_toxic_confidence_percent(signal.confidence));
+    request.level = Some(
+        if signal.toxicity_score >= 90 {
+            "critical"
+        } else if signal.toxicity_score >= 80 {
+            "high"
+        } else if signal.toxicity_score >= 65 {
+            "medium"
+        } else {
+            "low"
+        }
+        .to_string(),
+    );
+    request.symbol = Some(signal.symbol.clone());
+    request.time = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(signal.ts_ms as i64)
+        .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    request.signal_type = serde_json::to_value(signal.signal_type)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string));
+    request.side = serde_json::to_value(signal.direction)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string));
+    request.exchange = signal
+        .evidence
+        .as_ref()
+        .map(|evidence| evidence.venue.clone())
+        .or_else(|| Some("Runtime".to_string()));
+    request.candidate_type = request.signal_type.clone();
+    request.explain_tags = Some(signal.reason.clone());
+    request.direction_confidence = request.confidence;
+    if let Some(evidence) = signal.evidence.as_ref() {
+        request.add_qty = evidence.add_qty.is_finite().then_some(evidence.add_qty);
+        request.cancel_qty = evidence
+            .cancel_qty
+            .is_finite()
+            .then_some(evidence.cancel_qty);
+        request.fill_qty = evidence.fill_qty.is_finite().then_some(evidence.fill_qty);
+        request.cancel_to_trade_ratio = finite_metric(evidence.cancel_to_trade_ratio);
+        request.depth_before = finite_metric(evidence.depth_before);
+        request.depth_after = finite_metric(evidence.depth_after);
+        request.depth_impact = finite_metric(evidence.depth_impact);
+        request.price_impact_bps = finite_metric(evidence.price_impact_bps);
+        request.markout_1s_bps = finite_metric(evidence.markout_1s_bps);
+        request.markout_5s_bps = finite_metric(evidence.markout_5s_bps);
+        request.markout_30s_bps = finite_metric(evidence.markout_30s_bps);
+    }
+    request.reason = Some(signal.primary_reason.clone());
+    request.server_evidence_verified = true;
+}
+
+fn finite_metric(value: Option<f64>) -> Option<f64> {
+    value.filter(|metric| metric.is_finite())
+}
+
+fn canonical_toxic_confidence_percent(
+    confidence: crate::types::toxic_flow::ToxicConfidence,
+) -> f64 {
+    crate::toxicity::toxic_signal_inbox::toxic_confidence_score(confidence) * 100.0
+}
+
+fn clear_client_controlled_alert_content(request: &mut DiscordNotificationRequest) {
+    request.server_evidence_verified = false;
+    request.signal_id = None;
+    request.id = None;
+    request.dedupe_key = None;
+    request.exchange = None;
+    request.symbol = None;
+    request.signal_type = None;
+    request.level = None;
+    request.side = None;
+    request.score = None;
+    request.confidence = None;
+    request.data_quality = None;
+    request.reason = None;
+    request.impact = None;
+    request.impact_level = None;
+    request.time = None;
+    request.price_range = None;
+    request.add_qty = None;
+    request.cancel_qty = None;
+    request.fill_qty = None;
+    request.cancel_to_trade_ratio = None;
+    request.depth_before = None;
+    request.depth_after = None;
+    request.depth_impact = None;
+    request.price_impact_bps = None;
+    request.markout_1s_bps = None;
+    request.markout_5s_bps = None;
+    request.markout_30s_bps = None;
+    request.tof_metrics = None;
+    request.tof_score = None;
+    request.candidate_type = None;
+    request.explain_tags = None;
+    request.direction_confidence = None;
+    request.perp_tof_metrics = None;
+    request.perp_score = None;
+    request.perp_candidate_type = None;
+    request.final_candidate_type = None;
+    request.metrics_direction = None;
+    request.advanced_tof_metrics = None;
+    request.advanced_score = None;
+    request.advanced_candidate_type = None;
+    request.main_force_score = None;
+    request.extreme_impact_score = None;
+    request.structure_bias = None;
+    request.market_structure_confidence = None;
+    request.market_structure_data_quality = None;
+    request.market_structure_severity = None;
+    request.regime_type = None;
+    request.spot_score = None;
+    request.contract_score = None;
+    request.cross_confirm_score = None;
+    request.main_force_confirmed = None;
+    request.signal_agreement = None;
+    request.source_coverage = None;
+    request.oi_score = None;
+    request.liquidation_score = None;
 }
 
 fn evaluate_market_structure_gate(
@@ -1584,7 +2053,12 @@ fn evaluate_market_structure_gate(
 ) -> AlertGateDecision {
     let confidence = market_structure_confidence(signal);
     let data_quality = market_structure_data_quality(signal);
-    let trigger = market_structure_trigger(signal, gate);
+    let evidence_valid = market_structure_evidence_is_valid(signal);
+    let trigger = if evidence_valid {
+        market_structure_trigger(signal, gate)
+    } else {
+        None
+    };
     let score = match trigger {
         Some(MarketStructureTrigger::MainForce) => market_structure_main_force_score(signal),
         Some(MarketStructureTrigger::ExtremeImpact) => market_structure_extreme_score(signal),
@@ -1610,16 +2084,22 @@ fn evaluate_market_structure_gate(
         configured,
     };
 
-    if matches!(mode, DiscordAlertMode::Auto) && !auto_push_enabled {
+    if !signal.server_evidence_verified {
+        decision.allowed = false;
+        decision.reason = "authoritative_evidence_unavailable";
+    } else if !evidence_valid {
+        decision.allowed = false;
+        decision.reason = "invalid_authoritative_evidence";
+    } else if matches!(mode, DiscordAlertMode::Auto) && !auto_push_enabled {
         decision.allowed = false;
         decision.reason = "auto_disabled";
     } else if trigger.is_none() {
         decision.allowed = false;
         decision.reason = market_structure_rejection_reason(signal, gate);
-    } else if dry_run {
+    } else if dry_run && !matches!(mode, DiscordAlertMode::Preview) {
         decision.allowed = false;
         decision.reason = "dry_run";
-    } else if !configured {
+    } else if !configured && !matches!(mode, DiscordAlertMode::Preview) {
         decision.allowed = false;
         decision.reason = "webhook_missing";
     }
@@ -1638,12 +2118,16 @@ fn market_structure_trigger(
     signal: &DiscordNotificationRequest,
     gate: &AlertGate,
 ) -> Option<MarketStructureTrigger> {
+    if !market_structure_evidence_is_valid(signal) {
+        return None;
+    }
     let data_quality = market_structure_data_quality(signal);
     if data_quality < gate.min_data_quality {
         return None;
     }
     if market_structure_main_force_score(signal) >= gate.min_score
         && market_structure_confidence(signal) >= gate.min_confidence
+        && signal.main_force_confirmed == Some(true)
     {
         return Some(MarketStructureTrigger::MainForce);
     }
@@ -1667,6 +2151,12 @@ fn market_structure_rejection_reason(
     let main_force_score = market_structure_main_force_score(signal);
     let confidence = market_structure_confidence(signal);
     let extreme = market_structure_extreme_score(signal);
+    if main_force_score >= gate.min_score
+        && confidence >= gate.min_confidence
+        && signal.main_force_confirmed != Some(true)
+    {
+        return "main_force_not_confirmed";
+    }
     if main_force_score >= gate.min_score && confidence < gate.min_confidence {
         return "confidence_below_threshold";
     }
@@ -1721,6 +2211,49 @@ fn market_structure_data_quality(signal: &DiscordNotificationRequest) -> f64 {
         .market_structure_data_quality
         .or(signal.data_quality)
         .unwrap_or(0.0)
+}
+
+fn market_structure_evidence_is_valid(signal: &DiscordNotificationRequest) -> bool {
+    let Some(main_force_score) = signal.main_force_score else {
+        return false;
+    };
+    let Some(extreme_impact_score) = signal.extreme_impact_score else {
+        return false;
+    };
+    let Some(structure_bias) = signal.structure_bias else {
+        return false;
+    };
+    let Some(confidence) = signal.market_structure_confidence else {
+        return false;
+    };
+    let Some(data_quality) = signal.market_structure_data_quality else {
+        return false;
+    };
+    if signal.main_force_confirmed.is_none()
+        || main_force_score > 100
+        || extreme_impact_score > 100
+        || !(-100..=100).contains(&structure_bias)
+        || !confidence.is_finite()
+        || !(0.0..=100.0).contains(&confidence)
+        || !data_quality.is_finite()
+        || !(0.0..=100.0).contains(&data_quality)
+    {
+        return false;
+    }
+
+    [
+        signal.score,
+        signal.spot_score,
+        signal.contract_score,
+        signal.cross_confirm_score,
+        signal.signal_agreement,
+        signal.source_coverage,
+        signal.oi_score,
+        signal.liquidation_score,
+    ]
+    .into_iter()
+    .flatten()
+    .all(|score| score <= 100)
 }
 
 #[derive(Debug)]
@@ -1805,8 +2338,16 @@ fn discord_push_limiter() -> &'static Mutex<DiscordPushLimiter> {
     LIMITER.get_or_init(|| Mutex::new(DiscordPushLimiter::new()))
 }
 
+fn discord_test_preview_limiter() -> &'static Mutex<DiscordPushLimiter> {
+    static LIMITER: OnceLock<Mutex<DiscordPushLimiter>> = OnceLock::new();
+    LIMITER.get_or_init(|| Mutex::new(DiscordPushLimiter::new()))
+}
+
 pub fn reset_discord_push_limits_for_tests() {
     *discord_push_limiter().lock().expect("discord limiter") = DiscordPushLimiter::new();
+    *discord_test_preview_limiter()
+        .lock()
+        .expect("discord preview limiter") = DiscordPushLimiter::new();
 }
 
 pub fn reserve_discord_push_for_tests(key: &str) -> Option<&'static str> {
@@ -1831,19 +2372,51 @@ pub fn reserve_discord_push_for_tests_with_cooldown(
         )
 }
 
+const DISCORD_AUTO_TRACKER_MAX_ENTRIES: usize = 4_096;
+
 #[derive(Debug, Default)]
 struct DiscordAutoPushTracker {
     seen_keys: HashSet<String>,
+    seen_order: VecDeque<String>,
     statuses: HashMap<String, DiscordAlertPublicStatus>,
+    status_order: VecDeque<String>,
 }
 
 impl DiscordAutoPushTracker {
     fn mark_once(&mut self, key: &str) -> bool {
-        self.seen_keys.insert(key.to_string())
+        if !self.seen_keys.insert(key.to_string()) {
+            return false;
+        }
+        self.seen_order.push_back(key.to_string());
+        while self.seen_order.len() > DISCORD_AUTO_TRACKER_MAX_ENTRIES {
+            if let Some(oldest) = self.seen_order.pop_front() {
+                self.seen_keys.remove(&oldest);
+            }
+        }
+        true
     }
 
     fn set_status(&mut self, key: &str, status: DiscordAlertPublicStatus) {
+        // A successfully delivered alert is terminal for this candidate. A
+        // later polling pass may observe it as a duplicate, but must not erase
+        // the sent timestamp or downgrade the public state.
+        if let Some(existing) = self.statuses.get_mut(key) {
+            if existing.auto_sent && !status.auto_sent {
+                if status.manual_sent_at.is_some() {
+                    existing.manual_sent_at = status.manual_sent_at;
+                }
+                return;
+            }
+        }
+        if !self.statuses.contains_key(key) {
+            self.status_order.push_back(key.to_string());
+        }
         self.statuses.insert(key.to_string(), status);
+        while self.status_order.len() > DISCORD_AUTO_TRACKER_MAX_ENTRIES {
+            if let Some(oldest) = self.status_order.pop_front() {
+                self.statuses.remove(&oldest);
+            }
+        }
     }
 
     fn status(&self, key: &str) -> Option<DiscordAlertPublicStatus> {
@@ -1950,6 +2523,26 @@ mod tests {
     }
 
     #[test]
+    fn manual_and_auto_share_the_canonical_confidence_scale() {
+        use crate::types::toxic_flow::ToxicConfidence;
+
+        for (confidence, expected) in [
+            (ToxicConfidence::Low, 35.0),
+            (ToxicConfidence::Medium, 62.0),
+            (ToxicConfidence::High, 82.0),
+        ] {
+            assert_eq!(
+                super::canonical_toxic_confidence_percent(confidence),
+                expected
+            );
+            assert_eq!(
+                crate::toxicity::toxic_signal_inbox::toxic_confidence_score(confidence) * 100.0,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn discord_webhook_validation_only_allows_discord_https_webhooks() {
         let discord_path = "api/webhooks";
         assert!(validate_discord_webhook_url(&format!(
@@ -2001,6 +2594,22 @@ mod tests {
         assert_eq!(
             evaluate_discord_alert_gate(&low_confidence, DiscordAlertMode::Manual).reason,
             "confidence_below_threshold"
+        );
+        let mut invalid_confidence = request(Some(90), Some(90.0));
+        invalid_confidence.confidence = Some(f64::NAN);
+        assert_eq!(
+            evaluate_discord_alert_gate(&invalid_confidence, DiscordAlertMode::Manual).reason,
+            "invalid_authoritative_evidence"
+        );
+        let invalid_quality = request(Some(90), Some(f64::INFINITY));
+        assert_eq!(
+            evaluate_discord_alert_gate(&invalid_quality, DiscordAlertMode::Manual).reason,
+            "invalid_authoritative_evidence"
+        );
+        let invalid_score = request(Some(101), Some(90.0));
+        assert_eq!(
+            evaluate_discord_alert_gate(&invalid_score, DiscordAlertMode::Manual).reason,
+            "invalid_authoritative_evidence"
         );
         assert_eq!(
             evaluate_discord_alert_gate(&request(Some(90), Some(69.0)), DiscordAlertMode::Manual)
@@ -2102,8 +2711,356 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cooldown_key_canonicalizes_symbol_aliases() {
+        let mut binance = request(Some(90), Some(90.0));
+        binance.symbol = Some("BTCUSDT".to_string());
+        binance.signal_type = Some("spoofing".to_string());
+        binance.side = Some("Ask/Sell".to_string());
+
+        let mut canonical = request(Some(90), Some(90.0));
+        canonical.symbol = Some("BTC-PERP".to_string());
+        canonical.signal_type = Some("spoofing".to_string());
+        canonical.side = Some("Ask/Sell".to_string());
+
+        assert_eq!(
+            super::push_cooldown_key(&binance),
+            super::push_cooldown_key(&canonical)
+        );
+        assert!(super::push_cooldown_key(&binance)
+            .expect("cooldown key")
+            .contains(":BTC:"));
+    }
+
+    #[test]
+    fn malformed_or_empty_dry_run_value_fails_closed() {
+        let _guard = env_lock().lock().expect("env lock");
+        for value in ["", "garbage", "2", "tru"] {
+            std::env::set_var("DRY_RUN", value);
+            assert!(super::discord_dry_run(), "DRY_RUN={value:?} must be safe");
+        }
+        std::env::set_var("DRY_RUN", "false");
+        assert!(!super::discord_dry_run());
+        std::env::remove_var("DRY_RUN");
+        assert!(super::discord_dry_run());
+    }
+
+    #[test]
+    fn non_finite_or_out_of_range_threshold_env_is_ignored() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("TEST_PRIMARY_THRESHOLD", "NaN");
+        std::env::set_var("TEST_FALLBACK_THRESHOLD", "77");
+        assert_eq!(
+            super::read_f64_env(
+                "TEST_PRIMARY_THRESHOLD".to_string(),
+                "TEST_FALLBACK_THRESHOLD"
+            ),
+            Some(77.0)
+        );
+
+        for invalid in ["inf", "-inf", "101", "-1"] {
+            std::env::set_var("TEST_PRIMARY_THRESHOLD", invalid);
+            std::env::remove_var("TEST_FALLBACK_THRESHOLD");
+            assert_eq!(
+                super::read_f64_env(
+                    "TEST_PRIMARY_THRESHOLD".to_string(),
+                    "TEST_FALLBACK_THRESHOLD"
+                ),
+                None,
+                "threshold {invalid:?} must be rejected"
+            );
+        }
+        std::env::remove_var("TEST_PRIMARY_THRESHOLD");
+        std::env::remove_var("TEST_FALLBACK_THRESHOLD");
+    }
+
+    #[test]
+    fn test_flag_is_preview_only_even_after_a_gate_passes() {
+        let mut request = request(Some(95), Some(95.0));
+        request.test = Some(true);
+        let decision = super::AlertGateDecision {
+            allowed: true,
+            reason: "passed",
+            severity_allowed: true,
+            score: 95,
+            confidence: 95.0,
+            data_quality: 95.0,
+            min_score: 80,
+            min_confidence: 70.0,
+            min_data_quality: 70.0,
+            auto_push_enabled: true,
+            dry_run: false,
+            configured: true,
+        };
+
+        assert!(!super::webhook_delivery_permitted(&request, &decision));
+        request.test = Some(false);
+        assert!(super::webhook_delivery_permitted(&request, &decision));
+    }
+
+    #[test]
+    fn preview_validates_candidate_without_requiring_delivery_configuration() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("SHORT_TOXIC_ALERT_MIN_SCORE", "85");
+        std::env::set_var("SHORT_TOXIC_ALERT_MIN_CONFIDENCE", "70");
+        std::env::set_var("SHORT_TOXIC_ALERT_MIN_DATA_QUALITY", "70");
+        std::env::set_var("DRY_RUN", "true");
+        std::env::remove_var("SHORT_TOXIC_DISCORD_WEBHOOK_URL");
+        std::env::remove_var("DISCORD_WEBHOOK_URL");
+
+        let mut candidate = request(Some(92), Some(88.0));
+        candidate.test = Some(true);
+        let preview = evaluate_discord_alert_gate(&candidate, DiscordAlertMode::Preview);
+        assert!(preview.allowed);
+        assert!(preview.dry_run);
+        assert!(!preview.configured);
+        assert!(!super::webhook_delivery_permitted(&candidate, &preview));
+        let _payload = super::discord_candidate_payload(&candidate);
+
+        let mut below_threshold = request(Some(84), Some(88.0));
+        below_threshold.test = Some(true);
+        assert_eq!(
+            evaluate_discord_alert_gate(&below_threshold, DiscordAlertMode::Preview).reason,
+            "score_below_threshold"
+        );
+
+        candidate.test = Some(false);
+        let manual = evaluate_discord_alert_gate(&candidate, DiscordAlertMode::Manual);
+        assert!(!manual.allowed);
+        assert_eq!(manual.reason, "dry_run");
+
+        for key in [
+            "SHORT_TOXIC_ALERT_MIN_SCORE",
+            "SHORT_TOXIC_ALERT_MIN_CONFIDENCE",
+            "SHORT_TOXIC_ALERT_MIN_DATA_QUALITY",
+            "DRY_RUN",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn test_preview_uses_limits_without_consuming_real_delivery_capacity() {
+        let mut preview = super::DiscordPushLimiter::new();
+        let mut delivery = super::DiscordPushLimiter::new();
+        let key = "manual:short_toxic_order:canonical-signal-42";
+
+        assert_eq!(preview.reserve(key, None, None), None);
+        assert_eq!(
+            preview.reserve(key, None, None),
+            Some("DUPLICATE_PUSH_SUPPRESSED")
+        );
+        assert_eq!(delivery.reserve(key, None, None), None);
+    }
+
+    #[test]
+    fn manual_push_key_ignores_client_dedupe_and_is_always_limited() {
+        let mut request = request(Some(95), Some(95.0));
+        request.signal_id = Some("canonical-signal-42".to_string());
+        request.dedupe_key = Some("client-controlled-bypass".to_string());
+        let key = super::canonical_manual_push_key(&request).expect("canonical push key");
+        assert_eq!(key, "manual:short_toxic_order:canonical-signal-42");
+
+        let mut limiter = DiscordPushLimiter::new();
+        assert_eq!(limiter.reserve(&key, None, None), None);
+        request.dedupe_key = Some("different-client-value".to_string());
+        let same_key = super::canonical_manual_push_key(&request).expect("same canonical key");
+        assert_eq!(same_key, key);
+        assert_eq!(
+            limiter.reserve(&same_key, None, None),
+            Some("DUPLICATE_PUSH_SUPPRESSED")
+        );
+
+        request.signal_id = None;
+        request.id = Some("legacy-client-id".to_string());
+        assert!(super::canonical_manual_push_key(&request).is_none());
+    }
+
+    #[test]
+    fn clearing_untrusted_request_removes_content_and_evidence_for_both_families() {
+        for family in ["short_toxic_order", "market_structure"] {
+            let mut request = request(Some(99), Some(99.0));
+            request.alert_family = Some(family.to_string());
+            request.id = Some("forged-id".to_string());
+            request.dedupe_key = Some("forged-key".to_string());
+            request.reason = Some("forged judgment".to_string());
+            request.impact_level = Some("S".to_string());
+            request.price_impact_bps = Some(999.0);
+            request.main_force_score = Some(100);
+            request.market_structure_confidence = Some(100.0);
+            request.market_structure_data_quality = Some(100.0);
+            request.main_force_confirmed = Some(true);
+            request.regime_type = Some("main_force_long_build".to_string());
+            request.test = Some(true);
+
+            super::clear_client_controlled_alert_content(&mut request);
+
+            assert!(!request.server_evidence_verified);
+            assert!(request.signal_id.is_none());
+            assert!(request.id.is_none());
+            assert!(request.dedupe_key.is_none());
+            assert!(request.symbol.is_none());
+            assert!(request.reason.is_none());
+            assert!(request.impact_level.is_none());
+            assert!(request.price_impact_bps.is_none());
+            assert!(request.main_force_score.is_none());
+            assert!(request.market_structure_confidence.is_none());
+            assert!(request.market_structure_data_quality.is_none());
+            assert!(request.main_force_confirmed.is_none());
+            assert!(request.regime_type.is_none());
+            assert_eq!(request.test, Some(true));
+        }
+    }
+
+    #[test]
+    fn market_structure_gate_requires_valid_evidence_and_main_force_confirmation() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_SCORE", "80");
+        std::env::set_var("MARKET_STRUCTURE_EXTREME_MIN_SCORE", "85");
+        std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_CONFIDENCE", "70");
+        std::env::set_var("MARKET_STRUCTURE_ALERT_MIN_DATA_QUALITY", "70");
+        std::env::set_var("MARKET_STRUCTURE_DISCORD_AUTO_PUSH_ENABLED", "true");
+        std::env::set_var("DRY_RUN", "false");
+        std::env::set_var(
+            "MARKET_STRUCTURE_DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/test-id/test-token",
+        );
+
+        let mut market = request(Some(90), Some(90.0));
+        market.alert_family = Some("market_structure".to_string());
+        market.main_force_score = Some(90);
+        market.extreme_impact_score = Some(40);
+        market.structure_bias = Some(55);
+        market.market_structure_confidence = Some(90.0);
+        market.market_structure_data_quality = Some(90.0);
+        market.main_force_confirmed = Some(false);
+        assert_eq!(
+            evaluate_discord_alert_gate(&market, DiscordAlertMode::Auto).reason,
+            "main_force_not_confirmed"
+        );
+
+        market.main_force_confirmed = Some(true);
+        assert!(evaluate_discord_alert_gate(&market, DiscordAlertMode::Auto).allowed);
+
+        market.market_structure_confidence = Some(f64::NAN);
+        assert_eq!(
+            evaluate_discord_alert_gate(&market, DiscordAlertMode::Auto).reason,
+            "invalid_authoritative_evidence"
+        );
+
+        for key in [
+            "MARKET_STRUCTURE_ALERT_MIN_SCORE",
+            "MARKET_STRUCTURE_EXTREME_MIN_SCORE",
+            "MARKET_STRUCTURE_ALERT_MIN_CONFIDENCE",
+            "MARKET_STRUCTURE_ALERT_MIN_DATA_QUALITY",
+            "MARKET_STRUCTURE_DISCORD_AUTO_PUSH_ENABLED",
+            "MARKET_STRUCTURE_DISCORD_WEBHOOK_URL",
+            "DRY_RUN",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn unavailable_null_metric_dtos_deserialize_as_absent() {
+        let null_metrics: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
+            "tofMetrics": null,
+            "perpTofMetrics": null,
+            "advancedTofMetrics": null
+        }))
+        .expect("top-level null metrics must not reject the request");
+        assert!(null_metrics.tof_metrics.is_none());
+        assert!(null_metrics.perp_tof_metrics.is_none());
+        assert!(null_metrics.advanced_tof_metrics.is_none());
+
+        let partial_tof: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
+            "tofMetrics": {
+                "lineage": { "available": true, "alertEligible": true },
+                "tradeImbalance": 0.42,
+                "depthWithdrawalScore": null,
+                "spreadBps": null
+            }
+        }))
+        .expect("partial observed TOF with unavailable L2 must not reject the request");
+        assert!(partial_tof.tof_metrics.is_none());
+
+        let request: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
+            "tofMetrics": {
+                "lineage": { "available": false },
+                "tofScore": null,
+                "vpinProxy": null
+            },
+            "perpTofMetrics": {
+                "lineage": { "available": false },
+                "riskScore": null
+            },
+            "advancedTofMetrics": {
+                "lineage": { "available": false },
+                "advancedScore": null
+            }
+        }))
+        .expect("unavailable metrics must not reject the request");
+
+        assert!(request.tof_metrics.is_none());
+        assert!(request.perp_tof_metrics.is_none());
+        assert!(request.advanced_tof_metrics.is_none());
+    }
+
+    #[test]
+    fn sent_auto_status_is_not_downgraded_by_duplicate_poll() {
+        let mut tracker = super::DiscordAutoPushTracker::default();
+        let sent = super::DiscordAlertPublicStatus {
+            auto_eligible: true,
+            auto_sent: true,
+            last_decision: "sent".to_string(),
+            reason: "sent".to_string(),
+            sent_at: Some("2026-07-15T00:00:00Z".to_string()),
+            manual_sent_at: None,
+        };
+        tracker.set_status("signal-1", sent.clone());
+        tracker.set_status(
+            "signal-1",
+            super::DiscordAlertPublicStatus {
+                auto_eligible: false,
+                auto_sent: false,
+                last_decision: "skipped".to_string(),
+                reason: "duplicate_candidate".to_string(),
+                sent_at: None,
+                manual_sent_at: None,
+            },
+        );
+
+        assert_eq!(tracker.status("signal-1"), Some(sent));
+    }
+
+    #[test]
+    fn auto_tracker_seen_and_status_maps_are_capacity_bounded() {
+        let mut tracker = super::DiscordAutoPushTracker::default();
+        for index in 0..(super::DISCORD_AUTO_TRACKER_MAX_ENTRIES + 32) {
+            let key = format!("signal-{index}");
+            assert!(tracker.mark_once(&key));
+            tracker.set_status(
+                &key,
+                super::DiscordAlertPublicStatus {
+                    auto_eligible: false,
+                    auto_sent: false,
+                    last_decision: "skipped".to_string(),
+                    reason: "test".to_string(),
+                    sent_at: None,
+                    manual_sent_at: None,
+                },
+            );
+        }
+
+        assert!(tracker.seen_keys.len() <= super::DISCORD_AUTO_TRACKER_MAX_ENTRIES);
+        assert!(tracker.statuses.len() <= super::DISCORD_AUTO_TRACKER_MAX_ENTRIES);
+        assert!(!tracker.seen_keys.contains("signal-0"));
+        assert!(!tracker.statuses.contains_key("signal-0"));
+    }
+
     fn request(score: Option<u8>, data_quality: Option<f64>) -> DiscordNotificationRequest {
         DiscordNotificationRequest {
+            server_evidence_verified: true,
             alert_family: Some("short_toxic_order".to_string()),
             signal_id: Some("sig_001".to_string()),
             id: None,

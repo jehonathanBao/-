@@ -3,7 +3,10 @@ export default function CandidateExplanation({ signal, compact = false }) {
     return null;
   }
   const tags = Array.isArray(signal.explainTags) ? signal.explainTags : [];
-  const label = signal.directionLabel || signal.side || "中性 / 未知";
+  const label = signal.directionLabel || signal.side || "方向不可用";
+  const directionConfidence = numberOrNull(signal.directionConfidence);
+  const mainForceConfirmed = signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed;
+  const extremeImpactConfirmed = signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed;
 
   return (
     <div className={compact ? "mt-3 space-y-2" : "rounded-xl border border-slate-700/60 bg-slate-950/40 p-4"}>
@@ -11,8 +14,8 @@ export default function CandidateExplanation({ signal, compact = false }) {
         <span className="rounded-full border border-cyan-400/40 px-2.5 py-1 text-xs font-semibold text-cyan-200">
           {label}
         </span>
-        {signal.directionConfidence ? (
-          <span className="text-xs text-slate-400">置信度 {Math.round(signal.directionConfidence)}</span>
+        {directionConfidence !== null ? (
+          <span className="text-xs text-slate-400">置信度 {Math.round(directionConfidence)}</span>
         ) : null}
         <span className="text-xs text-slate-500">{signal.directionSource || "detector"}</span>
       </div>
@@ -29,7 +32,7 @@ export default function CandidateExplanation({ signal, compact = false }) {
           Bias {formatSignedNumber(signal.structureBias ?? signal.marketStructureScore?.structureBias)}
         </span>
         <span>
-          Confirmed {(signal.mainForceConfirmed ?? signal.marketStructureScore?.mainForceConfirmed) ? "Yes" : "No"} ·{" "}
+          Confirmed {formatBoolean(mainForceConfirmed)} ·{" "}
           {formatNumber(
             signal.mainForceConfirmationCount ?? signal.marketStructureScore?.mainForceConfirmationCount,
           )}
@@ -47,7 +50,7 @@ export default function CandidateExplanation({ signal, compact = false }) {
           {formatNumber(signal.marketStructureDataQuality ?? signal.marketStructureScore?.dataQuality)}
         </span>
         <span>
-          极端行情 {(signal.extremeImpactConfirmed ?? signal.marketStructureScore?.extremeImpactConfirmed) ? "是" : "否"} ·{" "}
+          极端行情 {formatBoolean(extremeImpactConfirmed, "是", "否")} ·{" "}
           {regimeTypeLabel(signal.regimeType)}
         </span>
         <span>
@@ -72,7 +75,7 @@ export default function CandidateExplanation({ signal, compact = false }) {
         {signal.finalCandidateType ? <span>Final {signal.finalCandidateType}</span> : null}
         {signal.metricsDirection ? <span>Metrics {signal.metricsDirection}</span> : null}
       </div>
-      <p className="text-xs font-semibold text-slate-300">Type: {signal.candidateType || signal.type}</p>
+      <p className="text-xs font-semibold text-slate-300">Type: {signal.candidateType || signal.type || "N/A"}</p>
       {signal.perpCandidateType ? (
         <p className="text-xs font-semibold text-indigo-200">Perp: {signal.perpCandidateType}</p>
       ) : null}
@@ -93,16 +96,31 @@ export default function CandidateExplanation({ signal, compact = false }) {
 }
 
 function formatNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.round(number) : "N/A";
+  const number = numberOrNull(value);
+  return number === null ? "N/A" : Math.round(number);
 }
 
 function formatSignedNumber(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) {
+  const number = numberOrNull(value);
+  if (number === null) {
     return "N/A";
   }
   return number > 0 ? `+${Math.round(number)}` : `${Math.round(number)}`;
+}
+
+function formatBoolean(value, trueLabel = "Yes", falseLabel = "No") {
+  if (typeof value !== "boolean") {
+    return "N/A";
+  }
+  return value ? trueLabel : falseLabel;
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function regimeTypeLabel(value) {

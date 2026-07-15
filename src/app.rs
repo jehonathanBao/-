@@ -26,8 +26,10 @@ use crate::{
         discord_notification_routes::{
             maybe_auto_push_discord, preferred_discord_alert_family, DiscordNotificationRequest,
         },
-        toxic_signal_inbox_routes::build_recent,
-        toxic_signal_ws_routes::{build_ws_snapshot, ToxicSignalWsItem},
+        toxic_signal_inbox_routes::{
+            build_recent, latest_cwm_signal_for_state, observed_tof_snapshot_for_state,
+        },
+        toxic_signal_ws_routes::{build_ws_snapshot_with_authoritative_state, ToxicSignalWsItem},
     },
     binance_alt_contract_monitor::{
         config as bacm_config, service::BinanceAltContractService, LOG_PREFIX as BACM_LOG_PREFIX,
@@ -1621,7 +1623,14 @@ impl AppState {
         let symbols = market_structure_event_symbols(self);
         for symbol in symbols {
             let recent = build_recent(self, &symbol);
-            let snapshot = build_ws_snapshot(&recent);
+            let cwm_signal = latest_cwm_signal_for_state(self, &symbol);
+            let tof_snapshot = observed_tof_snapshot_for_state(self, &symbol);
+            let snapshot = build_ws_snapshot_with_authoritative_state(
+                &recent,
+                cwm_signal.as_ref(),
+                tof_snapshot.as_ref(),
+                self.runtime_started(),
+            );
             self.observe_main_force_events(&symbol, &snapshot.signals)
                 .await;
 
@@ -1945,11 +1954,31 @@ impl AppState {
         self.inner.flow_service.get_price_snapshot_at_or_before(ts)
     }
 
+    pub fn price_snapshot_at_or_before_for_symbol(
+        &self,
+        ts: i64,
+        symbol: &str,
+    ) -> Option<crate::market_data::price_index::PriceSnapshot> {
+        self.inner
+            .flow_service
+            .get_price_snapshot_at_or_before_for_symbol(ts, symbol)
+    }
+
     pub fn price_snapshots_since(
         &self,
         ts: i64,
     ) -> Vec<crate::market_data::price_index::PriceSnapshot> {
         self.inner.flow_service.get_price_snapshots_since(ts)
+    }
+
+    pub fn price_snapshots_since_for_symbol(
+        &self,
+        ts: i64,
+        symbol: &str,
+    ) -> Vec<crate::market_data::price_index::PriceSnapshot> {
+        self.inner
+            .flow_service
+            .get_price_snapshots_since_for_symbol(ts, symbol)
     }
 
     pub fn shared_markout_engine_for_tests(
@@ -2217,6 +2246,13 @@ fn contract_flow_base_asset(symbol: &str) -> String {
 
 fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificationRequest {
     let mut request = DiscordNotificationRequest {
+        server_evidence_verified: signal.alert_eligible
+            && signal.monitoring_started
+            && signal.data_quality.is_some()
+            && signal.read_only
+            && !signal.runtime_modified
+            && signal.analysis_only
+            && !signal.execution_enabled,
         alert_family: None,
         signal_id: Some(signal.id.clone()),
         id: Some(signal.id.clone()),
@@ -2227,8 +2263,8 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         level: Some(signal.severity.clone()),
         side: Some(signal.direction_label.clone()),
         score: Some(signal.final_risk_score),
-        confidence: Some(signal.toxic_short_score.confidence),
-        data_quality: Some(signal.data_quality),
+        confidence: Some((signal.confidence * 100.0).clamp(0.0, 100.0)),
+        data_quality: signal.data_quality,
         reason: Some(signal.final_result.clone()),
         impact: None,
         impact_level: None,
@@ -2246,38 +2282,43 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         markout_5s_bps: None,
         markout_30s_bps: None,
         tof_metrics: Some(signal.tof_metrics.clone()),
-        tof_score: Some(signal.tof_score),
+        tof_score: signal.tof_score,
         candidate_type: Some(signal.candidate_type.clone()),
         explain_tags: Some(signal.explain_tags.clone()),
         direction_confidence: Some(signal.direction_confidence),
         perp_tof_metrics: Some(signal.perp_tof_metrics.clone()),
-        perp_score: Some(signal.perp_score),
+        perp_score: signal.perp_score,
         perp_candidate_type: Some(signal.perp_candidate_type.clone()),
         final_candidate_type: Some(signal.final_candidate_type.clone()),
         metrics_direction: serde_json::to_value(signal.metrics_direction)
             .ok()
             .and_then(|value| value.as_str().map(str::to_string)),
         advanced_tof_metrics: Some(signal.advanced_tof_metrics.clone()),
-        advanced_score: Some(signal.advanced_score),
+        advanced_score: signal.advanced_score,
         advanced_candidate_type: Some(signal.advanced_candidate_type.clone()),
-        main_force_score: Some(signal.main_force_score),
-        extreme_impact_score: Some(signal.extreme_impact_score),
-        structure_bias: Some(signal.structure_bias),
-        market_structure_confidence: Some(signal.market_structure_confidence),
-        market_structure_data_quality: Some(signal.market_structure_data_quality),
-        market_structure_severity: Some(signal.market_structure_severity.clone()),
-        regime_type: Some(signal.regime_type.clone()),
-        spot_score: Some(signal.spot_score),
-        contract_score: Some(signal.contract_score),
-        cross_confirm_score: Some(signal.cross_confirm_score),
-        main_force_confirmed: Some(signal.main_force_confirmed),
-        signal_agreement: Some(signal.signal_agreement),
-        source_coverage: Some(signal.source_coverage),
-        oi_score: Some(signal.oi_score),
-        liquidation_score: Some(signal.liquidation_score),
+        main_force_score: signal.main_force_score,
+        extreme_impact_score: signal.extreme_impact_score,
+        structure_bias: signal.structure_bias,
+        market_structure_confidence: signal.market_structure_confidence,
+        market_structure_data_quality: signal.market_structure_data_quality,
+        market_structure_severity: signal.market_structure_severity.clone(),
+        regime_type: signal.regime_type.clone(),
+        spot_score: signal.spot_score,
+        contract_score: signal.contract_score,
+        cross_confirm_score: signal.cross_confirm_score,
+        main_force_confirmed: signal.main_force_confirmed,
+        signal_agreement: signal.signal_agreement,
+        source_coverage: signal.source_coverage,
+        oi_score: signal.oi_score,
+        liquidation_score: signal.liquidation_score,
         test: None,
     };
     request.alert_family = Some(preferred_discord_alert_family(&request).to_string());
+    if request.alert_family.as_deref() == Some("market_structure")
+        && !signal.cwm_contribution.available
+    {
+        request.server_evidence_verified = false;
+    }
     request
 }
 

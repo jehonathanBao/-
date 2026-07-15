@@ -537,6 +537,7 @@ fn empty_vpin_state() -> VpinState {
             vpin: None,
             vpin_zscore: None,
             vpin_percentile: None,
+            per_venue_vpin: BTreeMap::new(),
             latest_bucket_imbalance_ratio: None,
             avg_bucket_imbalance_ratio: None,
             vpin_high: false,

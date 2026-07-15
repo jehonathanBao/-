@@ -84,3 +84,17 @@ fn rolling_window_can_compute_btc_and_eth_separately() {
     assert_eq!(eth.aggressive_buy_btc, 0.0);
     assert_eq!(eth.aggressive_sell_btc, 8_000.0);
 }
+
+#[test]
+fn trade_dedupe_key_includes_symbol() {
+    let mut buffer = TradeRingBuffer::new(120_000);
+    let mut btc = trade_for_symbol(Venue::Binance, "BTC-PERP", AggressorSide::Buy, 1.0);
+    btc.trade_id = Some("shared-id".to_string());
+    let mut eth = trade_for_symbol(Venue::Binance, "ETH-PERP", AggressorSide::Buy, 2.0);
+    eth.trade_id = Some("shared-id".to_string());
+
+    buffer.add_trade(btc);
+    buffer.add_trade(eth);
+
+    assert_eq!(buffer.len(), 2);
+}

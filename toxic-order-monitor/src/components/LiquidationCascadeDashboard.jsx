@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchLiquidationCascade,
   fetchLiquidationLeverageMap,
@@ -15,6 +15,7 @@ const statusTone = {
   IMMINENT: "border-orange-400/45 bg-orange-500/10 text-orange-100",
   WARNING: "border-yellow-400/45 bg-yellow-500/10 text-yellow-100",
   CALM: "border-emerald-400/35 bg-emerald-500/10 text-emerald-100",
+  UNAVAILABLE: "border-slate-600 bg-slate-800/60 text-slate-300",
 };
 
 const directionLabel = {
@@ -27,6 +28,7 @@ const directionLabel = {
 
 export default function LiquidationCascadeDashboard() {
   const [symbol, setSymbol] = useState("BTCUSDT");
+  const requestSequence = useRef(0);
   const [state, setState] = useState({
     cascade: null,
     leverageMap: null,
@@ -35,24 +37,32 @@ export default function LiquidationCascadeDashboard() {
     domainState: null,
     loading: true,
     error: null,
+    lastSuccessAtMs: null,
   });
 
   const isBtcSymbol = symbol.startsWith("BTC");
 
   const load = useCallback(async () => {
+    const requestedSymbol = symbol;
+    const requestId = ++requestSequence.current;
     const domainRequest = isBtcSymbol
-      ? fetchBtcStructure(symbol)
+      ? fetchBtcStructure(requestedSymbol)
       : Promise.resolve({ data: null, error: null });
     const regimeRequest = isBtcSymbol
       ? Promise.resolve({ data: null, error: null })
-      : fetchMarketRegime(symbol);
-    const [cascade, leverageMap, liquidityGap, regime, domainState] = await Promise.all([
-      fetchLiquidationCascade(symbol),
-      fetchLiquidationLeverageMap(symbol),
-      fetchLiquidationLiquidityGap(symbol),
+      : fetchMarketRegime(requestedSymbol);
+    const results = await Promise.all([
+      fetchLiquidationCascade(requestedSymbol),
+      fetchLiquidationLeverageMap(requestedSymbol),
+      fetchLiquidationLiquidityGap(requestedSymbol),
       regimeRequest,
       domainRequest,
     ]);
+    if (requestId !== requestSequence.current) return;
+
+    const [cascade, leverageMap, liquidityGap, regime, domainState] = results.map((result) =>
+      requireMatchingSymbol(result, requestedSymbol),
+    );
 
     setState({
       cascade: cascade.data,
@@ -68,6 +78,7 @@ export default function LiquidationCascadeDashboard() {
         regime.error ||
         domainState.error ||
         null,
+      lastSuccessAtMs: latestSuccessfulAt([cascade, leverageMap, liquidityGap, regime, domainState]),
     });
   }, [isBtcSymbol, symbol]);
 
@@ -113,8 +124,11 @@ export default function LiquidationCascadeDashboard() {
           <div>
             <p className="text-xs uppercase tracking-[0.32em] text-cyan-300">Liquidation Cascade Predictor</p>
             <h3 className="mt-2 text-2xl font-black text-white">强平瀑布预测</h3>
+            <p className="mt-2 inline-flex rounded-full border border-violet-400/40 bg-violet-400/10 px-3 py-1 text-xs font-bold text-violet-200">
+              流动性簇风险代理 · 非真实清算源 · 不参与 Discord
+            </p>
             <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-400">
-              独立展示杠杆集中、流动性缺口、触发接近度和市场状态输出；只读观察，不推送、不下单。
+              基于杠杆集中、流动性缺口、触发接近度和市场状态的估算输出；只读观察，不推送、不下单。
             </p>
           </div>
           <label className="block text-sm text-slate-300">
@@ -122,7 +136,17 @@ export default function LiquidationCascadeDashboard() {
             <select
               className="min-w-44 rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-bold text-slate-100 outline-none focus:border-cyan-400"
               onChange={(event) => {
-                setState((previous) => ({ ...previous, loading: true }));
+                requestSequence.current += 1;
+                setState({
+                  cascade: null,
+                  leverageMap: null,
+                  liquidityGap: null,
+                  regime: null,
+                  domainState: null,
+                  loading: true,
+                  error: null,
+                  lastSuccessAtMs: null,
+                });
                 setSymbol(event.target.value);
               }}
               value={symbol}
@@ -137,7 +161,8 @@ export default function LiquidationCascadeDashboard() {
         </div>
         {state.error ? (
           <div className="mt-4 rounded-xl border border-yellow-400/35 bg-yellow-400/10 px-4 py-3 text-sm text-yellow-100">
-            数据源短暂不可用，当前展示最近可用结构或安全 fallback：{state.error}
+            数据源不可用；本次响应不生成安全状态、方向或零值：{state.error}
+            {state.lastSuccessAtMs ? ` · 最近成功 ${formatAge(state.lastSuccessAtMs)}` : ""}
           </div>
         ) : null}
       </div>
@@ -152,18 +177,18 @@ export default function LiquidationCascadeDashboard() {
             <span
               className={[
                 "rounded-full border px-3 py-1 text-xs font-black",
-                statusTone[cascade?.status] || statusTone.CALM,
+                statusTone[cascade?.status] || statusTone.UNAVAILABLE,
               ].join(" ")}
             >
-              {cascade?.status || (state.loading ? "LOADING" : "CALM")}
+              {cascade?.status || (state.loading ? "LOADING" : "不可用")}
             </span>
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="瀑布概率" value={percent(cascade?.cascadeProbability)} tone="cyan" />
-            <MetricCard label="方向" value={directionLabel[cascade?.direction] || "中性"} tone="slate" />
-            <MetricCard label="预估波动" value={cascade?.estimatedMove || "-"} tone="orange" />
-            <MetricCard label="时间窗口" value={cascade?.timeWindow || "-"} tone="slate" />
+            <MetricCard label="方向" value={directionLabel[cascade?.direction] || "不可用"} tone="slate" />
+            <MetricCard label="预估波动" value={cascade?.estimatedMove || "不可用"} tone="orange" />
+            <MetricCard label="时间窗口" value={cascade?.timeWindow || "不可用"} tone="slate" />
           </div>
 
           <div className="mt-5 rounded-xl border border-slate-700/70 bg-slate-950/55 p-4">
@@ -201,7 +226,7 @@ export default function LiquidationCascadeDashboard() {
             <div className="grid gap-3 sm:grid-cols-2">
               <MetricCard
                 label="Regime"
-                value={(isBtcSymbol ? domainState?.regime : regime?.regime) || "-"}
+                value={(isBtcSymbol ? domainState?.regime : regime?.regime) || "不可用"}
                 tone="cyan"
               />
               <MetricCard
@@ -209,7 +234,7 @@ export default function LiquidationCascadeDashboard() {
                 value={
                   directionLabel[isBtcSymbol ? domainState?.bias : regime?.directionBias] ||
                   (isBtcSymbol ? domainState?.bias : regime?.directionBias) ||
-                  "-"
+                  "不可用"
                 }
                 tone="slate"
               />
@@ -234,7 +259,7 @@ export default function LiquidationCascadeDashboard() {
             <div className="space-y-3">
               <Bar label="下方缺口" value={liquidityGap?.belowPrice} />
               <Bar label="上方缺口" value={liquidityGap?.abovePrice} />
-              <Line label="主导方向" value={directionLabel[liquidityGap?.dominantGap] || "中性"} />
+              <Line label="主导方向" value={directionLabel[liquidityGap?.dominantGap] || "不可用"} />
             </div>
           </Panel>
         </section>
@@ -275,7 +300,7 @@ export default function LiquidationCascadeDashboard() {
                       <td className="px-5 py-4">${formatUsd(level.notionalUsd)}</td>
                       <td className="px-5 py-4">{formatNumber(level.distanceBps)} bps</td>
                       <td className="px-5 py-4 text-slate-400">
-                        {level.side === "long" ? "多头清算簇" : level.side === "short" ? "空头清算簇" : "中性簇"}
+                        {level.side === "long" ? "多头清算簇" : level.side === "short" ? "空头清算簇" : "来源不可用"}
                       </td>
                     </tr>
                   ))
@@ -352,8 +377,9 @@ function MetricCard({ label, value, tone = "slate" }) {
   );
 }
 
-function Bar({ label = null, value = 0, compact = false }) {
-  const safe = Math.min(1, Math.max(0, Number(value || 0)));
+function Bar({ label = null, value = null, compact = false }) {
+  const parsed = numberOrNull(value);
+  const safe = parsed === null ? null : Math.min(1, Math.max(0, parsed));
   return (
     <div className={compact ? "min-w-36" : ""}>
       {label ? (
@@ -363,7 +389,9 @@ function Bar({ label = null, value = 0, compact = false }) {
         </div>
       ) : null}
       <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-cyan-300" style={{ width: `${Math.round(safe * 100)}%` }} />
+        {safe === null ? null : (
+          <div className="h-full rounded-full bg-cyan-300" style={{ width: `${Math.round(safe * 100)}%` }} />
+        )}
       </div>
     </div>
   );
@@ -394,19 +422,69 @@ function Line({ label, value }) {
 }
 
 function percent(value) {
-  const parsed = Number(value || 0);
+  const parsed = numberOrNull(value);
+  if (parsed === null) return "不可用";
   return `${Math.round(Math.min(1, Math.max(0, parsed)) * 100)}%`;
 }
 
 function formatNumber(value) {
-  const parsed = Number(value || 0);
+  const parsed = numberOrNull(value);
+  if (parsed === null) return "不可用";
   return parsed.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
 function formatUsd(value) {
-  const parsed = Number(value || 0);
+  const parsed = numberOrNull(value);
+  if (parsed === null) return "不可用";
   if (Math.abs(parsed) >= 1_000_000_000) return `${(parsed / 1_000_000_000).toFixed(1)}B`;
   if (Math.abs(parsed) >= 1_000_000) return `${(parsed / 1_000_000).toFixed(1)}M`;
   if (Math.abs(parsed) >= 1_000) return `${(parsed / 1_000).toFixed(1)}K`;
   return parsed.toFixed(0);
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function latestSuccessfulAt(results) {
+  const values = results
+    .map((result) => numberOrNull(result?.state?.lastSuccessAtMs))
+    .filter((value) => value !== null);
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+function formatAge(timestamp) {
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1000)} 秒前`;
+  return `${Math.round(ageMs / 60_000)} 分钟前`;
+}
+
+function requireMatchingSymbol(result, requestedSymbol) {
+  if (!result?.data) return result;
+  const requested = canonicalSymbol(requestedSymbol);
+  const observed = canonicalSymbol(result.data.symbol);
+  if (requested && observed && requested === observed) return result;
+  return {
+    data: null,
+    error: "SYMBOL_MISMATCH",
+    state: {
+      phase: "unavailable",
+      source: null,
+      fetchedAtMs: result?.state?.fetchedAtMs ?? Date.now(),
+      lastSuccessAtMs: null,
+    },
+  };
+}
+
+function canonicalSymbol(value) {
+  let symbol = String(value || "").trim().toUpperCase();
+  if (!symbol) return null;
+  if (symbol.startsWith("T") && symbol.includes("F0")) symbol = symbol.slice(1);
+  symbol = symbol.split(/[-_/:]/)[0];
+  for (const suffix of ["PERP", "SWAP", "USDT", "USDC", "USD", "F0"]) {
+    symbol = symbol.replace(new RegExp(`${suffix}$`), "");
+  }
+  return symbol || null;
 }
