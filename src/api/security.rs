@@ -165,14 +165,27 @@ fn token_matches(security: &ApiSecurityConfig, headers: &HeaderMap) -> bool {
         .get(OPERATOR_TOKEN_HEADER)
         .or_else(|| headers.get(OPERATOR_TOKEN_HEADER_ALIAS))
         .and_then(|value| value.to_str().ok());
-    if header_token == Some(expected) {
+    if header_token.is_some_and(|token| constant_time_eq(token, expected)) {
         return true;
     }
     headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        == Some(expected)
+        .is_some_and(|token| constant_time_eq(token, expected))
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let len = left.len().max(right.len());
+    let mut diff = (left.len() != right.len()) as u8;
+    for index in 0..len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= left_byte ^ right_byte;
+    }
+    diff == 0
 }
 
 fn host_is_loopback(headers: &HeaderMap, api_port: u16) -> bool {
@@ -197,4 +210,21 @@ fn env_bool(key: &str, default: bool) -> bool {
         .ok()
         .map(|value| value.eq_ignore_ascii_case("true"))
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_accepts_equal_tokens() {
+        assert!(constant_time_eq("operator-token", "operator-token"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_mismatched_tokens() {
+        assert!(!constant_time_eq("operator-token", "operator-tokem"));
+        assert!(!constant_time_eq("short", "longer-token"));
+        assert!(!constant_time_eq("longer-token", "short"));
+    }
 }

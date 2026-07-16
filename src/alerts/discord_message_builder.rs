@@ -1,8 +1,6 @@
 use serde::Serialize;
 
-use crate::types::toxic_signal::{
-    SignalEvidence, ToxicSignal, ToxicSignalDirection, ToxicSignalType,
-};
+use crate::types::toxic_signal::{ToxicSignal, ToxicSignalDirection, ToxicSignalType};
 
 const FIELD_LIMIT: usize = 900;
 
@@ -34,6 +32,7 @@ pub struct DiscordEmbedFooter {
     pub text: String,
 }
 
+/// Safe Discord candidate input. Raw evidence / markout must never be rendered.
 #[derive(Debug, Clone, Default)]
 pub struct DiscordCandidateMessageInput {
     pub signal_id: Option<String>,
@@ -45,18 +44,6 @@ pub struct DiscordCandidateMessageInput {
     pub data_quality: Option<f64>,
     pub primary_reason: Option<String>,
     pub impact: Option<String>,
-    pub add_qty: Option<f64>,
-    pub cancel_qty: Option<f64>,
-    pub fill_qty: Option<f64>,
-    pub cancel_to_trade_ratio: Option<f64>,
-    pub depth_before: Option<f64>,
-    pub depth_after: Option<f64>,
-    pub depth_impact: Option<f64>,
-    pub price_impact_bps: Option<f64>,
-    pub markout_1s_bps: Option<f64>,
-    pub markout_5s_bps: Option<f64>,
-    pub markout_30s_bps: Option<f64>,
-    pub price_range: Option<String>,
     pub timestamp: Option<String>,
 }
 
@@ -74,39 +61,31 @@ pub fn build_discord_candidate_message_from_input(
         input.event_type.as_str()
     };
     let reason = truncate_field(&event_reason(input));
-    let evidence = truncate_field(&market_evidence(input));
-    let markout = truncate_field(&format!(
-        "1s: {}\n5s: {}\n30s: {}",
-        format_bps(input.markout_1s_bps),
-        format_bps(input.markout_5s_bps),
-        format_bps(input.markout_30s_bps)
-    ));
     let mut fields = vec![
         field("风险评分", format_score(input.score), true),
         field("数据质量", format_score(input.data_quality), true),
         field("异常类型", event_type.to_string(), true),
         field("方向", side.to_string(), true),
         field("核心原因", reason, false),
-        field("盘口证据", evidence, false),
-        field("撤后 Markout", markout, false),
     ];
     if let Some(impact) = input
         .impact
         .as_deref()
         .filter(|value| !value.trim().is_empty())
+        .filter(|value| !looks_like_forbidden_alert_content(value))
     {
         fields.push(field("影响解读", truncate_field(impact), false));
     }
     fields.push(field(
         "说明",
-        "该信号基于公开盘口 / L2 数据推断，为 Candidate，不是执法或定性结论。".to_string(),
+        "该信号基于公开盘口 / L2 数据推断，为 Candidate，不是执法或定性结论。详情请在 Dashboard 查看。".to_string(),
         false,
     ));
 
     DiscordWebhookPayload {
         content: None,
         embeds: vec![DiscordEmbed {
-            title: format!("🚨 疑似有毒订单候选信号：{}", input.symbol),
+            title: format!("疑似有毒订单候选信号：{}", input.symbol),
             description: format!(
                 "{} / {} · {} · {}",
                 input.venue.as_deref().unwrap_or("N/A"),
@@ -129,47 +108,27 @@ pub fn build_discord_candidate_message_from_input(
 
 impl From<&ToxicSignal> for DiscordCandidateMessageInput {
     fn from(signal: &ToxicSignal) -> Self {
-        let evidence = signal.evidence.as_ref();
+        let venue = signal
+            .evidence
+            .as_ref()
+            .map(|value| value.venue.clone());
         Self {
             signal_id: Some(signal.signal_id.clone()),
-            venue: evidence.map(|value| value.venue.clone()),
+            venue,
             symbol: signal.symbol.clone(),
             event_type: format!("{:?}", signal.signal_type),
             side: side_from_signal(signal),
             score: Some(signal.toxicity_score as f64),
             data_quality: signal.data_quality,
             primary_reason: Some(signal.primary_reason.clone()),
-            impact: signal.reason.first().cloned(),
-            add_qty: evidence.map(|value| value.add_qty),
-            cancel_qty: evidence.map(|value| value.cancel_qty),
-            fill_qty: evidence.map(|value| value.fill_qty),
-            cancel_to_trade_ratio: evidence.and_then(|value| value.cancel_to_trade_ratio),
-            depth_before: evidence.and_then(|value| value.depth_before),
-            depth_after: evidence.and_then(|value| value.depth_after),
-            depth_impact: evidence.and_then(|value| value.depth_impact),
-            price_impact_bps: evidence.and_then(|value| value.price_impact_bps),
-            markout_1s_bps: evidence.and_then(|value| value.markout_1s_bps),
-            markout_5s_bps: evidence.and_then(|value| value.markout_5s_bps),
-            markout_30s_bps: evidence.and_then(|value| value.markout_30s_bps),
-            price_range: price_range(evidence),
+            impact: signal
+                .reason
+                .first()
+                .cloned()
+                .filter(|value| !looks_like_forbidden_alert_content(value)),
             timestamp: None,
         }
     }
-}
-
-pub fn format_qty(value: Option<f64>, unit: &str) -> String {
-    value.map_or_else(
-        || "N/A".to_string(),
-        |value| format!("{} {unit}", format_number(value, 2)),
-    )
-}
-
-pub fn format_bps(value: Option<f64>) -> String {
-    value.map_or_else(|| "N/A".to_string(), |value| format!("{value:.2} bps"))
-}
-
-pub fn format_ratio(value: Option<f64>) -> String {
-    value.map_or_else(|| "N/A".to_string(), |value| format!("{value:.2}"))
 }
 
 pub fn format_score(value: Option<f64>) -> String {
@@ -190,7 +149,6 @@ pub fn embed_color(score: Option<f64>) -> u32 {
 }
 
 fn event_reason(input: &DiscordCandidateMessageInput) -> String {
-    let unit = base_asset(&input.symbol);
     let event_type = input.event_type.as_str();
     if event_type.contains("SpoofingCandidate") {
         let side_label = match input.side.as_deref() {
@@ -199,23 +157,15 @@ fn event_reason(input: &DiscordCandidateMessageInput) -> String {
             _ => "疑似诱导挂单",
         };
         return format!(
-            "{side_label}：盘口附近出现约 {} 可见挂单墙，随后快速撤除约 {}，成交参与量约 {}。撤单/成交比为 {}，可能存在短时制造卖压/买压后撤单的候选行为。",
-            format_qty(input.add_qty, unit),
-            format_qty(input.cancel_qty, unit),
-            format_qty(input.fill_qty, unit),
-            format_ratio(input.cancel_to_trade_ratio)
+            "{side_label}：公开盘口出现短时挂单墙后快速撤除的候选行为。详情请在 Dashboard 查看。"
         );
     }
     if event_type.contains("LayeringCandidate") {
-        return format!(
-            "疑似分层挂单：同侧多个价位层在短窗口内同步出现/撤除，累计挂单约 {}，撤除约 {}，成交约 {}。该行为可能形成短时盘口压力，诱导市场方向判断。",
-            format_qty(input.add_qty, unit),
-            format_qty(input.cancel_qty, unit),
-            format_qty(input.fill_qty, unit)
-        );
+        return "疑似分层挂单：同侧多个价位层在短窗口内同步出现/撤除的候选行为。详情请在 Dashboard 查看。"
+            .to_string();
     }
     if event_type.contains("IcebergCandidate") {
-        return "疑似冰山单：同一价位附近出现反复补量，累计成交量明显高于最大可见挂单量，显示量与实际成交不匹配，可能存在隐藏流动性。"
+        return "疑似冰山单：可见挂单与累计成交不匹配的隐藏流动性候选。详情请在 Dashboard 查看。"
             .to_string();
     }
     if event_type.contains("LiquidityPull")
@@ -223,11 +173,8 @@ fn event_reason(input: &DiscordCandidateMessageInput) -> String {
         || event_type.contains("NoTradeChop")
     {
         return format!(
-            "疑似流动性抽离：{} 侧盘口深度从 {} 降至 {}，下降约 {}，价差/冲击可能同步扩大，可能导致短时滑点增加。",
-            input.side.as_deref().unwrap_or("N/A"),
-            format_qty(input.depth_before, unit),
-            format_qty(input.depth_after, unit),
-            format_percent(input.depth_impact)
+            "疑似流动性抽离：{} 侧盘口深度短时下降的候选行为。详情请在 Dashboard 查看。",
+            input.side.as_deref().unwrap_or("N/A")
         );
     }
     if event_type.contains("Sweep")
@@ -235,21 +182,17 @@ fn event_reason(input: &DiscordCandidateMessageInput) -> String {
         || event_type.contains("WhaleFlow")
     {
         return format!(
-            "疑似主动扫单：短时间内出现大额主动 {} 成交，成交规模约 {}，价格冲击约 {}，可能导致短线方向性波动。",
-            input.side.as_deref().unwrap_or("N/A"),
-            format_qty(input.fill_qty.or(input.add_qty), unit),
-            format_bps(input.price_impact_bps)
+            "疑似主动扫单：短时出现大额主动 {} 成交的候选行为。详情请在 Dashboard 查看。",
+            input.side.as_deref().unwrap_or("N/A")
         );
     }
     input.primary_reason.as_deref().map_or_else(
         || {
-            "检测到疑似盘口异常候选信号，但当前信号缺少完整细分证据。请查看 Dashboard 详情面板。"
-                .to_string()
+            "检测到疑似盘口异常候选信号。详情请在 Dashboard 查看。".to_string()
         },
         |reason| {
-            if reason.trim().is_empty() {
-                "检测到疑似盘口异常候选信号，但当前信号缺少完整细分证据。请查看 Dashboard 详情面板。"
-                    .to_string()
+            if reason.trim().is_empty() || looks_like_forbidden_alert_content(reason) {
+                "检测到疑似盘口异常候选信号。详情请在 Dashboard 查看。".to_string()
             } else {
                 reason.to_string()
             }
@@ -257,18 +200,15 @@ fn event_reason(input: &DiscordCandidateMessageInput) -> String {
     )
 }
 
-fn market_evidence(input: &DiscordCandidateMessageInput) -> String {
-    let unit = base_asset(&input.symbol);
-    format!(
-        "交易所：{}\n交易对：{}\n价格区间：{}\n挂单量：{}\n撤除量：{}\n成交量：{}\n撤单/成交比：{}",
-        input.venue.as_deref().unwrap_or("N/A"),
-        input.symbol,
-        input.price_range.as_deref().unwrap_or("N/A"),
-        format_qty(input.add_qty, unit),
-        format_qty(input.cancel_qty, unit),
-        format_qty(input.fill_qty, unit),
-        format_ratio(input.cancel_to_trade_ratio)
-    )
+fn looks_like_forbidden_alert_content(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("markout")
+        || lower.contains("rawpayload")
+        || lower.contains("raw_payload")
+        || lower.contains("webhook")
+        || lower.contains("authorization")
+        || value.contains("盘口证据")
+        || value.contains("撤后 Markout")
 }
 
 fn field(name: &str, value: String, inline: bool) -> DiscordEmbedField {
@@ -288,13 +228,6 @@ fn truncate_field(value: &str) -> String {
         .take(FIELD_LIMIT.saturating_sub(1))
         .chain(std::iter::once('…'))
         .collect()
-}
-
-fn format_percent(value: Option<f64>) -> String {
-    value.map_or_else(
-        || "N/A".to_string(),
-        |value| format!("{}%", format_number(value * 100.0, 2)),
-    )
 }
 
 fn format_number(value: f64, decimals: usize) -> String {
@@ -320,38 +253,11 @@ fn format_number(value: f64, decimals: usize) -> String {
     }
 }
 
-fn base_asset(symbol: &str) -> &str {
-    let upper = symbol.to_ascii_uppercase();
-    if upper.starts_with("BTC") {
-        "BTC"
-    } else if upper.starts_with("ETH") {
-        "ETH"
-    } else if upper.starts_with("SOL") {
-        "SOL"
-    } else if upper.starts_with("BNB") {
-        "BNB"
-    } else {
-        "units"
-    }
-}
-
 fn side_from_signal(signal: &ToxicSignal) -> Option<String> {
     match signal.direction {
         ToxicSignalDirection::ShortBias => Some("Ask/Sell".to_string()),
         ToxicSignalDirection::LongBias => Some("Bid/Buy".to_string()),
         ToxicSignalDirection::TrapRisk | ToxicSignalDirection::Neutral => None,
-    }
-}
-
-fn price_range(evidence: Option<&SignalEvidence>) -> Option<String> {
-    let evidence = evidence?;
-    match (evidence.depth_before, evidence.depth_after) {
-        (Some(before), Some(after)) => Some(format!(
-            "depth {} -> {}",
-            format_number(before, 2),
-            format_number(after, 2)
-        )),
-        _ => None,
     }
 }
 

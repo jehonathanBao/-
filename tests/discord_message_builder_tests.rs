@@ -19,9 +19,7 @@ fn spoofing_candidate_ask_side_generates_sell_wall_copy() {
     let core = field(&payload.embeds[0].fields, "核心原因");
 
     assert!(core.contains("疑似大额卖墙压盘"));
-    assert!(core.contains("1,000 BTC"));
-    assert!(core.contains("980 BTC"));
-    assert!(core.contains("20 BTC"));
+    assert!(core.contains("Dashboard"));
 }
 
 #[test]
@@ -55,7 +53,7 @@ fn iceberg_candidate_generates_iceberg_copy() {
 }
 
 #[test]
-fn missing_evidence_uses_na_without_panicking() {
+fn missing_evidence_keeps_safe_fields_without_panicking() {
     let mut signal = signal(
         ToxicSignalType::SpoofingCandidate,
         ToxicSignalDirection::Neutral,
@@ -64,10 +62,34 @@ fn missing_evidence_uses_na_without_panicking() {
     signal.data_quality = None;
 
     let payload = build_discord_candidate_message(&signal);
-    let evidence = field(&payload.embeds[0].fields, "盘口证据");
+    let names: Vec<&str> = payload.embeds[0]
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect();
 
-    assert!(evidence.contains("N/A"));
+    assert!(!names.contains(&"盘口证据"));
+    assert!(!names.contains(&"撤后 Markout"));
     assert!(field(&payload.embeds[0].fields, "数据质量").contains("N/A"));
+}
+
+#[test]
+fn message_omits_markout_raw_evidence_and_qty_dumps() {
+    let payload = build_discord_candidate_message(&signal(
+        ToxicSignalType::SpoofingCandidate,
+        ToxicSignalDirection::ShortBias,
+    ));
+    let text = serde_json::to_string(&payload).expect("payload json");
+    let lower = text.to_ascii_lowercase();
+
+    assert!(!text.contains("盘口证据"));
+    assert!(!text.contains("撤后 Markout"));
+    assert!(!lower.contains("markout"));
+    assert!(!text.contains("1,000 BTC"));
+    assert!(!text.contains("980 BTC"));
+    assert!(!text.contains("raw_evidence"));
+    assert!(!lower.contains("confirmed manipulation"));
+    assert!(text.contains("Candidate"));
 }
 
 #[test]
