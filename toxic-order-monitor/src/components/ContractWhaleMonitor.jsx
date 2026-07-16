@@ -744,6 +744,44 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const showCoinbaseSpotOnlyNotice =
     filters.exchange === "coinbase" || state.meta?.reason === "coinbase_perp_disabled";
 
+  useEffect(() => {
+    if (!selectedSignalId || !selectedSignal || hasRichContractEventDetail(selectedSignal)) {
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      const payload = await fetchContractEvents({
+        ...filters,
+        range: "24h",
+        limit: DEFAULT_CONTRACT_EVENT_LIMIT,
+        includeSourceSignal: true,
+      });
+      if (cancelled || !isUsableDataPayload(payload)) return;
+      const enriched = payload.items.find((item) => matchesSignalIdentity(item, selectedSignalId));
+      if (!enriched) return;
+      setState((previous) => ({
+        ...previous,
+        contractEvents: previous.contractEvents.map((item) => (
+          matchesSignalIdentity(item, selectedSignalId) ? { ...item, ...enriched } : item
+        )),
+        finalEvents: {
+          active: previous.finalEvents.active.map((item) => (
+            matchesSignalIdentity(item, selectedSignalId) ? { ...item, ...enriched } : item
+          )),
+          closed: previous.finalEvents.closed.map((item) => (
+            matchesSignalIdentity(item, selectedSignalId) ? { ...item, ...enriched } : item
+          )),
+        },
+        items: previous.items.map((item) => (
+          matchesSignalIdentity(item, selectedSignalId) ? { ...item, ...enriched } : item
+        )),
+      }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filters, selectedSignal, selectedSignalId]);
+
   async function loadMoreContractEvents() {
     if (!state.contractEventsHasMore || !state.contractEventsCursor) return;
     const payload = await fetchContractEvents({
@@ -2862,6 +2900,16 @@ function LifecycleOiCell({ item }) {
 
 function signalDetailTargetId(item) {
   return item?.sourceSignalId || item?.id;
+}
+
+function hasRichContractEventDetail(item) {
+  return Boolean(
+    item?.scoreBreakdown
+    || item?.trajectory
+    || item?.activeSources
+    || item?.sourceSignal?.id
+    || item?.exchanges?.length,
+  );
 }
 
 function matchesSignalIdentity(item, signalId) {

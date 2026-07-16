@@ -444,10 +444,15 @@ export async function fetchContractEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
     const includeHidden = Boolean(filters.includeHidden ?? filters.include_hidden);
+    const includeSourceSignal = Boolean(
+      filters.includeSourceSignal ?? filters.include_source_signal,
+    );
     const query = buildContractWhaleQuery({
       ...filters,
       include_hidden: includeHidden ? "true" : undefined,
       includeHidden: undefined,
+      include_source_signal: includeSourceSignal ? "true" : undefined,
+      includeSourceSignal: undefined,
       range: filters.range ?? "24h",
       limit: filters.limit ?? 100,
       min_notional_usd: filters.min_notional_usd ?? 10_000_000,

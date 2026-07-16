@@ -96,6 +96,7 @@ pub struct ContractWhaleQuery {
     pub offset: Option<String>,
     pub min_notional_usd: Option<String>,
     pub include_hidden: Option<String>,
+    pub include_source_signal: Option<String>,
     pub hide_stale: Option<String>,
 }
 

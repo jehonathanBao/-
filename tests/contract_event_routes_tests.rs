@@ -338,6 +338,71 @@ async fn contract_events_expose_latency_metadata_fields() {
 }
 
 #[tokio::test]
+async fn contract_events_default_to_compact_tape_payload_without_source_signal() {
+    let state = seeded_contract_event_state();
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let client = test_http_client();
+    let compact = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("compact contract events response");
+    assert_eq!(compact.status(), StatusCode::OK);
+    let compact_payload: serde_json::Value = compact.json().await.expect("compact json");
+    let compact_items = compact_payload["items"].as_array().expect("compact items");
+    assert!(!compact_items.is_empty());
+    assert!(
+        compact_items
+            .iter()
+            .all(|item| item.get("sourceSignal").is_none()),
+        "default contract-events tape payload must omit nested sourceSignal"
+    );
+    assert!(
+        compact_items.iter().any(|item| {
+            item.get("mainExchange").is_some()
+                && item.get("discordSent").is_some()
+                && item.get("liquidationSuspected").is_some()
+        }),
+        "compact tape rows must still expose event-bar scalar fields"
+    );
+
+    let full = client
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=20&include_source_signal=true"
+        ))
+        .send()
+        .await
+        .expect("full contract events response");
+    assert_eq!(full.status(), StatusCode::OK);
+    let full_payload: serde_json::Value = full.json().await.expect("full json");
+    let full_items = full_payload["items"].as_array().expect("full items");
+    assert!(!full_items.is_empty());
+    assert!(
+        full_items
+            .iter()
+            .all(|item| item.get("sourceSignal").is_some()),
+        "include_source_signal=true must keep nested sourceSignal for detail enrichment"
+    );
+    assert!(
+        serde_json::to_vec(&compact_payload).expect("compact bytes").len()
+            < serde_json::to_vec(&full_payload).expect("full bytes").len(),
+        "compact payload must be smaller than full payload"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn contract_events_include_resolved_oi_context_fields() {
     let config = test_config(temp_sqlite_path("contract-events-oi-context"));
     let state = AppState::new(config);

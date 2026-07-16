@@ -274,10 +274,12 @@ struct ContractEventCandidate {
 pub async fn contract_events_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
-) -> Result<Json<ContractEventPage>, Response> {
+) -> Result<Response, Response> {
     let requested_limit =
         validate_contract_events_query(&query).map_err(IntoResponse::into_response)?;
     let include_hidden = parse_include_hidden(query.include_hidden.as_deref())
+        .map_err(IntoResponse::into_response)?;
+    let include_source_signal = parse_include_source_signal(query.include_source_signal.as_deref())
         .map_err(IntoResponse::into_response)?;
     let key = contract_projection_key("contract_events", &query, requested_limit, include_hidden);
     let runtime = state.contract_event_projection_runtime();
@@ -299,7 +301,7 @@ pub async fn contract_events_route(
         .map_err(projection_unavailable_response)?;
     let page =
         contract_event_page_from_outcome(outcome).map_err(projection_unavailable_response)?;
-    Ok(Json(page))
+    Ok(contract_events_wire_response(page, include_source_signal))
 }
 
 pub async fn contract_events_debug_counts_route(
@@ -505,6 +507,88 @@ fn serve_contract_event_page(
         page.error_code = None;
     }
     page
+}
+
+fn contract_events_wire_response(page: ContractEventPage, include_source_signal: bool) -> Response {
+    let Ok(mut value) = serde_json::to_value(page) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "dataState": "unavailable",
+                "degraded": true,
+                "errorCode": "contract_events_serialize_failed",
+                "lastKnownDataAvailable": false,
+                "readOnly": true,
+                "executionEnabled": false,
+            })),
+        )
+            .into_response();
+    };
+    if let Some(items) = value.get_mut("items").and_then(|items| items.as_array_mut()) {
+        for item in items {
+            promote_contract_event_tape_fields(item);
+            if !include_source_signal {
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("sourceSignal");
+                }
+            }
+        }
+    }
+    Json(value).into_response()
+}
+
+fn promote_contract_event_tape_fields(item: &mut serde_json::Value) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    let Some(source_signal) = object.get("sourceSignal").cloned() else {
+        return;
+    };
+    let Some(signal) = source_signal.as_object() else {
+        return;
+    };
+    copy_json_field(object, signal, "mainExchange");
+    copy_json_field(object, signal, "discordSent");
+    copy_json_field(object, signal, "discordEligible");
+    copy_json_field(object, signal, "discordReason");
+    copy_json_field(object, signal, "discordWouldSend");
+    copy_json_field(object, signal, "liquidationSuspected");
+    copy_json_field(object, signal, "liquidationLongBtc");
+    copy_json_field(object, signal, "liquidationShortBtc");
+    copy_json_field(object, signal, "liquidationRatio");
+    copy_json_field(object, signal, "fundingRate");
+    copy_json_field(object, signal, "fundingBias");
+    copy_json_field(object, signal, "oiChange5mBtc");
+    copy_json_field(object, signal, "oiChange1mBtc");
+    copy_json_field(object, signal, "oiBias");
+    copy_json_field(object, signal, "score");
+    copy_json_field(object, signal, "dynamicMultiple");
+    copy_json_field(object, signal, "percentileLevel");
+    copy_json_field(object, signal, "triggerPriceUsd");
+    copy_json_field(object, signal, "orderPriceUsd");
+    if !object.contains_key("eventLifecycle") {
+        if let Some(lifecycle) = signal.get("eventLifecycle") {
+            object.insert("eventLifecycle".to_string(), lifecycle.clone());
+        }
+    }
+    if !object.contains_key("eventQuality") {
+        if let Some(quality) = signal.get("eventQuality") {
+            object.insert("eventQuality".to_string(), quality.clone());
+        }
+    }
+}
+
+fn copy_json_field(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) {
+    if target.contains_key(key) {
+        return;
+    }
+    if let Some(value) = source.get(key) {
+        target.insert(key.to_string(), value.clone());
+    }
 }
 
 fn serve_final_events_v2_page(
@@ -1433,6 +1517,17 @@ fn parse_include_hidden(
         Some("true") | Some("1") => Ok(true),
         Some("false") | Some("0") => Ok(false),
         Some(_) => Err(bad_request("include_hidden_invalid")),
+    }
+}
+
+fn parse_include_source_signal(
+    value: Option<&str>,
+) -> Result<bool, (StatusCode, Json<serde_json::Value>)> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(false),
+        Some("true") | Some("1") => Ok(true),
+        Some("false") | Some("0") => Ok(false),
+        Some(_) => Err(bad_request("include_source_signal_invalid")),
     }
 }
 

@@ -1146,6 +1146,7 @@ describe("contract whale api", () => {
       "/api/contract-events?symbol=BTC&range=24h&limit=100&min_notional_usd=10000000",
       expect.objectContaining({ signal: expect.any(Object) }),
     );
+    expect(axios.get.mock.calls[0][0]).not.toContain("include_source_signal");
     expect(payload).toMatchObject({
       items: [
         expect.objectContaining({
@@ -1174,6 +1175,20 @@ describe("contract whale api", () => {
         timelineLagSec: 50,
       }),
     });
+  });
+
+  it("requests nested sourceSignal only when detail enrichment needs it", async () => {
+    axios.get.mockResolvedValueOnce({ data: { items: [] } });
+    await fetchContractEvents({
+      symbol: "ETH",
+      range: "24h",
+      limit: 20,
+      includeSourceSignal: true,
+    });
+    expect(axios.get).toHaveBeenCalledWith(
+      "/api/contract-events?symbol=ETH&range=24h&limit=20&include_source_signal=true&min_notional_usd=10000000",
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
   });
 
   it("fetches contract event debug counts for history diagnostics", async () => {
