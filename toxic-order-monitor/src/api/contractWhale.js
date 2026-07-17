@@ -1121,7 +1121,17 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
 }
 
 export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
-  const sourceSignal = item?.sourceSignal && typeof item.sourceSignal === "object" ? item.sourceSignal : {};
+  // Contract-events / flattened whale projections expose classification_v2 on the item
+  // itself (serde flatten). Nested sourceSignal is optional; top-level fields must win
+  // so OI / flow / price-response context is not dropped as "unavailable".
+  const nestedSource =
+    item?.sourceSignal && typeof item.sourceSignal === "object" ? item.sourceSignal : null;
+  const {
+    sourceSignal: _ignoredSourceSignal,
+    finalEvent: _ignoredFinalEvent,
+    ...itemFields
+  } = item && typeof item === "object" ? item : {};
+  const sourceSignal = nestedSource ? { ...nestedSource, ...itemFields } : itemFields;
   const eventSymbol = item?.symbol || sourceSignal.symbol || fallbackSymbol || "BTC";
   const signal = normalizeContractWhaleSignal(sourceSignal, eventSymbol);
   const sourceSignalIds = normalizeRawStringArray(item?.sourceSignalIds);

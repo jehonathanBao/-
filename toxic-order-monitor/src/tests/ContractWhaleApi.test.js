@@ -1649,6 +1649,67 @@ describe("contract whale api", () => {
     expect(event.isLifecycleAccumulated).toBe(false);
   });
 
+  it("preserves flattened contract-event oi/flow classification without nested sourceSignal", () => {
+    const event = normalizeContractEvent({
+      eventId: "cwm-event:BTC:aggressive_sell:flat-oi",
+      symbol: "BTC",
+      signalType: "aggressive_sell",
+      displaySignalType: "主动卖压",
+      flowDirection: "sell_dominant",
+      priceResponseTypeV2: "trend_follow_down",
+      priceResponseType: "trend_follow_down",
+      oiContext: "new_short_build",
+      oiContextLabel: "新空开仓",
+      oiDelta: 420,
+      oiDeltaPct: 0.42,
+      oiAvailable: true,
+      oiReason: "oi_increased_with_sell_pressure",
+      oiBias: "rising",
+      oiChangePct: 1.2,
+      volumeBtc: 726,
+      netVolumeBtc: -415,
+      notionalUsd: 45_000_000,
+    });
+
+    expect(event.flowDirection).toBe("sell_dominant");
+    expect(event.priceResponseTypeV2).toBe("trend_follow_down");
+    expect(event.oiAvailable).toBe(true);
+    expect(event.oiContext).toBe("new_short_build");
+    expect(event.oiContextLabel).toBe("新空开仓");
+    expect(event.oiDeltaPct).toBe(0.42);
+    expect(event.oiReason).toBe("oi_increased_with_sell_pressure");
+    expect(event.oiBias).toBe("rising");
+  });
+
+  it("lets top-level decorated oi fields win over nested sourceSignal defaults", () => {
+    const event = normalizeContractEvent({
+      eventId: "cwm-event:BTC:aggressive_sell:decorated-oi",
+      symbol: "BTC",
+      signalType: "aggressive_sell",
+      flowDirection: "sell_dominant",
+      oiContext: "long_unwind",
+      oiContextLabel: "多头平仓",
+      oiDeltaPct: -0.18,
+      oiAvailable: true,
+      oiReason: "oi_decreased_with_sell_pressure",
+      sourceSignal: {
+        id: "stale-source",
+        symbol: "BTC",
+        signalType: "aggressive_sell",
+        // Nested payload may predate OI decoration; flattened item fields are authoritative.
+        oiAvailable: false,
+        oiContext: "oi_unavailable",
+        oiContextLabel: "OI 不可用",
+      },
+    });
+
+    expect(event.oiAvailable).toBe(true);
+    expect(event.oiContext).toBe("long_unwind");
+    expect(event.oiContextLabel).toBe("多头平仓");
+    expect(event.oiDeltaPct).toBe(-0.18);
+    expect(event.flowDirection).toBe("sell_dominant");
+  });
+
   it("uses the requested asset in volume labels and exposes evidence provenance", () => {
     const signal = normalizeContractWhaleSignal({
       id: "eth-evidence-signal",
