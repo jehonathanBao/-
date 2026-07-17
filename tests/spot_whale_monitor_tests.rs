@@ -140,6 +140,56 @@ fn spot_detector_rejects_medium_without_directional_quality_and_price_response()
 }
 
 #[test]
+fn spot_detector_accepts_medium_on_dynamic_pulse_without_high_notional_wall() {
+    let config = SpotWhaleRuntimeConfig::default();
+    // Historically typical BTC 5s medium: small absolute volume, strong dyn multiple.
+    let stats = SpotWhaleWindowStats {
+        symbol: "BTC".to_string(),
+        window_sec: 5,
+        ts: 1_700_000_005_000,
+        buy_volume_base: 1.0,
+        sell_volume_base: 8.0,
+        total_volume_base: 9.0,
+        net_volume_base: -7.0,
+        total_notional_usd: 500_000.0,
+        dominance: 7.0 / 9.0,
+        price_move_pct: Some(-0.06),
+        coinbase_premium_pct: Some(0.01),
+        exchange_count: 2,
+        main_exchange: Some("binance".to_string()),
+        exchanges: vec![
+            contribution("binance", 0.5, 5.0),
+            contribution("coinbase", 0.5, 3.0),
+        ],
+        dynamic_multiple: Some(6.0),
+        multi_exchange_confirmed: true,
+        data_quality: 85,
+        startup_age_ms: Some(120_000),
+    };
+
+    let signal = detect_spot_whale_signal_with_config(&stats, &config).expect("medium signal");
+    assert_eq!(signal.severity, SpotWhaleSeverity::Medium);
+    assert_eq!(signal.signal_type, SpotWhaleSignalType::SpotAggressiveSell);
+    assert!(!signal.discord_eligible);
+}
+
+#[test]
+fn spot_detector_rejects_medium_when_price_move_and_dynamic_pulse_are_both_weak() {
+    let config = SpotWhaleRuntimeConfig::default();
+    let mut stats = high_conviction_stats();
+    stats.window_sec = 5;
+    stats.total_volume_base = 20.0;
+    stats.net_volume_base = -12.0;
+    stats.dominance = 0.60;
+    stats.total_notional_usd = 1_200_000.0;
+    stats.dynamic_multiple = Some(3.5);
+    stats.price_move_pct = Some(-0.02);
+    stats.data_quality = 85;
+
+    assert!(detect_spot_whale_signal_with_config(&stats, &config).is_none());
+}
+
+#[test]
 fn spot_detector_does_not_infer_absorption_or_suppression_without_price_evidence() {
     let config = SpotWhaleRuntimeConfig::default();
     let mut stats = high_conviction_stats();

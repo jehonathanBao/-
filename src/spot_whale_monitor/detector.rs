@@ -163,12 +163,17 @@ fn classify_severity(
     {
         return SpotWhaleSeverity::High;
     }
-    let medium_evidence_ok = stats.total_notional_usd >= thresholds.high_notional_usd * 0.60
-        && stats.dominance >= 0.55
-        && stats.data_quality >= 60;
-    if medium_evidence_ok
-        && (stats.total_volume_base >= thresholds.high_base * 0.60 || dynamic_multiple >= 5.0)
-        && (same_direction_price_move >= 0.10 || muted)
+    // Medium is display-only (Discord stays High+). Keep basic quality filters, but do not
+    // hard-wall on High-tier notional — that rejected essentially all historical mediums.
+    let medium_quality_ok = stats.dominance >= 0.55 && stats.data_quality >= 60;
+    let medium_volume_ok =
+        stats.total_volume_base >= thresholds.high_base * 0.50 || dynamic_multiple >= 4.0;
+    let medium_notional_ok = stats.total_notional_usd >= thresholds.high_notional_usd * 0.20
+        || dynamic_multiple >= 4.0;
+    if medium_quality_ok
+        && medium_volume_ok
+        && medium_notional_ok
+        && (same_direction_price_move >= 0.05 || muted)
     {
         return SpotWhaleSeverity::Medium;
     }
