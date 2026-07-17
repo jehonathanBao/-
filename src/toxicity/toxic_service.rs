@@ -6,6 +6,7 @@ use crate::{
     config::{thresholds::ToxicVolumeParams, AppConfig},
     market_data::flow_window_service::FlowWindowService,
     normalizers::trade::now_ms,
+    regime_thresholds::{RegimeAwareProvider, RegimeThresholdManager},
     storage::{sqlite::SqliteStore, toxic_events_repo::ToxicEventsRepo},
     toxicity::{
         liquidation_service::LiquidationService, markout_service::MarkoutService,
@@ -25,7 +26,8 @@ pub struct ToxicService {
     sweep_service: SweepService,
     vpin_service: VpinService,
     liquidation_service: LiquidationService,
-    engine: ToxicVolumeEngine,
+    base_params: ToxicVolumeParams,
+    regime_manager: Arc<RegimeThresholdManager>,
     windows_ms: Vec<ToxicWindowMs>,
     compute_interval_ms: u64,
     recent_event_limit: usize,
@@ -44,6 +46,26 @@ impl ToxicService {
         vpin_service: VpinService,
         liquidation_service: LiquidationService,
         config: &AppConfig,
+    ) -> Self {
+        Self::new_with_regime(
+            flow_service,
+            markout_service,
+            sweep_service,
+            vpin_service,
+            liquidation_service,
+            config,
+            Arc::new(RegimeThresholdManager::from_runtime_config()),
+        )
+    }
+
+    pub fn new_with_regime(
+        flow_service: FlowWindowService,
+        markout_service: MarkoutService,
+        sweep_service: SweepService,
+        vpin_service: VpinService,
+        liquidation_service: LiquidationService,
+        config: &AppConfig,
+        regime_manager: Arc<RegimeThresholdManager>,
     ) -> Self {
         let mut params = ToxicVolumeParams {
             threshold_btc: config.toxic_volume_alert_btc,
@@ -76,7 +98,8 @@ impl ToxicService {
             sweep_service,
             vpin_service,
             liquidation_service,
-            engine: ToxicVolumeEngine::new(params.clone()),
+            base_params: params.clone(),
+            regime_manager,
             windows_ms,
             compute_interval_ms: config.toxic_compute_interval_ms,
             recent_event_limit: params.recent_event_limit,
@@ -86,6 +109,15 @@ impl ToxicService {
             seen_event_ids: Arc::new(RwLock::new(std::collections::BTreeSet::new())),
             task: Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub fn regime_context(&self) -> crate::types::regime::RegimeContext {
+        self.regime_manager.current()
+    }
+
+    pub fn get_current_params(&self) -> ToxicVolumeParams {
+        self.regime_manager
+            .adjusted_toxic_volume_params(&self.base_params)
     }
 
     pub fn start(&self) {
@@ -146,12 +178,15 @@ impl ToxicService {
     }
 
     fn compute_once(&self, now_ts: i64) -> ToxicState {
+        let adjusted_params = self.get_current_params();
+        let engine = ToxicVolumeEngine::new(adjusted_params.clone());
         let flow_state = self.flow_service.get_latest_flow_state();
         let markout_state = self.markout_service.get_state();
         let sweep_state = self.sweep_service.get_state();
         let vpin_state = self.vpin_service.get_state();
         let liquidation_state = self.liquidation_service.get_state();
         let mut results = BTreeMap::new();
+        let confidence_ok = self.regime_manager.passes_confidence_gate();
 
         for window_ms in &self.windows_ms {
             let flow_window = flow_state
@@ -159,15 +194,17 @@ impl ToxicService {
                 .get(&window_ms.to_string())
                 .cloned()
                 .unwrap_or_else(|| empty_flow_window(*window_ms, now_ts));
-            let result = self.engine.compute_window(
+            let result = engine.compute_window(
                 &flow_window,
                 &markout_state,
                 &sweep_state,
                 &vpin_state,
                 &liquidation_state,
             );
-            if let Some(event) = self.engine.build_event_if_triggered(&result) {
-                self.push_event(event);
+            if confidence_ok {
+                if let Some(event) = engine.build_event_if_triggered(&result) {
+                    self.push_event(event);
+                }
             }
             results.insert(window_ms.to_string(), result);
         }
@@ -177,7 +214,7 @@ impl ToxicService {
         let state = ToxicState {
             symbol: flow_state.symbol.clone(),
             updated_at: now_ts,
-            threshold_btc: self.engine.params().threshold_btc,
+            threshold_btc: adjusted_params.threshold_btc,
             windows_ms: self.windows_ms.clone(),
             results,
             latest_event,
@@ -220,6 +257,12 @@ impl ToxicService {
             let overflow = events.len() - self.recent_event_limit;
             events.drain(0..overflow);
         }
+    }
+}
+
+impl RegimeAwareProvider for ToxicService {
+    fn regime_manager(&self) -> &Arc<RegimeThresholdManager> {
+        &self.regime_manager
     }
 }
 

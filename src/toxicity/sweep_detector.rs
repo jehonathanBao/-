@@ -49,6 +49,10 @@ impl SweepDetector {
         Self { params }
     }
 
+    pub fn with_params(&self, params: SweepParams) -> Self {
+        Self { params }
+    }
+
     pub fn detect(&self, input: SweepInput) -> SweepResult {
         let venue_breakdown = build_venue_breakdown(&input.trades);
         let buy_trade_count = input

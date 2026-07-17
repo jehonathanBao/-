@@ -126,6 +126,9 @@ impl AppConfig {
                 &settings,
             ),
         );
+        crate::regime_thresholds::set_regime_thresholds_config(
+            crate::regime_thresholds::load_regime_thresholds_from_settings(&settings),
+        );
 
         let read_only = bool_setting(&settings, "READ_ONLY", "read_only", true);
         if !read_only {

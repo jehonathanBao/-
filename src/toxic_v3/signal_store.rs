@@ -40,6 +40,15 @@ impl InMemorySignalStore {
         let evaluation = self.evaluate_system();
         AdaptiveEngine::step(&evaluation, parameters)
     }
+
+    pub fn propose_adaptation_with_regime(
+        &self,
+        parameters: &AdaptiveParameters,
+        regime_ctx: &crate::types::regime::RegimeContext,
+    ) -> AdaptiveAdjustment {
+        let evaluation = self.evaluate_system();
+        AdaptiveEngine::adjust_with_regime(&evaluation, parameters, regime_ctx)
+    }
 }
 
 impl Default for InMemorySignalStore {

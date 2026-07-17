@@ -15,6 +15,7 @@ pub mod market_regime_engine;
 pub mod multi_timeframe_orderflow_fusion;
 pub mod normalization;
 pub mod normalizers;
+pub mod regime_thresholds;
 pub mod replay;
 pub mod runtime;
 pub mod safety;

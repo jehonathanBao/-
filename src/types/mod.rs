@@ -10,6 +10,7 @@ pub mod market;
 pub mod markout;
 pub mod orderbook_delta;
 pub mod orderbook_wall;
+pub mod regime;
 pub mod safety_contract;
 pub mod status;
 pub mod structural_toxicity;

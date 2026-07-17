@@ -6,6 +6,7 @@ use crate::{
     config::{thresholds::VpinParams, AppConfig},
     market_data::event_bus::{MarketDataBus, MarketDataEvent},
     normalizers::trade::now_ms,
+    regime_thresholds::RegimeThresholdManager,
     storage::{sqlite::SqliteStore, vpin_repo::VpinRepo},
     types::vpin::{VpinBucket, VpinState},
 };
@@ -16,6 +17,8 @@ use super::vpin_bucket_engine::VpinBucketEngine;
 pub struct VpinService {
     bus: MarketDataBus,
     engine: Arc<RwLock<VpinBucketEngine>>,
+    base_params: VpinParams,
+    regime_manager: Arc<RegimeThresholdManager>,
     symbol: String,
     store: Option<SqliteStore>,
     persist_buckets: bool,
@@ -24,6 +27,20 @@ pub struct VpinService {
 
 impl VpinService {
     pub fn new(bus: MarketDataBus, config: &AppConfig, store: Option<SqliteStore>) -> Self {
+        Self::new_with_regime(
+            bus,
+            config,
+            store,
+            Arc::new(RegimeThresholdManager::from_runtime_config()),
+        )
+    }
+
+    pub fn new_with_regime(
+        bus: MarketDataBus,
+        config: &AppConfig,
+        store: Option<SqliteStore>,
+        regime_manager: Arc<RegimeThresholdManager>,
+    ) -> Self {
         let symbol = config.symbol.trim().to_ascii_uppercase();
         let params = VpinParams {
             enabled: config.vpin_enabled,
@@ -43,6 +60,8 @@ impl VpinService {
                 params.clone(),
                 symbol.clone(),
             ))),
+            base_params: params.clone(),
+            regime_manager,
             symbol,
             store,
             persist_buckets: params.persist_buckets,
@@ -98,7 +117,12 @@ impl VpinService {
     }
 
     pub fn get_state(&self) -> VpinState {
-        self.engine.read().get_state(now_ms())
+        let adjusted = self
+            .regime_manager
+            .adjusted_vpin_params(&self.base_params);
+        let mut engine = self.engine.write();
+        engine.apply_threshold_params(&adjusted);
+        engine.get_state(now_ms())
     }
 
     pub fn recent_buckets(&self, limit: usize) -> anyhow::Result<Vec<VpinBucket>> {

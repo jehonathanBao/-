@@ -1,6 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+use parking_lot::RwLock;
+
+use crate::regime_thresholds::RegimeThresholdManager;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MarketRegime {
     Accumulation,
@@ -366,4 +370,75 @@ fn round4(value: f64) -> f64 {
 
 fn round6(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
+}
+
+/// Periodically refreshes the shared [`RegimeThresholdManager`] from live features.
+#[derive(Clone)]
+pub struct MarketRegimeService {
+    manager: Arc<RegimeThresholdManager>,
+    refresh_interval_ms: u64,
+    latest_output: Arc<RwLock<Option<MarketRegimeEngineOutput>>>,
+    task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+}
+
+impl MarketRegimeService {
+    pub fn new(manager: Arc<RegimeThresholdManager>, refresh_interval_ms: u64) -> Self {
+        Self {
+            manager,
+            refresh_interval_ms: refresh_interval_ms.max(1_000),
+            latest_output: Arc::new(RwLock::new(None)),
+            task: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub fn manager(&self) -> Arc<RegimeThresholdManager> {
+        self.manager.clone()
+    }
+
+    pub fn analyze_and_update(&self, features: &MarketFeatureSet) -> MarketRegimeEngineOutput {
+        let output = self.manager.analyze_and_update(features);
+        *self.latest_output.write() = Some(output.clone());
+        tracing::debug!(
+            symbol = %output.regime.symbol,
+            regime = %output.regime.regime,
+            confidence = output.regime.confidence,
+            "regime thresholds refreshed"
+        );
+        output
+    }
+
+    pub fn latest_output(&self) -> Option<MarketRegimeEngineOutput> {
+        self.latest_output.read().clone()
+    }
+
+    pub fn start_with_provider<F>(&self, mut provider: F)
+    where
+        F: FnMut() -> MarketFeatureSet + Send + 'static,
+    {
+        if self.task.read().is_some() {
+            return;
+        }
+        if !self.manager.enabled() {
+            return;
+        }
+
+        let service = self.clone();
+        let interval_ms = self.refresh_interval_ms;
+        let handle = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+            loop {
+                interval.tick().await;
+                let features = provider();
+                service.analyze_and_update(&features);
+            }
+        });
+        *self.task.write() = Some(handle);
+    }
+
+    pub fn stop(&self) {
+        if let Some(handle) = self.task.write().take() {
+            handle.abort();
+        }
+    }
 }

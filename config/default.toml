@@ -759,3 +759,43 @@ min_extreme_impact_score = 85
 min_confidence = 70
 min_data_quality = 70
 cooldown_sec = 1200
+
+[regime_thresholds]
+enabled = true
+refresh_interval_ms = 15000
+
+[regime_thresholds.regime_adjust.MANIPULATION]
+toxic_volume_factor = 0.60
+vpin_z_threshold_factor = 0.85
+wall_persistence_factor = 0.80
+liq_hunt_sensitivity_factor = 0.85
+sweep_min_notional_factor = 0.60
+global_alert_factor = 0.95
+min_confidence = 0.0
+
+[regime_thresholds.regime_adjust.LIQUIDATION]
+toxic_volume_factor = 1.40
+vpin_z_threshold_factor = 1.25
+wall_persistence_factor = 1.20
+liq_hunt_sensitivity_factor = 1.25
+sweep_min_notional_factor = 1.35
+global_alert_factor = 1.10
+min_confidence = 0.55
+
+[regime_thresholds.regime_adjust.ACCUMULATION]
+toxic_volume_factor = 0.85
+vpin_z_threshold_factor = 0.95
+wall_persistence_factor = 0.90
+liq_hunt_sensitivity_factor = 0.90
+sweep_min_notional_factor = 0.85
+global_alert_factor = 0.98
+min_confidence = 0.0
+
+[regime_thresholds.regime_adjust.DISTRIBUTION]
+toxic_volume_factor = 1.05
+vpin_z_threshold_factor = 1.05
+wall_persistence_factor = 1.05
+liq_hunt_sensitivity_factor = 1.05
+sweep_min_notional_factor = 1.05
+global_alert_factor = 1.02
+min_confidence = 0.0

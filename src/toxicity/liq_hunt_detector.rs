@@ -31,6 +31,10 @@ impl LiqHuntDetector {
         Self { params }
     }
 
+    pub fn with_params(&self, params: LiqHuntParams) -> Self {
+        Self { params }
+    }
+
     pub fn detect(&self, input: LiqHuntDetectorInput) -> LiqHuntResult {
         let mut result = empty_liq_hunt_result(input.now_ts);
         result.symbol = input.symbol.clone();

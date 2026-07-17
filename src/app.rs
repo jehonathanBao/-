@@ -61,6 +61,8 @@ use crate::{
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
     market_data::{event_bus::MarketDataBus, flow_window_service::FlowWindowService},
+    market_regime_engine::MarketRegimeService,
+    regime_thresholds::RegimeThresholdManager,
     runtime::main_force_events::best_main_force_event_observation,
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
@@ -178,6 +180,7 @@ struct AppStateInner {
     liquidation_service: LiquidationService,
     liq_hunt_service: LiqHuntService,
     toxic_service: ToxicService,
+    market_regime_service: MarketRegimeService,
     orderbook_wall_lifecycle_service: OrderbookWallLifecycleService,
     alert_service: AlertService,
     snapshot_service: SnapshotService,
@@ -247,9 +250,15 @@ impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let booted_at_ms = crate::normalizers::trade::now_ms();
         let bus = MarketDataBus::new(4096);
+        let regime_manager = Arc::new(RegimeThresholdManager::from_runtime_config());
+        let market_regime_service = MarketRegimeService::new(
+            regime_manager.clone(),
+            regime_manager.thresholds().refresh_interval_ms,
+        );
         let flow_service = FlowWindowService::new(bus.clone(), &config);
         let markout_service = MarkoutService::new(bus.clone(), flow_service.clone(), &config);
-        let sweep_service = SweepService::new(flow_service.clone(), &config);
+        let sweep_service =
+            SweepService::new_with_regime(flow_service.clone(), &config, regime_manager.clone());
         let shared_store = if config.sqlite_enabled {
             SqliteStore::open(&config.sqlite_path)
                 .and_then(|store| {
@@ -261,28 +270,35 @@ impl AppState {
             None
         };
         let shared_store_for_state = shared_store.clone();
-        let vpin_service = VpinService::new(bus.clone(), &config, shared_store.clone());
+        let vpin_service = VpinService::new_with_regime(
+            bus.clone(),
+            &config,
+            shared_store.clone(),
+            regime_manager.clone(),
+        );
         let liquidation_service = LiquidationService::new(
             flow_service.clone(),
             sweep_service.clone(),
             vpin_service.clone(),
             &config,
         );
-        let toxic_service = ToxicService::new(
+        let toxic_service = ToxicService::new_with_regime(
             flow_service.clone(),
             markout_service.clone(),
             sweep_service.clone(),
             vpin_service.clone(),
             liquidation_service.clone(),
             &config,
+            regime_manager.clone(),
         );
-        let liq_hunt_service = LiqHuntService::new(
+        let liq_hunt_service = LiqHuntService::new_with_regime(
             flow_service.clone(),
             toxic_service.clone(),
             vpin_service.clone(),
             sweep_service.clone(),
             liquidation_service.clone(),
             &config,
+            regime_manager,
         );
         let orderbook_wall_lifecycle_service =
             OrderbookWallLifecycleService::new(bus.clone(), config.symbol.clone());
@@ -464,6 +480,7 @@ impl AppState {
                 liquidation_service,
                 liq_hunt_service,
                 toxic_service,
+                market_regime_service,
                 orderbook_wall_lifecycle_service,
                 alert_service,
                 snapshot_service,
@@ -554,6 +571,7 @@ impl AppState {
         self.inner.snapshot_service.start();
         self.inner.spot_whale_service.start();
         self.inner.binance_alt_contract_service.start();
+        self.start_market_regime_loop();
         self.start_discord_auto_push_loop();
         self.start_contract_whale_market_context_loop();
         self.start_contract_whale_auto_push_loop();
@@ -638,6 +656,7 @@ impl AppState {
         self.stop_contract_whale_outcome_calibration_loop();
         self.stop_contract_whale_market_context_loop();
         self.stop_discord_auto_push_loop();
+        self.stop_market_regime_loop();
         self.inner.alert_service.stop();
         self.inner.orderbook_wall_lifecycle_service.stop();
         self.inner.liq_hunt_service.stop();
@@ -718,6 +737,23 @@ impl AppState {
 
     pub fn subscribe_scan_logs(&self) -> tokio::sync::broadcast::Receiver<ScanLogItem> {
         self.inner.scan_log.subscribe()
+    }
+
+    fn start_market_regime_loop(&self) {
+        let state = self.clone();
+        self.inner
+            .market_regime_service
+            .start_with_provider(move || {
+                crate::api::market_regime_routes::build_latest_market_features(&state, None)
+            });
+    }
+
+    fn stop_market_regime_loop(&self) {
+        self.inner.market_regime_service.stop();
+    }
+
+    pub fn regime_manager(&self) -> Arc<RegimeThresholdManager> {
+        self.inner.market_regime_service.manager()
     }
 
     fn start_discord_auto_push_loop(&self) {

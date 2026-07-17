@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{evaluation::SystemEvaluationState, types::clamp01};
+use crate::types::regime::RegimeContext;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +82,18 @@ impl AdaptiveController {
         self.adjustments.push(adjustment.clone());
         adjustment
     }
+
+    pub fn step_with_regime(
+        &mut self,
+        evaluation: &SystemEvaluationState,
+        regime_ctx: &RegimeContext,
+    ) -> AdaptiveAdjustment {
+        let adjustment =
+            AdaptiveEngine::adjust_with_regime(evaluation, &self.shadow_parameters, regime_ctx);
+        self.shadow_parameters = adjustment.proposed_parameters.clone();
+        self.adjustments.push(adjustment.clone());
+        adjustment
+    }
 }
 
 impl Default for AdaptiveController {
@@ -123,6 +136,47 @@ impl AdaptiveEngine {
                 "does_not_write_runtime_config".to_string(),
             ],
         }
+    }
+
+    /// Dual-drive adaptation: feedback loop first, then regime multipliers.
+    /// Remains shadow-only and never mutates live Discord/Telegram gates.
+    pub fn adjust_with_regime(
+        evaluation: &SystemEvaluationState,
+        current: &AdaptiveParameters,
+        regime_ctx: &RegimeContext,
+    ) -> AdaptiveAdjustment {
+        let mut adjustment = Self::step(evaluation, current);
+        let factor = regime_ctx
+            .multipliers
+            .get("global_alert_factor")
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(1.0)
+            .clamp(0.50, 1.50);
+
+        let before = adjustment.proposed_parameters.global_alert_threshold;
+        adjustment.proposed_parameters.global_alert_threshold *= factor;
+        adjustment.proposed_parameters = sanitize_parameters(&adjustment.proposed_parameters);
+        adjustment.feedback_signals.push(FeedbackSignal {
+            signal_type: "regime_aware_global_alert".to_string(),
+            predicted: adjustment.proposed_parameters.global_alert_threshold,
+            actual: before,
+            error: adjustment.proposed_parameters.global_alert_threshold - before,
+            parameter: format!(
+                "global_alert_threshold@{:?}",
+                regime_ctx.regime
+            ),
+        });
+        adjustment
+            .safety_notes
+            .push("regime_aware_shadow_only".to_string());
+        adjustment
+            .safety_notes
+            .push(format!(
+                "regime={:?};confidence={:.3};factor={:.3}",
+                regime_ctx.regime, regime_ctx.confidence, factor
+            ));
+        adjustment
     }
 }
 

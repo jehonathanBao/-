@@ -1,13 +1,15 @@
 use tokio::sync::mpsc;
 
 use super::{
+    adaptive::{AdaptiveAdjustment, AdaptiveController, AdaptiveParameters},
     feature_builder::FeatureBuilder,
     feature_store::{FeatureStore, FeatureVector},
     runtime::FlowInferenceEngine,
     signal::SignalEvent,
-    signal_store::SignalStore,
+    signal_store::{InMemorySignalStore, SignalStore},
     types::MarketFlowTick,
 };
+use crate::types::regime::RegimeContext;
 
 #[derive(Debug, Clone)]
 pub struct InferenceBus {
@@ -66,6 +68,7 @@ where
 pub struct RecordingProductionFlowPipeline<F, S> {
     pipeline: ProductionFlowPipeline<F>,
     signal_store: S,
+    adaptive: AdaptiveController,
 }
 
 impl<F, S> RecordingProductionFlowPipeline<F, S>
@@ -77,6 +80,7 @@ where
         Self {
             pipeline,
             signal_store,
+            adaptive: AdaptiveController::default(),
         }
     }
 
@@ -91,5 +95,20 @@ where
 
     pub fn recent_signals(&self, limit: usize) -> Vec<SignalEvent> {
         self.signal_store.recent(limit)
+    }
+
+    pub fn shadow_parameters(&self) -> &AdaptiveParameters {
+        self.adaptive.shadow_parameters()
+    }
+}
+
+impl<F> RecordingProductionFlowPipeline<F, InMemorySignalStore>
+where
+    F: FeatureStore,
+{
+    /// Shadow-only dual drive: feedback evaluation + regime multipliers.
+    pub fn adapt_with_regime(&mut self, regime_ctx: &RegimeContext) -> AdaptiveAdjustment {
+        let evaluation = self.signal_store.evaluate_system();
+        self.adaptive.step_with_regime(&evaluation, regime_ctx)
     }
 }

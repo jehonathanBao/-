@@ -6,6 +6,7 @@ use crate::{
     config::AppConfig,
     market_data::flow_window_service::FlowWindowService,
     normalizers::trade::now_ms,
+    regime_thresholds::RegimeThresholdManager,
     toxicity::{
         liquidity_thinness::LiquidityThinness,
         sweep_detector::{SweepDetector, SweepInput, SweepParams},
@@ -21,14 +22,28 @@ pub struct SweepService {
     flow_service: FlowWindowService,
     windows_ms: Vec<SweepWindowMs>,
     compute_interval_ms: u64,
+    base_params: SweepParams,
     detector: SweepDetector,
     liquidity: LiquidityThinness,
+    regime_manager: Arc<RegimeThresholdManager>,
     latest_state: Arc<RwLock<SweepState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl SweepService {
     pub fn new(flow_service: FlowWindowService, config: &AppConfig) -> Self {
+        Self::new_with_regime(
+            flow_service,
+            config,
+            Arc::new(RegimeThresholdManager::from_runtime_config()),
+        )
+    }
+
+    pub fn new_with_regime(
+        flow_service: FlowWindowService,
+        config: &AppConfig,
+        regime_manager: Arc<RegimeThresholdManager>,
+    ) -> Self {
         let params = SweepParams::default();
         let windows_ms = if config.sweep_windows_ms.is_empty() {
             vec![1000, 5000, 15000]
@@ -44,7 +59,9 @@ impl SweepService {
                 params.min_depth_drop_ratio,
                 params.min_spread_widen_ratio,
             ),
+            base_params: params.clone(),
             detector: SweepDetector::new(params),
+            regime_manager,
             latest_state,
             task: Arc::new(RwLock::new(None)),
         }
@@ -106,7 +123,10 @@ impl SweepService {
                 self.flow_service.get_price_snapshot_at_or_before(since_ts),
                 self.flow_service.get_latest_price_snapshot(),
             );
-            let result = self.detector.detect(SweepInput {
+            let params = self
+                .regime_manager
+                .adjusted_sweep_params(&self.base_params);
+            let result = self.detector.with_params(params).detect(SweepInput {
                 symbol: "BTC-PERP".to_string(),
                 window_ms: *window_ms,
                 trades,

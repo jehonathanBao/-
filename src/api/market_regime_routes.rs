@@ -50,7 +50,7 @@ pub async fn market_signal_latest_route(
     Json(analyze_market_regime(&features).signal)
 }
 
-fn build_latest_market_features(
+pub fn build_latest_market_features(
     state: &AppState,
     requested_symbol: Option<&str>,
 ) -> MarketFeatureSet {

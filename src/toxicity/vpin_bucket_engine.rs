@@ -63,6 +63,12 @@ impl VpinBucketEngine {
         &self.params
     }
 
+    pub fn apply_threshold_params(&mut self, params: &VpinParams) {
+        self.params.spike_zscore = params.spike_zscore;
+        self.params.high_threshold = params.high_threshold;
+        self.params.extreme_threshold = params.extreme_threshold;
+    }
+
     pub fn on_trade(&mut self, trade: &NormalizedTrade) -> Vec<VpinBucket> {
         if normalized_symbol(&trade.symbol) != self.symbol
             || !self.params.enabled

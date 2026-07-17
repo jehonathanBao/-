@@ -6,6 +6,7 @@ use crate::{
     config::{thresholds::LiqHuntParams, AppConfig},
     market_data::flow_window_service::FlowWindowService,
     normalizers::trade::now_ms,
+    regime_thresholds::RegimeThresholdManager,
     toxicity::{
         liq_hunt_detector::{LiqHuntDetector, LiqHuntDetectorInput},
         liquidation_service::LiquidationService,
@@ -23,7 +24,9 @@ pub struct LiqHuntService {
     vpin_service: VpinService,
     sweep_service: SweepService,
     liquidation_service: LiquidationService,
+    base_params: LiqHuntParams,
     detector: LiqHuntDetector,
+    regime_manager: Arc<RegimeThresholdManager>,
     compute_interval_ms: u64,
     recent_result_limit: usize,
     latest_state: Arc<RwLock<LiqHuntState>>,
@@ -40,6 +43,26 @@ impl LiqHuntService {
         liquidation_service: LiquidationService,
         config: &AppConfig,
     ) -> Self {
+        Self::new_with_regime(
+            flow_service,
+            toxic_service,
+            vpin_service,
+            sweep_service,
+            liquidation_service,
+            config,
+            Arc::new(RegimeThresholdManager::from_runtime_config()),
+        )
+    }
+
+    pub fn new_with_regime(
+        flow_service: FlowWindowService,
+        toxic_service: ToxicService,
+        vpin_service: VpinService,
+        sweep_service: SweepService,
+        liquidation_service: LiquidationService,
+        config: &AppConfig,
+        regime_manager: Arc<RegimeThresholdManager>,
+    ) -> Self {
         let params = LiqHuntParams {
             cluster_large_notional_usd: config.liq_hunt_cluster_large_notional_usd,
             near_distance_bps: config.liq_hunt_near_distance_bps,
@@ -55,7 +78,9 @@ impl LiqHuntService {
             vpin_service,
             sweep_service,
             liquidation_service,
+            base_params: params.clone(),
             detector: LiqHuntDetector::new(params.clone()),
+            regime_manager,
             compute_interval_ms: config.toxic_compute_interval_ms,
             recent_result_limit: params.recent_result_limit,
             latest_state: Arc::new(RwLock::new(empty_liq_hunt_state(now_ms()))),
@@ -97,15 +122,21 @@ impl LiqHuntService {
     }
 
     fn compute_once(&self, now_ts: i64) -> LiqHuntState {
-        let result = self.detector.detect(LiqHuntDetectorInput {
-            now_ts,
-            symbol: "BTC-PERP".to_string(),
-            toxic_state: self.toxic_service.get_state(),
-            vpin_state: Some(self.vpin_service.get_state()),
-            sweep_state: self.sweep_service.get_state(),
-            liquidation_state: self.liquidation_service.get_state(),
-            flow_state: self.flow_service.get_latest_flow_state(),
-        });
+        let params = self
+            .regime_manager
+            .adjusted_liq_hunt_params(&self.base_params);
+        let result = self
+            .detector
+            .with_params(params)
+            .detect(LiqHuntDetectorInput {
+                now_ts,
+                symbol: "BTC-PERP".to_string(),
+                toxic_state: self.toxic_service.get_state(),
+                vpin_state: Some(self.vpin_service.get_state()),
+                sweep_state: self.sweep_service.get_state(),
+                liquidation_state: self.liquidation_service.get_state(),
+                flow_state: self.flow_service.get_latest_flow_state(),
+            });
 
         let mut recent_results = self.recent_results.write();
         recent_results.push(result.clone());
