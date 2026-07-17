@@ -569,6 +569,15 @@ fn promote_contract_event_tape_fields(item: &mut serde_json::Value) {
     copy_json_field(object, signal, "percentileLevel");
     copy_json_field(object, signal, "triggerPriceUsd");
     copy_json_field(object, signal, "orderPriceUsd");
+    // Classification v2 is flattened on the nested signal; promote before sourceSignal is stripped
+    // so the tape can render flow / price-response / OI semantics without the nested payload.
+    copy_json_field(object, signal, "flowDirection");
+    copy_json_field(object, signal, "priceResponseType");
+    copy_json_field(object, signal, "priceResponseTypeV2");
+    copy_json_field(object, signal, "displaySignalType");
+    copy_json_field(object, signal, "structureInterpretation");
+    copy_json_field(object, signal, "classificationReasons");
+
     if !object.contains_key("eventLifecycle") {
         if let Some(lifecycle) = signal.get("eventLifecycle") {
             object.insert("eventLifecycle".to_string(), lifecycle.clone());

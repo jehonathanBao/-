@@ -372,8 +372,10 @@ async fn contract_events_default_to_compact_tape_payload_without_source_signal()
             item.get("mainExchange").is_some()
                 && item.get("discordSent").is_some()
                 && item.get("liquidationSuspected").is_some()
+                && item.get("flowDirection").is_some()
+                && item.get("priceResponseTypeV2").is_some()
         }),
-        "compact tape rows must still expose event-bar scalar fields"
+        "compact tape rows must still expose event-bar scalar and classification fields"
     );
 
     let full = client
@@ -460,6 +462,17 @@ async fn contract_events_include_resolved_oi_context_fields() {
     assert_eq!(item["oiDeltaPct"], 0.42);
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
+    assert!(
+        item.get("flowDirection").and_then(|v| v.as_str()).is_some(),
+        "compact tape must promote flowDirection after stripping sourceSignal"
+    );
+    assert!(
+        item.get("priceResponseTypeV2")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "compact tape must promote priceResponseTypeV2 after stripping sourceSignal"
+    );
+    assert!(item.get("sourceSignal").is_none());
 
     server.abort();
 }
