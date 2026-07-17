@@ -1013,23 +1013,54 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
     old_s_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
     old_s_signal.net_volume_btc = 100.0;
     old_s_signal.severity = ContractWhaleSeverity::S;
+    old_s_signal.impact_level = Some("C".to_string());
     let mut old_large_net_signal = sample_s_signal();
     old_large_net_signal.id = "contract-whale:BTC:15:old:large-net".to_string();
     old_large_net_signal.ts = now - 390 * 24 * 60 * 60 * 1000;
     old_large_net_signal.net_volume_btc = -650.0;
     old_large_net_signal.severity = ContractWhaleSeverity::Medium;
+    old_large_net_signal.impact_level = Some("C".to_string());
+    let mut old_impact_a_signal = sample_s_signal();
+    old_impact_a_signal.id = "contract-whale:BTC:15:old:impact-a".to_string();
+    old_impact_a_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
+    old_impact_a_signal.net_volume_btc = 120.0;
+    old_impact_a_signal.severity = ContractWhaleSeverity::Medium;
+    old_impact_a_signal.impact_level = Some("A".to_string());
+    let mut old_impact_b_keep = sample_s_signal();
+    old_impact_b_keep.id = "contract-whale:BTC:15:old:impact-b-keep".to_string();
+    old_impact_b_keep.ts = now - 30 * 24 * 60 * 60 * 1000;
+    old_impact_b_keep.net_volume_btc = 80.0;
+    old_impact_b_keep.severity = ContractWhaleSeverity::Medium;
+    old_impact_b_keep.impact_level = Some("B".to_string());
+    let mut old_impact_b_drop = sample_s_signal();
+    old_impact_b_drop.id = "contract-whale:BTC:15:old:impact-b-drop".to_string();
+    old_impact_b_drop.ts = now - 120 * 24 * 60 * 60 * 1000;
+    old_impact_b_drop.net_volume_btc = 80.0;
+    old_impact_b_drop.severity = ContractWhaleSeverity::Medium;
+    old_impact_b_drop.impact_level = Some("B".to_string());
     let mut old_weak_signal = sample_s_signal();
     old_weak_signal.id = "contract-whale:BTC:15:old:weak".to_string();
-    old_weak_signal.ts = now - 380 * 24 * 60 * 60 * 1000;
+    old_weak_signal.ts = now - 10 * 24 * 60 * 60 * 1000;
     old_weak_signal.net_volume_btc = 499.0;
     old_weak_signal.severity = ContractWhaleSeverity::Medium;
+    old_weak_signal.impact_level = Some("C".to_string());
     let mut fresh_signal = sample_s_signal();
     fresh_signal.id = "contract-whale:BTC:15:fresh:s".to_string();
     fresh_signal.ts = now;
     fresh_signal.severity = ContractWhaleSeverity::Medium;
+    fresh_signal.impact_level = Some("C".to_string());
     store.upsert_contract_whale_signal(&old_s_signal).unwrap();
     store
         .upsert_contract_whale_signal(&old_large_net_signal)
+        .unwrap();
+    store
+        .upsert_contract_whale_signal(&old_impact_a_signal)
+        .unwrap();
+    store
+        .upsert_contract_whale_signal(&old_impact_b_keep)
+        .unwrap();
+    store
+        .upsert_contract_whale_signal(&old_impact_b_drop)
         .unwrap();
     store
         .upsert_contract_whale_signal(&old_weak_signal)
@@ -1039,12 +1070,14 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
     let result = store
         .prune_contract_whale_retention(
             now - 14 * 24 * 60 * 60 * 1000,
-            now - 365 * 24 * 60 * 60 * 1000,
+            now - 7 * 24 * 60 * 60 * 1000,
+            now - 90 * 24 * 60 * 60 * 1000,
         )
         .unwrap();
 
     assert_eq!(result.flow_1s_deleted, 1);
-    assert_eq!(result.signal_deleted, 1);
+    // old_weak (C >7d) + old_impact_b_drop (B >90d)
+    assert_eq!(result.signal_deleted, 2);
     assert_eq!(result.liquidation_deleted, 1);
     assert_eq!(result.oi_deleted, 1);
     assert_eq!(result.funding_deleted, 1);
@@ -1099,11 +1132,14 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .iter()
         .map(|signal| signal.id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining.len(), 5);
     assert!(remaining_ids.contains(&old_s_signal.id.as_str()));
     assert!(remaining_ids.contains(&old_large_net_signal.id.as_str()));
+    assert!(remaining_ids.contains(&old_impact_a_signal.id.as_str()));
+    assert!(remaining_ids.contains(&old_impact_b_keep.id.as_str()));
     assert!(remaining_ids.contains(&fresh_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_weak_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_impact_b_drop.id.as_str()));
 }
 
 #[test]
@@ -1150,6 +1186,7 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
     old_weak_signal.ts = now - 380 * 24 * 60 * 60 * 1000;
     old_weak_signal.net_volume_btc = 499.0;
     old_weak_signal.severity = ContractWhaleSeverity::Medium;
+    old_weak_signal.impact_level = Some("C".to_string());
     store
         .upsert_contract_whale_signal(&old_weak_signal)
         .unwrap();
@@ -1157,7 +1194,8 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
     let result = store
         .prune_contract_whale_retention(
             now - 14 * 24 * 60 * 60 * 1000,
-            now - 365 * 24 * 60 * 60 * 1000,
+            now - 7 * 24 * 60 * 60 * 1000,
+            now - 90 * 24 * 60 * 60 * 1000,
         )
         .expect("prune contract whale retention");
 

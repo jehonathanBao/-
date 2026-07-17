@@ -433,6 +433,7 @@ pub fn spawn_contract_whale_retention_task(
     store: Option<SqliteStore>,
     flow_1s_days: i64,
     signals_days: i64,
+    impact_b_days: i64,
     storage_health: StorageHealthTracker,
 ) {
     const INITIAL_RETENTION_DELAY_SECS: u64 = 30;
@@ -448,6 +449,7 @@ pub fn spawn_contract_whale_retention_task(
             event = log_events::RETENTION_PRUNED,
             flow_1s_days,
             signals_days,
+            impact_b_days,
             initial_delay_seconds = INITIAL_RETENTION_DELAY_SECS,
             "{} retention task scheduled",
             LOG_PREFIX
@@ -457,6 +459,7 @@ pub fn spawn_contract_whale_retention_task(
             store.clone(),
             flow_1s_days,
             signals_days,
+            impact_b_days,
             now_ms(),
             storage_health.clone(),
         )
@@ -469,6 +472,7 @@ pub fn spawn_contract_whale_retention_task(
                 store.clone(),
                 flow_1s_days,
                 signals_days,
+                impact_b_days,
                 now_ms(),
                 storage_health.clone(),
             )
@@ -481,14 +485,16 @@ pub async fn prune_contract_whale_retention_nonblocking(
     store: SqliteStore,
     flow_1s_days: i64,
     signals_days: i64,
+    impact_b_days: i64,
     now_ms: i64,
     storage_health: StorageHealthTracker,
 ) -> Option<ContractWhaleRetentionPruneResult> {
     let flow_cutoff = retention_cutoff_ms(now_ms, flow_1s_days);
     let signal_cutoff = retention_cutoff_ms(now_ms, signals_days);
+    let impact_b_cutoff = retention_cutoff_ms(now_ms, impact_b_days);
     let started_at = std::time::Instant::now();
     match tokio::task::spawn_blocking(move || {
-        store.prune_contract_whale_retention(flow_cutoff, signal_cutoff)
+        store.prune_contract_whale_retention(flow_cutoff, signal_cutoff, impact_b_cutoff)
     })
     .await
     {

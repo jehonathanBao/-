@@ -88,6 +88,7 @@ pub struct ContractWhaleQuery {
     pub window_sec: Option<String>,
     pub exchange: Option<String>,
     pub net_direction: Option<String>,
+    pub impact_level: Option<String>,
     pub status: Option<String>,
     pub range: Option<String>,
     pub cursor: Option<String>,
@@ -5088,6 +5089,7 @@ pub fn parse_history_query(
         window_sec: parse_window_sec_filter(query.window_sec.as_deref())?,
         exchange: parse_exchange_filter(query.exchange.as_deref())?,
         min_abs_net_volume_btc: parse_net_direction_filter(query.net_direction.as_deref())?,
+        impact_level: parse_impact_level_filter(query.impact_level.as_deref())?,
         min_notional_usd: parse_optional_nonnegative_f64(
             query.min_notional_usd.as_deref(),
             "min_notional_usd",
@@ -5135,6 +5137,21 @@ fn parse_severity_filter(
         "medium" => Ok(Some(ContractWhaleSeverity::Medium)),
         "calm" => Ok(Some(ContractWhaleSeverity::Calm)),
         _ => Err(bad_request("severity_invalid")),
+    }
+}
+
+fn parse_impact_level_filter(
+    filter: Option<&str>,
+) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+    match filter.to_ascii_uppercase().as_str() {
+        "A" | "B" | "S" => Ok(Some(filter.to_ascii_uppercase())),
+        _ => Err(bad_request("impact_level_invalid")),
     }
 }
 

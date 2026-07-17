@@ -241,6 +241,7 @@ enabled = false
     assert_eq!(cwm.data_quality.min_dynamic_samples, 7);
     assert_eq!(cwm.retention.flow_1s_days, 10);
     assert_eq!(cwm.retention.signals_days, 180);
+    assert_eq!(cwm.retention.impact_b_days, 90);
     assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 2222.0);
     assert!(cwm.symbol_enabled("BTC"));
     assert!(!cwm.symbol_enabled("ETH"));

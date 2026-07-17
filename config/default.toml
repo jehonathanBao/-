@@ -180,7 +180,10 @@ ct_val_missing_penalty = 20
 
 [contract_whale_monitor.retention]
 flow_1s_days = 14
-signals_days = 365
+# Default/C and below: keep at least 7 days. Impact B uses impact_b_days.
+# Impact A/S (and severity S / |net|>=500) stay permanent.
+signals_days = 7
+impact_b_days = 90
 
 [contract_whale_monitor.lifecycle]
 update_window_seconds = 30

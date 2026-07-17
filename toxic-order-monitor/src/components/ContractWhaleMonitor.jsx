@@ -30,6 +30,7 @@ const DEFAULT_FILTERS = {
   signal_type: "all",
   direction: "all",
   net_direction: "all",
+  impact_level: "all",
   discord_sent: "all",
   window_sec: "all",
   exchange: "all",
@@ -70,6 +71,7 @@ function eventFeedSessionCacheKey(filters) {
     filters.signal_type || "all",
     filters.direction || "all",
     filters.net_direction || "all",
+    filters.impact_level || "all",
     filters.discord_sent || "all",
     filters.window_sec || "all",
     filters.exchange || "all",
@@ -887,7 +889,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           <span className="text-slate-300">VISIBLE GATE</span>
           <span>{displayFilterLabel}</span>
           <span>价格偏离 ≤ {CWM_MAX_PRICE_DEVIATION_PCT}%</span>
-          <span>原始事件保留</span>
+          <span>保留：默认 7 天 / B 3 个月 / A·S 永久</span>
         </p>
         <DataHealthBanner dataSlices={state.dataSlices} />
       </div>
@@ -4002,6 +4004,12 @@ function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
         <option value="abs500">大于 500（正负）</option>
         <option value="abs1000">大于 1000（正负）</option>
       </FilterSelect>
+      <FilterSelect label="冲击等级" value={filters.impact_level || "all"} onChange={(value) => update("impact_level", value)}>
+        <option value="all">全部</option>
+        <option value="A">A</option>
+        <option value="B">B</option>
+        <option value="S">S</option>
+      </FilterSelect>
       <FilterSelect label="Discord" value={filters.discord_sent} onChange={(value) => update("discord_sent", value)}>
         <option value="all">全部</option>
         <option value="true">已推送</option>
@@ -4471,7 +4479,7 @@ function directionLabel(direction) {
 }
 
 function shouldUseHistory(filters) {
-  return ["severity", "signal_type", "direction", "net_direction", "discord_sent", "window_sec", "exchange"].some(
+  return ["severity", "signal_type", "direction", "net_direction", "impact_level", "discord_sent", "window_sec", "exchange"].some(
     (key) => filters[key] && filters[key] !== "all",
   );
 }

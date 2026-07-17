@@ -31,6 +31,7 @@ pub struct ContractWhaleSignalQuery {
     pub window_sec: Option<u64>,
     pub exchange: Option<String>,
     pub min_abs_net_volume_btc: Option<f64>,
+    pub impact_level: Option<String>,
     pub min_notional_usd: Option<f64>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
@@ -59,7 +60,8 @@ fn contract_whale_signal_query_path(
         || query.discord_sent.is_some()
         || query.window_sec.is_some()
         || query.exchange.is_some()
-        || query.min_abs_net_volume_btc.is_some();
+        || query.min_abs_net_volume_btc.is_some()
+        || query.impact_level.is_some();
     let has_positioned_cursor = query.cursor_ts.is_some() || query.cursor_signal_id.is_some();
 
     if query.symbol.is_some()
@@ -282,6 +284,7 @@ pub trait ContractWhaleRepo {
         &self,
         flow_cutoff_ts: i64,
         signal_cutoff_ts: i64,
+        impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult>;
 }
 
@@ -295,6 +298,7 @@ pub struct ContractWhaleRetentionPruneResult {
     pub signal_deleted: usize,
     pub flow_cutoff_ts: i64,
     pub signal_cutoff_ts: i64,
+    pub impact_b_cutoff_ts: i64,
     pub protected_s_count: usize,
     pub protected_net_volume_count: usize,
     pub table_results: Vec<RetentionTableResult>,
@@ -919,6 +923,12 @@ impl ContractWhaleRepo for SqliteStore {
         let min_abs_net_volume_btc = query
             .min_abs_net_volume_btc
             .filter(|value| value.is_finite() && *value > 0.0);
+        let impact_level = query
+            .impact_level
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_uppercase());
         let cursor_signal_id = query.cursor_signal_id.as_deref().map(str::to_string);
         let exchange_like = query
             .exchange
@@ -944,11 +954,19 @@ impl ContractWhaleRepo for SqliteStore {
                   AND (?11 IS NULL OR total_notional_usd >= ?11)
                   AND (
                         ?12 IS NULL
-                        OR ts < ?12
-                        OR (ts = ?12 AND signal_id < ?13)
+                        OR UPPER(COALESCE(
+                              json_extract(payload_json, '$.impactLevel'),
+                              json_extract(payload_json, '$.impact_level'),
+                              ''
+                            )) = ?12
+                  )
+                  AND (
+                        ?13 IS NULL
+                        OR ts < ?13
+                        OR (ts = ?13 AND signal_id < ?14)
                   )
                 ORDER BY ts DESC, signal_id DESC
-                LIMIT ?14 OFFSET ?15
+                LIMIT ?15 OFFSET ?16
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -964,6 +982,7 @@ impl ContractWhaleRepo for SqliteStore {
                     exchange_like.as_deref(),
                     min_abs_net_volume_btc,
                     min_notional_usd,
+                    impact_level.as_deref(),
                     query.cursor_ts,
                     cursor_signal_id.as_deref(),
                     query.limit as i64,
@@ -1460,12 +1479,14 @@ impl ContractWhaleRepo for SqliteStore {
         &self,
         flow_cutoff_ts: i64,
         signal_cutoff_ts: i64,
+        impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
         let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_connection(|conn| {
             let mut result = ContractWhaleRetentionPruneResult {
                 flow_cutoff_ts,
                 signal_cutoff_ts,
+                impact_b_cutoff_ts,
                 ..ContractWhaleRetentionPruneResult::default()
             };
             if table_exists(conn, "contract_whale_signals")?
@@ -1534,27 +1555,55 @@ impl ContractWhaleRepo for SqliteStore {
                 params![flow_cutoff_ts],
                 &mut result.table_results,
             )?;
+            // Retention tiers:
+            // - impact A/S, severity S, |net|>=500: permanent
+            // - impact B: keep until impact_b_cutoff_ts (default 90d)
+            // - everything else: keep until signal_cutoff_ts (default 7d)
             result.signal_deleted = prune_contract_table(
                 conn,
                 "contract_whale_signals",
                 "ts",
                 r#"
                 DELETE FROM contract_whale_signals
-                WHERE ts < ?1
-                  AND severity != ?2
-                  AND ABS(COALESCE(net_volume_btc, 0.0)) < ?3
+                WHERE severity != ?1
+                  AND ABS(COALESCE(net_volume_btc, 0.0)) < ?2
+                  AND UPPER(COALESCE(
+                        json_extract(payload_json, '$.impactLevel'),
+                        json_extract(payload_json, '$.impact_level'),
+                        ''
+                      )) NOT IN ('A', 'S')
+                  AND (
+                        (
+                          UPPER(COALESCE(
+                            json_extract(payload_json, '$.impactLevel'),
+                            json_extract(payload_json, '$.impact_level'),
+                            ''
+                          )) = 'B'
+                          AND ts < ?3
+                        )
+                        OR
+                        (
+                          UPPER(COALESCE(
+                            json_extract(payload_json, '$.impactLevel'),
+                            json_extract(payload_json, '$.impact_level'),
+                            ''
+                          )) != 'B'
+                          AND ts < ?4
+                        )
+                  )
                 "#,
                 params![
-                    signal_cutoff_ts,
                     s_severity,
                     CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                    impact_b_cutoff_ts,
+                    signal_cutoff_ts,
                 ],
                 &mut result.table_results,
             )?;
             if let Some(last_entry) = result.table_results.last_mut() {
                 if last_entry.status == RetentionTableStatus::Ok {
                     last_entry.reason = Some(format!(
-                        "severity_protected_threshold_lt_{}",
+                        "impact_as_permanent_b_days_default_days_net_lt_{}",
                         CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
                     ));
                 }

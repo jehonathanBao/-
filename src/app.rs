@@ -424,6 +424,7 @@ impl AppState {
             contract_whale_store.clone(),
             cwm_retention.flow_1s_days,
             cwm_retention.signals_days,
+            cwm_retention.impact_b_days,
             storage_health.clone(),
         );
         let cwm_emission_watermarks = contract_whale_store

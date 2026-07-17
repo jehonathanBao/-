@@ -2614,6 +2614,10 @@ describe("ContractWhaleMonitor", () => {
     await user.selectOptions(screen.getByLabelText("等级"), "critical");
     expect(screen.getByRole("option", { name: "大于 500（正负）" })).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
+    const impactSelect = screen.getByLabelText("冲击等级");
+    expect(impactSelect).toHaveDisplayValue("全部");
+    await user.selectOptions(impactSelect, "A");
+    expect(impactSelect).toHaveDisplayValue("A");
 
     await waitFor(() =>
       expect(fetchContractEvents).toHaveBeenLastCalledWith(
@@ -2621,6 +2625,7 @@ describe("ContractWhaleMonitor", () => {
           symbol: "BTC",
           severity: "critical",
           net_direction: "abs500",
+          impact_level: "A",
           range: "24h",
           limit: 20,
         }),

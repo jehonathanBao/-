@@ -149,7 +149,9 @@ pub struct RetentionTableStats {
 pub struct ContractRetentionStatusResponse {
     pub flow_retention_days: i64,
     pub signal_retention_days: i64,
+    pub impact_b_retention_days: i64,
     pub signal_protect_severity_s: bool,
+    pub signal_protect_impact_a_s: bool,
     pub signal_protect_net_volume_btc: f64,
     pub cleanup_interval_hours: i64,
     pub tables: ContractRetentionTables,
@@ -408,6 +410,7 @@ fn contract_projection_key(
             "windowSec": normalize(query.window_sec.as_ref()),
             "exchange": normalize(query.exchange.as_ref()),
             "netDirection": normalize(query.net_direction.as_ref()),
+            "impactLevel": normalize(query.impact_level.as_ref()),
             "status": normalize_status_filter(query.status.as_deref()).unwrap_or_else(|| "all".to_string()),
             "range": range,
             "cursor": query.cursor.as_deref().map(str::trim).unwrap_or_default(),
@@ -794,7 +797,9 @@ pub async fn contract_retention_status_route(
     Ok(Json(ContractRetentionStatusResponse {
         flow_retention_days: retention.flow_1s_days,
         signal_retention_days: retention.signals_days,
+        impact_b_retention_days: retention.impact_b_days,
         signal_protect_severity_s: true,
+        signal_protect_impact_a_s: true,
         signal_protect_net_volume_btc: CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
         cleanup_interval_hours: 1,
         tables,
@@ -1436,11 +1441,23 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
     let exchange_contract_count = source_signal.active_sources.contract.len();
     let severity_key = severity_key(source_signal.severity);
     let direction_key = direction_key(source_signal.direction);
+    let impact_level = source_signal
+        .impact_level
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_uppercase());
+    let impact_permanent = matches!(impact_level.as_deref(), Some("A") | Some("S"));
     let is_retention_protected = severity_key == "s"
+        || impact_permanent
         || source_signal.net_volume_btc.abs()
             >= CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC;
     let retention_reason = if severity_key == "s" {
         Some("severity_s".to_string())
+    } else if impact_level.as_deref() == Some("S") {
+        Some("impact_s".to_string())
+    } else if impact_level.as_deref() == Some("A") {
+        Some("impact_a".to_string())
     } else if source_signal.net_volume_btc.abs()
         >= CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
     {
