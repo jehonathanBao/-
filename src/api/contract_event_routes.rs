@@ -563,6 +563,7 @@ fn promote_contract_event_tape_fields(item: &mut serde_json::Value) {
     copy_json_field(object, signal, "fundingBias");
     copy_json_field(object, signal, "oiChange5mBtc");
     copy_json_field(object, signal, "oiChange1mBtc");
+    copy_json_field(object, signal, "oiChangePct");
     copy_json_field(object, signal, "oiBias");
     copy_json_field(object, signal, "score");
     copy_json_field(object, signal, "dynamicMultiple");
@@ -577,6 +578,17 @@ fn promote_contract_event_tape_fields(item: &mut serde_json::Value) {
     copy_json_field(object, signal, "displaySignalType");
     copy_json_field(object, signal, "structureInterpretation");
     copy_json_field(object, signal, "classificationReasons");
+    copy_json_field(object, signal, "oiConsistentSources");
+    copy_json_field(object, signal, "oiExcludedSources");
+    copy_json_field(object, signal, "oiSourceCoverageChanged");
+    copy_json_field(object, signal, "oiCrossExchangeConsensus");
+    copy_json_field(object, signal, "oiEvidenceDegraded");
+    copy_json_field(object, signal, "oiEvidenceReason");
+    // Prefer detector-persisted impact labels over page-relative FinalEvent cohort scores.
+    copy_json_field_overwrite(object, signal, "impactLevel");
+    copy_json_field_overwrite(object, signal, "signalLevel");
+    copy_json_field_overwrite(object, signal, "signalLabel");
+    copy_json_field_overwrite(object, signal, "normalizedStrength");
 
     if !object.contains_key("eventLifecycle") {
         if let Some(lifecycle) = signal.get("eventLifecycle") {
@@ -600,6 +612,18 @@ fn copy_json_field(
     }
     if let Some(value) = source.get(key) {
         target.insert(key.to_string(), value.clone());
+    }
+}
+
+fn copy_json_field_overwrite(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) {
+    if let Some(value) = source.get(key) {
+        if !value.is_null() {
+            target.insert(key.to_string(), value.clone());
+        }
     }
 }
 

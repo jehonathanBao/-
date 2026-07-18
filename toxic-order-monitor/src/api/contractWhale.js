@@ -1082,6 +1082,23 @@ function impactLevelToNormalizedStrength(impactLevel) {
   return "LOW";
 }
 
+function resolveOiAvailable(item = {}, classification = {}) {
+  const raw = item.oiAvailable ?? item.oi_available ?? classification.oiAvailable ?? classification.oi_available;
+  if (typeof raw === "boolean") return raw;
+  const context = String(
+    item.oiContext || item.oi_context || classification.oiContext || classification.oi_context || "",
+  ).toLowerCase();
+  if (context && context !== "oi_unavailable") return true;
+  if (
+    numberOrNull(
+      item.oiDeltaPct ?? item.oi_delta_pct ?? classification.oiDeltaPct ?? classification.oi_delta_pct,
+    ) !== null
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impactScoreFallback = null, percentileFallback = null } = {}) {
   const impactScore =
     numberOrNull(item?.impactScore ?? item?.impact_score) ??
@@ -1340,7 +1357,31 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
     liquidationLongBtc: numberOrNull(item?.liquidationLongBtc ?? item?.liquidation_long_btc) ?? normalized.liquidationLongBtc,
     liquidationRatio: numberOrNull(item?.liquidationRatio ?? item?.liquidation_ratio) ?? normalized.liquidationRatio,
     oiChange1mBtc: numberOrNull(item?.oiChange1mBtc ?? item?.oi_change_1m_btc) ?? normalized.oiChange1mBtc,
-    oiChangePct: numberOrNull(item?.oiChangePct ?? item?.oi_change_pct) ?? normalized.oiChangePct,
+    oiChange5mBtc: numberOrNull(item?.oiChange5mBtc ?? item?.oi_change_5m_btc) ?? normalized.oiChange5mBtc,
+    oiChangePct:
+      numberOrNull(item?.oiChangePct ?? item?.oi_change_pct) ??
+      numberOrNull(item?.oiDeltaPct ?? item?.oi_delta_pct) ??
+      normalized.oiChangePct,
+    oiDeltaPct: numberOrNull(item?.oiDeltaPct ?? item?.oi_delta_pct) ?? normalized.oiDeltaPct,
+    oiAvailable: resolveOiAvailable(item, item?.classificationV2 || item?.classification_v2 || {}),
+    oiContext: item?.oiContext || item?.oi_context || normalized.oiContext,
+    oiContextLabel: item?.oiContextLabel || item?.oi_context_label || normalized.oiContextLabel,
+    oiReason: item?.oiReason || item?.oi_reason || normalized.oiReason,
+    flowDirection: item?.flowDirection || item?.flow_direction || normalized.flowDirection,
+    priceResponseTypeV2:
+      item?.priceResponseTypeV2 ||
+      item?.price_response_type_v2 ||
+      item?.priceResponseType ||
+      normalized.priceResponseTypeV2,
+    priceResponseType: String(
+      item?.priceResponseTypeV2 ||
+        item?.price_response_type_v2 ||
+        item?.priceResponseType ||
+        item?.price_response_type ||
+        normalized.priceResponseTypeV2 ||
+        normalized.priceResponseType ||
+        "no_clear_response",
+    ).toLowerCase(),
     oiBias: item?.oiBias || item?.oi_bias || normalized.oiBias,
     fundingRate: numberOrNull(item?.fundingRate ?? item?.funding_rate) ?? normalized.fundingRate,
     fundingBias: item?.fundingBias || item?.funding_bias || normalized.fundingBias,
@@ -1396,6 +1437,14 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     impactScoreFallback: item?.dynamicMultiple ?? item?.dynamic_multiple,
     percentileFallback: item?.percentileLevel ?? item?.percentile_level,
   });
+  const priceResponseTypeV2 =
+    item.priceResponseTypeV2 ||
+    item.price_response_type_v2 ||
+    classification.priceResponseTypeV2 ||
+    classification.price_response_type_v2 ||
+    item.priceResponseType ||
+    item.price_response_type ||
+    "no_clear_response";
   return {
     id: item.id || `${item.symbol || fallbackSymbol || "BTC"}-${item.windowSec || 0}-${item.ts || Date.now()}`,
     ts: numberOrNull(item.ts),
@@ -1404,16 +1453,25 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     quantityUnit: item.quantityUnit || item.baseAsset || item.symbol || fallbackSymbol || "BTC",
     windowSec: numberOrNull(item.windowSec) || 0,
     signalType: item.signalType || "unknown",
-    displaySignalType: item.displaySignalType || item.display_signal_type || "",
-    structureInterpretation: item.structureInterpretation || item.structure_interpretation || "unknown",
-    flowDirection: item.flowDirection || item.flow_direction || "unknown",
-    priceResponseTypeV2:
-      item.priceResponseTypeV2 || item.price_response_type_v2 || item.priceResponseType || "no_clear_response",
+    displaySignalType: item.displaySignalType || item.display_signal_type || classification.displaySignalType || classification.display_signal_type || "",
+    structureInterpretation:
+      item.structureInterpretation ||
+      item.structure_interpretation ||
+      classification.structureInterpretation ||
+      classification.structure_interpretation ||
+      "unknown",
+    flowDirection:
+      item.flowDirection ||
+      item.flow_direction ||
+      classification.flowDirection ||
+      classification.flow_direction ||
+      "unknown",
+    priceResponseTypeV2,
     oiContext: item.oiContext || item.oi_context || classification.oiContext || classification.oi_context || "oi_unavailable",
     oiContextLabel: item.oiContextLabel || item.oi_context_label || classification.oiContextLabel || classification.oi_context_label || "OI 不可用",
     oiDelta: numberOrNull(item.oiDelta ?? item.oi_delta ?? classification.oiDelta ?? classification.oi_delta),
     oiDeltaPct: numberOrNull(item.oiDeltaPct ?? item.oi_delta_pct ?? classification.oiDeltaPct ?? classification.oi_delta_pct),
-    oiAvailable: Boolean(item.oiAvailable ?? item.oi_available ?? classification.oiAvailable ?? classification.oi_available),
+    oiAvailable: resolveOiAvailable(item, classification),
     oiReason: item.oiReason || item.oi_reason || classification.oiReason || classification.oi_reason || "oi_unavailable",
     oiConsistentSources: normalizeStringArray(
       item.oiConsistentSources ?? item.oi_consistent_sources ?? classification.oiConsistentSources ?? classification.oi_consistent_sources,
@@ -1466,7 +1524,7 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     priceMove5sPct: numberOrNull(item.priceMove5sPct),
     priceMove15sPct: numberOrNull(item.priceMove15sPct),
     priceMove30sPct: numberOrNull(item.priceMove30sPct),
-    priceResponseType: item.priceResponseType ? String(item.priceResponseType).toLowerCase() : "no_clear_response",
+    priceResponseType: String(priceResponseTypeV2).toLowerCase(),
     triggerPriceUsd,
     orderPriceUsd,
     currentMarketPriceUsd,
@@ -1495,10 +1553,10 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     liquidationNotionalUsd: numberOrNull(item.liquidationNotionalUsd) || 0,
     liquidationRatio: numberOrNull(item.liquidationRatio),
     priceReversalRatio: numberOrNull(item.priceReversalRatio),
-    oiChange1mBtc: numberOrNull(item.oiChange1mBtc),
-    oiChange5mBtc: numberOrNull(item.oiChange5mBtc),
-    oiChangePct: numberOrNull(item.oiChangePct),
-    oiBias: item.oiBias || "unknown",
+    oiChange1mBtc: numberOrNull(item.oiChange1mBtc ?? item.oi_change_1m_btc),
+    oiChange5mBtc: numberOrNull(item.oiChange5mBtc ?? item.oi_change_5m_btc),
+    oiChangePct: numberOrNull(item.oiChangePct ?? item.oi_change_pct),
+    oiBias: item.oiBias || item.oi_bias || "unknown",
     fundingRate: numberOrNull(item.fundingRate),
     fundingBias: item.fundingBias || "unknown",
     exchanges: normalizeSignalExchanges(item.exchanges),

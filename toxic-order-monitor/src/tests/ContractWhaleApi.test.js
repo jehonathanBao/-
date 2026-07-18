@@ -1602,6 +1602,35 @@ describe("contract whale api", () => {
     expect(signal.oiReason).toBe("oi_unavailable");
   });
 
+  it("infers oiAvailable from context when the boolean flag is omitted", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "oi-inferred-available",
+      symbol: "BTC",
+      oiContext: "new_short_build",
+      oiContextLabel: "新空开仓",
+      oiDeltaPct: 0.42,
+    });
+
+    expect(signal.oiAvailable).toBe(true);
+    expect(signal.oiContext).toBe("new_short_build");
+    expect(signal.priceResponseType).toBe("no_clear_response");
+  });
+
+  it("reads flow and price-response from nested classificationV2", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "classification-nested-flow",
+      symbol: "BTC",
+      classificationV2: {
+        flowDirection: "sell_dominant",
+        priceResponseTypeV2: "trend_follow_down",
+      },
+    });
+
+    expect(signal.flowDirection).toBe("sell_dominant");
+    expect(signal.priceResponseTypeV2).toBe("trend_follow_down");
+    expect(signal.priceResponseType).toBe("trend_follow_down");
+  });
+
   it("maps volume display semantics without changing the underlying math", () => {
     const signal = normalizeContractWhaleSignal({
       id: "volume-semantics-signal",
@@ -1708,6 +1737,30 @@ describe("contract whale api", () => {
     expect(event.oiContextLabel).toBe("多头平仓");
     expect(event.oiDeltaPct).toBe(-0.18);
     expect(event.flowDirection).toBe("sell_dominant");
+  });
+
+  it("keeps promoted oiChangePct and falls back oiChangePct from oiDeltaPct on contract events", () => {
+    const withPct = normalizeContractEvent({
+      eventId: "cwm-event:BTC:oi-pct",
+      symbol: "BTC",
+      oiChange5mBtc: 900,
+      oiChangePct: 1.2,
+      oiBias: "rising",
+      oiAvailable: true,
+      oiContext: "new_short_build",
+    });
+    expect(withPct.oiChangePct).toBe(1.2);
+    expect(withPct.oiChange5mBtc).toBe(900);
+
+    const fallback = normalizeContractEvent({
+      eventId: "cwm-event:BTC:oi-delta-fallback",
+      symbol: "BTC",
+      oiDeltaPct: -0.18,
+      oiAvailable: true,
+      oiContext: "long_unwind",
+    });
+    expect(fallback.oiChangePct).toBe(-0.18);
+    expect(fallback.oiDeltaPct).toBe(-0.18);
   });
 
   it("uses the requested asset in volume labels and exposes evidence provenance", () => {

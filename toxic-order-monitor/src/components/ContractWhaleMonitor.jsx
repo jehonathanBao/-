@@ -1994,7 +1994,7 @@ function ContractWhaleSystemStatusPanel({
             ) : null}
             {retentionStatus ? (
               <p className="mt-2 text-cyan-100">
-                retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 保留 {retentionStatus.signalRetentionDays} 天 · S 级永久保留 · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
+                retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 默认 {retentionStatus.signalRetentionDays} 天 · B 级 {retentionStatus.impactBRetentionDays ?? 90} 天 · A·S 永久{retentionStatus.signalProtectImpactAS === false ? "（未启用）" : ""} · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
               </p>
             ) : (
               <p className="mt-2 text-slate-500">retention: 后台维护中；详细统计不在页面加载链路执行。</p>
@@ -3459,7 +3459,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["Symbol", signal.symbol],
               ["类型", signalDisplayType(signal)],
               ["方向", directionLabel(signal.direction)],
-              ["价格响应", priceResponseLabel(signal.priceResponseType)],
+              ["价格响应", priceResponseLabel(signal.priceResponseTypeV2 || signal.priceResponseType)],
               ["v2 流向", flowDirectionLabel(signal.flowDirection)],
               ["OI 语境", formatOiContextSummary(signal)],
               ["意图置信", `${signal.intentConfidence || 0}/100`],
@@ -4267,9 +4267,10 @@ function resolvedOiContextLabel(item) {
 }
 
 function formatOiContextSummary(item) {
+  // Only treat explicit false as unavailable; missing flags should still render context labels.
   if (item?.oiAvailable === false) return "OI 不可用";
   const label = resolvedOiContextLabel(item);
-  const deltaPct = Number(item?.oiDeltaPct);
+  const deltaPct = Number(item?.oiDeltaPct ?? item?.oiChangePct);
   if (!Number.isFinite(deltaPct)) {
     return label || "OI 不确认";
   }
@@ -4325,9 +4326,10 @@ function priceResponseLabel(type) {
 
 function priceResponseNarrative(signal) {
   const move = formatSignedPct(signal.priceMovePct);
-  const response = priceResponseLabel(signal.priceResponseType);
+  const responseType = signal.priceResponseTypeV2 || signal.priceResponseType;
+  const response = priceResponseLabel(responseType);
   const base = `价格响应：${response}，当前窗口价格变化 ${move}。`;
-  const value = String(signal.priceResponseType || "").toLowerCase();
+  const value = String(responseType || "").toLowerCase();
   if (value === "downside_absorption") {
     return `${base} 主动卖出放大但没有有效打穿价格，优先按下方承接观察。`;
   }
@@ -5569,10 +5571,16 @@ function formatPriceRange(low, high) {
 
 function oiStatus(item) {
   const bias = oiBiasLabel(item.oiBias);
-  if (item.oiChange5mBtc === null || item.oiChange5mBtc === undefined) return bias;
-  const pct = item.oiChangePct === null || item.oiChangePct === undefined
-    ? ""
-    : ` / ${formatSignedPct(item.oiChangePct)}`;
+  if (item.oiChange5mBtc === null || item.oiChange5mBtc === undefined) {
+    // Compact tape may omit 5m delta; fall back to semantic window OI when available.
+    if (item?.oiAvailable !== false) {
+      const semantic = formatOiContextSummary(item);
+      if (semantic && semantic !== "OI 不可用") return semantic;
+    }
+    return bias;
+  }
+  const pctValue = Number(item?.oiChangePct ?? item?.oiDeltaPct);
+  const pct = Number.isFinite(pctValue) ? ` / ${formatSignedPct(pctValue)}` : "";
   return `${formatSignedBaseVolume(item.oiChange5mBtc, item.symbol)}${pct} ${bias}`;
 }
 
