@@ -575,10 +575,7 @@ impl SpotWhaleService {
         let retention = spot_whale_runtime_config().retention;
         let retention_days = retention.signals_days.max(1);
         let cutoff = now.saturating_sub(retention_days.saturating_mul(86_400_000));
-        match store.prune_spot_whale_signals_older_than(
-            cutoff,
-            super::types::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
-        ) {
+        match store.prune_spot_whale_signals_older_than(cutoff) {
             Ok(deleted) => {
                 tracing::info!(
                     target: LOG_TARGET,
@@ -1042,8 +1039,8 @@ fn signal_matches_query(signal: &SpotWhaleSignal, query: &SpotWhaleSignalQuery) 
         return false;
     }
     if query.permanent_only.is_some_and(|value| {
-        let is_permanent =
-            signal.is_permanent || is_permanent_spot_whale_signal(signal.net_volume_base);
+        let is_permanent = signal.is_permanent
+            || is_permanent_spot_whale_signal(&signal.symbol, signal.net_volume_base);
         is_permanent != value
     }) {
         return false;

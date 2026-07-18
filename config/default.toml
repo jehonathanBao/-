@@ -383,7 +383,9 @@ scan_interval_ms = 2000
 duplicate_window_ms = 60000
 
 [spot_whale_monitor.retention]
-signals_days = 365
+# Non-permanent spot rows expire after this many days.
+# Permanent keepers: BTC |net| >= 100, ETH |net| >= 1000.
+signals_days = 7
 interval_seconds = 3600
 initial_delay_seconds = 30
 

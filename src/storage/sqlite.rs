@@ -9,10 +9,13 @@ use std::{
 };
 
 use anyhow::Context;
-use rusqlite::{Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 
 use super::migrations::MIGRATIONS;
-use crate::storage::spot_whale_repo::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
+use crate::storage::spot_whale_repo::{
+    SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+    SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+};
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -211,15 +214,24 @@ fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         r#"
         UPDATE spot_whale_signals
         SET is_permanent = CASE
-          WHEN ABS(net_volume_base) > ?1 THEN 1
+          WHEN UPPER(TRIM(symbol)) = 'ETH'
+            AND ABS(net_volume_base) >= ?1 THEN 1
+          WHEN UPPER(TRIM(symbol)) != 'ETH'
+            AND ABS(net_volume_base) >= ?2 THEN 1
           ELSE 0
         END
         WHERE is_permanent != CASE
-          WHEN ABS(net_volume_base) > ?1 THEN 1
+          WHEN UPPER(TRIM(symbol)) = 'ETH'
+            AND ABS(net_volume_base) >= ?1 THEN 1
+          WHEN UPPER(TRIM(symbol)) != 'ETH'
+            AND ABS(net_volume_base) >= ?2 THEN 1
           ELSE 0
         END
         "#,
-        [SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE],
+        params![
+            SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+            SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+        ],
     )
     .context("failed to backfill spot_whale_signals.is_permanent")?;
     Ok(())

@@ -57,7 +57,7 @@ pub fn detect_spot_whale_signal_with_config(
         discord_sent: false,
         discord_sent_at: None,
         discord_reason,
-        is_permanent: is_permanent_spot_whale_signal(stats.net_volume_base),
+        is_permanent: is_permanent_spot_whale_signal(&stats.symbol, stats.net_volume_base),
         final_result: final_result_text(signal_type),
         read_only: true,
         analysis_only: true,

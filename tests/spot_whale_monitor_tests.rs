@@ -22,9 +22,7 @@ use btc_toxic_flow_monitor_rs::{
         },
     },
     storage::{
-        spot_whale_repo::{
-            SpotWhaleRepo, SpotWhaleSignalQuery, SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
-        },
+        spot_whale_repo::{SpotWhaleRepo, SpotWhaleSignalQuery},
         SqliteStore,
     },
 };
@@ -293,21 +291,18 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
         detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
     let cutoff_ts = base.ts + 10_000;
 
-    let old_protected = signal_with_net(&base, "old-protected-negative-60", -20_000, -60.0);
+    let old_protected = signal_with_net(&base, "old-protected-negative-120", -20_000, -120.0);
+    let old_mid = signal_with_net(&base, "old-mid-60", -19_500, -60.0);
     let old_weak = signal_with_net(&base, "old-weak-30", -19_000, 30.0);
     let recent_weak = signal_with_net(&base, "recent-weak-40", 20_000, 40.0);
 
     store.upsert_spot_whale_signal(&old_protected).unwrap();
+    store.upsert_spot_whale_signal(&old_mid).unwrap();
     store.upsert_spot_whale_signal(&old_weak).unwrap();
     store.upsert_spot_whale_signal(&recent_weak).unwrap();
 
-    let pruned = store
-        .prune_spot_whale_signals_older_than(
-            cutoff_ts,
-            SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
-        )
-        .unwrap();
-    assert_eq!(pruned, 1);
+    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
+    assert_eq!(pruned, 2);
 
     let rows = store
         .query_spot_whale_signals(&SpotWhaleSignalQuery {
@@ -322,7 +317,41 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
         .collect::<Vec<_>>();
     assert!(ids.contains(&old_protected.id.as_str()));
     assert!(ids.contains(&recent_weak.id.as_str()));
+    assert!(!ids.contains(&old_mid.id.as_str()));
     assert!(!ids.contains(&old_weak.id.as_str()));
+}
+
+#[test]
+fn spot_whale_prune_uses_eth_1000_and_btc_100_net_thresholds() {
+    let store = temp_store("spot-whale-prune-symbol-thresholds");
+    let config = SpotWhaleRuntimeConfig::default();
+    let btc_base =
+        detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("btc");
+    let eth_base = {
+        let mut stats = high_conviction_stats();
+        stats.symbol = "ETH".to_string();
+        stats.total_volume_base = 20_000.0;
+        stats.net_volume_base = 12_000.0;
+        stats.total_notional_usd = 40_000_000.0;
+        stats.dominance = 0.7;
+        detect_spot_whale_signal_with_config(&stats, &config).expect("eth")
+    };
+    let cutoff_ts = btc_base.ts + 10_000;
+
+    let old_btc_weak = signal_with_net(&btc_base, "btc-old-90", -20_000, 90.0);
+    let old_btc_keep = signal_with_net(&btc_base, "btc-old-100", -19_000, 100.0);
+    let old_eth_weak = signal_with_symbol_net(&eth_base, "eth-old-999", -18_000, 999.0);
+    let old_eth_keep = signal_with_symbol_net(&eth_base, "eth-old-1000", -17_000, 1000.0);
+
+    store.upsert_spot_whale_signal(&old_btc_weak).unwrap();
+    store.upsert_spot_whale_signal(&old_btc_keep).unwrap();
+    store.upsert_spot_whale_signal(&old_eth_weak).unwrap();
+    store.upsert_spot_whale_signal(&old_eth_keep).unwrap();
+
+    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
+    assert_eq!(pruned, 2);
+    assert_eq!(store.count_spot_whale_signals("BTC").unwrap(), 1);
+    assert_eq!(store.count_spot_whale_signals("ETH").unwrap(), 1);
 }
 
 #[test]
@@ -370,7 +399,7 @@ fn spot_whale_history_filters_by_time_range_and_permanent_only() {
         detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
 
     let older_non_permanent = signal_with_net(&base, "older-non-permanent", -20_000, 30.0);
-    let in_range_permanent = signal_with_net(&base, "in-range-permanent", -5_000, -70.0);
+    let in_range_permanent = signal_with_net(&base, "in-range-permanent", -5_000, -100.0);
     let newer_non_permanent = signal_with_net(&base, "newer-non-permanent", 20_000, 20.0);
 
     store
@@ -589,16 +618,18 @@ fn spot_whale_service_retention_prunes_only_old_unprotected_rows() {
     let base =
         detect_spot_whale_signal_with_config(&high_conviction_stats(), &config).expect("signal");
     let old_weak = signal_with_net(&base, "service-old-weak", 0, 20.0);
-    let old_protected = signal_with_net(&base, "service-old-protected", 1, -60.0);
+    let old_mid = signal_with_net(&base, "service-old-mid", 1, -60.0);
+    let old_protected = signal_with_net(&base, "service-old-protected", 2, -120.0);
     store.upsert_spot_whale_signal(&old_weak).unwrap();
+    store.upsert_spot_whale_signal(&old_mid).unwrap();
     store.upsert_spot_whale_signal(&old_protected).unwrap();
     let service = SpotWhaleService::new(true, true, base.ts, Some(store.clone()));
 
     let deleted = service
-        .run_retention_once(base.ts + 366 * 86_400_000)
+        .run_retention_once(base.ts + 8 * 86_400_000)
         .expect("retention run");
 
-    assert_eq!(deleted, 1);
+    assert_eq!(deleted, 2);
     assert_eq!(store.count_spot_whale_signals("BTC").unwrap(), 1);
 }
 
@@ -664,6 +695,15 @@ fn contribution(exchange: &str, buy: f64, sell: f64) -> SpotExchangeContribution
 }
 
 fn signal_with_net(
+    base: &btc_toxic_flow_monitor_rs::spot_whale_monitor::types::SpotWhaleSignal,
+    suffix: &str,
+    ts_delta_ms: i64,
+    net_volume_base: f64,
+) -> btc_toxic_flow_monitor_rs::spot_whale_monitor::types::SpotWhaleSignal {
+    signal_with_symbol_net(base, suffix, ts_delta_ms, net_volume_base)
+}
+
+fn signal_with_symbol_net(
     base: &btc_toxic_flow_monitor_rs::spot_whale_monitor::types::SpotWhaleSignal,
     suffix: &str,
     ts_delta_ms: i64,

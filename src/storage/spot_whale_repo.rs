@@ -1,7 +1,11 @@
 use anyhow::Context;
 use rusqlite::{params, OptionalExtension};
 
-pub use crate::spot_whale_monitor::types::SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
+pub use crate::spot_whale_monitor::types::{
+    SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+    SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+    SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+};
 
 use crate::spot_whale_monitor::types::{is_permanent_spot_whale_signal, SpotWhaleSignal};
 
@@ -41,11 +45,7 @@ pub trait SpotWhaleRepo {
         reason: &str,
     ) -> anyhow::Result<usize>;
     fn count_spot_whale_signals(&self, symbol: &str) -> anyhow::Result<usize>;
-    fn prune_spot_whale_signals_older_than(
-        &self,
-        cutoff_ts: i64,
-        preserve_abs_net_volume_base: f64,
-    ) -> anyhow::Result<usize>;
+    fn prune_spot_whale_signals_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize>;
 }
 
 impl SpotWhaleRepo for SqliteStore {
@@ -289,27 +289,24 @@ impl SpotWhaleRepo for SqliteStore {
         })
     }
 
-    fn prune_spot_whale_signals_older_than(
-        &self,
-        cutoff_ts: i64,
-        preserve_abs_net_volume_base: f64,
-    ) -> anyhow::Result<usize> {
-        let threshold =
-            if preserve_abs_net_volume_base.is_finite() && preserve_abs_net_volume_base > 0.0 {
-                preserve_abs_net_volume_base
-            } else {
-                SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
-            };
+    fn prune_spot_whale_signals_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
         self.with_connection(|conn| {
             let changed = conn
                 .execute(
                     r#"
                     DELETE FROM spot_whale_signals
                     WHERE ts < ?1
-                      AND is_permanent = 0
-                      AND ABS(net_volume_base) < ?2
+                      AND CASE
+                        WHEN UPPER(TRIM(symbol)) = 'ETH'
+                          THEN ABS(net_volume_base) < ?2
+                        ELSE ABS(net_volume_base) < ?3
+                      END
                     "#,
-                    params![cutoff_ts, threshold],
+                    params![
+                        cutoff_ts,
+                        SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+                        SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
+                    ],
                 )
                 .context("failed to prune spot whale signals")?;
             Ok(changed)
@@ -331,7 +328,7 @@ fn decode_signal_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SpotWhaleSigna
 
 fn canonicalize_signal(signal: &SpotWhaleSignal) -> SpotWhaleSignal {
     let mut signal = signal.clone();
-    signal.is_permanent = is_permanent_spot_whale_signal(signal.net_volume_base);
+    signal.is_permanent = is_permanent_spot_whale_signal(&signal.symbol, signal.net_volume_base);
     signal
 }
 

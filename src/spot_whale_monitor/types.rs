@@ -1,9 +1,27 @@
 use std::collections::BTreeMap;
 
-pub const SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 50.0;
+/// BTC (and non-ETH) spot rows with `|net|` below this are short-lived (7d retention).
+pub const SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 100.0;
+/// ETH spot rows with `|net|` below this are short-lived (7d retention).
+pub const SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 = 1000.0;
+/// Backward-compatible alias for the BTC permanent / short-retention boundary.
+pub const SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE: f64 =
+    SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE;
 
-pub fn is_permanent_spot_whale_signal(net_volume_base: f64) -> bool {
-    net_volume_base.abs() > SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
+pub fn spot_whale_permanent_net_threshold(symbol: &str) -> f64 {
+    if symbol.trim().eq_ignore_ascii_case("ETH") {
+        SPOT_WHALE_ETH_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
+    } else {
+        SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE
+    }
+}
+
+pub fn is_permanent_spot_whale_signal(symbol: &str, net_volume_base: f64) -> bool {
+    net_volume_base
+        .abs()
+        .is_finite()
+        .then_some(net_volume_base.abs() >= spot_whale_permanent_net_threshold(symbol))
+        .unwrap_or(false)
 }
 
 #[derive(

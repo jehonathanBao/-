@@ -242,7 +242,8 @@ pub struct SpotWhaleRetentionConfig {
 impl Default for SpotWhaleRetentionConfig {
     fn default() -> Self {
         Self {
-            signals_days: 365,
+            // Non-permanent spot rows (BTC |net|<100 / ETH |net|<1000) expire after 7 days.
+            signals_days: 7,
             interval_seconds: 3_600,
             initial_delay_seconds: 30,
         }
@@ -336,7 +337,7 @@ pub fn load_spot_whale_runtime_config_from_settings(
             ),
         },
         retention: SpotWhaleRetentionConfig {
-            signals_days: i64_setting(settings, "spot_whale_monitor.retention.signals_days", 365),
+            signals_days: i64_setting(settings, "spot_whale_monitor.retention.signals_days", 7),
             interval_seconds: i64_setting(
                 settings,
                 "spot_whale_monitor.retention.interval_seconds",
