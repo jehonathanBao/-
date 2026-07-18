@@ -1296,7 +1296,7 @@ describe("ContractWhaleMonitor", () => {
       expect(fetchContractEvents).toHaveBeenCalledWith(
         expect.objectContaining({
           symbol: "ETH",
-          range: "24h",
+          range: "7d",
           limit: 20,
         }),
       ),
@@ -1326,7 +1326,7 @@ describe("ContractWhaleMonitor", () => {
 
     expect(fetchContractEvents).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ symbol: "BTC", range: "24h", limit: 20 }),
+      expect.objectContaining({ symbol: "BTC", range: "7d", limit: 20 }),
     );
 
     await vi.advanceTimersByTimeAsync(2_000);
@@ -1334,7 +1334,7 @@ describe("ContractWhaleMonitor", () => {
 
     expect(fetchContractEvents).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ symbol: "BTC", range: "24h", limit: 20 }),
+      expect.objectContaining({ symbol: "BTC", range: "7d", limit: 20 }),
     );
   });
 
@@ -1550,7 +1550,7 @@ describe("ContractWhaleMonitor", () => {
   it("promotes historical events into the pro desk primary view", async () => {
     render(<ContractWhaleMonitor />);
 
-    const historical = await screen.findByText("HISTORICAL EVENTS (24h stream)");
+    const historical = await screen.findByText("HISTORICAL EVENTS (7d stream)");
     const proDesk = screen.getByText("事件驱动交易台总览");
     const structure = screen.getByText("Market Structure");
     const setups = screen.getByText("Structure Setups");
@@ -1996,7 +1996,7 @@ describe("ContractWhaleMonitor", () => {
 
     render(<ContractWhaleMonitor />);
 
-    await screen.findByText("HISTORICAL EVENTS (24h stream)");
+    await screen.findByText("HISTORICAL EVENTS (7d stream)");
 
     expect(screen.getAllByText(/当前过滤：窗口总流量 ≥ 500 BTC/).length).toBeGreaterThan(0);
     expect(screen.queryByTestId("contract-whale-row-cwm-event:BTC:aggressive_buy:low-notional")).not.toBeInTheDocument();
@@ -2010,7 +2010,7 @@ describe("ContractWhaleMonitor", () => {
   it("renders jump navigation links for the pro desk sections", async () => {
     render(<ContractWhaleMonitor />);
 
-    await screen.findByText("HISTORICAL EVENTS (24h stream)");
+    await screen.findByText("HISTORICAL EVENTS (7d stream)");
 
     expect(screen.getByRole("link", { name: "Events" })).toHaveAttribute("href", "#contract-whale-events");
     expect(screen.getByRole("link", { name: "Structure" })).toHaveAttribute("href", "#contract-whale-structure");
@@ -2285,7 +2285,7 @@ describe("ContractWhaleMonitor", () => {
     expect(fetchContractEvents).toHaveBeenCalledWith(
       expect.objectContaining({
         symbol: "BTC",
-        range: "24h",
+        range: "7d",
         limit: 20,
       }),
     );
@@ -2626,7 +2626,7 @@ describe("ContractWhaleMonitor", () => {
           severity: "critical",
           net_direction: "abs500",
           impact_level: "A",
-          range: "24h",
+          range: "7d",
           limit: 20,
         }),
       ),
@@ -3136,7 +3136,7 @@ describe("ContractWhaleMonitor", () => {
       expect(fetchContractEvents).toHaveBeenLastCalledWith(
         expect.objectContaining({
           symbol: "BTC",
-          range: "24h",
+          range: "7d",
           limit: 100,
           includeHidden: true,
         }),
@@ -3168,7 +3168,7 @@ describe("ContractWhaleMonitor", () => {
         expect.objectContaining({
           symbol: "BTC",
           exchange: "coinbase",
-          range: "24h",
+          range: "7d",
           limit: 20,
         }),
       ),

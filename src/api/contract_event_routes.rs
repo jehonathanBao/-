@@ -852,7 +852,7 @@ pub(crate) fn contract_event_page_for_query(
 ) -> Result<ContractEventPage, (StatusCode, Json<serde_json::Value>)> {
     let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
     let include_hidden = parse_include_hidden(query.include_hidden.as_deref())?;
-    let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
+    let range = query.range.clone().unwrap_or_else(|| "7d".to_string());
     query.limit = Some((requested_limit + 1).to_string());
     let history_query = parse_history_query(&query)?;
     let store = state

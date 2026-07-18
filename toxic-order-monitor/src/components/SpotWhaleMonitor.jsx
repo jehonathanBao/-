@@ -19,6 +19,35 @@ const DEFAULT_FILTERS = {
   to_ts: "",
 };
 
+const BTC_NET_DIRECTION_OPTIONS = [
+  { value: "abs50", label: "大于 50（正负）" },
+  { value: "abs100", label: "大于 100（正负）" },
+  { value: "abs200", label: "大于 200（正负）" },
+  { value: "abs500", label: "大于 500（正负）" },
+];
+
+const ETH_NET_DIRECTION_OPTIONS = [
+  { value: "abs1000", label: "大于 1000（正负）" },
+  { value: "abs2000", label: "大于 2000（正负）" },
+  { value: "abs5000", label: "大于 5000（正负）" },
+  { value: "abs10000", label: "大于 10000（正负）" },
+];
+
+function netDirectionOptionsForSymbol(symbol) {
+  return normalizeMainstreamSymbol(symbol) === "ETH"
+    ? ETH_NET_DIRECTION_OPTIONS
+    : BTC_NET_DIRECTION_OPTIONS;
+}
+
+function sanitizeNetDirection(symbol, netDirection) {
+  if (!netDirection || netDirection === "all") {
+    return "all";
+  }
+  return netDirectionOptionsForSymbol(symbol).some((option) => option.value === netDirection)
+    ? netDirection
+    : "all";
+}
+
 export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
   const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
   const [state, setState] = useState({
@@ -41,9 +70,17 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
     setSelectedSignalId(null);
     setPageIndex(0);
     pageCursorsRef.current = [null];
-    setFilters((previous) => (
-      previous.symbol === assetSymbol ? previous : { ...previous, symbol: assetSymbol }
-    ));
+    setFilters((previous) => {
+      const nextNetDirection = sanitizeNetDirection(assetSymbol, previous.net_direction);
+      if (previous.symbol === assetSymbol && previous.net_direction === nextNetDirection) {
+        return previous;
+      }
+      return {
+        ...previous,
+        symbol: assetSymbol,
+        net_direction: nextNetDirection,
+      };
+    });
   }, [assetSymbol]);
 
   useEffect(() => {
@@ -375,15 +412,17 @@ function SpotWhaleFilters({ filters, onChange, onPageChange, pageIndex, total, t
         <label className="space-y-1">
           <span className="text-slate-500">净方向</span>
           <select
+            aria-label="净方向"
             className="console-field"
             onChange={(event) => onChange({ ...filters, net_direction: event.target.value })}
-            value={filters.net_direction}
+            value={sanitizeNetDirection(filters.symbol, filters.net_direction)}
           >
             <option value="all">全部</option>
-            <option value="abs50">大于 50（正负）</option>
-            <option value="abs100">大于 100（正负）</option>
-            <option value="abs200">大于 200（正负）</option>
-            <option value="abs500">大于 500（正负）</option>
+            {netDirectionOptionsForSymbol(filters.symbol).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
         <label className="space-y-1">

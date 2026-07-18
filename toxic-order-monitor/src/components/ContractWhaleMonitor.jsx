@@ -18,8 +18,10 @@ const EVENT_RECOVERY_RETRY_MS = 2_000;
 const EVENTS_SYNC_LAG_MS = 15_000;
 const DEFAULT_CONTRACT_EVENT_LIMIT = 50;
 const INITIAL_CONTRACT_EVENT_LIMIT = 20;
+/** Contract event tape query/retention window: keep at least 7 days of full history. */
+const CONTRACT_EVENT_RANGE = "7d";
 const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
-const EVENT_FEED_SESSION_CACHE_VERSION = 1;
+const EVENT_FEED_SESSION_CACHE_VERSION = 2;
 const EVENT_FEED_SESSION_CACHE_TTL_MS = 10 * 60 * 1_000;
 const EVENT_FEED_SESSION_CACHE_PREFIX = "contract-whale:event-feed";
 const OPERATOR_DIAGNOSTICS_ENABLED =
@@ -290,7 +292,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     const refreshLatest = () => fetchContractWhaleLatest(50, filters.symbol);
 
     const refreshContractEvents = async (limit = 50) => {
-      const payload = await fetchContractEvents({ ...filters, range: "24h", limit });
+      const payload = await fetchContractEvents({ ...filters, range: CONTRACT_EVENT_RANGE, limit });
       const usable = isUsableDataPayload(payload);
       if (usable) {
         writeEventFeedSessionCache(filters, payload);
@@ -330,7 +332,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     const refreshContractEventDebugCounts = async () => {
       const payload = await fetchContractEventDebugCounts({
         symbol: filters.symbol,
-        range: "24h",
+        range: CONTRACT_EVENT_RANGE,
         includeHidden: true,
       });
       updateState((previous) => ({
@@ -754,7 +756,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     void (async () => {
       const payload = await fetchContractEvents({
         ...filters,
-        range: "24h",
+        range: CONTRACT_EVENT_RANGE,
         limit: DEFAULT_CONTRACT_EVENT_LIMIT,
         includeSourceSignal: true,
       });
@@ -788,7 +790,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     if (!state.contractEventsHasMore || !state.contractEventsCursor) return;
     const payload = await fetchContractEvents({
       ...filters,
-      range: "24h",
+      range: CONTRACT_EVENT_RANGE,
       limit: 100,
       cursor: state.contractEventsCursor,
     });
@@ -824,7 +826,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
     }));
     const payload = await fetchContractEvents({
       ...filters,
-      range: "24h",
+      range: CONTRACT_EVENT_RANGE,
       limit: 100,
       includeHidden: true,
     });
@@ -889,7 +891,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           <span className="text-slate-300">VISIBLE GATE</span>
           <span>{displayFilterLabel}</span>
           <span>价格偏离 ≤ {CWM_MAX_PRICE_DEVIATION_PCT}%</span>
-          <span>保留：默认 7 天 / B 3 个月 / A·S 永久</span>
+          <span>保留：合约市场事件完整数据 ≥ 7 天 / B 3 个月 / A·S 永久</span>
         </p>
         <DataHealthBanner dataSlices={state.dataSlices} />
       </div>
@@ -1707,16 +1709,16 @@ function HistoricalEventStreamPanel({
           <p className="contract-event-kicker">CONTRACT EVENT TAPE</p>
           <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <h4 className="text-sm font-semibold text-slate-100">合约市场事件</h4>
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">HISTORICAL EVENTS (24h stream)</span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-slate-600">HISTORICAL EVENTS (7d stream)</span>
           </div>
           <p className="sr-only">
-            当前列表为历史事件流，不是 latest 快照。latest 只用于顶部实时状态；历史事件来自 contract_whale_signals，ACTIVE/CLOSED 是生命周期投影视图。
+            当前列表为历史事件流，不是 latest 快照。latest 只用于顶部实时状态；历史事件来自 contract_whale_signals，默认保留并查询最近 7 天完整数据，ACTIVE/CLOSED 是生命周期投影视图。
           </p>
         </div>
         <div className="contract-event-controls">
           <span className="contract-live-state text-emerald-300"><i className="bg-emerald-400" /> LIVE</span>
           <span>{contractEvents.length} EVENTS</span>
-          <span>24H</span>
+          <span>7D</span>
           <span>已加载 {contractEvents.length} 条</span>
         </div>
       </div>

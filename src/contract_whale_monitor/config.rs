@@ -2064,22 +2064,30 @@ fn load_threshold_profile_windows(
 
 fn load_retention_config(settings: &::config::Config) -> ContractWhaleRetentionConfig {
     let defaults = ContractWhaleRetentionConfig::default();
+    // Floor signal retention at 7 days so the contract event tape always keeps a
+    // full week of history (impact A/S and large |net| remain permanent).
+    let signals_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.signals_days",
+        defaults.signals_days,
+    )
+    .max(DEFAULT_SIGNAL_RETENTION_DAYS);
+    let flow_1s_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.flow_1s_days",
+        defaults.flow_1s_days,
+    )
+    .max(DEFAULT_SIGNAL_RETENTION_DAYS);
+    let impact_b_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.impact_b_days",
+        defaults.impact_b_days,
+    )
+    .max(signals_days);
     ContractWhaleRetentionConfig {
-        flow_1s_days: i64_setting(
-            settings,
-            "contract_whale_monitor.retention.flow_1s_days",
-            defaults.flow_1s_days,
-        ),
-        signals_days: i64_setting(
-            settings,
-            "contract_whale_monitor.retention.signals_days",
-            defaults.signals_days,
-        ),
-        impact_b_days: i64_setting(
-            settings,
-            "contract_whale_monitor.retention.impact_b_days",
-            defaults.impact_b_days,
-        ),
+        flow_1s_days,
+        signals_days,
+        impact_b_days,
     }
 }
 

@@ -268,6 +268,41 @@ describe("SpotWhaleMonitor", () => {
     });
   });
 
+  it("uses ETH-specific net-direction thresholds on the ETH spot page", async () => {
+    const user = userEvent.setup();
+    fetchSpotWhaleHistory.mockResolvedValue({
+      summary: { enabled: true, dryRun: false, symbol: "ETH", exchanges: {} },
+      items: [],
+      limit: 50,
+      offset: 0,
+      total: 0,
+      hasMore: false,
+      error: null,
+    });
+
+    render(<SpotWhaleMonitor lockedSymbol="ETH" />);
+
+    await user.click(screen.getByRole("button", { name: "历史查询" }));
+    const netDirection = await screen.findByLabelText("净方向");
+    expect(netDirection).toHaveDisplayValue("全部");
+    expect(screen.getByRole("option", { name: "大于 1000（正负）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "大于 2000（正负）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "大于 5000（正负）" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "大于 10000（正负）" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "大于 50（正负）" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "大于 500（正负）" })).not.toBeInTheDocument();
+
+    await user.selectOptions(netDirection, "abs5000");
+    expect(fetchSpotWhaleHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limit: 50,
+        offset: 0,
+        net_direction: "abs5000",
+        symbol: "ETH",
+      }),
+    );
+  });
+
   it("shows stale spot exchanges instead of reporting them as online", async () => {
     const staleSummary = {
       status: "calm",

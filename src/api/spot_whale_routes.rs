@@ -174,9 +174,13 @@ fn parse_net_direction_filter(
         "abs100" | "gte100" | "min100" | "100" => Ok(Some(100.0)),
         "abs200" | "gte200" | "min200" | "200" => Ok(Some(200.0)),
         "abs500" | "gte500" | "min500" | "500" => Ok(Some(500.0)),
+        "abs1000" | "gte1000" | "min1000" | "1000" => Ok(Some(1000.0)),
+        "abs2000" | "gte2000" | "min2000" | "2000" => Ok(Some(2000.0)),
+        "abs5000" | "gte5000" | "min5000" | "5000" => Ok(Some(5000.0)),
+        "abs10000" | "gte10000" | "min10000" | "10000" => Ok(Some(10_000.0)),
         _ => Err(bad_request(
             "invalid_net_direction",
-            "net_direction must be all, abs50, abs100, abs200, or abs500",
+            "net_direction must be all, abs50, abs100, abs200, abs500, abs1000, abs2000, abs5000, or abs10000",
         )),
     }
 }
