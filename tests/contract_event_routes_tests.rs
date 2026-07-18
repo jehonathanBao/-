@@ -375,7 +375,6 @@ async fn contract_events_default_to_compact_tape_payload_without_source_signal()
                 && item.get("flowDirection").is_some()
                 && item.get("priceResponseTypeV2").is_some()
                 && item.get("oiChangePct").is_some()
-                && item.get("impactLevel").is_some()
         }),
         "compact tape rows must still expose event-bar scalar and classification fields"
     );
@@ -1845,9 +1844,6 @@ fn seeded_contract_event_state() -> AppState {
     visible.oi_change_pct = Some(1.2);
     visible.oi_change_5m_btc = Some(900.0);
     visible.oi_bias = Some("rising".to_string());
-    visible.impact_level = Some("B".to_string());
-    visible.signal_level = Some("L2".to_string());
-    visible.signal_label = Some("MEDIUM IMPACT EVENT".to_string());
     let old_visible = base_signal("old-visible", now - 26 * 60 * 60 * 1000);
     let mut hidden_price = base_signal("hidden-price", now - 15 * 60 * 1000);
     hidden_price.order_price_usd = Some(60_000.0);
