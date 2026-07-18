@@ -200,31 +200,16 @@ impl FinalEvent {
             status: event_status_key(signal.event_lifecycle.status).to_string(),
             window_sec: signal.window_sec,
             raw_volume: impact.raw_volume,
-            impact_score: signal.impact_score.unwrap_or(impact.impact_score),
-            z_score: signal.impact_z_score.unwrap_or(impact.z_score),
-            percentile: signal.percentile_level.unwrap_or(impact.percentile),
+            // Tape badges use page-cohort relative impact so large events on a
+            // high-volume stream are not all labeled S against the detector baseline.
+            impact_score: impact.impact_score,
+            z_score: impact.z_score,
+            percentile: impact.percentile,
             normalized_score: impact.normalized_score,
-            // Prefer detector-persisted impact labels so tape badges match filters / retention.
-            normalized_strength: signal
-                .normalized_strength
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or(impact.normalized_strength),
-            impact_level: signal
-                .impact_level
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or(impact.impact_level),
-            signal_level: signal
-                .signal_level
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or(impact.signal_level),
-            signal_label: signal
-                .signal_label
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or(impact.signal_label),
+            normalized_strength: impact.normalized_strength,
+            impact_level: impact.impact_level,
+            signal_level: impact.signal_level,
+            signal_label: impact.signal_label,
             total_volume_btc: signal.total_volume_btc,
             volume: signal.total_volume_btc,
             net_volume: signal.net_volume_btc,
@@ -516,11 +501,10 @@ mod tests {
         assert_eq!(final_event.merged_windows_sec, vec![5, 15]);
         assert_eq!(final_event.buy_volume_btc, Some(1_830.0));
         assert_eq!(final_event.sell_volume_btc, Some(2_450.0));
-        // Detector-persisted impact wins over page-cohort MarketImpactNormalization ("A").
-        assert_eq!(final_event.impact_level, "S");
-        assert_eq!(final_event.signal_level, "S");
-        assert_eq!(final_event.signal_label, "SHOCK IMPACT EVENT");
-        assert_eq!(final_event.normalized_strength, "EXTREME");
+        // Tape keeps the page-cohort normalization passed in ("A"), not detector "S".
+        assert_eq!(final_event.impact_level, "A");
+        assert_eq!(final_event.signal_level, "L3");
+        assert_eq!(final_event.signal_label, "HIGH IMPACT EVENT");
     }
 
     fn sample_signal() -> ContractWhaleSignal {
