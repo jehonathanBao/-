@@ -92,6 +92,11 @@ impl HourlyDeltaAlertRuntime {
             outbox.run_outbox_loop().await;
         }));
 
+        let reconciliation = self.clone();
+        handles.push(tokio::spawn(async move {
+            reconciliation.run_rest_reconciliation_loop().await;
+        }));
+
         handles
     }
 
@@ -165,6 +170,19 @@ impl HourlyDeltaAlertRuntime {
     }
 
     async fn startup_backfill(&self, client: &reqwest::Client) -> anyhow::Result<()> {
+        let ok = self.reconcile_recent_closed_hours(client).await?;
+        self.diagnostics.write().backfill_ok += ok;
+        tracing::info!(
+            target: LOG_TARGET,
+            event = format!("{LOG_EVENTS_PREFIX}.backfill.ok"),
+            count = ok,
+            "{} hourly_delta startup backfill ok",
+            LOG_PREFIX
+        );
+        Ok(())
+    }
+
+    async fn reconcile_recent_closed_hours(&self, client: &reqwest::Client) -> anyhow::Result<u64> {
         let limit = self.config.startup_backfill_hours.saturating_add(1);
         let klines = fetch_closed_hourly_klines(client, &self.config, limit).await?;
         let mut ok = 0_u64;
@@ -177,20 +195,53 @@ impl HourlyDeltaAlertRuntime {
                 Ok(true) => ok += 1,
                 Ok(false) => {}
                 Err(error) => {
-                    self.diagnostics.write().backfill_fail += 1;
                     return Err(error);
                 }
             }
         }
-        self.diagnostics.write().backfill_ok += ok;
-        tracing::info!(
-            target: LOG_TARGET,
-            event = format!("{LOG_EVENTS_PREFIX}.backfill.ok"),
-            count = ok,
-            "{} hourly_delta startup backfill ok",
-            LOG_PREFIX
-        );
-        Ok(())
+        Ok(ok)
+    }
+
+    async fn run_rest_reconciliation_loop(&self) {
+        let client = reqwest::Client::new();
+        let initial_grace = Duration::from_secs(self.config.close_grace_seconds);
+        if !initial_grace.is_zero() {
+            tokio::time::sleep(initial_grace).await;
+        }
+
+        let mut interval = tokio::time::interval(Duration::from_millis(
+            self.config.rest_reconcile_interval_ms,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        while !self.stop.load(Ordering::SeqCst) {
+            interval.tick().await;
+            if self.stop.load(Ordering::SeqCst) {
+                break;
+            }
+            match self.reconcile_recent_closed_hours(&client).await {
+                Ok(processed) if processed > 0 => {
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        event = format!("{LOG_EVENTS_PREFIX}.reconcile.ok"),
+                        count = processed,
+                        "{} hourly_delta REST reconciliation recovered closed hour(s)",
+                        LOG_PREFIX
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.diagnostics.write().backfill_fail += 1;
+                    self.record_error(format!("reconcile:{error}"));
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        event = format!("{LOG_EVENTS_PREFIX}.reconcile.failed"),
+                        error = %error,
+                        "{} hourly_delta REST reconciliation failed",
+                        LOG_PREFIX
+                    );
+                }
+            }
+        }
     }
 
     async fn finalize_closed_hour(

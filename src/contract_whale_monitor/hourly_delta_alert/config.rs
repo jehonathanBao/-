@@ -18,6 +18,7 @@ pub struct HourlyDeltaAlertConfig {
     pub outbox_max_retry_seconds: i64,
     pub rest_retry_max: u32,
     pub rest_retry_base_ms: u64,
+    pub rest_reconcile_interval_ms: u64,
 }
 
 impl Default for HourlyDeltaAlertConfig {
@@ -39,6 +40,7 @@ impl Default for HourlyDeltaAlertConfig {
             outbox_max_retry_seconds: 300,
             rest_retry_max: 5,
             rest_retry_base_ms: 500,
+            rest_reconcile_interval_ms: 15_000,
         }
     }
 }
@@ -161,6 +163,13 @@ pub fn load_hourly_delta_alert_config_from_settings(
             defaults.rest_retry_base_ms,
         )
         .clamp(100, 10_000),
+        rest_reconcile_interval_ms: u64_setting(
+            settings,
+            "HOURLY_DELTA_ALERT_RECONCILE_INTERVAL_MS",
+            "contract_whale_monitor.hourly_delta_alert.rest_reconcile_interval_ms",
+            defaults.rest_reconcile_interval_ms,
+        )
+        .clamp(5_000, 300_000),
     }
 }
 

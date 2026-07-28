@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{
     calc::{parse_binance_kline_ws_message, parse_binance_rest_klines},
@@ -42,39 +42,39 @@ pub async fn run_binance_hourly_kline_collector(
                 let (_, mut read) = ws.split();
                 while let Some(message) = read.next().await {
                     match message {
-                        Ok(message) => {
-                            if let Ok(text) = message.to_text() {
-                                match parse_binance_kline_ws_message(text, &config.exchange) {
-                                    Ok(Some(kline))
-                                        if config.matches_stream(
-                                            &kline.exchange,
-                                            &kline.symbol,
-                                            &kline.interval,
-                                        ) =>
-                                    {
-                                        if sender.send(kline).await.is_err() {
-                                            tracing::warn!(
-                                                target: LOG_TARGET,
-                                                event = format!("{LOG_EVENTS_PREFIX}.ws.disconnected"),
-                                                "{} hourly kline receiver dropped",
-                                                LOG_PREFIX
-                                            );
-                                            return;
-                                        }
-                                    }
-                                    Ok(_) => {}
-                                    Err(error) => {
+                        Ok(Message::Text(text)) => {
+                            match parse_binance_kline_ws_message(&text, &config.exchange) {
+                                Ok(Some(kline))
+                                    if config.matches_stream(
+                                        &kline.exchange,
+                                        &kline.symbol,
+                                        &kline.interval,
+                                    ) =>
+                                {
+                                    if sender.send(kline).await.is_err() {
                                         tracing::warn!(
                                             target: LOG_TARGET,
-                                            event = format!("{LOG_EVENTS_PREFIX}.parse_error"),
-                                            error = %error,
-                                            "{} failed to parse hourly kline ws message",
+                                            event = format!("{LOG_EVENTS_PREFIX}.ws.disconnected"),
+                                            "{} hourly kline receiver dropped",
                                             LOG_PREFIX
                                         );
+                                        return;
                                     }
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: LOG_TARGET,
+                                        event = format!("{LOG_EVENTS_PREFIX}.parse_error"),
+                                        error = %error,
+                                        "{} failed to parse hourly kline ws message",
+                                        LOG_PREFIX
+                                    );
                                 }
                             }
                         }
+                        Ok(Message::Close(_)) => break,
+                        Ok(_) => {}
                         Err(error) => {
                             tracing::warn!(
                                 target: LOG_TARGET,
