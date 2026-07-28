@@ -243,6 +243,8 @@ outbox_base_retry_seconds = 2
 outbox_max_retry_seconds = 300
 rest_retry_max = 5
 rest_retry_base_ms = 500
+rest_reconcile_interval_ms = 15000
+rest_reconcile_lookback_hours = 6
 
 [contract_whale_monitor.okx_instruments]
 metadata_enabled = true

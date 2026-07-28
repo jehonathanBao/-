@@ -170,7 +170,9 @@ impl HourlyDeltaAlertRuntime {
     }
 
     async fn startup_backfill(&self, client: &reqwest::Client) -> anyhow::Result<()> {
-        let ok = self.reconcile_recent_closed_hours(client).await?;
+        let ok = self
+            .reconcile_recent_closed_hours(client, self.config.startup_backfill_hours)
+            .await?;
         self.diagnostics.write().backfill_ok += ok;
         tracing::info!(
             target: LOG_TARGET,
@@ -182,15 +184,15 @@ impl HourlyDeltaAlertRuntime {
         Ok(())
     }
 
-    async fn reconcile_recent_closed_hours(&self, client: &reqwest::Client) -> anyhow::Result<u64> {
-        let limit = self.config.startup_backfill_hours.saturating_add(1);
+    async fn reconcile_recent_closed_hours(
+        &self,
+        client: &reqwest::Client,
+        lookback_hours: u32,
+    ) -> anyhow::Result<u64> {
+        let limit = lookback_hours.saturating_add(1);
         let klines = fetch_closed_hourly_klines(client, &self.config, limit).await?;
         let mut ok = 0_u64;
-        for kline in klines
-            .into_iter()
-            .rev()
-            .take(self.config.startup_backfill_hours as usize)
-        {
+        for kline in klines.into_iter().rev().take(lookback_hours as usize) {
             match self.process_closed_kline(kline).await {
                 Ok(true) => ok += 1,
                 Ok(false) => {}
@@ -218,7 +220,10 @@ impl HourlyDeltaAlertRuntime {
             if self.stop.load(Ordering::SeqCst) {
                 break;
             }
-            match self.reconcile_recent_closed_hours(&client).await {
+            match self
+                .reconcile_recent_closed_hours(&client, self.config.rest_reconcile_lookback_hours)
+                .await
+            {
                 Ok(processed) if processed > 0 => {
                     tracing::info!(
                         target: LOG_TARGET,

@@ -35,6 +35,8 @@ interval = "1h"
 threshold_btc = 1000.0
 close_grace_seconds = 5
 startup_backfill_hours = 2
+rest_reconcile_interval_ms = 15000
+rest_reconcile_lookback_hours = 6
 discord_enabled = true
 dry_run = true
 
