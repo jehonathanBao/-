@@ -457,4 +457,44 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_event_feed
       ON contract_whale_signals(symbol, ts DESC, signal_id DESC);
     "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS hourly_delta_alert_records (
+      record_key TEXT PRIMARY KEY,
+      exchange TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      interval TEXT NOT NULL,
+      kline_open_time_ms INTEGER NOT NULL,
+      kline_close_time_ms INTEGER NOT NULL,
+      taker_buy_btc REAL NOT NULL,
+      taker_sell_btc REAL NOT NULL,
+      delta_btc REAL NOT NULL,
+      volume_btc REAL NOT NULL,
+      direction TEXT NOT NULL,
+      above_threshold INTEGER NOT NULL,
+      data_status TEXT NOT NULL,
+      discord_status TEXT NOT NULL,
+      discord_sent_at_ms INTEGER,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      payload_json TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_hourly_delta_alert_records_symbol_open
+      ON hourly_delta_alert_records(symbol, kline_open_time_ms DESC);
+    CREATE TABLE IF NOT EXISTS hourly_delta_discord_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_key TEXT NOT NULL UNIQUE,
+      symbol TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER,
+      created_at INTEGER NOT NULL,
+      sent_at INTEGER,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_hourly_delta_discord_outbox_due
+      ON hourly_delta_discord_outbox(status, next_attempt_at, created_at);
+    "#,
 ];

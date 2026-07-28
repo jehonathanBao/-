@@ -16,6 +16,7 @@ pub mod discord_notifier;
 pub mod emission;
 pub mod event_lifecycle;
 pub mod event_quality;
+pub mod hourly_delta_alert;
 pub mod intelligence;
 pub mod merge;
 pub mod normalizer;
@@ -47,4 +48,7 @@ pub mod log_events {
     pub const DISCORD_WOULD_SEND: &str = "cwm.discord.would_send";
     pub const RETENTION_PRUNED: &str = "cwm.retention.pruned";
     pub const ERROR: &str = "cwm.error";
+    pub const HOURLY_DELTA_CLOSED: &str = "cwm.hourly_delta.closed";
+    pub const HOURLY_DELTA_BACKFILL_OK: &str = "cwm.hourly_delta.backfill.ok";
+    pub const HOURLY_DELTA_DISCORD_SENT: &str = "cwm.hourly_delta.discord.sent";
 }

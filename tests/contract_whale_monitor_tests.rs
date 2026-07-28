@@ -52,6 +52,12 @@ fn reliability_runtime_defaults_are_explicit_and_conservative() {
     assert_eq!(config.discord_outbox.max_attempts, 6);
     assert_eq!(config.discord_outbox.base_retry_seconds, 2);
     assert_eq!(config.discord_outbox.max_retry_seconds, 300);
+    assert!(!config.hourly_delta_alert.enabled);
+    assert!(config.hourly_delta_alert.dry_run);
+    assert_eq!(config.hourly_delta_alert.threshold_btc, 1000.0);
+    assert_eq!(config.hourly_delta_alert.symbol, "BTCUSDT");
+    assert_eq!(config.hourly_delta_alert.interval, "1h");
+    assert_eq!(config.hourly_delta_alert.startup_backfill_hours, 2);
 }
 
 #[test]

@@ -226,6 +226,24 @@ max_attempts = 6
 base_retry_seconds = 2
 max_retry_seconds = 300
 
+[contract_whale_monitor.hourly_delta_alert]
+enabled = false
+exchange = "binance"
+symbol = "BTCUSDT"
+interval = "1h"
+threshold_btc = 1000.0
+close_grace_seconds = 5
+startup_backfill_hours = 2
+discord_enabled = true
+dry_run = true
+outbox_poll_interval_ms = 1000
+outbox_batch_size = 10
+outbox_max_attempts = 6
+outbox_base_retry_seconds = 2
+outbox_max_retry_seconds = 300
+rest_retry_max = 5
+rest_retry_base_ms = 500
+
 [contract_whale_monitor.okx_instruments]
 metadata_enabled = true
 refresh_minutes = 60

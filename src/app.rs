@@ -46,6 +46,7 @@ use crate::{
             notify_contract_whale_discord, ContractWhaleDiscordSettings,
         },
         emission::{emission_key, fingerprint, should_emit},
+        hourly_delta_alert::{HourlyDeltaAlertRuntime, HourlyDeltaRuntimeDiagnostics},
         log_events as cwm_log_events,
         outcome_calibration::evaluate_contract_whale_signal_outcome,
         persistence::{
@@ -160,6 +161,8 @@ struct AppStateInner {
     discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_discord_outbox_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_hourly_delta_runtime: Arc<RwLock<Option<HourlyDeltaAlertRuntime>>>,
+    cwm_hourly_delta_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     cwm_outcome_calibration_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_market_context_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_producer_running: AtomicBool,
@@ -460,6 +463,8 @@ impl AppState {
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
                 cwm_auto_push_task: Arc::new(RwLock::new(None)),
                 cwm_discord_outbox_task: Arc::new(RwLock::new(None)),
+                cwm_hourly_delta_runtime: Arc::new(RwLock::new(None)),
+                cwm_hourly_delta_tasks: Arc::new(RwLock::new(Vec::new())),
                 cwm_outcome_calibration_task: Arc::new(RwLock::new(None)),
                 cwm_market_context_task: Arc::new(RwLock::new(None)),
                 cwm_producer_running: AtomicBool::new(false),
@@ -577,6 +582,7 @@ impl AppState {
         self.start_contract_whale_market_context_loop();
         self.start_contract_whale_auto_push_loop();
         self.start_contract_whale_discord_outbox_loop();
+        self.start_hourly_delta_alert_runtime();
         self.start_contract_whale_outcome_calibration_loop();
         self.record_scan_log(
             "info",
@@ -654,6 +660,7 @@ impl AppState {
         self.inner.snapshot_service.stop();
         self.stop_contract_whale_auto_push_loop();
         self.stop_contract_whale_discord_outbox_loop();
+        self.stop_hourly_delta_alert_runtime();
         self.stop_contract_whale_outcome_calibration_loop();
         self.stop_contract_whale_market_context_loop();
         self.stop_discord_auto_push_loop();
@@ -888,6 +895,48 @@ impl AppState {
         if let Some(handle) = self.inner.cwm_discord_outbox_task.write().take() {
             handle.abort();
         }
+    }
+
+    fn start_hourly_delta_alert_runtime(&self) {
+        let config = contract_whale_runtime_config().hourly_delta_alert;
+        if !config.enabled {
+            return;
+        }
+        if self.inner.cwm_hourly_delta_runtime.read().is_some() {
+            return;
+        }
+        let runtime = HourlyDeltaAlertRuntime::new(
+            config,
+            self.config().contract_whale_monitor.dry_run,
+            self.contract_whale_store(),
+        );
+        let handles = runtime.clone().spawn();
+        *self.inner.cwm_hourly_delta_runtime.write() = Some(runtime);
+        *self.inner.cwm_hourly_delta_tasks.write() = handles;
+        tracing::info!(
+            target: CWM_LOG_TARGET,
+            event = cwm_log_events::HOURLY_DELTA_CLOSED,
+            "{} hourly_delta_alert runtime started",
+            CWM_LOG_PREFIX
+        );
+    }
+
+    fn stop_hourly_delta_alert_runtime(&self) {
+        if let Some(runtime) = self.inner.cwm_hourly_delta_runtime.write().take() {
+            runtime.stop();
+        }
+        let handles = std::mem::take(&mut *self.inner.cwm_hourly_delta_tasks.write());
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    pub fn hourly_delta_runtime_diagnostics(&self) -> Option<HourlyDeltaRuntimeDiagnostics> {
+        self.inner
+            .cwm_hourly_delta_runtime
+            .read()
+            .as_ref()
+            .map(|runtime| runtime.diagnostics())
     }
 
     async fn process_contract_whale_discord_outbox_once(&self) {

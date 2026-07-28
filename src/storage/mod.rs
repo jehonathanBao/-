@@ -1,5 +1,6 @@
 pub mod binance_alt_contract_repo;
 pub mod contract_whale_repo;
+pub mod hourly_delta_repo;
 pub mod main_force_events_repo;
 pub mod migrations;
 pub mod new_token_l2_repo;

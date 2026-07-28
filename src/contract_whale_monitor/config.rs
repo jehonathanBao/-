@@ -4,6 +4,7 @@ use std::{
 };
 
 use super::{
+    hourly_delta_alert::{load_hourly_delta_alert_config_from_settings, HourlyDeltaAlertConfig},
     types::{
         ContractExchange, ContractWhaleExchangeStatus, ContractWhaleMarketType,
         ContractWhaleSourceRole, ContractWhaleThresholds,
@@ -49,6 +50,7 @@ pub struct ContractWhaleRuntimeConfig {
     pub threshold_profiles: BTreeMap<String, ContractWhaleThresholdProfileConfig>,
     pub data_quality: ContractWhaleDataQualityConfig,
     pub retention: ContractWhaleRetentionConfig,
+    pub hourly_delta_alert: HourlyDeltaAlertConfig,
 }
 
 const CONTRACT_SOURCE_ORDER: [ContractExchange; 4] = [
@@ -506,6 +508,7 @@ impl Default for ContractWhaleRuntimeConfig {
             threshold_profiles: default_threshold_profiles(),
             data_quality: ContractWhaleDataQualityConfig::default(),
             retention: ContractWhaleRetentionConfig::default(),
+            hourly_delta_alert: HourlyDeltaAlertConfig::default(),
         }
     }
 }
@@ -1297,6 +1300,7 @@ pub fn load_contract_whale_runtime_config_from_settings(
         symbols: load_symbol_configs(settings),
         threshold_profiles: load_threshold_profiles(settings),
         retention: load_retention_config(settings),
+        hourly_delta_alert: load_hourly_delta_alert_config_from_settings(settings),
     }
 }
 
