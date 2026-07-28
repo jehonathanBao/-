@@ -63,25 +63,39 @@ pub struct HourlyDeltaDiscordOutcome {
 }
 
 pub fn build_hourly_delta_discord_content(result: &HourlyDeltaResult) -> String {
-    let (emoji, title) = match result.direction {
-        HourlyDeltaDirection::NetBuy if result.above_threshold => ("🟢", "BTC 1H 主动成交净买入"),
-        HourlyDeltaDirection::NetSell if result.above_threshold => ("🔴", "BTC 1H 主动成交净卖出"),
-        _ => ("⚪", "BTC 1H 主动成交净差"),
-    };
+    let summary = presentation_summary(result);
+    let (buy_share, sell_share) = flow_shares(result);
     let period = format_utc8_period(result.kline_open_time_ms, result.kline_close_time_ms);
     let delta_label = format_signed_btc(result.delta_btc);
     format!(
-        "{emoji} {title}\n\n\
-周期：{period}（UTC+8）\n\
-主动买入：{} BTC\n\
+        "{} {} | BTC 1H {}\n\n\
+{}：{} BTC\n\
+卖出占比：{}  |  买入占比：{}\n\n\
+方向强度\n\
+SELL  {} {}\n\
+BUY   {} {}\n\n\
 主动卖出：{} BTC\n\
-净差：{delta_label} BTC\n\
+主动买入：{} BTC\n\
+净差 Delta：{} BTC\n\
 总成交量：{} BTC\n\
+周期：{period}（UTC+8）\n\
 触发阈值：|Delta| > {} BTC\n\
 数据源：Binance {} 永续\n\
 状态：1H 已收线",
-        format_btc(result.taker_buy_btc),
+        summary.emoji,
+        summary.bias,
+        summary.title,
+        summary.hero_label,
+        format_btc(summary.hero_amount),
+        format_share(sell_share),
+        format_share(buy_share),
+        direction_bar(sell_share),
+        format_share(sell_share),
+        direction_bar(buy_share),
+        format_share(buy_share),
         format_btc(result.taker_sell_btc),
+        format_btc(result.taker_buy_btc),
+        delta_label,
         format_btc(result.volume_btc),
         format_btc(result.threshold_btc),
         result.symbol
@@ -90,27 +104,30 @@ pub fn build_hourly_delta_discord_content(result: &HourlyDeltaResult) -> String 
 
 pub fn build_hourly_delta_discord_payload(result: &HourlyDeltaResult) -> Value {
     let content = build_hourly_delta_discord_content(result);
-    let color = match result.direction {
-        HourlyDeltaDirection::NetBuy => 0x22_C5_5E,
-        HourlyDeltaDirection::NetSell => 0xEF_44_44,
-        HourlyDeltaDirection::Flat => 0x9C_A3_AF,
+    let summary = presentation_summary(result);
+    let (buy_share, sell_share) = flow_shares(result);
+    let color = match (result.above_threshold, result.direction) {
+        (true, HourlyDeltaDirection::NetBuy) => 0x22_C5_5E,
+        (true, HourlyDeltaDirection::NetSell) => 0xEF_44_44,
+        _ => 0x9C_A3_AF,
     };
     serde_json::json!({
         "content": content,
         "embeds": [{
-            "title": match result.direction {
-                HourlyDeltaDirection::NetBuy => "BTC 1H 主动成交净买入",
-                HourlyDeltaDirection::NetSell => "BTC 1H 主动成交净卖出",
-                HourlyDeltaDirection::Flat => "BTC 1H 主动成交净差",
-            },
-            "description": "主动成交净差报警（非资金净流入/非持仓变化/非主力买卖判定）",
+            "title": format!("{} {} · BTC 1H 主动成交", summary.emoji, summary.bias),
+            "description": format!("{}：{} BTC\n主动成交净差报警（非资金净流入/非持仓变化/非主力买卖判定）", summary.hero_label, format_btc(summary.hero_amount)),
             "color": color,
             "fields": [
-                {"name": "周期 (UTC+8)", "value": format_utc8_period(result.kline_open_time_ms, result.kline_close_time_ms), "inline": false},
-                {"name": "主动买入", "value": format!("{} BTC", format_btc(result.taker_buy_btc)), "inline": true},
-                {"name": "主动卖出", "value": format!("{} BTC", format_btc(result.taker_sell_btc)), "inline": true},
+                {"name": "方向", "value": format!("{} / {}", summary.bias, summary.code), "inline": true},
                 {"name": "净差 Delta", "value": format!("{} BTC", format_signed_btc(result.delta_btc)), "inline": true},
+                {"name": summary.hero_label, "value": format!("{} BTC", format_btc(summary.hero_amount)), "inline": true},
+                {"name": "卖出占比", "value": format_share(sell_share), "inline": true},
+                {"name": "买入占比", "value": format_share(buy_share), "inline": true},
+                {"name": "方向强度", "value": format!("SELL  {} {}\nBUY   {} {}", direction_bar(sell_share), format_share(sell_share), direction_bar(buy_share), format_share(buy_share)), "inline": false},
+                {"name": "主动卖出", "value": format!("{} BTC", format_btc(result.taker_sell_btc)), "inline": true},
+                {"name": "主动买入", "value": format!("{} BTC", format_btc(result.taker_buy_btc)), "inline": true},
                 {"name": "总成交量", "value": format!("{} BTC", format_btc(result.volume_btc)), "inline": true},
+                {"name": "周期 (UTC+8)", "value": format_utc8_period(result.kline_open_time_ms, result.kline_close_time_ms), "inline": false},
                 {"name": "阈值", "value": format!("|Delta| > {} BTC", format_btc(result.threshold_btc)), "inline": true},
                 {"name": "数据源", "value": format!("Binance {} 永续", result.symbol), "inline": true},
                 {"name": "状态", "value": "1H 已收线", "inline": true}
@@ -118,6 +135,88 @@ pub fn build_hourly_delta_discord_payload(result: &HourlyDeltaResult) -> Value {
             "footer": {"text": format!("record={}", result.record_key)}
         }]
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PresentationSummary {
+    emoji: &'static str,
+    bias: &'static str,
+    title: &'static str,
+    code: &'static str,
+    hero_label: &'static str,
+    hero_amount: f64,
+}
+
+fn presentation_summary(result: &HourlyDeltaResult) -> PresentationSummary {
+    if !result.above_threshold {
+        return PresentationSummary {
+            emoji: "⚪",
+            bias: "观察",
+            title: "主动成交净差",
+            code: "FLAT",
+            hero_label: "净差",
+            hero_amount: result.delta_btc.abs(),
+        };
+    }
+    match result.direction {
+        HourlyDeltaDirection::NetBuy => PresentationSummary {
+            emoji: "🟢",
+            bias: "偏多",
+            title: "主动成交净买入",
+            code: "BUY",
+            hero_label: "净买入",
+            hero_amount: result.delta_btc.abs(),
+        },
+        HourlyDeltaDirection::NetSell => PresentationSummary {
+            emoji: "🔴",
+            bias: "偏空",
+            title: "主动成交净卖出",
+            code: "SELL",
+            hero_label: "净卖出",
+            hero_amount: result.delta_btc.abs(),
+        },
+        HourlyDeltaDirection::Flat => PresentationSummary {
+            emoji: "⚪",
+            bias: "观察",
+            title: "主动成交净差",
+            code: "FLAT",
+            hero_label: "净差",
+            hero_amount: result.delta_btc.abs(),
+        },
+    }
+}
+
+fn flow_shares(result: &HourlyDeltaResult) -> (f64, f64) {
+    let total = if result.volume_btc.is_finite() && result.volume_btc > 0.0 {
+        result.volume_btc
+    } else {
+        result.taker_buy_btc.max(0.0) + result.taker_sell_btc.max(0.0)
+    };
+    if !total.is_finite() || total <= f64::EPSILON {
+        return (0.0, 0.0);
+    }
+    (
+        safe_share(result.taker_buy_btc, total),
+        safe_share(result.taker_sell_btc, total),
+    )
+}
+
+fn safe_share(value: f64, total: f64) -> f64 {
+    if value.is_finite() {
+        (value.max(0.0) / total * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn format_share(value: f64) -> String {
+    format!("{value:.1}%")
+}
+
+fn direction_bar(share: f64) -> String {
+    const WIDTH: usize = 20;
+    let filled = ((share.clamp(0.0, 100.0) / 100.0) * WIDTH as f64).round() as usize;
+    format!("{}{}", "█".repeat(filled), "░".repeat(WIDTH - filled))
 }
 
 pub fn result_from_record(record: &HourlyDeltaAlertRecord) -> HourlyDeltaResult {

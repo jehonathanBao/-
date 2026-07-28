@@ -56,16 +56,47 @@ fn temp_store(label: &str) -> SqliteStore {
 fn discord_copy_is_active_trade_net_delta_only() {
     let content = build_hourly_delta_discord_content(&sample_result(-2_800.0, true));
     assert!(content.contains("主动成交净卖出"));
+    assert!(content.contains("🔴 偏空"));
+    assert!(content.contains("净卖出：2,800 BTC"));
+    assert!(content.contains("卖出占比：68.2%"));
+    assert!(content.contains("买入占比：31.8%"));
+    assert!(content.contains("方向强度"));
     assert!(content.contains("主动买入"));
     assert!(content.contains("主动卖出"));
     assert!(content.contains("净差"));
+    assert!(content.contains("状态：1H 已收线"));
     assert!(!content.contains("资金净流入"));
     assert!(!content.contains("持仓增加"));
     assert!(!content.contains("主力买卖"));
 
     let buy = build_hourly_delta_discord_content(&sample_result(1_200.0, true));
     assert!(buy.contains("主动成交净买入"));
+    assert!(buy.contains("🟢 偏多"));
+    assert!(buy.contains("净买入：1,200 BTC"));
     assert!(buy.contains("🟢"));
+}
+
+#[test]
+fn direction_first_payload_prioritizes_bias_and_delta() {
+    let payload = build_hourly_delta_discord_payload(&sample_result(-2_800.0, true));
+    let embed = &payload["embeds"][0];
+    assert_eq!(embed["color"], 0xEF_44_44);
+    assert!(embed["title"].as_str().unwrap().contains("偏空"));
+
+    let fields = embed["fields"].as_array().unwrap();
+    assert_eq!(fields[0]["name"], "方向");
+    assert_eq!(fields[1]["name"], "净差 Delta");
+    assert_eq!(fields[2]["name"], "净卖出");
+    assert_eq!(fields[3]["name"], "卖出占比");
+    assert_eq!(fields[4]["name"], "买入占比");
+    assert_eq!(fields[5]["name"], "方向强度");
+    assert_eq!(fields[6]["name"], "主动卖出");
+    assert_eq!(fields[7]["name"], "主动买入");
+    assert!(fields[8]["value"].as_str().unwrap().contains("7,700 BTC"));
+    assert!(embed["footer"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("record="));
 }
 
 #[test]
