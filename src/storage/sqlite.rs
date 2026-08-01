@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -21,6 +21,12 @@ use crate::storage::spot_whale_repo::{
 pub struct SqliteStore {
     path: PathBuf,
     journal_mode_initializations: Arc<AtomicUsize>,
+    /// SQLite allows concurrent readers, but this service has several independent
+    /// background writers (ingest, retention, snapshots, and outboxes).  A single
+    /// process-wide operation gate prevents a long DELETE/ checkpoint transaction
+    /// from racing a bucket upsert and turning a transient contention into a lost
+    /// monitoring window.
+    operation_lock: Arc<Mutex<()>>,
 }
 
 impl SqliteStore {
@@ -36,6 +42,7 @@ impl SqliteStore {
         let store = Self {
             path,
             journal_mode_initializations: Arc::new(AtomicUsize::new(0)),
+            operation_lock: Arc::new(Mutex::new(())),
         };
         store.initialize_database()?;
         store.health_check()?;
@@ -52,6 +59,7 @@ impl SqliteStore {
     }
 
     pub fn migrate(&self) -> anyhow::Result<()> {
+        let _operation_guard = self.lock_operation();
         let conn = self.open_connection()?;
         for migration in MIGRATIONS {
             conn.execute_batch(migration)
@@ -63,6 +71,7 @@ impl SqliteStore {
     }
 
     pub fn health_check(&self) -> anyhow::Result<()> {
+        let _operation_guard = self.lock_operation();
         let conn = self.open_connection()?;
         conn.query_row("SELECT 1", [], |_row| Ok(()))
             .context("sqlite health check failed")?;
@@ -73,6 +82,7 @@ impl SqliteStore {
     where
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
+        let _operation_guard = self.lock_operation();
         let conn = self.open_connection()?;
         op(&conn)
     }
@@ -81,6 +91,7 @@ impl SqliteStore {
     where
         F: FnOnce(&Transaction<'_>) -> anyhow::Result<T>,
     {
+        let _operation_guard = self.lock_operation();
         let mut conn = self.open_connection()?;
         let transaction = conn
             .transaction()
@@ -95,9 +106,15 @@ impl SqliteStore {
     fn open_connection(&self) -> anyhow::Result<Connection> {
         let conn = Connection::open(&self.path)
             .with_context(|| format!("failed to open sqlite {}", self.path.display()))?;
-        conn.busy_timeout(Duration::from_secs(5))
+        conn.busy_timeout(Duration::from_secs(30))
             .context("failed to set sqlite busy_timeout")?;
         Ok(conn)
+    }
+
+    fn lock_operation(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.operation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn initialize_database(&self) -> anyhow::Result<()> {

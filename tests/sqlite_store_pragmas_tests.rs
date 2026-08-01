@@ -106,6 +106,35 @@ fn sqlite_reads_do_not_wait_for_an_active_wal_writer() {
 }
 
 #[test]
+fn sqlite_store_operations_are_serialized_across_clones() {
+    let path = unique_path("sqlite/operation_gate.sqlite");
+    let store = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open sqlite");
+    let first = store.clone();
+    let second = store.clone();
+
+    let writer = std::thread::spawn(move || {
+        first
+            .with_connection(|_conn| {
+                std::thread::sleep(Duration::from_millis(150));
+                Ok(())
+            })
+            .expect("first operation");
+    });
+    std::thread::sleep(Duration::from_millis(25));
+    let started = Instant::now();
+    second
+        .with_connection(|_conn| Ok(()))
+        .expect("second operation");
+    let waited = started.elapsed();
+    writer.join().expect("join first operation");
+
+    assert!(
+        waited >= Duration::from_millis(100),
+        "cloned stores must share the operation gate; waited={waited:?}"
+    );
+}
+
+#[test]
 fn high_churn_snapshot_tables_have_retention_indexes() {
     let path = unique_path("sqlite/retention_indexes.sqlite");
     let store = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open sqlite");
