@@ -249,7 +249,14 @@ impl ToxicService {
         let mut events = self.recent_events.write();
         if let Some(store) = &self.store {
             if let Err(err) = store.insert_event(&event) {
-                tracing::warn!("failed to persist toxic event: {err}");
+                // Do not turn a transient database failure into permanent
+                // in-process dedupe. The event remains retryable, and we
+                // fail closed for external alerts until persistence recovers.
+                self.seen_event_ids
+                    .write()
+                    .remove(&toxic_event_semantic_key(&event));
+                tracing::warn!("failed to persist toxic event; retry remains enabled: {err}");
+                return;
             }
         }
         events.push(event);
