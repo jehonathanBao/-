@@ -157,6 +157,7 @@ struct AppStateInner {
     config: AppConfig,
     booted_at_ms: i64,
     runtime_started: AtomicBool,
+    lifecycle_lock: tokio::sync::Mutex<()>,
     runtime_control: Arc<RwLock<RuntimeControlTracker>>,
     discord_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_auto_push_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
@@ -459,6 +460,7 @@ impl AppState {
                 config,
                 booted_at_ms,
                 runtime_started: AtomicBool::new(false),
+                lifecycle_lock: tokio::sync::Mutex::new(()),
                 runtime_control: Arc::new(RwLock::new(RuntimeControlTracker::new())),
                 discord_auto_push_task: Arc::new(RwLock::new(None)),
                 cwm_auto_push_task: Arc::new(RwLock::new(None)),
@@ -512,6 +514,7 @@ impl AppState {
     }
 
     pub async fn ensure_monitoring_started(&self) -> StartMonitoringOutcome {
+        let _lifecycle_guard = self.inner.lifecycle_lock.lock().await;
         {
             let mut runtime_control = self.inner.runtime_control.write();
             runtime_control.start_attempt_count += 1;
@@ -616,6 +619,7 @@ impl AppState {
     }
 
     pub async fn ensure_monitoring_stopped(&self) -> StopMonitoringOutcome {
+        let _lifecycle_guard = self.inner.lifecycle_lock.lock().await;
         {
             let mut runtime_control = self.inner.runtime_control.write();
             runtime_control.stop_attempt_count += 1;

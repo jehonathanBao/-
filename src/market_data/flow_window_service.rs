@@ -11,7 +11,7 @@ use crate::{
         rolling_windows::RollingWindows,
         trade_ring_buffer::TradeRingBuffer,
     },
-    normalizers::trade::now_ms,
+    normalizers::trade::{is_ingress_timestamp_acceptable, now_ms},
     types::{flow::FlowState, market::NormalizedTrade},
 };
 
@@ -74,10 +74,16 @@ impl FlowWindowService {
                 tokio::select! {
                     event = rx.recv() => {
                         match event {
-                            Ok(MarketDataEvent::Trade(trade)) => trade_buffer.write().add_trade(trade),
+                            Ok(MarketDataEvent::Trade(trade)) => {
+                                if is_ingress_timestamp_acceptable(trade.ts, now_ms()) {
+                                    trade_buffer.write().add_trade(trade);
+                                }
+                            }
                             Ok(MarketDataEvent::Book(book)) => {
-                                book_state.write().update_book(book.clone());
-                                price_index.write().update_book(book);
+                                if is_ingress_timestamp_acceptable(book.ts, now_ms()) {
+                                    book_state.write().update_book(book.clone());
+                                    price_index.write().update_book(book);
+                                }
                             }
                             Ok(MarketDataEvent::VenueHealth(_)) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -180,6 +186,12 @@ impl FlowWindowService {
         self.trade_buffer.read().get_trades_since(ts)
     }
 
+    pub fn get_trades_since_for_symbol(&self, ts: i64, symbol: &str) -> Vec<NormalizedTrade> {
+        self.trade_buffer
+            .read()
+            .get_trades_since_for_symbol(ts, symbol)
+    }
+
     pub fn get_price_snapshot_at_or_before(&self, ts: i64) -> Option<PriceSnapshot> {
         self.price_index.read().snapshot_at_or_before(ts)
     }
@@ -196,6 +208,12 @@ impl FlowWindowService {
 
     pub fn get_latest_price_snapshot(&self) -> Option<PriceSnapshot> {
         self.price_index.read().latest_snapshot()
+    }
+
+    pub fn get_latest_price_snapshot_for_symbol(&self, symbol: &str) -> Option<PriceSnapshot> {
+        self.price_index
+            .read()
+            .current_snapshot_for_symbol(now_ms(), symbol)
     }
 
     pub fn get_price_snapshots_since(&self, ts: i64) -> Vec<PriceSnapshot> {
@@ -225,6 +243,25 @@ impl FlowWindowService {
             .collect()
     }
 
+    pub fn get_active_venues_for_symbol(
+        &self,
+        now_ts: i64,
+        symbol: &str,
+    ) -> Vec<crate::types::market::Venue> {
+        self.book_state
+            .read()
+            .active_venues_for_symbol(symbol, now_ts, self.stale_ms)
+            .into_iter()
+            .filter_map(|venue| match venue.as_str() {
+                "binance" => Some(crate::types::market::Venue::Binance),
+                "bybit" => Some(crate::types::market::Venue::Bybit),
+                "okx" => Some(crate::types::market::Venue::Okx),
+                "bitfinex" => Some(crate::types::market::Venue::Bitfinex),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn get_stale_venues(&self, now_ts: i64) -> Vec<crate::types::market::Venue> {
         let books = self.book_state.read();
         let latest = books.latest_books();
@@ -234,6 +271,25 @@ impl FlowWindowService {
                 latest
                     .get(venue)
                     .is_some_and(|book| now_ts - book.ts > self.stale_ms)
+            })
+            .collect()
+    }
+
+    pub fn get_stale_venues_for_symbol(
+        &self,
+        now_ts: i64,
+        symbol: &str,
+    ) -> Vec<crate::types::market::Venue> {
+        self.book_state
+            .read()
+            .stale_venues_for_symbol(symbol, now_ts, self.stale_ms)
+            .into_iter()
+            .filter_map(|venue| match venue.as_str() {
+                "binance" => Some(crate::types::market::Venue::Binance),
+                "bybit" => Some(crate::types::market::Venue::Bybit),
+                "okx" => Some(crate::types::market::Venue::Okx),
+                "bitfinex" => Some(crate::types::market::Venue::Bitfinex),
+                _ => None,
             })
             .collect()
     }

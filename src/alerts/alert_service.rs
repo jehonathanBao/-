@@ -220,7 +220,7 @@ impl AlertService {
             return state;
         };
 
-        if !self.should_attempt_send(&event) {
+        if !self.should_attempt_send(&event, &toxic_state) {
             state.suppressed_count = state.suppressed_count.saturating_add(1);
             state.last_suppressed_ts = Some(now_ts);
             *self.state.write() = state.clone();
@@ -260,7 +260,9 @@ impl AlertService {
             .is_some_and(|result| result.as_ref().is_ok());
         let delivered = sidecar_delivered || telegram_delivered;
 
-        if delivered || telegram_result.is_some() {
+        // A channel being configured is not the same as a successful delivery.
+        // Keep the dedupe key retryable after a transient transport failure.
+        if delivered {
             self.deduper.write().mark_sent(&key, now_ts);
         }
 
@@ -284,7 +286,12 @@ impl AlertService {
         state
     }
 
-    fn should_attempt_send(&self, event: &ToxicEvent) -> bool {
+    fn should_attempt_send(&self, event: &ToxicEvent, state: &ToxicState) -> bool {
+        // External alerts are fail-closed while the authoritative state is stale
+        // or the flow window has not been rebuilt after a data interruption.
+        if !state.quality.has_flow || !state.quality.stale_venues.is_empty() {
+            return false;
+        }
         if event.direction == ToxicDirection::Neutral {
             return false;
         }

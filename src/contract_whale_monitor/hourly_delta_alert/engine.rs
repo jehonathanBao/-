@@ -283,10 +283,13 @@ impl HourlyDeltaAlertRuntime {
         };
 
         let now = now_ms();
+        let should_enqueue = result.above_threshold && self.config.discord_enabled;
         let inserted = tokio::task::spawn_blocking({
             let store = store.clone();
             let result = result.clone();
-            move || store.upsert_hourly_delta_closed_result(&result, now)
+            move || {
+                store.upsert_hourly_delta_closed_result_with_outbox(&result, now, should_enqueue)
+            }
         })
         .await??;
 
@@ -318,16 +321,8 @@ impl HourlyDeltaAlertRuntime {
             LOG_PREFIX
         );
 
-        if result.above_threshold && self.config.discord_enabled {
-            let enqueued = tokio::task::spawn_blocking({
-                let store = store.clone();
-                let key = result.record_key.clone();
-                move || store.enqueue_hourly_delta_discord_outbox(&key, now)
-            })
-            .await??;
-            if enqueued {
-                self.diagnostics.write().alerts_enqueued += 1;
-            }
+        if should_enqueue {
+            self.diagnostics.write().alerts_enqueued += 1;
         }
         Ok(true)
     }

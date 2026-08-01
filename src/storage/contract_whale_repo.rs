@@ -20,6 +20,7 @@ use super::{
 };
 
 pub const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
+const DISCORD_OUTBOX_LEASE_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct ContractWhaleSignalQuery {
@@ -1082,8 +1083,10 @@ impl ContractWhaleRepo for SqliteStore {
                 r#"
                 SELECT signal_id, payload_json, attempts
                 FROM contract_whale_discord_outbox
-                WHERE status IN ('pending', 'retry')
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                WHERE (
+                    (status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= ?1))
+                    OR (status = 'sending' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?1)
+                )
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?2
                 "#,
@@ -1101,10 +1104,15 @@ impl ContractWhaleRepo for SqliteStore {
                 let changed = tx.execute(
                     r#"
                     UPDATE contract_whale_discord_outbox
-                    SET status = 'sending', attempts = attempts + 1, next_attempt_at = NULL
-                    WHERE signal_id = ?1 AND status IN ('pending', 'retry')
+                    SET status = 'sending', attempts = attempts + 1,
+                        next_attempt_at = ?2
+                    WHERE signal_id = ?1
+                      AND (
+                        status IN ('pending', 'retry')
+                        OR (status = 'sending' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?2)
+                      )
                     "#,
-                    params![signal_id],
+                    params![signal_id, now_ms.saturating_add(DISCORD_OUTBOX_LEASE_MS)],
                 )?;
                 if changed == 1 {
                     claimed.push(ContractWhaleDiscordOutboxItem {
@@ -1159,10 +1167,10 @@ impl ContractWhaleRepo for SqliteStore {
             conn.query_row(
                 r#"
                 SELECT
-                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status IN ('pending', 'sending') THEN 1 ELSE 0 END),
                   SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END),
                   SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END),
-                  MIN(CASE WHEN status IN ('pending', 'retry') THEN created_at END)
+                  MIN(CASE WHEN status IN ('pending', 'sending', 'retry') THEN created_at END)
                 FROM contract_whale_discord_outbox
                 "#,
                 [],

@@ -212,11 +212,23 @@ pub async fn notify_spot_whale_discord(
                 }
             }
             Err(error) => {
-                last_error = error.to_string();
+                last_error = classify_request_error(&error);
             }
         }
     }
     outcome(true, false, false, &last_error, None, Some(payload))
+}
+
+fn classify_request_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "timeout".to_string()
+    } else if error.is_connect() {
+        "connect_failed".to_string()
+    } else if error.is_request() {
+        "request_failed".to_string()
+    } else {
+        "send_failed".to_string()
+    }
 }
 
 pub fn build_spot_whale_discord_payload(signal: &SpotWhaleSignal) -> Value {

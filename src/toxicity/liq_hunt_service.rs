@@ -32,6 +32,7 @@ pub struct LiqHuntService {
     latest_state: Arc<RwLock<LiqHuntState>>,
     recent_results: Arc<RwLock<Vec<LiqHuntResult>>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    symbol: String,
 }
 
 impl LiqHuntService {
@@ -86,6 +87,7 @@ impl LiqHuntService {
             latest_state: Arc::new(RwLock::new(empty_liq_hunt_state(now_ms()))),
             recent_results: Arc::new(RwLock::new(Vec::new())),
             task: Arc::new(RwLock::new(None)),
+            symbol: config.symbol.clone(),
         }
     }
 
@@ -130,12 +132,12 @@ impl LiqHuntService {
             .with_params(params)
             .detect(LiqHuntDetectorInput {
                 now_ts,
-                symbol: "BTC-PERP".to_string(),
+                symbol: self.symbol.clone(),
                 toxic_state: self.toxic_service.get_state(),
                 vpin_state: Some(self.vpin_service.get_state()),
                 sweep_state: self.sweep_service.get_state(),
                 liquidation_state: self.liquidation_service.get_state(),
-                flow_state: self.flow_service.get_latest_flow_state(),
+                flow_state: self.flow_service.latest_state_for_symbol(&self.symbol),
             });
 
         let mut recent_results = self.recent_results.write();
@@ -146,7 +148,7 @@ impl LiqHuntService {
         }
 
         let state = LiqHuntState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: self.symbol.clone(),
             updated_at: now_ts,
             result,
             recent_results: recent_results.clone(),

@@ -455,7 +455,7 @@ mod tests {
     fn message_uses_active_trade_wording() {
         let content = build_hourly_delta_discord_content(&sample_result(-2800.0));
         assert!(content.contains("主动成交净卖出"));
-        assert!(content.contains("净差：-2,800 BTC"));
+        assert!(content.contains("净差 Delta：-2,800 BTC"));
         assert!(!content.contains("资金净流入"));
         assert!(!content.contains("主力买卖"));
         assert!(!content.contains("持仓增加"));

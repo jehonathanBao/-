@@ -20,6 +20,7 @@ const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusd
 const REST_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
 const CONNECT_TIMEOUT_SECS: u64 = 8;
 const REST_POLL_INTERVAL_MS: u64 = 1000;
+const REST_FALLBACK_MAX_MS: u64 = 30_000;
 
 #[derive(Debug, Deserialize)]
 struct Combined {
@@ -152,12 +153,17 @@ async fn run_rest_polling(
         bus,
         health,
         Venue::Binance,
-        VenueConnectionStatus::Connected,
+        VenueConnectionStatus::Degraded,
         Some("binance websocket unavailable; reading public REST polling fallback".to_string()),
     );
+    let fallback_deadline =
+        tokio::time::Instant::now() + Duration::from_millis(REST_FALLBACK_MAX_MS);
     let mut interval = tokio::time::interval(Duration::from_millis(REST_POLL_INTERVAL_MS));
     loop {
         interval.tick().await;
+        if tokio::time::Instant::now() >= fallback_deadline {
+            return Ok(());
+        }
         fetch_rest_trades(client, bus, health).await?;
         fetch_rest_depth(client, bus, health).await?;
     }

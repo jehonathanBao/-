@@ -161,3 +161,9 @@ fn build_trade(
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
+
+pub const MAX_INGRESS_FUTURE_SKEW_MS: i64 = 120_000;
+
+pub fn is_ingress_timestamp_acceptable(ts: i64, now: i64) -> bool {
+    ts <= now.saturating_add(MAX_INGRESS_FUTURE_SKEW_MS)
+}

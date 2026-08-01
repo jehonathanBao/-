@@ -9,11 +9,20 @@ use crate::contract_whale_monitor::hourly_delta_alert::types::{
 
 use super::sqlite::SqliteStore;
 
+const DISCORD_OUTBOX_LEASE_MS: i64 = 120_000;
+
 pub trait HourlyDeltaRepo {
     fn upsert_hourly_delta_closed_result(
         &self,
         result: &HourlyDeltaResult,
         now_ms: i64,
+    ) -> anyhow::Result<bool>;
+
+    fn upsert_hourly_delta_closed_result_with_outbox(
+        &self,
+        result: &HourlyDeltaResult,
+        now_ms: i64,
+        enqueue_discord: bool,
     ) -> anyhow::Result<bool>;
 
     fn get_hourly_delta_record(
@@ -106,6 +115,85 @@ impl HourlyDeltaRepo for SqliteStore {
                 ],
             )?;
             Ok(changed == 1)
+        })
+    }
+
+    fn upsert_hourly_delta_closed_result_with_outbox(
+        &self,
+        result: &HourlyDeltaResult,
+        now_ms: i64,
+        enqueue_discord: bool,
+    ) -> anyhow::Result<bool> {
+        self.with_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT discord_status FROM hourly_delta_alert_records WHERE record_key = ?1",
+                    params![result.record_key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing.is_some() {
+                return Ok(false);
+            }
+
+            let payload_json = serde_json::to_string(result)?;
+            tx.execute(
+                r#"
+                INSERT INTO hourly_delta_alert_records (
+                  record_key, exchange, symbol, interval,
+                  kline_open_time_ms, kline_close_time_ms,
+                  taker_buy_btc, taker_sell_btc, delta_btc, volume_btc,
+                  direction, above_threshold, data_status, discord_status,
+                  discord_sent_at_ms, attempts, last_error, payload_json,
+                  created_at_ms, updated_at_ms
+                ) VALUES (
+                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                  ?11, ?12, ?13, ?14, NULL, 0, NULL, ?15, ?16, ?17
+                )
+                "#,
+                params![
+                    result.record_key,
+                    result.exchange,
+                    result.symbol,
+                    result.interval,
+                    result.kline_open_time_ms,
+                    result.kline_close_time_ms,
+                    result.taker_buy_btc,
+                    result.taker_sell_btc,
+                    result.delta_btc,
+                    result.volume_btc,
+                    result.direction.as_str(),
+                    bool_to_int(result.above_threshold),
+                    result.data_status.as_str(),
+                    HourlyDeltaDiscordStatus::None.as_str(),
+                    payload_json,
+                    now_ms,
+                    now_ms,
+                ],
+            )?;
+
+            if enqueue_discord && result.above_threshold {
+                tx.execute(
+                    r#"
+                    INSERT INTO hourly_delta_discord_outbox (
+                      record_key, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                    ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
+                    ON CONFLICT(record_key) DO NOTHING
+                    "#,
+                    params![result.record_key, result.symbol, payload_json, now_ms, now_ms],
+                )?;
+                tx.execute(
+                    r#"
+                    UPDATE hourly_delta_alert_records
+                    SET discord_status = 'pending', updated_at_ms = ?2
+                    WHERE record_key = ?1
+                    "#,
+                    params![result.record_key, now_ms],
+                )?;
+            }
+            tx.commit()?;
+            Ok(true)
         })
     }
 
@@ -215,8 +303,10 @@ impl HourlyDeltaRepo for SqliteStore {
                 r#"
                 SELECT record_key, payload_json, attempts
                 FROM hourly_delta_discord_outbox
-                WHERE status IN ('pending', 'retry')
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                WHERE (
+                    (status IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= ?1))
+                    OR (status = 'sending' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?1)
+                )
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?2
                 "#,
@@ -234,10 +324,15 @@ impl HourlyDeltaRepo for SqliteStore {
                 let changed = tx.execute(
                     r#"
                     UPDATE hourly_delta_discord_outbox
-                    SET status = 'sending', attempts = attempts + 1, next_attempt_at = NULL
-                    WHERE record_key = ?1 AND status IN ('pending', 'retry')
+                    SET status = 'sending', attempts = attempts + 1,
+                        next_attempt_at = ?2
+                    WHERE record_key = ?1
+                      AND (
+                        status IN ('pending', 'retry')
+                        OR (status = 'sending' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?2)
+                      )
                     "#,
-                    params![record_key],
+                    params![record_key, now_ms.saturating_add(DISCORD_OUTBOX_LEASE_MS)],
                 )?;
                 if changed == 1 {
                     let record: HourlyDeltaAlertRecord = serde_json::from_str(&payload_json)
@@ -310,10 +405,10 @@ impl HourlyDeltaRepo for SqliteStore {
             conn.query_row(
                 r#"
                 SELECT
-                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN status IN ('pending', 'sending') THEN 1 ELSE 0 END),
                   SUM(CASE WHEN status = 'retry' THEN 1 ELSE 0 END),
                   SUM(CASE WHEN status = 'dead' THEN 1 ELSE 0 END),
-                  MIN(CASE WHEN status IN ('pending', 'retry') THEN created_at END)
+                  MIN(CASE WHEN status IN ('pending', 'sending', 'retry') THEN created_at END)
                 FROM hourly_delta_discord_outbox
                 "#,
                 [],

@@ -1796,6 +1796,8 @@ fn contract_whale_history_query_validates_filters_and_clamps_limit() {
         cursor: None,
         include_hidden: None,
         hide_stale: None,
+        impact_level: None,
+        include_source_signal: None,
     };
 
     let parsed = parse_history_query(&query).expect("valid query");
@@ -2051,6 +2053,8 @@ fn empty_query() -> ContractWhaleQuery {
         cursor: None,
         include_hidden: None,
         hide_stale: None,
+        impact_level: None,
+        include_source_signal: None,
     }
 }
 

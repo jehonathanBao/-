@@ -23,6 +23,7 @@ pub struct LiquidationService {
     compute_interval_ms: u64,
     latest_state: Arc<RwLock<LiquidationState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    symbol: String,
 }
 
 impl LiquidationService {
@@ -52,6 +53,7 @@ impl LiquidationService {
             compute_interval_ms: config.toxic_compute_interval_ms,
             latest_state: Arc::new(RwLock::new(empty_liquidation_state(now_ms()))),
             task: Arc::new(RwLock::new(None)),
+            symbol: config.symbol.clone(),
         }
     }
 
@@ -90,10 +92,10 @@ impl LiquidationService {
     fn compute_once(&self, now_ts: i64) -> LiquidationState {
         let snapshots = self
             .flow_service
-            .get_price_snapshots_since(now_ts - self.lookback_ms);
+            .get_price_snapshots_since_for_symbol(now_ts - self.lookback_ms, &self.symbol);
         let state = self.engine.compute(
             now_ts,
-            &self.flow_service.get_latest_flow_state(),
+            &self.flow_service.latest_state_for_symbol(&self.symbol),
             &self.sweep_service.get_state(),
             &self.vpin_service.get_state(),
             &snapshots,

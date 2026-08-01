@@ -193,6 +193,24 @@ mod tests {
     }
 
     #[test]
+    fn bitfinex_trade_update_and_replay_are_counted_once() {
+        let service = SpotWhaleService::new(true, true, now_ms().saturating_sub(120_000), None);
+        let mut channels = BTreeMap::new();
+        handle_message(
+            r#"{"event":"subscribed","channel":"trades","chanId":7,"symbol":"tBTCUSD"}"#,
+            &service,
+            &mut channels,
+        );
+        let ts = now_ms();
+        let message = format!(r#"[7,"te",[11,{ts},-0.25,70000]]"#);
+        handle_message(&message, &service, &mut channels);
+        handle_message(&message, &service, &mut channels);
+
+        let latest = service.latest("BTC", 10);
+        assert_eq!(latest.summary.trend60s.sell_volume_base, 0.25);
+    }
+
+    #[test]
     fn bitfinex_spot_normalizer_maps_positive_amount_to_buy() {
         let trade = normalize_bitfinex_trade_value(
             "tETHUSD",

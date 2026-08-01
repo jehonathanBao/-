@@ -28,6 +28,7 @@ pub struct SweepService {
     regime_manager: Arc<RegimeThresholdManager>,
     latest_state: Arc<RwLock<SweepState>>,
     task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    symbol: String,
 }
 
 impl SweepService {
@@ -50,7 +51,11 @@ impl SweepService {
         } else {
             config.sweep_windows_ms.clone()
         };
-        let latest_state = Arc::new(RwLock::new(empty_state(&windows_ms, now_ms())));
+        let latest_state = Arc::new(RwLock::new(empty_state(
+            &windows_ms,
+            now_ms(),
+            &config.symbol,
+        )));
         Self {
             flow_service,
             windows_ms,
@@ -64,6 +69,7 @@ impl SweepService {
             regime_manager,
             latest_state,
             task: Arc::new(RwLock::new(None)),
+            symbol: config.symbol.clone(),
         }
     }
 
@@ -100,34 +106,43 @@ impl SweepService {
     }
 
     fn compute_once(&self, now_ts: i64) -> SweepState {
-        let flow_state = self.flow_service.get_latest_flow_state();
-        let has_books = self.flow_service.get_latest_price_snapshot().is_some();
-        let active_venues = self.flow_service.get_active_venues(now_ts);
-        let stale_venues = self.flow_service.get_stale_venues(now_ts);
+        let flow_state = self.flow_service.latest_state_for_symbol(&self.symbol);
+        let has_books = self
+            .flow_service
+            .get_latest_price_snapshot_for_symbol(&self.symbol)
+            .is_some();
+        let active_venues = self
+            .flow_service
+            .get_active_venues_for_symbol(now_ts, &self.symbol);
+        let stale_venues = self
+            .flow_service
+            .get_stale_venues_for_symbol(now_ts, &self.symbol);
         let mut results = BTreeMap::new();
         let mut has_trades = false;
 
         for window_ms in &self.windows_ms {
             let since_ts = now_ts - *window_ms as i64;
-            let trades = self.flow_service.get_trades_since(since_ts);
+            let trades = self
+                .flow_service
+                .get_trades_since_for_symbol(since_ts, &self.symbol);
             has_trades |= !trades.is_empty();
 
             let flow_window = flow_state
                 .windows
                 .get(&window_ms.to_string())
                 .cloned()
-                .unwrap_or_else(|| empty_flow_window(*window_ms, now_ts));
+                .unwrap_or_else(|| empty_flow_window(*window_ms, now_ts, &self.symbol));
             let liquidity = self.liquidity.detect(
-                "BTC-PERP",
+                &self.symbol,
                 *window_ms,
-                self.flow_service.get_price_snapshot_at_or_before(since_ts),
-                self.flow_service.get_latest_price_snapshot(),
+                self.flow_service
+                    .get_price_snapshot_at_or_before_for_symbol(since_ts, &self.symbol),
+                self.flow_service
+                    .get_latest_price_snapshot_for_symbol(&self.symbol),
             );
-            let params = self
-                .regime_manager
-                .adjusted_sweep_params(&self.base_params);
+            let params = self.regime_manager.adjusted_sweep_params(&self.base_params);
             let result = self.detector.with_params(params).detect(SweepInput {
-                symbol: "BTC-PERP".to_string(),
+                symbol: self.symbol.clone(),
                 window_ms: *window_ms,
                 trades,
                 flow_window,
@@ -137,7 +152,7 @@ impl SweepService {
         }
 
         let state = SweepState {
-            symbol: "BTC-PERP".to_string(),
+            symbol: self.symbol.clone(),
             updated_at: now_ts,
             windows_ms: self.windows_ms.clone(),
             results,
@@ -162,9 +177,9 @@ pub fn last_sweep_summary(state: &SweepState) -> (SweepDirection, bool) {
         .unwrap_or((SweepDirection::None, false))
 }
 
-fn empty_state(windows_ms: &[SweepWindowMs], now_ts: i64) -> SweepState {
+fn empty_state(windows_ms: &[SweepWindowMs], now_ts: i64, symbol: &str) -> SweepState {
     SweepState {
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         updated_at: now_ts,
         windows_ms: windows_ms.to_vec(),
         results: windows_ms
@@ -173,12 +188,12 @@ fn empty_state(windows_ms: &[SweepWindowMs], now_ts: i64) -> SweepState {
                 (
                     window_ms.to_string(),
                     SweepDetector::default().detect(SweepInput {
-                        symbol: "BTC-PERP".to_string(),
+                        symbol: symbol.to_string(),
                         window_ms: *window_ms,
                         trades: Vec::new(),
-                        flow_window: empty_flow_window(*window_ms, now_ts),
+                        flow_window: empty_flow_window(*window_ms, now_ts, symbol),
                         liquidity: Some(
-                            LiquidityThinness::default().detect("BTC-PERP", *window_ms, None, None),
+                            LiquidityThinness::default().detect(symbol, *window_ms, None, None),
                         ),
                     }),
                 )
@@ -193,9 +208,9 @@ fn empty_state(windows_ms: &[SweepWindowMs], now_ts: i64) -> SweepState {
     }
 }
 
-fn empty_flow_window(window_ms: u64, now_ts: i64) -> FlowWindow {
+fn empty_flow_window(window_ms: u64, now_ts: i64, symbol: &str) -> FlowWindow {
     FlowWindow {
-        symbol: "BTC-PERP".to_string(),
+        symbol: symbol.to_string(),
         window_ms,
         now_ts,
         aggressive_buy_btc: 0.0,

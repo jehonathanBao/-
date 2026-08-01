@@ -38,6 +38,15 @@ impl TradeRingBuffer {
             .collect()
     }
 
+    pub fn get_trades_since_for_symbol(&self, ts: i64, symbol: &str) -> Vec<NormalizedTrade> {
+        let normalized = symbol_prefix(symbol);
+        self.trades
+            .iter()
+            .filter(|trade| trade.ts >= ts && symbol_prefix(&trade.symbol) == normalized)
+            .cloned()
+            .collect()
+    }
+
     pub fn prune(&mut self, now_ts: i64) {
         let cutoff = now_ts - self.max_age_ms;
         let mut removed = Vec::new();
@@ -72,4 +81,13 @@ fn dedupe_key(trade: &NormalizedTrade) -> Option<String> {
             trade.symbol.trim().to_ascii_uppercase()
         )
     })
+}
+
+fn symbol_prefix(symbol: &str) -> String {
+    symbol
+        .trim()
+        .split(['-', '_', '/', ':'])
+        .next()
+        .unwrap_or(symbol)
+        .to_ascii_uppercase()
 }

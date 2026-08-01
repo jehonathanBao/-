@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::{
-    normalizers::trade::now_ms,
+    normalizers::trade::{is_ingress_timestamp_acceptable, now_ms},
     storage::{
         spot_whale_repo::{SpotWhaleRepo, SpotWhaleSignalQuery},
         SqliteStore,
@@ -46,6 +46,7 @@ pub struct SpotWhaleService {
 #[derive(Debug)]
 struct SpotWhaleState {
     trades: VecDeque<SpotTrade>,
+    seen_trade_ids: BTreeMap<String, i64>,
     signals: VecDeque<SpotWhaleSignal>,
     seen_signal_ids: BTreeSet<String>,
     exchanges: BTreeMap<String, SpotExchangeStatus>,
@@ -100,6 +101,7 @@ impl SpotWhaleService {
             store,
             state: Arc::new(RwLock::new(SpotWhaleState {
                 trades: VecDeque::new(),
+                seen_trade_ids: BTreeMap::new(),
                 signals: restored.signals,
                 seen_signal_ids: restored.seen_signal_ids,
                 exchanges,
@@ -181,11 +183,33 @@ impl SpotWhaleService {
         if !self.enabled || !spot_whale_runtime_config().symbol_enabled(&trade.symbol) {
             return Vec::new();
         }
+        if !is_ingress_timestamp_acceptable(trade.ts, now_ms()) {
+            return Vec::new();
+        }
+        let trade_key = trade.trade_id.as_deref().map(|trade_id| {
+            format!(
+                "{}:{}:{}",
+                trade.exchange.as_key(),
+                trade.symbol.trim().to_ascii_uppercase(),
+                trade_id
+            )
+        });
+        {
+            let mut state = self.state.write();
+            if let Some(key) = trade_key.as_deref() {
+                if state.seen_trade_ids.contains_key(key) {
+                    return Vec::new();
+                }
+                state.seen_trade_ids.insert(key.to_string(), trade.ts);
+            }
+            let cutoff = now_ms().saturating_sub(TRADE_RETENTION_MS);
+            state.seen_trade_ids.retain(|_, ts| *ts >= cutoff);
+        }
         self.mark_trade(trade.exchange, &trade.symbol, trade.ts);
         {
             let mut state = self.state.write();
             state.trades.push_back(trade.clone());
-            prune_trades(&mut state.trades, trade.ts);
+            prune_trades(&mut state.trades, now_ms());
         }
         let config = spot_whale_runtime_config();
         if !self.should_run_detector(&trade.symbol, trade.ts, config.performance.scan_interval_ms) {
