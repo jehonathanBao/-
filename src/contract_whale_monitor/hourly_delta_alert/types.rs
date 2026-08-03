@@ -194,5 +194,9 @@ pub struct HourlyDeltaRuntimeDiagnostics {
     pub backfill_fail: u64,
     pub discord_sent: u64,
     pub discord_dry_run: u64,
+    pub outbox_polls: u64,
+    pub outbox_claimed: u64,
+    pub outbox_errors: u64,
+    pub last_outbox_poll_at_ms: Option<i64>,
     pub last_error: Option<String>,
 }

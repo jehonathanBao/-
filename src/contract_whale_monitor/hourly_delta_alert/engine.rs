@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 
@@ -89,7 +90,7 @@ impl HourlyDeltaAlertRuntime {
 
         let outbox = self.clone();
         handles.push(tokio::spawn(async move {
-            outbox.run_outbox_loop().await;
+            outbox.run_outbox_supervisor().await;
         }));
 
         let reconciliation = self.clone();
@@ -246,6 +247,19 @@ impl HourlyDeltaAlertRuntime {
                     );
                 }
             }
+            // The reconciliation task is an independent safety net for the Discord
+            // worker. A transient task failure must not leave closed alerts pending
+            // until the next process restart.
+            if let Err(error) = self.process_outbox_once().await {
+                self.record_outbox_error(format!("reconcile_outbox:{error}"));
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    event = format!("{LOG_EVENTS_PREFIX}.outbox.reconcile_failed"),
+                    error = %error,
+                    "{} hourly_delta reconciliation outbox poll failed",
+                    LOG_PREFIX
+                );
+            }
         }
     }
 
@@ -333,8 +347,42 @@ impl HourlyDeltaAlertRuntime {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.stop.load(Ordering::SeqCst) {
             interval.tick().await;
+            {
+                let mut diagnostics = self.diagnostics.write();
+                diagnostics.outbox_polls = diagnostics.outbox_polls.saturating_add(1);
+                diagnostics.last_outbox_poll_at_ms = Some(now_ms());
+            }
             if let Err(error) = self.process_outbox_once().await {
-                self.record_error(format!("outbox:{error}"));
+                self.record_outbox_error(format!("outbox:{error}"));
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    event = format!("{LOG_EVENTS_PREFIX}.outbox.failed"),
+                    error = %error,
+                    "{} hourly_delta outbox poll failed",
+                    LOG_PREFIX
+                );
+            }
+        }
+    }
+
+    async fn run_outbox_supervisor(&self) {
+        while !self.stop.load(Ordering::SeqCst) {
+            let worker = self.clone();
+            let result = tokio::spawn(async move { worker.run_outbox_loop().await }).await;
+            if let Err(error) = result {
+                self.record_outbox_error(format!("outbox_worker:{error}"));
+                tracing::error!(
+                    target: LOG_TARGET,
+                    event = format!("{LOG_EVENTS_PREFIX}.outbox.worker_panicked"),
+                    error = %error,
+                    "{} hourly_delta outbox worker stopped unexpectedly",
+                    LOG_PREFIX
+                );
+            } else {
+                break;
+            }
+            if !self.stop.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
@@ -349,7 +397,22 @@ impl HourlyDeltaAlertRuntime {
             let store = store.clone();
             move || store.claim_hourly_delta_discord_outbox(batch, now)
         })
-        .await??;
+        .await
+        .context("hourly_delta outbox claim task failed")??;
+
+        if !claimed.is_empty() {
+            let mut diagnostics = self.diagnostics.write();
+            diagnostics.outbox_claimed = diagnostics
+                .outbox_claimed
+                .saturating_add(claimed.len() as u64);
+            tracing::info!(
+                target: LOG_TARGET,
+                event = format!("{LOG_EVENTS_PREFIX}.outbox.claimed"),
+                count = claimed.len(),
+                "{} hourly_delta outbox claimed records",
+                LOG_PREFIX
+            );
+        }
 
         let settings = HourlyDeltaDiscordSettings::from_config(&self.config, self.parent_dry_run);
         for item in claimed {
@@ -402,13 +465,20 @@ impl HourlyDeltaAlertRuntime {
                     )
                 }
             })
-            .await??;
+            .await
+            .context("hourly_delta outbox finish task failed")??;
         }
         Ok(())
     }
 
     fn record_error(&self, error: String) {
         self.diagnostics.write().last_error = Some(error);
+    }
+
+    fn record_outbox_error(&self, error: String) {
+        let mut diagnostics = self.diagnostics.write();
+        diagnostics.outbox_errors = diagnostics.outbox_errors.saturating_add(1);
+        diagnostics.last_error = Some(error);
     }
 }
 
