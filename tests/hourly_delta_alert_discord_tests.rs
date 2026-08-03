@@ -175,6 +175,53 @@ fn outbox_is_idempotent_and_marks_sent() {
 }
 
 #[test]
+fn atomic_upsert_outbox_payload_is_claimable() {
+    let store = temp_store("atomic-upsert");
+    let result = sample_result(-2_800.0, true);
+    assert!(store
+        .upsert_hourly_delta_closed_result_with_outbox(&result, result.kline_open_time_ms, true,)
+        .unwrap());
+
+    let claimed = store
+        .claim_hourly_delta_discord_outbox(10, result.kline_open_time_ms)
+        .expect("claim outbox");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].record_key, result.record_key);
+    assert_eq!(
+        claimed[0].record.discord_status,
+        HourlyDeltaDiscordStatus::Pending
+    );
+}
+
+#[test]
+fn legacy_result_payload_is_repaired_when_claimed() {
+    let store = temp_store("legacy-payload");
+    let result = sample_result(-2_800.0, true);
+    assert!(store
+        .upsert_hourly_delta_closed_result(&result, result.kline_open_time_ms)
+        .unwrap());
+    let legacy_payload = serde_json::to_string(&result).unwrap();
+    store
+        .with_write_connection(|conn| {
+            conn.execute(
+                "INSERT INTO hourly_delta_discord_outbox (record_key, symbol, payload_json, status, attempts, next_attempt_at, created_at) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?4)",
+                rusqlite::params![result.record_key, result.symbol, legacy_payload, result.kline_open_time_ms],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let claimed = store
+        .claim_hourly_delta_discord_outbox(10, result.kline_open_time_ms)
+        .expect("claim legacy outbox");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(
+        claimed[0].record.discord_status,
+        HourlyDeltaDiscordStatus::None
+    );
+}
+
+#[test]
 fn below_threshold_record_is_not_enqueued() {
     let store = temp_store("below");
     let result = sample_result(500.0, false);

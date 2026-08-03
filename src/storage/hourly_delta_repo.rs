@@ -1,5 +1,5 @@
 use anyhow::Context;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::contract_whale_monitor::hourly_delta_alert::types::{
     HourlyDeltaAlertRecord, HourlyDeltaDataStatus, HourlyDeltaDirection,
@@ -174,6 +174,29 @@ impl HourlyDeltaRepo for SqliteStore {
             )?;
 
             if enqueue_discord && result.above_threshold {
+                let outbox_record = HourlyDeltaAlertRecord {
+                    record_key: result.record_key.clone(),
+                    exchange: result.exchange.clone(),
+                    symbol: result.symbol.clone(),
+                    interval: result.interval.clone(),
+                    kline_open_time_ms: result.kline_open_time_ms,
+                    kline_close_time_ms: result.kline_close_time_ms,
+                    taker_buy_btc: result.taker_buy_btc,
+                    taker_sell_btc: result.taker_sell_btc,
+                    delta_btc: result.delta_btc,
+                    volume_btc: result.volume_btc,
+                    direction: result.direction,
+                    above_threshold: result.above_threshold,
+                    data_status: result.data_status,
+                    discord_status: HourlyDeltaDiscordStatus::Pending,
+                    discord_sent_at_ms: None,
+                    attempts: 0,
+                    last_error: None,
+                    payload_json: payload_json.clone(),
+                    created_at_ms: now_ms,
+                    updated_at_ms: now_ms,
+                };
+                let outbox_payload_json = serde_json::to_string(&outbox_record)?;
                 tx.execute(
                     r#"
                     INSERT INTO hourly_delta_discord_outbox (
@@ -181,7 +204,13 @@ impl HourlyDeltaRepo for SqliteStore {
                     ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
                     ON CONFLICT(record_key) DO NOTHING
                     "#,
-                    params![result.record_key, result.symbol, payload_json, now_ms, now_ms],
+                    params![
+                        result.record_key,
+                        result.symbol,
+                        outbox_payload_json,
+                        now_ms,
+                        now_ms
+                    ],
                 )?;
                 tx.execute(
                     r#"
@@ -335,8 +364,18 @@ impl HourlyDeltaRepo for SqliteStore {
                     params![record_key, now_ms.saturating_add(DISCORD_OUTBOX_LEASE_MS)],
                 )?;
                 if changed == 1 {
-                    let record: HourlyDeltaAlertRecord = serde_json::from_str(&payload_json)
-                        .context("invalid hourly delta outbox payload")?;
+                    let record = match serde_json::from_str::<HourlyDeltaAlertRecord>(&payload_json)
+                    {
+                        Ok(record) => record,
+                        Err(_) => load_hourly_delta_record(&tx, &record_key)?
+                            .ok_or(rusqlite::Error::QueryReturnedNoRows)?,
+                    };
+                    let canonical_payload = serde_json::to_string(&record)
+                        .context("failed to canonicalize hourly delta outbox payload")?;
+                    tx.execute(
+                        "UPDATE hourly_delta_discord_outbox SET payload_json = ?2 WHERE record_key = ?1",
+                        params![record_key, canonical_payload],
+                    )?;
                     claimed.push(HourlyDeltaDiscordOutboxItem {
                         record_key,
                         record,
@@ -427,6 +466,28 @@ impl HourlyDeltaRepo for SqliteStore {
             .context("failed to load hourly delta outbox stats")
         })
     }
+}
+
+fn load_hourly_delta_record(
+    conn: &Connection,
+    record_key: &str,
+) -> rusqlite::Result<Option<HourlyDeltaAlertRecord>> {
+    conn.query_row(
+        r#"
+        SELECT
+          record_key, exchange, symbol, interval,
+          kline_open_time_ms, kline_close_time_ms,
+          taker_buy_btc, taker_sell_btc, delta_btc, volume_btc,
+          direction, above_threshold, data_status, discord_status,
+          discord_sent_at_ms, attempts, last_error, payload_json,
+          created_at_ms, updated_at_ms
+        FROM hourly_delta_alert_records
+        WHERE record_key = ?1
+        "#,
+        params![record_key],
+        map_record_row,
+    )
+    .optional()
 }
 
 fn map_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HourlyDeltaAlertRecord> {

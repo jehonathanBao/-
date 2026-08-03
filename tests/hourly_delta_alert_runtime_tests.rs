@@ -8,10 +8,11 @@ use btc_toxic_flow_monitor_rs::storage::hourly_delta_repo::HourlyDeltaRepo;
 use btc_toxic_flow_monitor_rs::storage::SqliteStore;
 
 fn temp_store(label: &str) -> SqliteStore {
-    let path = std::env::temp_dir().join(format!(
-        "hourly-delta-runtime-{label}-{}.sqlite",
-        std::process::id()
-    ));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("hourly-delta-runtime-{label}-{nonce}.sqlite"));
     let _ = std::fs::remove_file(&path);
     let store = SqliteStore::open(path.to_string_lossy().as_ref()).expect("sqlite");
     store.migrate().expect("migrate");
@@ -101,7 +102,7 @@ fn enabled_runtime_drains_pending_outbox_without_manual_intervention() {
                 enabled: true,
                 dry_run: true,
                 outbox_poll_interval_ms: 25,
-                startup_backfill_hours: 1,
+                startup_backfill_hours: 0,
                 rest_reconcile_interval_ms: 60_000,
                 ..HourlyDeltaAlertConfig::default()
             },
@@ -120,8 +121,8 @@ fn enabled_runtime_drains_pending_outbox_without_manual_intervention() {
             .expect("load result")
             .expect("result exists");
         assert_eq!(record.discord_status, HourlyDeltaDiscordStatus::DryRun);
-        assert_eq!(record.attempts, 1);
         let diagnostics = alert_runtime.diagnostics();
+        assert_eq!(record.attempts, 1);
         assert!(diagnostics.outbox_polls > 0);
         assert_eq!(diagnostics.outbox_claimed, 1);
     });
