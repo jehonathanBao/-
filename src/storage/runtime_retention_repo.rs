@@ -110,7 +110,7 @@ impl RuntimeRetentionRepo for SqliteStore {
         let new_token_l2_outcomes_cutoff =
             retention_cutoff(now_ms, policy.new_token_l2_outcomes_retention_ms);
 
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.busy_timeout(std::time::Duration::from_millis(policy.lock_wait_ms.max(1)))?;
             let mut result = RuntimeRetentionPruneResult::default();
             result.toxic_events_deleted = prune_table(

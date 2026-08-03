@@ -106,7 +106,7 @@ fn sqlite_reads_do_not_wait_for_an_active_wal_writer() {
 }
 
 #[test]
-fn sqlite_store_operations_are_serialized_across_clones() {
+fn sqlite_read_does_not_wait_for_an_internal_write_operation() {
     let path = unique_path("sqlite/operation_gate.sqlite");
     let store = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open sqlite");
     let first = store.clone();
@@ -114,7 +114,7 @@ fn sqlite_store_operations_are_serialized_across_clones() {
 
     let writer = std::thread::spawn(move || {
         first
-            .with_connection(|_conn| {
+            .with_write_connection(|_conn| {
                 std::thread::sleep(Duration::from_millis(150));
                 Ok(())
             })
@@ -129,8 +129,37 @@ fn sqlite_store_operations_are_serialized_across_clones() {
     writer.join().expect("join first operation");
 
     assert!(
+        waited < Duration::from_millis(100),
+        "WAL reads must not wait for an internal write operation; waited={waited:?}"
+    );
+}
+
+#[test]
+fn sqlite_write_operations_are_serialized_across_clones() {
+    let path = unique_path("sqlite/write_gate.sqlite");
+    let store = SqliteStore::open(path.to_str().expect("utf8 path")).expect("open sqlite");
+    let first = store.clone();
+    let second = store.clone();
+
+    let writer = std::thread::spawn(move || {
+        first
+            .with_write_connection(|_conn| {
+                std::thread::sleep(Duration::from_millis(150));
+                Ok(())
+            })
+            .expect("first write");
+    });
+    std::thread::sleep(Duration::from_millis(25));
+    let started = Instant::now();
+    second
+        .with_write_connection(|_conn| Ok(()))
+        .expect("second write");
+    let waited = started.elapsed();
+    writer.join().expect("join first write");
+
+    assert!(
         waited >= Duration::from_millis(100),
-        "cloned stores must share the operation gate; waited={waited:?}"
+        "cloned stores must serialize writes; waited={waited:?}"
     );
 }
 

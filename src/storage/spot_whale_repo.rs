@@ -56,7 +56,7 @@ impl SpotWhaleRepo for SqliteStore {
         let severity = format!("{:?}", signal.severity);
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
         let payload_json = serde_json::to_string(&signal)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO spot_whale_signals (
@@ -237,7 +237,7 @@ impl SpotWhaleRepo for SqliteStore {
         sent_at_ms: Option<i64>,
         reason: &str,
     ) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let payload = conn
                 .query_row(
                     "SELECT payload_json, is_permanent FROM spot_whale_signals WHERE signal_id = ?1",
@@ -290,7 +290,7 @@ impl SpotWhaleRepo for SqliteStore {
     }
 
     fn prune_spot_whale_signals_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let changed = conn
                 .execute(
                     r#"

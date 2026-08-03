@@ -21,12 +21,9 @@ use crate::storage::spot_whale_repo::{
 pub struct SqliteStore {
     path: PathBuf,
     journal_mode_initializations: Arc<AtomicUsize>,
-    /// SQLite allows concurrent readers, but this service has several independent
-    /// background writers (ingest, retention, snapshots, and outboxes).  A single
-    /// process-wide operation gate prevents a long DELETE/ checkpoint transaction
-    /// from racing a bucket upsert and turning a transient contention into a lost
-    /// monitoring window.
-    operation_lock: Arc<Mutex<()>>,
+    /// Serialize writes that belong to the same process while leaving WAL reads
+    /// free to serve the dashboard during retention/checkpoint work.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl SqliteStore {
@@ -42,7 +39,7 @@ impl SqliteStore {
         let store = Self {
             path,
             journal_mode_initializations: Arc::new(AtomicUsize::new(0)),
-            operation_lock: Arc::new(Mutex::new(())),
+            write_lock: Arc::new(Mutex::new(())),
         };
         store.initialize_database()?;
         store.health_check()?;
@@ -59,7 +56,7 @@ impl SqliteStore {
     }
 
     pub fn migrate(&self) -> anyhow::Result<()> {
-        let _operation_guard = self.lock_operation();
+        let _write_guard = self.lock_write();
         let conn = self.open_connection()?;
         for migration in MIGRATIONS {
             conn.execute_batch(migration)
@@ -71,7 +68,6 @@ impl SqliteStore {
     }
 
     pub fn health_check(&self) -> anyhow::Result<()> {
-        let _operation_guard = self.lock_operation();
         let conn = self.open_connection()?;
         conn.query_row("SELECT 1", [], |_row| Ok(()))
             .context("sqlite health check failed")?;
@@ -82,7 +78,6 @@ impl SqliteStore {
     where
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
-        let _operation_guard = self.lock_operation();
         let conn = self.open_connection()?;
         op(&conn)
     }
@@ -91,7 +86,7 @@ impl SqliteStore {
     where
         F: FnOnce(&Transaction<'_>) -> anyhow::Result<T>,
     {
-        let _operation_guard = self.lock_operation();
+        let _write_guard = self.lock_write();
         let mut conn = self.open_connection()?;
         let transaction = conn
             .transaction()
@@ -103,6 +98,16 @@ impl SqliteStore {
         Ok(result)
     }
 
+    /// Run a write operation while keeping ordinary WAL reads concurrent.
+    pub fn with_write_connection<T, F>(&self, op: F) -> anyhow::Result<T>
+    where
+        F: FnOnce(&Connection) -> anyhow::Result<T>,
+    {
+        let _write_guard = self.lock_write();
+        let conn = self.open_connection()?;
+        op(&conn)
+    }
+
     fn open_connection(&self) -> anyhow::Result<Connection> {
         let conn = Connection::open(&self.path)
             .with_context(|| format!("failed to open sqlite {}", self.path.display()))?;
@@ -111,8 +116,8 @@ impl SqliteStore {
         Ok(conn)
     }
 
-    fn lock_operation(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.operation_lock
+    fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.write_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

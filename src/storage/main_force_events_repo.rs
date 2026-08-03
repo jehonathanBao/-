@@ -27,7 +27,7 @@ impl MainForceEventsRepo for SqliteStore {
         observation: Option<&MainForceEventObservation>,
         now_ms: i64,
     ) -> anyhow::Result<Option<MainForceEvent>> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let open_event = latest_open_event(&tx, symbol)?;
             let mut result = None;

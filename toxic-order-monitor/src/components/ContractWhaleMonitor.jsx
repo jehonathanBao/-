@@ -24,6 +24,9 @@ const BTC_MIN_VISIBLE_TOTAL_VOLUME_BTC = 500;
 const EVENT_FEED_SESSION_CACHE_VERSION = 2;
 const EVENT_FEED_SESSION_CACHE_TTL_MS = 10 * 60 * 1_000;
 const EVENT_FEED_SESSION_CACHE_PREFIX = "contract-whale:event-feed";
+const STATUS_SESSION_CACHE_VERSION = 1;
+const STATUS_SESSION_CACHE_TTL_MS = 2 * 60 * 1_000;
+const STATUS_SESSION_CACHE_PREFIX = "contract-whale:status";
 const OPERATOR_DIAGNOSTICS_ENABLED =
   import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
 const DEFAULT_FILTERS = {
@@ -110,7 +113,7 @@ function readEventFeedSessionCache(filters) {
 }
 
 function writeEventFeedSessionCache(filters, payload) {
-  if (typeof window === "undefined" || !Array.isArray(payload?.items) || payload.items.length === 0) {
+  if (typeof window === "undefined" || !Array.isArray(payload?.items)) {
     return;
   }
   try {
@@ -130,6 +133,56 @@ function writeEventFeedSessionCache(filters, payload) {
         cacheAgeSec: payload.cacheAgeSec ?? null,
         cacheTtlSec: payload.cacheTtlSec ?? null,
         timeline: payload.timeline ?? null,
+      }),
+    );
+  } catch {
+    // Session storage is a best-effort first-paint cache; network refresh remains authoritative.
+  }
+}
+
+function statusSessionCacheKey(symbol) {
+  return `${STATUS_SESSION_CACHE_PREFIX}:v${STATUS_SESSION_CACHE_VERSION}:${String(symbol || "BTC").trim().toLowerCase()}`;
+}
+
+function readStatusSessionCache(symbol) {
+  if (typeof window === "undefined") return null;
+  try {
+    const cached = JSON.parse(window.sessionStorage.getItem(statusSessionCacheKey(symbol)) || "null");
+    const savedAt = Number(cached?.savedAt);
+    const cacheAgeMs = Date.now() - savedAt;
+    if (
+      cached?.version !== STATUS_SESSION_CACHE_VERSION
+      || !Number.isFinite(savedAt)
+      || cacheAgeMs < 0
+      || cacheAgeMs > STATUS_SESSION_CACHE_TTL_MS
+      || (cached.summary == null && !Array.isArray(cached.items))
+    ) {
+      window.sessionStorage.removeItem(statusSessionCacheKey(symbol));
+      return null;
+    }
+    return { ...cached, cacheAgeMs };
+  } catch {
+    return null;
+  }
+}
+
+function writeStatusSessionCache(symbol, patch) {
+  if (typeof window === "undefined" || !patch || typeof patch !== "object") return;
+  try {
+    const previous = readStatusSessionCache(symbol) || {};
+    window.sessionStorage.setItem(
+      statusSessionCacheKey(symbol),
+      JSON.stringify({
+        version: STATUS_SESSION_CACHE_VERSION,
+        savedAt: Date.now(),
+        summary: patch.summary !== undefined ? patch.summary : previous.summary ?? null,
+        items: patch.items !== undefined ? patch.items : previous.items ?? [],
+        serverTime: patch.serverTime !== undefined ? patch.serverTime : previous.serverTime ?? null,
+        maxTs: patch.maxTs !== undefined ? patch.maxTs : previous.maxTs ?? null,
+        maxAgeSec: patch.maxAgeSec !== undefined ? patch.maxAgeSec : previous.maxAgeSec ?? null,
+        staleCount: patch.staleCount !== undefined ? patch.staleCount : previous.staleCount ?? null,
+        timeline: patch.timeline !== undefined ? patch.timeline : previous.timeline ?? null,
+        meta: patch.meta !== undefined ? patch.meta : previous.meta ?? null,
       }),
     );
   } catch {
@@ -186,6 +239,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const assetSymbol = normalizeMainstreamSymbol(lockedSymbol);
   const [state, setState] = useState(() => {
     const cachedEventFeed = readEventFeedSessionCache({ ...DEFAULT_FILTERS, symbol: assetSymbol });
+    const cachedStatus = readStatusSessionCache(assetSymbol);
     const dataSlices = createDataSlices();
     if (cachedEventFeed) {
       dataSlices.historical = createDataSlice({
@@ -197,12 +251,22 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         cacheTtlSec: Math.floor(EVENT_FEED_SESSION_CACHE_TTL_MS / 1_000),
       });
     }
+    if (cachedStatus) {
+      dataSlices.status = createDataSlice({
+        state: "stale",
+        errorCode: "status_session_cache",
+        lastSuccessAt: cachedStatus.savedAt,
+        nextRetryAt: Date.now(),
+        cacheAgeSec: Math.floor(cachedStatus.cacheAgeMs / 1_000),
+        cacheTtlSec: Math.floor(STATUS_SESSION_CACHE_TTL_MS / 1_000),
+      });
+    }
     return {
       loading: true,
       contractEventsLoading: !cachedEventFeed,
       dataSlices,
-      summary: null,
-      items: [],
+      summary: cachedStatus?.summary || null,
+      items: cachedStatus?.items || [],
       contractEvents: cachedEventFeed?.items || [],
       contractEventsCursor: cachedEventFeed?.nextCursor ?? null,
       contractEventsHasMore: cachedEventFeed?.hasMore ?? false,
@@ -235,12 +299,12 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       hiddenContractEventsExpanded: false,
       hiddenContractEventsLoading: false,
       retentionStatus: null,
-      latestServerTime: null,
-      latestMaxTs: null,
-      latestMaxAgeSec: null,
-      latestStaleCount: null,
-      latestTimeline: null,
-      meta: null,
+      latestServerTime: cachedStatus?.serverTime ?? null,
+      latestMaxTs: cachedStatus?.maxTs ?? null,
+      latestMaxAgeSec: cachedStatus?.maxAgeSec ?? null,
+      latestStaleCount: cachedStatus?.staleCount ?? null,
+      latestTimeline: cachedStatus?.timeline ?? null,
+      meta: cachedStatus?.meta || null,
     };
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
@@ -432,9 +496,39 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       if (statusRefreshInFlight) return;
       statusRefreshInFlight = true;
       try {
+        const summaryRequest = refreshSummary().then((payload) => {
+          if (isUsableDataPayload(payload)) {
+            writeStatusSessionCache(filters.symbol, {
+              summary: payload.summary,
+              meta: payload.meta,
+            });
+            updateState((previous) => ({
+              ...previous,
+              summary: payload.summary || previous.summary,
+              meta: payload.meta || previous.meta,
+            }));
+          }
+          return payload;
+        });
+        const latestRequest = refreshLatest();
+        latestRequest.then((payload) => {
+          if (isUsableDataPayload(payload)) {
+            writeStatusSessionCache(filters.symbol, {
+              items: payload.items,
+              serverTime: payload.serverTime,
+              maxTs: payload.maxTs,
+              maxAgeSec: payload.maxAgeSec,
+              staleCount: payload.staleCount,
+              timeline: payload.timeline,
+              summary: payload.summary,
+              meta: payload.meta,
+            });
+          }
+          return payload;
+        });
         const [summaryPayload, latestPayload] = await Promise.all([
-          refreshSummary(),
-          refreshLatest(),
+          summaryRequest,
+          latestRequest,
         ]);
         const summaryUsable = Boolean(summaryPayload && !summaryPayload.error);
         const latestUsable = isUsableDataPayload(latestPayload);

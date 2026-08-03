@@ -63,7 +63,7 @@ impl HourlyDeltaRepo for SqliteStore {
         result: &HourlyDeltaResult,
         now_ms: i64,
     ) -> anyhow::Result<bool> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let existing: Option<String> = conn
                 .query_row(
                     "SELECT discord_status FROM hourly_delta_alert_records WHERE record_key = ?1",
@@ -124,7 +124,7 @@ impl HourlyDeltaRepo for SqliteStore {
         now_ms: i64,
         enqueue_discord: bool,
     ) -> anyhow::Result<bool> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let existing: Option<String> = tx
                 .query_row(
@@ -227,7 +227,7 @@ impl HourlyDeltaRepo for SqliteStore {
         record_key: &str,
         now_ms: i64,
     ) -> anyhow::Result<bool> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let record = tx
                 .query_row(
@@ -297,7 +297,7 @@ impl HourlyDeltaRepo for SqliteStore {
         now_ms: i64,
     ) -> anyhow::Result<Vec<HourlyDeltaDiscordOutboxItem>> {
         let limit = limit.clamp(1, 100) as i64;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut stmt = tx.prepare(
                 r#"
@@ -358,7 +358,7 @@ impl HourlyDeltaRepo for SqliteStore {
         sent_at: Option<i64>,
         last_error: Option<&str>,
     ) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let changed = tx.execute(
                 r#"

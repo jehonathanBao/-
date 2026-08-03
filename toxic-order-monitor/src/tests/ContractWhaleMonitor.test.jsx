@@ -1269,6 +1269,43 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByText("暂无主力合约异动")).not.toBeInTheDocument();
   });
 
+  it("renders the summary as soon as it resolves even when latest is still pending", async () => {
+    fetchContractWhaleLatest.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<ContractWhaleMonitor />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("contract-workspace-status-ribbon")).toHaveTextContent("健康");
+    });
+  });
+
+  it("paints the last status snapshot from session cache while the refresh is pending", async () => {
+    window.sessionStorage.setItem(
+      "contract-whale:status:v1:btc",
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        summary: {
+          status: "strong",
+          healthStatus: "healthy",
+          healthReason: "cached_snapshot",
+          direction: "buy",
+          latestDirection: "buy",
+          latestSeverity: "s",
+          enabled: true,
+          dryRun: true,
+          readOnly: true,
+        },
+        items: [],
+      }),
+    );
+    fetchContractWhaleLatest.mockReturnValueOnce(new Promise(() => {}));
+
+    render(<ContractWhaleMonitor />);
+
+    expect(screen.getByTestId("contract-workspace-status-ribbon")).toHaveTextContent("健康");
+  });
+
   it("restores the last successful event feed immediately across a page refresh", async () => {
     window.sessionStorage.clear();
     const firstRender = render(<ContractWhaleMonitor />);

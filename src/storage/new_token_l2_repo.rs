@@ -62,7 +62,7 @@ impl NewTokenL2Repo for SqliteStore {
         session: &L2SessionSnapshot,
     ) -> anyhow::Result<()> {
         let payload_json = serde_json::to_string(session)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO new_token_l2_metrics (
@@ -115,7 +115,7 @@ impl NewTokenL2Repo for SqliteStore {
     }
 
     fn prune_new_token_l2_metrics_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 "DELETE FROM new_token_l2_metrics WHERE ts < ?1",
                 [cutoff_ts],
@@ -132,7 +132,7 @@ impl NewTokenL2Repo for SqliteStore {
         if outcomes.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let transaction = conn.unchecked_transaction()?;
             let mut written = 0;
             for observation in outcomes {
@@ -220,7 +220,7 @@ impl NewTokenL2Repo for SqliteStore {
     }
 
     fn prune_new_token_l2_outcomes_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 "DELETE FROM new_token_l2_outcomes WHERE observed_at < ?1",
                 [cutoff_ts],

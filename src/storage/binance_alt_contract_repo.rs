@@ -74,7 +74,7 @@ impl BinanceAltContractRepo for SqliteStore {
     }
 
     fn prune_alt_contract_signals(&self, older_than: i64) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 "DELETE FROM alt_contract_signals WHERE severity != 'S' AND ts < ?1",
                 [older_than],
@@ -106,7 +106,7 @@ impl BinanceAltContractRepo for SqliteStore {
         outcome: &AltContractSignalOutcome,
     ) -> anyhow::Result<()> {
         let payload = serde_json::to_string(outcome).context("failed to serialize BACM outcome")?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO alt_contract_signal_outcomes (
@@ -191,7 +191,7 @@ impl BinanceAltContractRepo for SqliteStore {
 
     fn upsert_alt_contract_event(&self, event: &AltContractEventRecord) -> anyhow::Result<()> {
         let payload = serde_json::to_string(event).context("failed to serialize BACM event")?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO alt_contract_events (

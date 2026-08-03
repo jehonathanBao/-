@@ -47,7 +47,7 @@ impl SnapshotsRepo for SqliteStore {
                 )
             };
         let payload_json = serde_json::to_string(state)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO toxic_snapshots (
@@ -75,7 +75,7 @@ impl SnapshotsRepo for SqliteStore {
 
     fn insert_flow_snapshot(&self, state: &FlowState) -> anyhow::Result<()> {
         let payload_json = serde_json::to_string(state)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             for window in state.windows.values() {
                 tx.execute(

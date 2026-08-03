@@ -15,7 +15,7 @@ impl ToxicEventsRepo for SqliteStore {
     fn insert_event(&self, event: &ToxicEvent) -> anyhow::Result<()> {
         let reason_codes_json = serde_json::to_string(&event.reason_codes)?;
         let payload_json = serde_json::to_string(event)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT OR IGNORE INTO toxic_events (

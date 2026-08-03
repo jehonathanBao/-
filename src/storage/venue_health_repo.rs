@@ -11,7 +11,7 @@ pub trait VenueHealthRepo {
 
 impl VenueHealthRepo for SqliteStore {
     fn insert_venue_health_snapshot(&self, ts: i64, health: &VenueHealthMap) -> anyhow::Result<()> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             for venue_health in health.values() {
                 tx.execute(

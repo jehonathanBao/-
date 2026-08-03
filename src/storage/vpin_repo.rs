@@ -14,7 +14,7 @@ impl VpinRepo for SqliteStore {
     fn insert_bucket(&self, bucket: &VpinBucket) -> anyhow::Result<()> {
         let venue_breakdown_json = serde_json::to_string(&bucket.venue_breakdown)?;
         let payload_json = serde_json::to_string(bucket)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 INSERT OR REPLACE INTO vpin_buckets (

@@ -314,7 +314,7 @@ impl ContractWhaleRepo for SqliteStore {
         if buckets.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut written = 0;
             {
@@ -465,7 +465,7 @@ impl ContractWhaleRepo for SqliteStore {
         if buckets.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut written = 0;
             {
@@ -554,7 +554,7 @@ impl ContractWhaleRepo for SqliteStore {
         if snapshots.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut written = 0;
             {
@@ -696,7 +696,7 @@ impl ContractWhaleRepo for SqliteStore {
         if snapshots.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut written = 0;
             {
@@ -773,7 +773,7 @@ impl ContractWhaleRepo for SqliteStore {
         if signals.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let written = upsert_contract_whale_signals_in_transaction(
                 &tx,
@@ -794,7 +794,7 @@ impl ContractWhaleRepo for SqliteStore {
         if signals.is_empty() && outbox_signals.is_empty() {
             return Ok((0, 0));
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let written = upsert_contract_whale_signals_in_transaction(&tx, signals, now_ms)?;
             let mut outbox_stmt = tx.prepare(
@@ -1005,7 +1005,7 @@ impl ContractWhaleRepo for SqliteStore {
         sent: bool,
         sent_at_ms: Option<i64>,
     ) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let payload = conn
                 .query_row(
                     "SELECT payload_json FROM contract_whale_signals WHERE signal_id = ?1",
@@ -1045,7 +1045,7 @@ impl ContractWhaleRepo for SqliteStore {
         if signals.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut stmt = tx.prepare(
                 r#"
@@ -1077,7 +1077,7 @@ impl ContractWhaleRepo for SqliteStore {
         now_ms: i64,
     ) -> anyhow::Result<Vec<ContractWhaleDiscordOutboxItem>> {
         let limit = limit.clamp(1, 100) as i64;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut stmt = tx.prepare(
                 r#"
@@ -1137,7 +1137,7 @@ impl ContractWhaleRepo for SqliteStore {
         sent_at: Option<i64>,
         last_error: Option<&str>,
     ) -> anyhow::Result<usize> {
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             conn.execute(
                 r#"
                 UPDATE contract_whale_discord_outbox
@@ -1220,7 +1220,7 @@ impl ContractWhaleRepo for SqliteStore {
         if watermarks.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut stmt = tx.prepare(
                 r#"
@@ -1252,7 +1252,7 @@ impl ContractWhaleRepo for SqliteStore {
         if outcomes.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut stmt = tx.prepare(
                 r#"
@@ -1406,7 +1406,7 @@ impl ContractWhaleRepo for SqliteStore {
         if thresholds.is_empty() {
             return Ok(0);
         }
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut written = 0;
             {
@@ -1490,7 +1490,7 @@ impl ContractWhaleRepo for SqliteStore {
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
         let s_severity = enum_value(ContractWhaleSeverity::S)?;
-        self.with_connection(|conn| {
+        self.with_write_connection(|conn| {
             let mut result = ContractWhaleRetentionPruneResult {
                 flow_cutoff_ts,
                 signal_cutoff_ts,
