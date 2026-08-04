@@ -178,6 +178,40 @@ min_dynamic_samples = 20
 single_exchange_penalty = 15
 ct_val_missing_penalty = 20
 
+[contract_whale_monitor.impact_grade_v3]
+enabled = true
+shadow_mode = true
+grade_version = "cwm_impact_v3"
+baseline_lookback_days = 90
+baseline_min_samples = 10000
+episode_gap_seconds = 900
+min_confirmed_sources = 2
+
+[contract_whale_monitor.impact_grade_v3.s]
+min_data_quality = 85
+min_robust_percentile = 99.95
+min_abs_price_move_pct = 2.0
+min_live_liquidation_btc = 2500.0
+min_live_liquidation_notional_usd = 250000000.0
+min_unique_turnover_btc = 20000.0
+min_unique_turnover_notional_usd = 1000000000.0
+
+[contract_whale_monitor.impact_grade_v3.a]
+min_data_quality = 80
+min_robust_percentile = 99.5
+min_robust_z = 4.0
+min_abs_price_move_pct = 0.5
+min_event_volume_btc = 2500.0
+min_event_notional_usd = 150000000.0
+
+[contract_whale_monitor.impact_grade_v3.b]
+min_data_quality = 70
+min_robust_percentile = 99.0
+min_robust_z = 2.5
+min_abs_price_move_pct = 0.15
+min_event_volume_btc = 800.0
+min_event_notional_usd = 50000000.0
+
 [contract_whale_monitor.retention]
 flow_1s_days = 14
 # Contract market events (contract_whale_signals): keep at least 7 full days.

@@ -51,6 +51,142 @@ pub struct ContractWhaleRuntimeConfig {
     pub data_quality: ContractWhaleDataQualityConfig,
     pub retention: ContractWhaleRetentionConfig,
     pub hourly_delta_alert: HourlyDeltaAlertConfig,
+    pub impact_grade_v3: ContractWhaleImpactGradeConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactGradeTierConfig {
+    pub min_data_quality: u8,
+    pub min_robust_percentile: f64,
+    pub min_robust_z: Option<f64>,
+    pub min_abs_price_move_pct: f64,
+    pub min_event_volume_btc: Option<f64>,
+    pub min_event_notional_usd: Option<f64>,
+    pub min_live_liquidation_btc: Option<f64>,
+    pub min_live_liquidation_notional_usd: Option<f64>,
+    pub min_unique_turnover_btc: Option<f64>,
+    pub min_unique_turnover_notional_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactGradeConfig {
+    pub enabled: bool,
+    pub shadow_mode: bool,
+    pub grade_version: String,
+    pub baseline_lookback_days: i64,
+    pub baseline_min_samples: usize,
+    pub episode_gap_seconds: i64,
+    pub min_confirmed_sources: usize,
+    pub s: ContractWhaleImpactGradeTierConfig,
+    pub a: ContractWhaleImpactGradeTierConfig,
+    pub b: ContractWhaleImpactGradeTierConfig,
+}
+
+impl ContractWhaleImpactGradeConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.grade_version.trim().is_empty() {
+            return Err("impact grade version must not be empty".to_string());
+        }
+        if self.baseline_lookback_days <= 0
+            || self.baseline_min_samples == 0
+            || self.episode_gap_seconds <= 0
+            || self.min_confirmed_sources == 0
+        {
+            return Err(
+                "impact grade window, sample, gap, and source values must be positive".to_string(),
+            );
+        }
+        for (name, tier) in [("b", &self.b), ("a", &self.a), ("s", &self.s)] {
+            let values = [
+                tier.min_robust_percentile,
+                tier.min_abs_price_move_pct,
+                tier.min_robust_z.unwrap_or(0.0),
+                tier.min_event_volume_btc.unwrap_or(0.0),
+                tier.min_event_notional_usd.unwrap_or(0.0),
+                tier.min_live_liquidation_btc.unwrap_or(0.0),
+                tier.min_live_liquidation_notional_usd.unwrap_or(0.0),
+                tier.min_unique_turnover_btc.unwrap_or(0.0),
+                tier.min_unique_turnover_notional_usd.unwrap_or(0.0),
+            ];
+            if values
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                return Err(format!(
+                    "impact grade {name} thresholds must be finite and non-negative"
+                ));
+            }
+        }
+        if !(self.b.min_robust_percentile < self.a.min_robust_percentile
+            && self.a.min_robust_percentile < self.s.min_robust_percentile)
+        {
+            return Err("impact grade percentiles must satisfy B < A < S".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn default_impact_grade_tier_configs() -> (
+    ContractWhaleImpactGradeTierConfig,
+    ContractWhaleImpactGradeTierConfig,
+    ContractWhaleImpactGradeTierConfig,
+) {
+    (
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 70,
+            min_robust_percentile: 99.0,
+            min_robust_z: Some(2.5),
+            min_abs_price_move_pct: 0.15,
+            min_event_volume_btc: Some(800.0),
+            min_event_notional_usd: Some(50_000_000.0),
+            min_live_liquidation_btc: None,
+            min_live_liquidation_notional_usd: None,
+            min_unique_turnover_btc: None,
+            min_unique_turnover_notional_usd: None,
+        },
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 80,
+            min_robust_percentile: 99.5,
+            min_robust_z: Some(4.0),
+            min_abs_price_move_pct: 0.5,
+            min_event_volume_btc: Some(2_500.0),
+            min_event_notional_usd: Some(150_000_000.0),
+            min_live_liquidation_btc: None,
+            min_live_liquidation_notional_usd: None,
+            min_unique_turnover_btc: None,
+            min_unique_turnover_notional_usd: None,
+        },
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 85,
+            min_robust_percentile: 99.95,
+            min_robust_z: None,
+            min_abs_price_move_pct: 2.0,
+            min_event_volume_btc: None,
+            min_event_notional_usd: None,
+            min_live_liquidation_btc: Some(2_500.0),
+            min_live_liquidation_notional_usd: Some(250_000_000.0),
+            min_unique_turnover_btc: Some(20_000.0),
+            min_unique_turnover_notional_usd: Some(1_000_000_000.0),
+        },
+    )
+}
+
+impl Default for ContractWhaleImpactGradeConfig {
+    fn default() -> Self {
+        let (b, a, s) = default_impact_grade_tier_configs();
+        Self {
+            enabled: true,
+            shadow_mode: true,
+            grade_version: "cwm_impact_v3".to_string(),
+            baseline_lookback_days: 90,
+            baseline_min_samples: 10_000,
+            episode_gap_seconds: 900,
+            min_confirmed_sources: 2,
+            s,
+            a,
+            b,
+        }
+    }
 }
 
 const CONTRACT_SOURCE_ORDER: [ContractExchange; 4] = [
@@ -509,6 +645,7 @@ impl Default for ContractWhaleRuntimeConfig {
             data_quality: ContractWhaleDataQualityConfig::default(),
             retention: ContractWhaleRetentionConfig::default(),
             hourly_delta_alert: HourlyDeltaAlertConfig::default(),
+            impact_grade_v3: ContractWhaleImpactGradeConfig::default(),
         }
     }
 }
@@ -1247,7 +1384,8 @@ impl Default for ContractWhaleDiscordGateConfig {
     fn default() -> Self {
         Self {
             impact_level_push_enabled: true,
-            push_impact_levels: vec!["B".to_string(), "A".to_string(), "S".to_string()],
+            // B remains inbox-only; external delivery requires a major grade.
+            push_impact_levels: vec!["A".to_string(), "S".to_string()],
             impact_level_min_data_quality: 70,
         }
     }
@@ -1301,6 +1439,100 @@ pub fn load_contract_whale_runtime_config_from_settings(
         threshold_profiles: load_threshold_profiles(settings),
         retention: load_retention_config(settings),
         hourly_delta_alert: load_hourly_delta_alert_config_from_settings(settings),
+        impact_grade_v3: load_impact_grade_config(settings),
+    }
+}
+
+fn load_impact_grade_config(settings: &::config::Config) -> ContractWhaleImpactGradeConfig {
+    let defaults = ContractWhaleImpactGradeConfig::default();
+    let mut config = defaults.clone();
+    config.enabled = settings
+        .get_bool("contract_whale_monitor.impact_grade_v3.enabled")
+        .unwrap_or(defaults.enabled);
+    config.shadow_mode = settings
+        .get_bool("contract_whale_monitor.impact_grade_v3.shadow_mode")
+        .unwrap_or(defaults.shadow_mode);
+    config.grade_version = settings
+        .get_string("contract_whale_monitor.impact_grade_v3.grade_version")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(defaults.grade_version);
+    config.baseline_lookback_days = i64_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.baseline_lookback_days",
+        defaults.baseline_lookback_days,
+    );
+    config.baseline_min_samples = usize_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.baseline_min_samples",
+        defaults.baseline_min_samples,
+    );
+    config.episode_gap_seconds = i64_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.episode_gap_seconds",
+        defaults.episode_gap_seconds,
+    );
+    config.min_confirmed_sources = usize_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.min_confirmed_sources",
+        defaults.min_confirmed_sources,
+    );
+    config.b = load_impact_grade_tier(settings, "b", &defaults.b);
+    config.a = load_impact_grade_tier(settings, "a", &defaults.a);
+    config.s = load_impact_grade_tier(settings, "s", &defaults.s);
+    config
+        .validate()
+        .expect("invalid contract impact grade configuration");
+    config
+}
+
+fn load_impact_grade_tier(
+    settings: &::config::Config,
+    tier: &str,
+    defaults: &ContractWhaleImpactGradeTierConfig,
+) -> ContractWhaleImpactGradeTierConfig {
+    let path = |field: &str| format!("contract_whale_monitor.impact_grade_v3.{tier}.{field}");
+    let optional_float =
+        |field: &str, default: Option<f64>| settings.get_float(&path(field)).ok().or(default);
+    ContractWhaleImpactGradeTierConfig {
+        min_data_quality: u8_setting(
+            settings,
+            &path("min_data_quality"),
+            defaults.min_data_quality,
+        ),
+        min_robust_percentile: positive_float_setting(
+            settings,
+            &path("min_robust_percentile"),
+            defaults.min_robust_percentile,
+        ),
+        min_robust_z: optional_float("min_robust_z", defaults.min_robust_z),
+        min_abs_price_move_pct: positive_float_setting(
+            settings,
+            &path("min_abs_price_move_pct"),
+            defaults.min_abs_price_move_pct,
+        ),
+        min_event_volume_btc: optional_float("min_event_volume_btc", defaults.min_event_volume_btc),
+        min_event_notional_usd: optional_float(
+            "min_event_notional_usd",
+            defaults.min_event_notional_usd,
+        ),
+        min_live_liquidation_btc: optional_float(
+            "min_live_liquidation_btc",
+            defaults.min_live_liquidation_btc,
+        ),
+        min_live_liquidation_notional_usd: optional_float(
+            "min_live_liquidation_notional_usd",
+            defaults.min_live_liquidation_notional_usd,
+        ),
+        min_unique_turnover_btc: optional_float(
+            "min_unique_turnover_btc",
+            defaults.min_unique_turnover_btc,
+        ),
+        min_unique_turnover_notional_usd: optional_float(
+            "min_unique_turnover_notional_usd",
+            defaults.min_unique_turnover_notional_usd,
+        ),
     }
 }
 

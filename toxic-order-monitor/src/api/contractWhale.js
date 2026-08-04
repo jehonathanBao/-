@@ -1107,7 +1107,8 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
   const percentile =
     numberOrNull(item?.percentile ?? item?.percentile_level) ??
     numberOrNull(percentileFallback);
-  const explicitImpactLevel = item?.impactLevel ?? item?.impact_level;
+  const explicitImpactLevel =
+    item?.impactGrade ?? item?.impact_grade ?? item?.impactLevel ?? item?.impact_level;
   const impactLevel = explicitImpactLevel
     ? String(explicitImpactLevel).toUpperCase()
     : impactLevelFromLegacySignals(
@@ -1128,6 +1129,7 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
       ? String(explicitNormalizedStrength).toUpperCase()
       : impactLevelToNormalizedStrength(impactLevel),
     impactLevel,
+    impactGrade: impactLevel,
     signalLevel: explicitSignalLevel
       ? String(explicitSignalLevel).toUpperCase()
       : impactLevelToSignalLevel(impactLevel),
@@ -1194,6 +1196,11 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: item?.impactGrade ?? item?.impact_grade ?? impact.impactLevel,
+    impactGradeState: item?.impactGradeState ?? item?.impact_grade_state ?? "legacy",
+    impactGradeVersion: item?.impactGradeVersion ?? item?.impact_grade_version ?? null,
+    impactReasonCodes: normalizeStringArray(item?.impactReasonCodes ?? item?.impact_reason_codes),
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
     volume,
@@ -1239,6 +1246,11 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: item?.impactGrade ?? item?.impact_grade ?? impact.impactLevel,
+    impactGradeState: item?.impactGradeState ?? item?.impact_grade_state ?? "legacy",
+    impactGradeVersion: item?.impactGradeVersion ?? item?.impact_grade_version ?? null,
+    impactReasonCodes: normalizeStringArray(item?.impactReasonCodes ?? item?.impact_reason_codes),
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
     ts: numberOrNull(item?.endTime) ?? signal.ts,
@@ -1544,6 +1556,11 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: item?.impactGrade ?? item?.impact_grade ?? impact.impactLevel,
+    impactGradeState: item?.impactGradeState ?? item?.impact_grade_state ?? "legacy",
+    impactGradeVersion: item?.impactGradeVersion ?? item?.impact_grade_version ?? null,
+    impactReasonCodes: normalizeStringArray(item?.impactReasonCodes ?? item?.impact_reason_codes),
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
     multiExchangeConfirmed: Boolean(item.multiExchangeConfirmed),

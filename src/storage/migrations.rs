@@ -497,4 +497,38 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_hourly_delta_discord_outbox_due
       ON hourly_delta_discord_outbox(status, next_attempt_at, created_at);
     "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_event_impact_baselines (
+      symbol TEXT NOT NULL,
+      window_sec INTEGER NOT NULL,
+      threshold_profile TEXT NOT NULL,
+      computed_at_ms INTEGER NOT NULL,
+      lookback_from_ms INTEGER NOT NULL,
+      lookback_to_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL,
+      median_log_volume REAL NOT NULL,
+      mad_log_volume REAL NOT NULL,
+      sorted_samples_json TEXT NOT NULL,
+      PRIMARY KEY(symbol, window_sec, threshold_profile)
+    );
+    CREATE TABLE IF NOT EXISTS contract_event_impact_grades (
+      event_id TEXT NOT NULL,
+      grade_version TEXT NOT NULL,
+      episode_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      grade TEXT NOT NULL CHECK(grade IN ('C','B','A','S')),
+      state TEXT NOT NULL CHECK(state IN ('evidence_insufficient','provisional','confirmed')),
+      reason_codes_json TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      assessed_at_ms INTEGER NOT NULL,
+      discord_sent_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(event_id, grade_version)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_event_impact_episode_version
+      ON contract_event_impact_grades(episode_id, grade_version);
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_grades_symbol_assessed
+      ON contract_event_impact_grades(symbol, assessed_at_ms DESC);
+    "#,
 ];

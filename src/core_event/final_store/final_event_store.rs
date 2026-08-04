@@ -23,6 +23,16 @@ pub struct FinalEvent {
     pub normalized_score: f64,
     pub normalized_strength: String,
     pub impact_level: String,
+    #[serde(default)]
+    pub impact_grade: String,
+    #[serde(default)]
+    pub impact_grade_state: String,
+    #[serde(default)]
+    pub impact_grade_version: Option<String>,
+    #[serde(default)]
+    pub impact_reason_codes: Vec<String>,
+    #[serde(default)]
+    pub relative_rank: Option<usize>,
     pub signal_level: String,
     pub signal_label: String,
     pub total_volume_btc: f64,
@@ -191,6 +201,20 @@ impl FinalEvent {
         } else {
             signal.event_lifecycle.event_id.clone()
         };
+        // Impact grade is event-owned. Page-cohort normalization is presentation
+        // metadata only and must not rewrite the persisted business grade.
+        let stable_impact_level = signal
+            .impact_level
+            .clone()
+            .unwrap_or_else(|| impact.impact_level.clone());
+        let stable_signal_level = signal
+            .signal_level
+            .clone()
+            .unwrap_or_else(|| impact.signal_level.clone());
+        let stable_signal_label = signal
+            .signal_label
+            .clone()
+            .unwrap_or_else(|| impact.signal_label.clone());
         Self {
             event_id,
             symbol: signal.symbol.clone(),
@@ -200,16 +224,22 @@ impl FinalEvent {
             status: event_status_key(signal.event_lifecycle.status).to_string(),
             window_sec: signal.window_sec,
             raw_volume: impact.raw_volume,
-            // Tape badges use page-cohort relative impact so large events on a
-            // high-volume stream are not all labeled S against the detector baseline.
             impact_score: impact.impact_score,
             z_score: impact.z_score,
             percentile: impact.percentile,
             normalized_score: impact.normalized_score,
             normalized_strength: impact.normalized_strength,
-            impact_level: impact.impact_level,
-            signal_level: impact.signal_level,
-            signal_label: impact.signal_label,
+            impact_level: stable_impact_level,
+            impact_grade: signal
+                .impact_level
+                .clone()
+                .unwrap_or_else(|| impact.impact_level.clone()),
+            impact_grade_state: "legacy".to_string(),
+            impact_grade_version: None,
+            impact_reason_codes: Vec::new(),
+            relative_rank: None,
+            signal_level: stable_signal_level,
+            signal_label: stable_signal_label,
             total_volume_btc: signal.total_volume_btc,
             volume: signal.total_volume_btc,
             net_volume: signal.net_volume_btc,
@@ -501,10 +531,10 @@ mod tests {
         assert_eq!(final_event.merged_windows_sec, vec![5, 15]);
         assert_eq!(final_event.buy_volume_btc, Some(1_830.0));
         assert_eq!(final_event.sell_volume_btc, Some(2_450.0));
-        // Tape keeps the page-cohort normalization passed in ("A"), not detector "S".
-        assert_eq!(final_event.impact_level, "A");
-        assert_eq!(final_event.signal_level, "L3");
-        assert_eq!(final_event.signal_label, "HIGH IMPACT EVENT");
+        // Tape keeps the event-owned detector grade, not page-cohort normalization.
+        assert_eq!(final_event.impact_level, "S");
+        assert_eq!(final_event.signal_level, "S");
+        assert_eq!(final_event.signal_label, "SHOCK IMPACT EVENT");
     }
 
     fn sample_signal() -> ContractWhaleSignal {

@@ -3587,6 +3587,9 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["Z-score", impactZScoreLabel(signal)],
               ["Percentile", impactPercentileLabel(signal)],
               ["Impact Level", resolveImpactDisplay(signal).impactLevel],
+                ["Impact Grade State", resolveImpactDisplay(signal).impactGradeState],
+                ["Impact Grade Version", resolveImpactDisplay(signal).impactGradeVersion || "legacy"],
+                ["Relative Rank", resolveImpactDisplay(signal).relativeRank ?? "—"],
                 ["Signal Level", resolveImpactDisplay(signal).signalLevel],
                 ["Signal Label", resolveImpactDisplay(signal).signalLabel],
                 ["Normalized Strength", resolveImpactDisplay(signal).normalizedStrength],
@@ -5266,6 +5269,8 @@ function resolveImpactDisplay(item) {
       "normal",
   ).toLowerCase();
   const impactLevel = String(
+    item?.impactGrade ??
+      item?.finalEvent?.impactGrade ??
     item?.impactLevel ??
       item?.finalEvent?.impactLevel ??
       deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore),
@@ -5290,6 +5295,10 @@ function resolveImpactDisplay(item) {
     zScore,
     percentile,
     impactLevel,
+    impactGrade: impactLevel,
+    impactGradeState: item?.impactGradeState ?? item?.finalEvent?.impactGradeState ?? "legacy",
+    impactGradeVersion: item?.impactGradeVersion ?? item?.finalEvent?.impactGradeVersion ?? null,
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.finalEvent?.relativeRank),
     signalLevel,
     signalLabel,
     normalizedStrength,

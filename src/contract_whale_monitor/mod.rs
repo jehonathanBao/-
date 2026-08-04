@@ -17,6 +17,9 @@ pub mod emission;
 pub mod event_lifecycle;
 pub mod event_quality;
 pub mod hourly_delta_alert;
+pub mod impact_baseline;
+pub mod impact_episode;
+pub mod impact_grade;
 pub mod intelligence;
 pub mod merge;
 pub mod normalizer;
@@ -27,6 +30,8 @@ pub mod scoring;
 pub mod trading;
 pub mod trajectory;
 pub mod types;
+
+pub use config::ContractWhaleRuntimeConfig;
 
 pub const LOG_TARGET: &str = "contract_whale_monitor";
 pub const LOG_PREFIX: &str = "[cwm]";

@@ -121,7 +121,9 @@ pub fn normalize_market_impact_from_metrics(
     let score = impact_score
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(0.0);
-    let z = z_score.filter(|value| value.is_finite()).unwrap_or(score);
+    // A dynamic multiple is a relative volume ratio, not a z-score. Missing
+    // robust z evidence must fail closed instead of aliasing the ratio.
+    let z = z_score.filter(|value| value.is_finite()).unwrap_or(0.0);
     let percentile = percentile
         .filter(|value| value.is_finite())
         .unwrap_or(0.0)

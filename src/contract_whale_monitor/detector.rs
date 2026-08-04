@@ -355,7 +355,7 @@ fn market_impact_normalization(stats: &ContractWhaleWindowStats) -> MarketImpact
     normalize_market_impact_from_metrics(
         stats.total_volume_btc,
         impact_score,
-        impact_score,
+        None,
         stats.percentile_level,
     )
 }
