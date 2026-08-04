@@ -163,6 +163,53 @@ async fn contract_events_hide_btc_sub_500_volume_rows_with_explicit_reason() {
 }
 
 #[tokio::test]
+async fn legacy_s_without_v3_assessment_is_fail_closed_in_event_feed() {
+    let config = test_config(temp_sqlite_path("contract-event-legacy-s-fail-closed"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut legacy_s = base_signal("legacy-s", now - 5 * 60 * 1000);
+    legacy_s.impact_level = Some("S".to_string());
+    store
+        .upsert_contract_whale_signal(&legacy_s)
+        .expect("seed legacy s signal");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let item = payload["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["sourceSignalId"] == legacy_s.id)
+        })
+        .expect("legacy signal item");
+    assert_eq!(item["impactGrade"], "C");
+    assert_eq!(item["impactLevel"], "C");
+    assert_eq!(item["impactGradeState"], "evidence_insufficient");
+    assert_eq!(item["impactGradeVersion"], "cwm_impact_v3");
+    assert_ne!(item["signalLevel"], "S");
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate() {
     let config = test_config(temp_sqlite_path("final-events-lifecycle-volume-gate"));
     let state = AppState::new(config);
@@ -397,7 +444,9 @@ async fn contract_events_default_to_compact_tape_payload_without_source_signal()
         "include_source_signal=true must keep nested sourceSignal for detail enrichment"
     );
     assert!(
-        serde_json::to_vec(&compact_payload).expect("compact bytes").len()
+        serde_json::to_vec(&compact_payload)
+            .expect("compact bytes")
+            .len()
             < serde_json::to_vec(&full_payload).expect("full bytes").len(),
         "compact payload must be smaller than full payload"
     );

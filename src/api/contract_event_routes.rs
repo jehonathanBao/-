@@ -1518,30 +1518,47 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
 
 fn decorate_v3_impact_grades(store: Option<&SqliteStore>, items: &mut [ContractEventItem]) {
     let Some(store) = store else { return };
+    let runtime_config = contract_whale_runtime_config();
+    if !runtime_config.impact_grade_v3.enabled {
+        return;
+    }
     let repo = ContractEventGradeRepo::new(store.clone());
-    let version = contract_whale_runtime_config()
-        .impact_grade_v3
-        .grade_version;
+    let version = runtime_config.impact_grade_v3.grade_version;
     for item in items {
-        let Some(assessment) = repo.get_assessment(&item.event_id, &version).ok().flatten() else {
-            continue;
-        };
-        apply_v3_grade_to_final_event(&mut item.final_event, &assessment);
+        match repo.get_assessment(&item.event_id, &version).ok().flatten() {
+            Some(assessment) => apply_v3_grade_to_final_event(&mut item.final_event, &assessment),
+            None => apply_v3_unavailable_grade(&mut item.final_event, &version),
+        }
     }
 }
 
 fn decorate_v3_final_events(store: Option<&SqliteStore>, items: &mut [FinalEvent]) {
     let Some(store) = store else { return };
-    let repo = ContractEventGradeRepo::new(store.clone());
-    let version = contract_whale_runtime_config()
-        .impact_grade_v3
-        .grade_version;
-    for item in items {
-        let Some(assessment) = repo.get_assessment(&item.event_id, &version).ok().flatten() else {
-            continue;
-        };
-        apply_v3_grade_to_final_event(item, &assessment);
+    let runtime_config = contract_whale_runtime_config();
+    if !runtime_config.impact_grade_v3.enabled {
+        return;
     }
+    let repo = ContractEventGradeRepo::new(store.clone());
+    let version = runtime_config.impact_grade_v3.grade_version;
+    for item in items {
+        match repo.get_assessment(&item.event_id, &version).ok().flatten() {
+            Some(assessment) => apply_v3_grade_to_final_event(item, &assessment),
+            None => apply_v3_unavailable_grade(item, &version),
+        }
+    }
+}
+
+fn apply_v3_unavailable_grade(event: &mut FinalEvent, version: &str) {
+    event.impact_level = "C".to_string();
+    event.impact_grade = "C".to_string();
+    event.impact_grade_state = "evidence_insufficient".to_string();
+    event.impact_grade_version = Some(version.to_string());
+    event.impact_reason_codes = vec![
+        "v3_assessment_unavailable".to_string(),
+        "legacy_grade_not_authoritative".to_string(),
+    ];
+    event.signal_level = "L1".to_string();
+    event.signal_label = "LOW IMPACT EVENT".to_string();
 }
 
 fn apply_v3_grade_to_final_event(
