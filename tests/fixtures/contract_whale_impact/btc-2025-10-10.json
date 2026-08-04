@@ -1,0 +1,21 @@
+{
+  "episodeId": "episode-btc-2025-10-10",
+  "symbol": "BTC",
+  "startTimeMs": 1760058000000,
+  "endTimeMs": 1760101200000,
+  "sourceEventIds": ["btc-2025-10-10-turnover"],
+  "totalVolumeBtc": 28000.0,
+  "totalNotionalUsd": 1800000000.0,
+  "netVolumeBtc": 2100.0,
+  "uniqueTurnoverBtc": 22000.0,
+  "uniqueTurnoverNotionalUsd": 1400000000.0,
+  "liveLiquidationBtc": 1800.0,
+  "liveLiquidationNotionalUsd": 120000000.0,
+  "peakAbsPriceMovePct": 3.2,
+  "peakAbsOiChangePct": 9.0,
+  "confirmedSources": ["binance", "bitfinex", "okx"],
+  "dataQuality": 96,
+  "robustPercentile": 99.99,
+  "robustZ": 9.0,
+  "baselineSampleCount": 50000
+}

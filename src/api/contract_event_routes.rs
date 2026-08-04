@@ -44,6 +44,7 @@ use crate::{
     },
     normalizers::trade::now_ms,
     storage::{
+        contract_event_grade_repo::ContractEventGradeRepo,
         contract_whale_repo::{
             ContractWhaleRepo, ContractWhaleSignalQuery,
             CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
@@ -527,7 +528,10 @@ fn contract_events_wire_response(page: ContractEventPage, include_source_signal:
         )
             .into_response();
     };
-    if let Some(items) = value.get_mut("items").and_then(|items| items.as_array_mut()) {
+    if let Some(items) = value
+        .get_mut("items")
+        .and_then(|items| items.as_array_mut())
+    {
         for item in items {
             promote_contract_event_tape_fields(item);
             if !include_source_signal {
@@ -906,7 +910,7 @@ pub(crate) fn contract_event_page_for_query(
         .unwrap_or(0);
     let requested_status = normalize_status_filter(query.status.as_deref());
     let store = state.contract_whale_store();
-    let items = project_contract_event_candidates(
+    let mut items = project_contract_event_candidates(
         sliced_items,
         VolumeDisplayContext::ContractEventStream,
         store.as_ref(),
@@ -916,6 +920,7 @@ pub(crate) fn contract_event_page_for_query(
     .filter(|candidate| include_hidden || candidate.is_visible)
     .map(contract_event_from_candidate)
     .collect::<Vec<_>>();
+    decorate_v3_impact_grades(store.as_ref(), &mut items);
 
     Ok(ContractEventPage {
         items,
@@ -998,6 +1003,8 @@ pub(crate) fn final_events_v2_for_query(
             active.push(candidate.event);
         }
     }
+    decorate_v3_final_events(store.as_ref(), &mut active);
+    decorate_v3_final_events(store.as_ref(), &mut closed);
 
     Ok(FinalEventsV2Response {
         active,
@@ -1507,6 +1514,66 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
         hidden_detail: candidate.hidden_detail,
         final_event: event,
     }
+}
+
+fn decorate_v3_impact_grades(store: Option<&SqliteStore>, items: &mut [ContractEventItem]) {
+    let Some(store) = store else { return };
+    let repo = ContractEventGradeRepo::new(store.clone());
+    let version = contract_whale_runtime_config()
+        .impact_grade_v3
+        .grade_version;
+    for item in items {
+        let Some(assessment) = repo.get_assessment(&item.event_id, &version).ok().flatten() else {
+            continue;
+        };
+        apply_v3_grade_to_final_event(&mut item.final_event, &assessment);
+    }
+}
+
+fn decorate_v3_final_events(store: Option<&SqliteStore>, items: &mut [FinalEvent]) {
+    let Some(store) = store else { return };
+    let repo = ContractEventGradeRepo::new(store.clone());
+    let version = contract_whale_runtime_config()
+        .impact_grade_v3
+        .grade_version;
+    for item in items {
+        let Some(assessment) = repo.get_assessment(&item.event_id, &version).ok().flatten() else {
+            continue;
+        };
+        apply_v3_grade_to_final_event(item, &assessment);
+    }
+}
+
+fn apply_v3_grade_to_final_event(
+    event: &mut FinalEvent,
+    assessment: &crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment,
+) {
+    let grade = serde_json::to_string(&assessment.grade)
+        .unwrap_or_else(|_| "\"C\"".to_string())
+        .trim_matches('"')
+        .to_string();
+    event.impact_level = grade.clone();
+    event.impact_grade = grade.clone();
+    event.impact_grade_state = serde_json::to_string(&assessment.state)
+        .unwrap_or_else(|_| "\"evidence_insufficient\"".to_string())
+        .trim_matches('"')
+        .to_string();
+    event.impact_grade_version = Some(assessment.grade_version.clone());
+    event.impact_reason_codes = assessment.reason_codes.clone();
+    event.signal_level = match grade.as_str() {
+        "S" => "S",
+        "A" => "L3",
+        "B" => "L2",
+        _ => "L1",
+    }
+    .to_string();
+    event.signal_label = match grade.as_str() {
+        "S" => "SHOCK IMPACT EVENT",
+        "A" => "HIGH IMPACT EVENT",
+        "B" => "MEDIUM IMPACT EVENT",
+        _ => "LOW IMPACT EVENT",
+    }
+    .to_string();
 }
 
 fn severity_key(severity: ContractWhaleSeverity) -> &'static str {

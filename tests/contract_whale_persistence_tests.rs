@@ -1066,6 +1066,28 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .upsert_contract_whale_signal(&old_weak_signal)
         .unwrap();
     store.upsert_contract_whale_signal(&fresh_signal).unwrap();
+    let old_s_event_id: String = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(NULLIF(json_extract(payload_json, '$.eventLifecycle.eventId'), ''), signal_id)
+                   FROM contract_whale_signals WHERE signal_id = ?1",
+                [&old_s_signal.id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    store
+        .with_write_connection(|conn| {
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3', ?1, 'BTC', 'S', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![old_s_event_id, now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
 
     let result = store
         .prune_contract_whale_retention(
@@ -1076,8 +1098,9 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .unwrap();
 
     assert_eq!(result.flow_1s_deleted, 1);
-    // old_weak (C >7d) + old_impact_b_drop (B >90d)
-    assert_eq!(result.signal_deleted, 2);
+    // Legacy severity/impact and large-net rows are no longer permanent;
+    // only a confirmed V3 S materialization is protected.
+    assert_eq!(result.signal_deleted, 4);
     assert_eq!(result.liquidation_deleted, 1);
     assert_eq!(result.oi_deleted, 1);
     assert_eq!(result.funding_deleted, 1);
@@ -1132,10 +1155,8 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .iter()
         .map(|signal| signal.id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(remaining.len(), 5);
+    assert_eq!(remaining.len(), 3);
     assert!(remaining_ids.contains(&old_s_signal.id.as_str()));
-    assert!(remaining_ids.contains(&old_large_net_signal.id.as_str()));
-    assert!(remaining_ids.contains(&old_impact_a_signal.id.as_str()));
     assert!(remaining_ids.contains(&old_impact_b_keep.id.as_str()));
     assert!(remaining_ids.contains(&fresh_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_weak_signal.id.as_str()));

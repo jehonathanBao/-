@@ -1,0 +1,21 @@
+{
+  "episodeId": "episode-ordinary-2026-07",
+  "symbol": "BTC",
+  "startTimeMs": 1782867600000,
+  "endTimeMs": 1782871200000,
+  "sourceEventIds": ["ordinary-2026-07-09"],
+  "totalVolumeBtc": 975.407,
+  "totalNotionalUsd": 62540360.75,
+  "netVolumeBtc": 537.175,
+  "uniqueTurnoverBtc": null,
+  "uniqueTurnoverNotionalUsd": null,
+  "liveLiquidationBtc": null,
+  "liveLiquidationNotionalUsd": null,
+  "peakAbsPriceMovePct": 0.2077,
+  "peakAbsOiChangePct": 0.1425,
+  "confirmedSources": ["binance", "bitfinex"],
+  "dataQuality": 85,
+  "robustPercentile": 99.5,
+  "robustZ": 4.5,
+  "baselineSampleCount": 20000
+}

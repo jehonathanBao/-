@@ -1,0 +1,21 @@
+{
+  "episodeId": "episode-btc-2020-03-12",
+  "symbol": "BTC",
+  "startTimeMs": 1584000000000,
+  "endTimeMs": 1584043200000,
+  "sourceEventIds": ["btc-2020-03-12-liquidation"],
+  "totalVolumeBtc": 32000.0,
+  "totalNotionalUsd": 1500000000.0,
+  "netVolumeBtc": -4800.0,
+  "uniqueTurnoverBtc": null,
+  "uniqueTurnoverNotionalUsd": null,
+  "liveLiquidationBtc": 6500.0,
+  "liveLiquidationNotionalUsd": 300000000.0,
+  "peakAbsPriceMovePct": 12.0,
+  "peakAbsOiChangePct": 18.0,
+  "confirmedSources": ["binance", "bitfinex", "okx"],
+  "dataQuality": 98,
+  "robustPercentile": 99.999,
+  "robustZ": 12.0,
+  "baselineSampleCount": 50000
+}

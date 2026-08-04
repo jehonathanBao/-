@@ -5234,11 +5234,16 @@ function eventQualityBadge(item) {
 
 function impactNormalizationBadge(item) {
   const impact = resolveImpactDisplay(item);
+  const isV3 = Boolean(impact.impactGradeVersion);
+  const gradeState = String(impact.impactGradeState || "legacy").replaceAll("_", " ");
 
   return (
     <span className="block whitespace-nowrap">
       <span className={`block text-xs font-bold ${signalLevelClass(impact.signalLevel)}`}>
         {impact.signalLevel} / {impact.impactLevel}
+      </span>
+      <span className={`block text-[10px] font-semibold uppercase tracking-wide ${isV3 ? "text-cyan-300" : "text-slate-500"}`}>
+        {isV3 ? `V3 ${impact.impactGrade} · ${gradeState}` : "LEGACY GRADE"}
       </span>
       <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span>
       <span className="block text-[10px] text-slate-500">

@@ -1,5 +1,13 @@
 use crate::{
     contract_whale_monitor::{
+        config::contract_whale_runtime_config,
+        impact_baseline::{
+            build_robust_impact_baseline, score_event_impact, ImpactBaselineKey,
+            RobustImpactBaseline,
+        },
+        impact_grade::{
+            assess_contract_impact_episode, ContractEventImpactAssessment, ContractImpactEpisode,
+        },
         log_events,
         types::{
             ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
@@ -9,11 +17,142 @@ use crate::{
     },
     normalizers::trade::now_ms,
     storage::{
-        contract_whale_repo::{ContractWhaleRepo, ContractWhaleRetentionPruneResult},
+        contract_event_grade_repo::ContractEventGradeRepo,
+        contract_whale_repo::{
+            ContractWhaleRepo, ContractWhaleRetentionPruneResult, ContractWhaleSignalQuery,
+        },
         storage_health::{RetentionRunHealth, RetentionTableStatus, StorageHealthTracker},
         SqliteStore,
     },
 };
+
+/// Materialize the V3 assessment beside the legacy signal row. This is kept
+/// separate from the legacy payload so shadow rollout and replay remain
+/// backward compatible.
+pub async fn materialize_contract_whale_impact_grades_nonblocking(
+    store: Option<SqliteStore>,
+    signals: Vec<ContractWhaleSignal>,
+    now_ms: i64,
+) -> anyhow::Result<Vec<ContractEventImpactAssessment>> {
+    let Some(store) = store else {
+        return Ok(Vec::new());
+    };
+    if signals.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || {
+        materialize_contract_whale_impact_grades(&store, &signals, now_ms)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("impact grade task failed: {error}"))?
+}
+
+fn materialize_contract_whale_impact_grades(
+    store: &SqliteStore,
+    signals: &[ContractWhaleSignal],
+    now_ms: i64,
+) -> anyhow::Result<Vec<ContractEventImpactAssessment>> {
+    let config = contract_whale_runtime_config();
+    let grade_repo = ContractEventGradeRepo::new(store.clone());
+    let mut baselines = std::collections::BTreeMap::<String, Option<RobustImpactBaseline>>::new();
+    let mut assessments = Vec::with_capacity(signals.len());
+    for signal in signals {
+        let profile = if signal.threshold_profile.trim().is_empty() {
+            "default".to_string()
+        } else {
+            signal.threshold_profile.clone()
+        };
+        let key_string = format!(
+            "{}:{}:{}",
+            signal.symbol.to_ascii_uppercase(),
+            signal.window_sec,
+            profile
+        );
+        if !baselines.contains_key(&key_string) {
+            let samples = store
+                .query_contract_whale_signals(&ContractWhaleSignalQuery {
+                    symbol: Some(signal.symbol.clone()),
+                    window_sec: Some(signal.window_sec),
+                    limit: config.impact_grade_v3.baseline_min_samples,
+                    ..ContractWhaleSignalQuery::default()
+                })?
+                .into_iter()
+                .map(|row| row.total_volume_btc)
+                .collect::<Vec<_>>();
+            baselines.insert(
+                key_string.clone(),
+                build_robust_impact_baseline(
+                    ImpactBaselineKey {
+                        symbol: signal.symbol.to_ascii_uppercase(),
+                        window_sec: signal.window_sec,
+                        threshold_profile: profile.clone(),
+                    },
+                    samples,
+                    config.impact_grade_v3.baseline_min_samples,
+                ),
+            );
+        }
+        let baseline = baselines.get(&key_string).and_then(Option::as_ref);
+        let robust_score =
+            baseline.and_then(|baseline| score_event_impact(signal.total_volume_btc, baseline));
+        let lifecycle_event_id = if signal.event_lifecycle.event_id.trim().is_empty() {
+            signal.id.clone()
+        } else {
+            signal.event_lifecycle.event_id.clone()
+        };
+        let sources = signal
+            .active_sources
+            .contract
+            .iter()
+            .map(|source| source.exchange.clone())
+            .collect::<Vec<_>>();
+        let price_move = signal.price_move_pct.map(f64::abs);
+        let liquidation_btc = (signal.liquidation_long_btc.max(0.0)
+            + signal.liquidation_short_btc.max(0.0))
+        .is_sign_positive()
+        .then(|| signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0));
+        let liquidation_usd =
+            (signal.liquidation_notional_usd > 0.0).then_some(signal.liquidation_notional_usd);
+        let unique_turnover_btc = signal.event_lifecycle.unique_turnover_btc;
+        let unique_turnover_usd = unique_turnover_btc.and_then(|volume| {
+            signal
+                .current_market_price_usd
+                .or(signal.order_price_usd)
+                .filter(|price| price.is_finite() && *price > 0.0)
+                .map(|price| volume * price)
+        });
+        let episode = ContractImpactEpisode {
+            episode_id: lifecycle_event_id,
+            symbol: signal.symbol.clone(),
+            start_time_ms: signal.event_lifecycle.start_time.max(signal.ts),
+            end_time_ms: signal.event_lifecycle.last_update_time.max(signal.ts),
+            source_event_ids: std::iter::once(signal.id.clone())
+                .chain(signal.merged_from.clone())
+                .collect(),
+            total_volume_btc: signal
+                .event_lifecycle
+                .peak_window_volume_btc
+                .max(signal.total_volume_btc),
+            total_notional_usd: signal.total_notional_usd.max(0.0),
+            net_volume_btc: signal.net_volume_btc,
+            unique_turnover_btc,
+            unique_turnover_notional_usd: unique_turnover_usd,
+            live_liquidation_btc: liquidation_btc,
+            live_liquidation_notional_usd: liquidation_usd,
+            peak_abs_price_move_pct: price_move,
+            peak_abs_oi_change_pct: signal.oi_change_pct.map(f64::abs),
+            confirmed_sources: sources,
+            data_quality: signal.data_quality,
+            robust_percentile: robust_score.map(|score| score.percentile),
+            robust_z: robust_score.map(|score| score.robust_z),
+            baseline_sample_count: robust_score.map(|score| score.sample_count).unwrap_or(0),
+        };
+        let assessment = assess_contract_impact_episode(&episode, &config, now_ms);
+        grade_repo.upsert_assessment(&assessment, now_ms)?;
+        assessments.push(assessment);
+    }
+    Ok(assessments)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContractWhalePersistenceOutcome {

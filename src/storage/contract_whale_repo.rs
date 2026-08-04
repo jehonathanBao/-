@@ -91,6 +91,7 @@ pub enum ContractWhaleDiscordOutboxStatus {
     Sending,
     Sent,
     DryRun,
+    Skipped,
     Retry,
     Dead,
 }
@@ -102,6 +103,7 @@ impl ContractWhaleDiscordOutboxStatus {
             Self::Sending => "sending",
             Self::Sent => "sent",
             Self::DryRun => "dry_run",
+            Self::Skipped => "skipped",
             Self::Retry => "retry",
             Self::Dead => "dead",
         }
@@ -1489,7 +1491,6 @@ impl ContractWhaleRepo for SqliteStore {
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
-        let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_write_connection(|conn| {
             let mut result = ContractWhaleRetentionPruneResult {
                 flow_cutoff_ts,
@@ -1498,27 +1499,17 @@ impl ContractWhaleRepo for SqliteStore {
                 ..ContractWhaleRetentionPruneResult::default()
             };
             if table_exists(conn, "contract_whale_signals")?
-                && column_exists(conn, "contract_whale_signals", "ts")?
-                && column_exists(conn, "contract_whale_signals", "severity")?
+                && table_exists(conn, "contract_event_impact_grades")?
             {
                 result.protected_s_count = conn.query_row(
-                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity = ?2",
-                    params![signal_cutoff_ts, s_severity.clone()],
-                    |row| row.get::<_, i64>(0),
-                )? as usize;
-            }
-            if table_exists(conn, "contract_whale_signals")?
-                && column_exists(conn, "contract_whale_signals", "ts")?
-                && column_exists(conn, "contract_whale_signals", "severity")?
-                && column_exists(conn, "contract_whale_signals", "net_volume_btc")?
-            {
-                result.protected_net_volume_count = conn.query_row(
-                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity != ?2 AND ABS(COALESCE(net_volume_btc, 0.0)) >= ?3",
-                    params![
-                        signal_cutoff_ts,
-                        s_severity.clone(),
-                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                    ],
+                    "SELECT COUNT(*) FROM contract_whale_signals s
+                       WHERE s.ts < ?1
+                         AND EXISTS (
+                           SELECT 1 FROM contract_event_impact_grades g
+                            WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                              AND g.state = 'confirmed' AND g.grade = 'S'
+                         )",
+                    params![signal_cutoff_ts],
                     |row| row.get::<_, i64>(0),
                 )? as usize;
             }
@@ -1564,7 +1555,8 @@ impl ContractWhaleRepo for SqliteStore {
                 &mut result.table_results,
             )?;
             // Retention tiers:
-            // - impact A/S, severity S, |net|>=500: permanent
+            // - only confirmed V3 S: permanent
+            // - legacy grades and detector severity: ordinary retention
             // - impact B: keep until impact_b_cutoff_ts (default 90d)
             // - everything else: keep until signal_cutoff_ts (default 7d)
             result.signal_deleted = prune_contract_table(
@@ -1573,13 +1565,11 @@ impl ContractWhaleRepo for SqliteStore {
                 "ts",
                 r#"
                 DELETE FROM contract_whale_signals
-                WHERE severity != ?1
-                  AND ABS(COALESCE(net_volume_btc, 0.0)) < ?2
-                  AND UPPER(COALESCE(
-                        json_extract(payload_json, '$.impactLevel'),
-                        json_extract(payload_json, '$.impact_level'),
-                        ''
-                      )) NOT IN ('A', 'S')
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM contract_event_impact_grades g
+                         WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
+                           AND g.state = 'confirmed' AND g.grade = 'S'
+                      )
                   AND (
                         (
                           UPPER(COALESCE(
@@ -1587,7 +1577,7 @@ impl ContractWhaleRepo for SqliteStore {
                             json_extract(payload_json, '$.impact_level'),
                             ''
                           )) = 'B'
-                          AND ts < ?3
+                          AND ts < ?1
                         )
                         OR
                         (
@@ -1596,13 +1586,11 @@ impl ContractWhaleRepo for SqliteStore {
                             json_extract(payload_json, '$.impact_level'),
                             ''
                           )) != 'B'
-                          AND ts < ?4
+                          AND ts < ?2
                         )
                   )
                 "#,
                 params![
-                    s_severity,
-                    CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
                     impact_b_cutoff_ts,
                     signal_cutoff_ts,
                 ],

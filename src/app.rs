@@ -41,9 +41,11 @@ use crate::{
         aggregator::aggregate_1s_buckets,
         collector_binance, collector_okx,
         config::contract_whale_runtime_config,
+        discord_gate::impact_grade_v3_discord_eligible,
         discord_notifier::{
             evaluate_contract_whale_discord_gate, global_contract_whale_discord_cooldown_store,
-            notify_contract_whale_discord, ContractWhaleDiscordSettings,
+            notify_contract_whale_discord, ContractWhaleDiscordGateDecision,
+            ContractWhaleDiscordSettings,
         },
         emission::{emission_key, fingerprint, should_emit},
         hourly_delta_alert::{HourlyDeltaAlertRuntime, HourlyDeltaRuntimeDiagnostics},
@@ -51,6 +53,7 @@ use crate::{
         outcome_calibration::evaluate_contract_whale_signal_outcome,
         persistence::{
             flush_contract_flow_buckets_nonblocking,
+            materialize_contract_whale_impact_grades_nonblocking,
             persist_contract_funding_snapshots_nonblocking,
             persist_contract_oi_snapshots_nonblocking, persist_contract_whale_signals_nonblocking,
             spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
@@ -68,6 +71,7 @@ use crate::{
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
     storage::{
+        contract_event_grade_repo::ContractEventGradeRepo,
         contract_whale_repo::{
             ContractWhaleDiscordOutboxStatus, ContractWhaleRepo, ContractWhaleSignalQuery,
         },
@@ -981,7 +985,47 @@ impl AppState {
         };
         let settings =
             ContractWhaleDiscordSettings::from_env(self.config().contract_whale_monitor.dry_run);
+        let grade_config = contract_whale_runtime_config().impact_grade_v3;
         for item in claimed {
+            let event_id = if item.signal.event_lifecycle.event_id.trim().is_empty() {
+                item.signal.id.clone()
+            } else {
+                item.signal.event_lifecycle.event_id.clone()
+            };
+            let grade_repo = ContractEventGradeRepo::new(store.clone());
+            let grade_version = grade_config.grade_version.clone();
+            let sent_event_id = event_id.clone();
+            let sent_grade_version = grade_version.clone();
+            let duplicate_s = tokio::task::spawn_blocking(move || {
+                let assessment = grade_repo.get_assessment(&event_id, &grade_version)?;
+                Ok::<bool, anyhow::Error>(assessment.is_some_and(|assessment| {
+                    matches!(
+                        assessment.grade,
+                        crate::contract_whale_monitor::impact_grade::ContractEventImpactGrade::S
+                    ) && grade_repo
+                        .alert_already_sent(&assessment.event_id, &assessment.grade_version)
+                        .unwrap_or(false)
+                }))
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(false);
+            if duplicate_s {
+                let finish_store = store.clone();
+                let signal_id = item.signal_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    finish_store.finish_contract_whale_discord_outbox(
+                        &signal_id,
+                        ContractWhaleDiscordOutboxStatus::Skipped,
+                        None,
+                        None,
+                        Some("confirmed_s_episode_already_sent"),
+                    )
+                })
+                .await;
+                continue;
+            }
             let outcome =
                 notify_contract_whale_discord(&settings, &item.signal, Some(store.clone())).await;
             let (status, next_attempt_at, sent_at, last_error) = if outcome.sent {
@@ -1035,6 +1079,19 @@ impl AppState {
                     "{} discord outbox finish failed",
                     CWM_LOG_PREFIX
                 );
+            }
+            if outcome.sent {
+                let marker_store = store.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    ContractEventGradeRepo::new(marker_store).mark_alert_sent(
+                        &sent_event_id,
+                        &sent_grade_version,
+                        outcome
+                            .sent_at_ms
+                            .unwrap_or_else(crate::normalizers::trade::now_ms),
+                    )
+                })
+                .await;
             }
         }
     }
@@ -1430,18 +1487,58 @@ impl AppState {
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
             let signals = self.filter_contract_whale_emissions(response.items);
+            let impact_assessments = materialize_contract_whale_impact_grades_nonblocking(
+                store.clone(),
+                signals.clone(),
+                crate::normalizers::trade::now_ms(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    event = cwm_log_events::ERROR,
+                    error = %error,
+                    "{} impact grade materialization failed",
+                    CWM_LOG_PREFIX
+                );
+                Vec::new()
+            });
+            let v3_delivery_enabled = runtime_config.impact_grade_v3.enabled
+                && !runtime_config.impact_grade_v3.shadow_mode;
             if contract_whale_discord_outbox_enabled() {
                 let cooldown_store = global_contract_whale_discord_cooldown_store();
                 let now = crate::normalizers::trade::now_ms();
                 let queued = signals
                     .iter()
                     .filter(|signal| {
-                        let decision = evaluate_contract_whale_discord_gate(
+                        let legacy_decision = evaluate_contract_whale_discord_gate(
                             &settings,
                             signal,
                             cooldown_store,
                             now,
                         );
+                        let v3_assessment = impact_assessments.iter().find(|assessment| {
+                            assessment.event_id
+                                == if signal.event_lifecycle.event_id.trim().is_empty() {
+                                    signal.id.as_str()
+                                } else {
+                                    signal.event_lifecycle.event_id.as_str()
+                                }
+                        });
+                        let decision = if v3_delivery_enabled {
+                            let allowed =
+                                v3_assessment.is_some_and(impact_grade_v3_discord_eligible);
+                            ContractWhaleDiscordGateDecision {
+                                allowed,
+                                reason: if allowed {
+                                    "v3_confirmed_grade".to_string()
+                                } else {
+                                    "v3_not_confirmed".to_string()
+                                },
+                            }
+                        } else {
+                            legacy_decision
+                        };
                         self.record_scan_log(
                             if decision.allowed { "info" } else { "debug" },
                             if decision.allowed {

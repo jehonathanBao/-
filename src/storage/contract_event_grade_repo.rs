@@ -116,4 +116,18 @@ impl ContractEventGradeRepo {
             Ok(changed == 1)
         })
     }
+
+    pub fn alert_already_sent(&self, event_id: &str, grade_version: &str) -> anyhow::Result<bool> {
+        self.store.with_connection(|conn| {
+            let sent: Option<i64> = conn
+                .query_row(
+                    "SELECT discord_sent_at_ms FROM contract_event_impact_grades
+                      WHERE event_id = ?1 AND grade_version = ?2",
+                    params![event_id, grade_version],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok(sent.is_some())
+        })
+    }
 }

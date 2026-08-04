@@ -1,3 +1,4 @@
+use btc_toxic_flow_monitor_rs::contract_whale_monitor::discord_gate::impact_grade_v3_discord_eligible;
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::impact_baseline::{
     build_robust_impact_baseline, score_event_impact, ImpactBaselineKey,
 };
@@ -228,4 +229,53 @@ fn impact_grade_defaults_are_conservative_and_validation_rejects_inverted_thresh
     invalid = defaults.impact_grade_v3.clone();
     invalid.s.min_abs_price_move_pct = f64::NAN;
     assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn historical_impact_fixtures_keep_ordinary_flow_below_s_and_confirm_systemic_anchors() {
+    let config = ContractWhaleRuntimeConfig::default();
+    let ordinary: ContractImpactEpisode = serde_json::from_str(include_str!(
+        "fixtures/contract_whale_impact/ordinary-2026-07.json"
+    ))
+    .unwrap();
+    let march_2020: ContractImpactEpisode = serde_json::from_str(include_str!(
+        "fixtures/contract_whale_impact/btc-2020-03-12.json"
+    ))
+    .unwrap();
+    let october_2025: ContractImpactEpisode = serde_json::from_str(include_str!(
+        "fixtures/contract_whale_impact/btc-2025-10-10.json"
+    ))
+    .unwrap();
+
+    let ordinary_assessment = assess_contract_impact_episode(&ordinary, &config, 1_800_000_000_000);
+    assert_ne!(ordinary_assessment.grade, ContractEventImpactGrade::S);
+    assert_eq!(ordinary_assessment.state, ImpactGradeState::Confirmed);
+
+    for anchor in [march_2020, october_2025] {
+        let assessment = assess_contract_impact_episode(&anchor, &config, 1_800_000_000_000);
+        assert_eq!(assessment.grade, ContractEventImpactGrade::S);
+        assert_eq!(assessment.state, ImpactGradeState::Confirmed);
+        assert!(impact_grade_v3_discord_eligible(&assessment));
+    }
+}
+
+#[test]
+fn provisional_a_and_confirmed_c_never_enter_v3_discord_gate() {
+    let mut episode = base_episode();
+    episode.total_volume_btc = 25_000.0;
+    episode.total_notional_usd = 1_500_000_000.0;
+    episode.peak_abs_price_move_pct = Some(2.5);
+    episode.robust_percentile = Some(99.99);
+    episode.robust_z = Some(8.0);
+    let mut assessment = assess_contract_impact_episode(
+        &episode,
+        &ContractWhaleRuntimeConfig::default(),
+        1_700_000_100_000,
+    );
+    assert_eq!(assessment.grade, ContractEventImpactGrade::A);
+    assert_eq!(assessment.state, ImpactGradeState::Provisional);
+    assert!(!impact_grade_v3_discord_eligible(&assessment));
+    assessment.grade = ContractEventImpactGrade::C;
+    assessment.state = ImpactGradeState::Confirmed;
+    assert!(!impact_grade_v3_discord_eligible(&assessment));
 }
