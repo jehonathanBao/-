@@ -1320,6 +1320,8 @@ pub struct ContractWhaleSignal {
     pub price_response_type: ContractWhalePriceResponseType,
     #[serde(default, flatten)]
     pub classification_v2: ContractWhaleClassificationV2,
+    #[serde(default)]
+    pub behavior_assessment: super::behavior::BehaviorAssessment,
     pub main_exchange: Option<String>,
     #[serde(default)]
     pub market_type: ContractWhaleMarketType,

@@ -2825,7 +2825,7 @@ const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSig
           <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
           <HeaderCell>价格</HeaderCell>
           <HeaderCell>价格偏离</HeaderCell>
-          <HeaderCell>主力评分</HeaderCell>
+          <HeaderCell title="主力行为判断与市场冲击等级分离">主力行为</HeaderCell>
           <HeaderCell>轨迹</HeaderCell>
           <HeaderCell>现货 / 合约</HeaderCell>
           <HeaderCell>净方向</HeaderCell>
@@ -2896,7 +2896,7 @@ const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSig
             </Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
             <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
-            <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
+            <Cell><BehaviorAssessmentCell item={item} /></Cell>
             <Cell>{clusterTableLabel(item)}</Cell>
             <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
             <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
@@ -4295,6 +4295,35 @@ function SignalTypeSummary({ item }) {
       <span className="mt-1 whitespace-normal text-[10px] leading-4 text-slate-500">
         {signalClassificationMeta(item)}
       </span>
+    </span>
+  );
+}
+
+function BehaviorAssessmentCell({ item }) {
+  const state = String(item?.behaviorState || "insufficient").toLowerCase();
+  const type = String(item?.behaviorType || "insufficient_evidence").toLowerCase();
+  const stateLabel = {
+    confirmed: "已确认",
+    provisional: "候选",
+    insufficient: "证据不足",
+    invalidated: "已失效",
+  }[state] || "证据不足";
+  const typeLabel = {
+    new_long_build: "新多建仓",
+    new_short_build: "新空建仓",
+    short_covering: "空头回补",
+    long_unwind: "多头平仓",
+    downside_absorption: "下方吸收",
+    upside_suppression: "上方压制",
+    liquidation_sweep: "清算驱动",
+    insufficient_evidence: "普通成交流",
+  }[type] || "普通成交流";
+  const confidence = Math.round(Number(item?.behaviorConfidence || 0));
+  const tone = state === "confirmed" ? "text-emerald-300" : state === "provisional" ? "text-amber-300" : "text-slate-500";
+  return (
+    <span className="flex min-w-[112px] flex-col leading-tight" title={`${item?.behaviorRationale || ""}\n支持：${(item?.behaviorSupportingEvidence || []).join(" · ")}\n反证：${(item?.behaviorCounterEvidence || []).join(" · ")}`}>
+      <span className={`font-semibold ${tone}`}>{typeLabel}</span>
+      <span className="mt-1 text-[10px] text-slate-500">{stateLabel} · {confidence}/100</span>
     </span>
   );
 }

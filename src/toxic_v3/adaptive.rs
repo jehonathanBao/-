@@ -162,20 +162,15 @@ impl AdaptiveEngine {
             predicted: adjustment.proposed_parameters.global_alert_threshold,
             actual: before,
             error: adjustment.proposed_parameters.global_alert_threshold - before,
-            parameter: format!(
-                "global_alert_threshold@{:?}",
-                regime_ctx.regime
-            ),
+            parameter: format!("global_alert_threshold@{:?}", regime_ctx.regime),
         });
         adjustment
             .safety_notes
             .push("regime_aware_shadow_only".to_string());
-        adjustment
-            .safety_notes
-            .push(format!(
-                "regime={:?};confidence={:.3};factor={:.3}",
-                regime_ctx.regime, regime_ctx.confidence, factor
-            ));
+        adjustment.safety_notes.push(format!(
+            "regime={:?};confidence={:.3};factor={:.3}",
+            regime_ctx.regime, regime_ctx.confidence, factor
+        ));
         adjustment
     }
 }

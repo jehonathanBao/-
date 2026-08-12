@@ -397,7 +397,9 @@ async fn contract_events_default_to_compact_tape_payload_without_source_signal()
         "include_source_signal=true must keep nested sourceSignal for detail enrichment"
     );
     assert!(
-        serde_json::to_vec(&compact_payload).expect("compact bytes").len()
+        serde_json::to_vec(&compact_payload)
+            .expect("compact bytes")
+            .len()
             < serde_json::to_vec(&full_payload).expect("full bytes").len(),
         "compact payload must be smaller than full payload"
     );
@@ -463,6 +465,9 @@ async fn contract_events_include_resolved_oi_context_fields() {
     assert_eq!(item["oiDeltaPct"], 0.42);
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
+    assert_eq!(item["behaviorType"], "insufficient_evidence");
+    assert_eq!(item["behaviorState"], "insufficient");
+    assert_eq!(item["behaviorMainForceConfirmed"], false);
     assert!(
         item.get("flowDirection").and_then(|v| v.as_str()).is_some(),
         "compact tape must promote flowDirection after stripping sourceSignal"

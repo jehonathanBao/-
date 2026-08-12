@@ -32,6 +32,30 @@ describe("contract whale api", () => {
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
 
+  it("normalizes evidence-first behavior assessment fields", () => {
+    const signal = normalizeContractWhaleSignal({
+      id: "behavior-1",
+      symbol: "BTC",
+      signalType: "aggressive_buy",
+      behaviorType: "short_covering",
+      behaviorState: "provisional",
+      behaviorConfidence: 62,
+      behaviorMainForceConfirmed: false,
+      behaviorSupportingEvidence: ["OI 方向一致"],
+      behaviorCounterEvidence: ["OI 下降反对新多头建仓"],
+      behaviorRationale: "更像空头回补",
+    });
+
+    expect(signal).toMatchObject({
+      behaviorType: "short_covering",
+      behaviorState: "provisional",
+      behaviorConfidence: 62,
+      behaviorMainForceConfirmed: false,
+      behaviorRationale: "更像空头回补",
+    });
+    expect(signal.behaviorCounterEvidence).toContain("oi 下降反对新多头建仓");
+  });
+
   it("preserves lifecycle snapshot semantics and OI evidence coverage", () => {
     const signal = normalizeContractWhaleSignal({
       id: "signal-1",

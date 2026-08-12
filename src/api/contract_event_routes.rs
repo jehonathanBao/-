@@ -73,6 +73,13 @@ pub struct ContractEventItem {
     pub direction: String,
     pub net_direction: String,
     pub main_force_score: Option<u8>,
+    pub behavior_type: String,
+    pub behavior_state: String,
+    pub behavior_confidence: u8,
+    pub behavior_main_force_confirmed: bool,
+    pub behavior_supporting_evidence: Vec<String>,
+    pub behavior_counter_evidence: Vec<String>,
+    pub behavior_rationale: String,
     pub exchange_spot_count: usize,
     pub exchange_contract_count: usize,
     pub source: String,
@@ -527,7 +534,10 @@ fn contract_events_wire_response(page: ContractEventPage, include_source_signal:
         )
             .into_response();
     };
-    if let Some(items) = value.get_mut("items").and_then(|items| items.as_array_mut()) {
+    if let Some(items) = value
+        .get_mut("items")
+        .and_then(|items| items.as_array_mut())
+    {
         for item in items {
             promote_contract_event_tape_fields(item);
             if !include_source_signal {
@@ -1497,6 +1507,22 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
         direction: direction_key.to_string(),
         net_direction: event.direction_bias.clone(),
         main_force_score: source_signal.main_force_score,
+        behavior_type: serde_json::to_value(source_signal.behavior_assessment.behavior_type)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "insufficient_evidence".to_string()),
+        behavior_state: serde_json::to_value(source_signal.behavior_assessment.state)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "insufficient".to_string()),
+        behavior_confidence: source_signal.behavior_assessment.confidence,
+        behavior_main_force_confirmed: source_signal.behavior_assessment.main_force_confirmed,
+        behavior_supporting_evidence: source_signal
+            .behavior_assessment
+            .supporting_evidence
+            .clone(),
+        behavior_counter_evidence: source_signal.behavior_assessment.counter_evidence.clone(),
+        behavior_rationale: source_signal.behavior_assessment.rationale.clone(),
         exchange_spot_count,
         exchange_contract_count,
         source: "contract_whale_signals".to_string(),

@@ -117,9 +117,7 @@ impl VpinService {
     }
 
     pub fn get_state(&self) -> VpinState {
-        let adjusted = self
-            .regime_manager
-            .adjusted_vpin_params(&self.base_params);
+        let adjusted = self.regime_manager.adjusted_vpin_params(&self.base_params);
         let mut engine = self.engine.write();
         engine.apply_threshold_params(&adjusted);
         engine.get_state(now_ms())

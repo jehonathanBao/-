@@ -2,6 +2,7 @@
 //! blocks orders, transfers funds, or modifies exchange account state.
 
 pub mod aggregator;
+pub mod behavior;
 pub mod classification;
 pub mod cluster;
 pub mod collector_binance;

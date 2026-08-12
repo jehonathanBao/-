@@ -425,8 +425,7 @@ impl MarketRegimeService {
         let service = self.clone();
         let interval_ms = self.refresh_interval_ms;
         let handle = tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
             loop {
                 interval.tick().await;
                 let features = provider();

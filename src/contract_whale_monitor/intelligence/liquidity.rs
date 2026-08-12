@@ -56,6 +56,58 @@ pub fn behavior_for_signal(signal: &ContractWhaleSignal) -> &'static str {
 fn classify_liquidity_behavior(
     signal: &ContractWhaleSignal,
 ) -> (&'static str, &'static str, &'static str) {
+    match signal.behavior_assessment.behavior_type {
+        crate::contract_whale_monitor::behavior::BehaviorType::NewLongBuild => {
+            return (
+                "new_long_build",
+                "New Long Build",
+                "OI 上升、主动买入和价格跟随共同确认新多头建仓。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::NewShortBuild => {
+            return (
+                "new_short_build",
+                "New Short Build",
+                "OI 上升、主动卖出和价格跟随共同确认新空头建仓。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::ShortCovering => {
+            return (
+                "short_covering",
+                "Short Covering",
+                "主动买入伴随 OI 下降，优先解释为空头回补。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::LongUnwind => {
+            return (
+                "long_unwind",
+                "Long Unwind",
+                "主动卖出伴随 OI 下降，优先解释为多头平仓。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::LiquidationSweep => {
+            return (
+                "liquidation_sweep",
+                "Liquidation Sweep",
+                "清算驱动事件进入影响通道，不认定为主力主动建仓。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::DownsideAbsorption => {
+            return (
+                "absorption",
+                "Absorption",
+                "卖压释放后价格未继续下破，形成下方吸收候选。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::UpsideSuppression => {
+            return (
+                "suppression",
+                "Suppression",
+                "买压未能推动价格上行，形成上方压制候选。",
+            )
+        }
+        crate::contract_whale_monitor::behavior::BehaviorType::InsufficientEvidence => {}
+    }
     if signal.liquidation_suspected || signal.liquidation_ratio.unwrap_or_default() >= 0.10 {
         return (
             "liquidity_sweep",

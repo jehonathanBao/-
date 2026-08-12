@@ -577,6 +577,19 @@ fn decorate_item_with_tof_observation(
         .and_then(|value| value.as_str().map(str::to_string));
     let cwm_contribution =
         build_cwm_risk_contribution_for_candidate(&symbol, cwm_signal, created_at_ms, now_ms);
+    let behavior_type = cwm_signal.and_then(|signal| {
+        serde_json::to_value(signal.behavior_assessment.behavior_type)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+    });
+    let behavior_state = cwm_signal.and_then(|signal| {
+        serde_json::to_value(signal.behavior_assessment.state)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+    });
+    let behavior_confidence = cwm_signal.map(|signal| signal.behavior_assessment.confidence);
+    let behavior_main_force_confirmed =
+        cwm_signal.map(|signal| signal.behavior_assessment.main_force_confirmed);
     let risk_systems = build_split_risk_systems(SplitRiskSystemsInput {
         ts_ms: created_at_ms,
         symbol: &symbol,
@@ -901,6 +914,22 @@ fn decorate_item_with_tof_observation(
         serde_json::json!(market_structure.map(|score| score.cwm_score)),
     );
     object.insert(
+        "behaviorType".to_string(),
+        serde_json::json!(behavior_type.clone()),
+    );
+    object.insert(
+        "behaviorState".to_string(),
+        serde_json::json!(behavior_state.clone()),
+    );
+    object.insert(
+        "behaviorConfidence".to_string(),
+        serde_json::json!(behavior_confidence),
+    );
+    object.insert(
+        "behaviorMainForceConfirmed".to_string(),
+        serde_json::json!(behavior_main_force_confirmed),
+    );
+    object.insert(
         "marketStructureReasons".to_string(),
         serde_json::to_value(market_structure.map(|score| &score.reasons))
             .unwrap_or(serde_json::Value::Null),
@@ -1002,6 +1031,10 @@ fn decorate_item_with_tof_observation(
         market_structure_confidence: market_structure.map(|score| score.confidence),
         market_structure_data_quality: market_structure.map(|score| score.data_quality),
         market_structure_severity: market_structure.map(|score| score.severity.clone()),
+        behavior_type,
+        behavior_state,
+        behavior_confidence,
+        behavior_main_force_confirmed,
         regime_type: market_structure.map(|score| score.regime_type.clone()),
         spot_score: market_structure.map(|score| score.spot_score),
         contract_score: market_structure.map(|score| score.contract_score),
@@ -1334,6 +1367,7 @@ mod tests {
             price_move_30s_pct: None,
             price_response_type: ContractWhalePriceResponseType::TrendFollowUp,
             classification_v2: Default::default(),
+            behavior_assessment: Default::default(),
             main_exchange: Some("binance".to_string()),
             market_type: ContractWhaleMarketType::Perp,
             source_role: ContractWhaleSourceRole::Primary,

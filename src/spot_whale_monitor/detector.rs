@@ -168,8 +168,8 @@ fn classify_severity(
     let medium_quality_ok = stats.dominance >= 0.55 && stats.data_quality >= 60;
     let medium_volume_ok =
         stats.total_volume_base >= thresholds.high_base * 0.50 || dynamic_multiple >= 4.0;
-    let medium_notional_ok = stats.total_notional_usd >= thresholds.high_notional_usd * 0.20
-        || dynamic_multiple >= 4.0;
+    let medium_notional_ok =
+        stats.total_notional_usd >= thresholds.high_notional_usd * 0.20 || dynamic_multiple >= 4.0;
     if medium_quality_ok
         && medium_volume_ok
         && medium_notional_ok

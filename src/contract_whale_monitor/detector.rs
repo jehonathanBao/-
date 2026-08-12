@@ -1,4 +1,5 @@
 use super::{
+    behavior::{assess_contract_whale_behavior, BehaviorAssessmentInput},
     classification::classify_contract_whale_signal_v2,
     config::{
         contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
@@ -210,6 +211,19 @@ pub fn inspect_contract_whale_signal_with_config(
     let total_volume = round(stats.total_volume_btc, 3);
     let net_volume = round(stats.net_volume_btc, 3);
     let final_result = final_result_text(&classification_v2, liquidation_suspected);
+    let behavior_assessment = assess_contract_whale_behavior(&BehaviorAssessmentInput {
+        signal_type,
+        oi_context: classification_v2.oi_context,
+        oi_available: classification_v2.oi_available,
+        oi_evidence_degraded: classification_v2.oi_evidence_degraded,
+        price_move_pct: scoring_stats.price_move_pct,
+        price_response_type,
+        multi_exchange_confirmed,
+        data_quality: scoring_stats.data_quality,
+        dominance: scoring_stats.dominance,
+        liquidation_suspected,
+        liquidation_total_btc: scoring_stats.liquidation_context.total_liq_btc,
+    });
     let signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
@@ -246,6 +260,7 @@ pub fn inspect_contract_whale_signal_with_config(
         price_move_30s_pct: price_move_for_window(&scoring_stats, 30),
         price_response_type,
         classification_v2,
+        behavior_assessment,
         main_exchange: scoring_stats.main_exchange.clone(),
         market_type: ContractWhaleMarketType::Perp,
         source_role: signal_source_role(&scoring_stats, config),

@@ -96,6 +96,13 @@ pub struct DiscordNotificationRequest {
     pub market_structure_confidence: Option<f64>,
     pub market_structure_data_quality: Option<f64>,
     pub market_structure_severity: Option<String>,
+    /// Evidence-first behavior lane. Runtime-generated requests populate this
+    /// so ordinary impact/volume observations cannot masquerade as main-force
+    /// behavior notifications.
+    pub behavior_type: Option<String>,
+    pub behavior_state: Option<String>,
+    pub behavior_confidence: Option<u8>,
+    pub behavior_main_force_confirmed: Option<bool>,
     pub regime_type: Option<String>,
     pub spot_score: Option<u8>,
     pub contract_score: Option<u8>,
@@ -769,6 +776,13 @@ pub fn evaluate_discord_alert_gate(
     let auto_push_enabled = discord_auto_push_enabled(family);
     let dry_run = discord_dry_run();
     let configured = discord_webhook_url(signal).is_some();
+    if family == "MARKET_STRUCTURE"
+        && !matches!(mode, DiscordAlertMode::Preview)
+        && behavior_lane_is_present(signal)
+        && !behavior_lane_allows_push(signal)
+    {
+        return behavior_rejection_decision(signal, gate, auto_push_enabled, dry_run, configured);
+    }
     match family {
         "MARKET_STRUCTURE" => evaluate_market_structure_gate(
             signal,
@@ -779,6 +793,60 @@ pub fn evaluate_discord_alert_gate(
             configured,
         ),
         _ => evaluate_short_toxic_gate(signal, &gate, mode, auto_push_enabled, dry_run, configured),
+    }
+}
+
+fn behavior_lane_is_present(signal: &DiscordNotificationRequest) -> bool {
+    signal.behavior_type.is_some()
+        || signal.behavior_state.is_some()
+        || signal.behavior_main_force_confirmed.is_some()
+}
+
+fn behavior_lane_allows_push(signal: &DiscordNotificationRequest) -> bool {
+    let behavior_type = signal
+        .behavior_type
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if behavior_type == "liquidation_sweep" {
+        // Liquidation is an impact lane; it must not be mislabeled as a
+        // confirmed main-force behavior, but it may still pass the existing
+        // market-impact gate.
+        return true;
+    }
+    signal
+        .behavior_state
+        .as_deref()
+        .is_some_and(|state| state.eq_ignore_ascii_case("confirmed"))
+        && signal.behavior_main_force_confirmed == Some(true)
+        && signal.behavior_confidence.unwrap_or(0) >= 80
+        && behavior_type != "insufficient_evidence"
+}
+
+fn behavior_rejection_decision(
+    signal: &DiscordNotificationRequest,
+    gate: AlertGate,
+    auto_push_enabled: bool,
+    dry_run: bool,
+    configured: bool,
+) -> AlertGateDecision {
+    AlertGateDecision {
+        allowed: false,
+        reason: "behavior_not_confirmed",
+        severity_allowed: severity_allows(signal.level.as_deref()),
+        score: signal.main_force_score.unwrap_or(signal.score.unwrap_or(0)),
+        confidence: signal
+            .behavior_confidence
+            .map(f64::from)
+            .unwrap_or_else(|| signal.confidence.unwrap_or(0.0)),
+        data_quality: signal.data_quality.unwrap_or(0.0),
+        min_score: gate.min_score,
+        min_confidence: gate.min_confidence,
+        min_data_quality: gate.min_data_quality,
+        auto_push_enabled,
+        dry_run,
+        configured,
     }
 }
 
@@ -1272,6 +1340,27 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
     let regime_label = market_structure_regime_label(regime_type);
     let severity = market_structure_severity_label(signal);
     let direction = market_structure_direction_from_bias(structure_bias);
+    let behavior_type = signal
+        .behavior_type
+        .as_deref()
+        .unwrap_or("insufficient_evidence");
+    let behavior_state = signal.behavior_state.as_deref().unwrap_or("insufficient");
+    let behavior_label = match behavior_type {
+        "new_long_build" => "新多建仓",
+        "new_short_build" => "新空建仓",
+        "short_covering" => "空头回补",
+        "long_unwind" => "多头平仓",
+        "downside_absorption" => "下方吸收",
+        "upside_suppression" => "上方压制",
+        "liquidation_sweep" => "清算驱动",
+        _ => "普通成交流",
+    };
+    let behavior_state_label = match behavior_state {
+        "confirmed" => "已确认",
+        "provisional" => "候选",
+        "invalidated" => "已失效",
+        _ => "证据不足",
+    };
     let extreme_template = matches!(
         market_structure_trigger(signal, &AlertGate::from_env("MARKET_STRUCTURE")),
         Some(MarketStructureTrigger::ExtremeImpact | MarketStructureTrigger::ImpactLevel)
@@ -1360,6 +1449,14 @@ fn market_structure_payload(signal: &DiscordNotificationRequest) -> DiscordWebho
         DiscordEmbedField {
             name: "通知链路".to_string(),
             value: "主力结构异动".to_string(),
+            inline: true,
+        },
+        DiscordEmbedField {
+            name: "主力行为".to_string(),
+            value: format!(
+                "{behavior_label} · {behavior_state_label} · {}/100",
+                signal.behavior_confidence.unwrap_or(0)
+            ),
             inline: true,
         },
     ];
@@ -1699,6 +1796,9 @@ pub fn discord_payload_for_tests(signal: &DiscordNotificationRequest) -> Discord
 }
 
 pub fn preferred_discord_alert_family(signal: &DiscordNotificationRequest) -> &'static str {
+    if behavior_lane_is_present(signal) {
+        return "market_structure";
+    }
     if market_structure_trigger(signal, &AlertGate::from_env("MARKET_STRUCTURE")).is_some() {
         "market_structure"
     } else {
@@ -1897,6 +1997,10 @@ fn hydrate_authoritative_short_toxic_request(
         request.market_structure_confidence = authoritative.market_structure_confidence;
         request.market_structure_data_quality = authoritative.market_structure_data_quality;
         request.market_structure_severity = authoritative.market_structure_severity.clone();
+        request.behavior_type = authoritative.behavior_type.clone();
+        request.behavior_state = authoritative.behavior_state.clone();
+        request.behavior_confidence = authoritative.behavior_confidence;
+        request.behavior_main_force_confirmed = authoritative.behavior_main_force_confirmed;
         request.regime_type = authoritative.regime_type.clone();
         request.spot_score = authoritative.spot_score;
         request.contract_score = authoritative.contract_score;
@@ -2032,6 +2136,10 @@ fn clear_client_controlled_alert_content(request: &mut DiscordNotificationReques
     request.market_structure_confidence = None;
     request.market_structure_data_quality = None;
     request.market_structure_severity = None;
+    request.behavior_type = None;
+    request.behavior_state = None;
+    request.behavior_confidence = None;
+    request.behavior_main_force_confirmed = None;
     request.regime_type = None;
     request.spot_score = None;
     request.contract_score = None;
@@ -2962,6 +3070,47 @@ mod tests {
     }
 
     #[test]
+    fn behavior_lane_blocks_ordinary_volume_even_when_impact_scores_are_high() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("DRY_RUN", "false");
+        std::env::set_var(
+            "SHORT_TOXIC_ORDER_DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/test-id/test-token",
+        );
+        let mut ordinary = request(Some(99), Some(99.0));
+        ordinary.main_force_score = Some(99);
+        ordinary.behavior_type = Some("insufficient_evidence".to_string());
+        ordinary.behavior_state = Some("insufficient".to_string());
+        ordinary.behavior_confidence = Some(0);
+        ordinary.behavior_main_force_confirmed = Some(false);
+        let decision = evaluate_discord_alert_gate(&ordinary, DiscordAlertMode::Auto);
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason, "behavior_not_confirmed");
+        std::env::remove_var("SHORT_TOXIC_ORDER_DISCORD_WEBHOOK_URL");
+        std::env::remove_var("DRY_RUN");
+    }
+
+    #[test]
+    fn behavior_lane_allows_only_confirmed_main_force_behavior() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var("DRY_RUN", "false");
+        std::env::set_var(
+            "SHORT_TOXIC_ORDER_DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/test-id/test-token",
+        );
+        let mut confirmed = request(Some(99), Some(99.0));
+        confirmed.main_force_score = Some(99);
+        confirmed.behavior_type = Some("new_long_build".to_string());
+        confirmed.behavior_state = Some("confirmed".to_string());
+        confirmed.behavior_confidence = Some(86);
+        confirmed.behavior_main_force_confirmed = Some(true);
+        let decision = evaluate_discord_alert_gate(&confirmed, DiscordAlertMode::Auto);
+        assert!(decision.allowed);
+        std::env::remove_var("SHORT_TOXIC_ORDER_DISCORD_WEBHOOK_URL");
+        std::env::remove_var("DRY_RUN");
+    }
+
+    #[test]
     fn unavailable_null_metric_dtos_deserialize_as_absent() {
         let null_metrics: DiscordNotificationRequest = serde_json::from_value(serde_json::json!({
             "tofMetrics": null,
@@ -3108,6 +3257,10 @@ mod tests {
             market_structure_confidence: None,
             market_structure_data_quality: None,
             market_structure_severity: None,
+            behavior_type: None,
+            behavior_state: None,
+            behavior_confidence: None,
+            behavior_main_force_confirmed: None,
             regime_type: None,
             spot_score: None,
             contract_score: None,

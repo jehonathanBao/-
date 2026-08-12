@@ -1254,6 +1254,7 @@ fn sample_cwm_signal() -> ContractWhaleSignal {
         price_move_30s_pct: None,
         price_response_type: ContractWhalePriceResponseType::TrendFollowUp,
         classification_v2: Default::default(),
+        behavior_assessment: Default::default(),
         main_exchange: Some("binance".to_string()),
         market_type: ContractWhaleMarketType::Perp,
         source_role: ContractWhaleSourceRole::Primary,

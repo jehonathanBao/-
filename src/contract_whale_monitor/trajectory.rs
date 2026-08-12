@@ -89,7 +89,7 @@ fn reconstruct_trajectory(
 
 fn action_type(signal: &ContractWhaleSignal) -> &'static str {
     if signal.liquidation_suspected {
-        return "stop_hunt";
+        return "liquidation_sweep";
     }
     match signal.signal_type {
         ContractWhaleSignalType::AggressiveBuy => "aggressive_buy",
@@ -105,7 +105,7 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
     }
     let stop_hunt_count = actions
         .iter()
-        .filter(|action| action.action_type == "stop_hunt")
+        .filter(|action| action.action_type == "liquidation_sweep")
         .count();
     let buy_pressure = actions
         .iter()
@@ -122,7 +122,7 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
         .filter(|action| {
             matches!(
                 action.action_type.as_str(),
-                "aggressive_sell" | "liquidity_probe" | "stop_hunt"
+                "aggressive_sell" | "liquidity_probe" | "liquidation_sweep"
             )
         })
         .map(|action| action.volume)
@@ -147,7 +147,7 @@ fn compact_regime_path(actions: &[ContractWhaleAction]) -> Vec<String> {
         let regime = match action.action_type.as_str() {
             "aggressive_buy" | "passive_absorb" => "accumulation",
             "aggressive_sell" => "distribution",
-            "stop_hunt" | "liquidity_probe" => "manipulation",
+            "liquidation_sweep" | "liquidity_probe" => "manipulation",
             _ => "unclear",
         };
         if path.last().is_none_or(|last| last != regime) {

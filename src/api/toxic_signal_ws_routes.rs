@@ -118,6 +118,10 @@ pub struct ToxicSignalWsItem {
     pub market_structure_confidence: Option<f64>,
     pub market_structure_data_quality: Option<f64>,
     pub structure_raw: Option<f64>,
+    pub behavior_type: Option<String>,
+    pub behavior_state: Option<String>,
+    pub behavior_confidence: Option<u8>,
+    pub behavior_main_force_confirmed: Option<bool>,
     pub spot_contract_floor: Option<u8>,
     pub duration_score: Option<u8>,
     pub liquidation_penalty: Option<f64>,
@@ -501,6 +505,19 @@ fn redact_signal_item(
     let market_structure_confidence = market_structure.map(|score| score.confidence);
     let market_structure_data_quality = market_structure.map(|score| score.data_quality);
     let structure_raw = market_structure.map(|score| score.structure_raw);
+    let behavior_type = cwm_signal.and_then(|signal| {
+        serde_json::to_value(signal.behavior_assessment.behavior_type)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    });
+    let behavior_state = cwm_signal.and_then(|signal| {
+        serde_json::to_value(signal.behavior_assessment.state)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+    });
+    let behavior_confidence = cwm_signal.map(|signal| signal.behavior_assessment.confidence);
+    let behavior_main_force_confirmed =
+        cwm_signal.map(|signal| signal.behavior_assessment.main_force_confirmed);
     let spot_contract_floor = market_structure.map(|score| score.spot_contract_floor);
     let duration_score = market_structure.map(|score| score.duration_score);
     let liquidation_penalty = market_structure.map(|score| score.liquidation_penalty);
@@ -601,6 +618,10 @@ fn redact_signal_item(
         market_structure_confidence,
         market_structure_data_quality,
         market_structure_severity: market_structure_severity.clone(),
+        behavior_type: behavior_type.clone(),
+        behavior_state: behavior_state.clone(),
+        behavior_confidence,
+        behavior_main_force_confirmed,
         regime_type: regime_type.clone(),
         spot_score,
         contract_score,
@@ -712,6 +733,10 @@ fn redact_signal_item(
         market_structure_confidence,
         market_structure_data_quality,
         structure_raw,
+        behavior_type,
+        behavior_state,
+        behavior_confidence,
+        behavior_main_force_confirmed,
         spot_contract_floor,
         duration_score,
         liquidation_penalty,

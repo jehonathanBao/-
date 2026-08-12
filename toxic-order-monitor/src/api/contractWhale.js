@@ -1344,6 +1344,13 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
     direction: item?.direction || normalized.direction,
     dominance: numberOrNull(item?.dominance) ?? normalized.dominance,
     mainForceScore: numberOrNull(item?.mainForceScore ?? item?.main_force_score) ?? normalized.mainForceScore,
+    behaviorType: String(item?.behaviorType ?? item?.behavior_type ?? normalized.behaviorType ?? "insufficient_evidence").toLowerCase(),
+    behaviorState: String(item?.behaviorState ?? item?.behavior_state ?? normalized.behaviorState ?? "insufficient").toLowerCase(),
+    behaviorConfidence: numberOrNull(item?.behaviorConfidence ?? item?.behavior_confidence) ?? normalized.behaviorConfidence,
+    behaviorMainForceConfirmed: Boolean(item?.behaviorMainForceConfirmed ?? item?.behavior_main_force_confirmed ?? normalized.behaviorMainForceConfirmed),
+    behaviorSupportingEvidence: normalizeStringArray(item?.behaviorSupportingEvidence ?? item?.behavior_supporting_evidence ?? normalized.behaviorSupportingEvidence),
+    behaviorCounterEvidence: normalizeStringArray(item?.behaviorCounterEvidence ?? item?.behavior_counter_evidence ?? normalized.behaviorCounterEvidence),
+    behaviorRationale: item?.behaviorRationale ?? item?.behavior_rationale ?? normalized.behaviorRationale,
     spotScore: numberOrNull(item?.spotScore ?? item?.spot_score) ?? normalized.spotScore,
     contractScore: numberOrNull(item?.contractScore ?? item?.contract_score) ?? normalized.contractScore,
     orderPriceUsd: rawPrice ?? normalized.orderPriceUsd,
@@ -1437,6 +1444,7 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     impactScoreFallback: item?.dynamicMultiple ?? item?.dynamic_multiple,
     percentileFallback: item?.percentileLevel ?? item?.percentile_level,
   });
+  const behavior = item.behaviorAssessment || item.behavior_assessment || {};
   const priceResponseTypeV2 =
     item.priceResponseTypeV2 ||
     item.price_response_type_v2 ||
@@ -1497,6 +1505,13 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
       evidence.liquidationReason || evidence.liquidation_reason || null,
     intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
     isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
+    behaviorType: String(item.behaviorType ?? item.behavior_type ?? behavior.behaviorType ?? behavior.behavior_type ?? "insufficient_evidence").toLowerCase(),
+    behaviorState: String(item.behaviorState ?? item.behavior_state ?? behavior.state ?? "insufficient").toLowerCase(),
+    behaviorConfidence: numberOrNull(item.behaviorConfidence ?? item.behavior_confidence ?? behavior.confidence) || 0,
+    behaviorMainForceConfirmed: Boolean(item.behaviorMainForceConfirmed ?? item.behavior_main_force_confirmed ?? behavior.mainForceConfirmed),
+    behaviorSupportingEvidence: normalizeStringArray(item.behaviorSupportingEvidence ?? item.behavior_supporting_evidence ?? behavior.supportingEvidence ?? behavior.supporting_evidence),
+    behaviorCounterEvidence: normalizeStringArray(item.behaviorCounterEvidence ?? item.behavior_counter_evidence ?? behavior.counterEvidence ?? behavior.counter_evidence),
+    behaviorRationale: String(item.behaviorRationale ?? item.behavior_rationale ?? behavior.rationale ?? "仅观察到成交流，未形成可确认的主力行为证据链。"),
     classificationVersion: item.classificationVersion || item.classification_version || "",
     classificationReasons: normalizeStringArray(item.classificationReasons ?? item.classification_reasons),
     dynamicThresholds: normalizeContractWhaleDynamicThresholds(item.dynamicThresholds ?? item.dynamic_thresholds),

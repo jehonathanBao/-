@@ -301,7 +301,9 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
     store.upsert_spot_whale_signal(&old_weak).unwrap();
     store.upsert_spot_whale_signal(&recent_weak).unwrap();
 
-    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
+    let pruned = store
+        .prune_spot_whale_signals_older_than(cutoff_ts)
+        .unwrap();
     assert_eq!(pruned, 2);
 
     let rows = store
@@ -348,7 +350,9 @@ fn spot_whale_prune_uses_eth_1000_and_btc_100_net_thresholds() {
     store.upsert_spot_whale_signal(&old_eth_weak).unwrap();
     store.upsert_spot_whale_signal(&old_eth_keep).unwrap();
 
-    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
+    let pruned = store
+        .prune_spot_whale_signals_older_than(cutoff_ts)
+        .unwrap();
     assert_eq!(pruned, 2);
     assert_eq!(store.count_spot_whale_signals("BTC").unwrap(), 1);
     assert_eq!(store.count_spot_whale_signals("ETH").unwrap(), 1);

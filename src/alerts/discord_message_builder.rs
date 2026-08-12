@@ -108,10 +108,7 @@ pub fn build_discord_candidate_message_from_input(
 
 impl From<&ToxicSignal> for DiscordCandidateMessageInput {
     fn from(signal: &ToxicSignal) -> Self {
-        let venue = signal
-            .evidence
-            .as_ref()
-            .map(|value| value.venue.clone());
+        let venue = signal.evidence.as_ref().map(|value| value.venue.clone());
         Self {
             signal_id: Some(signal.signal_id.clone()),
             venue,
@@ -187,9 +184,7 @@ fn event_reason(input: &DiscordCandidateMessageInput) -> String {
         );
     }
     input.primary_reason.as_deref().map_or_else(
-        || {
-            "检测到疑似盘口异常候选信号。详情请在 Dashboard 查看。".to_string()
-        },
+        || "检测到疑似盘口异常候选信号。详情请在 Dashboard 查看。".to_string(),
         |reason| {
             if reason.trim().is_empty() || looks_like_forbidden_alert_content(reason) {
                 "检测到疑似盘口异常候选信号。详情请在 Dashboard 查看。".to_string()
