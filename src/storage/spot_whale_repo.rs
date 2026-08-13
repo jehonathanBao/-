@@ -7,7 +7,11 @@ pub use crate::spot_whale_monitor::types::{
     SPOT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
 };
 
+use crate::spot_whale_monitor::config::spot_whale_runtime_config;
 use crate::spot_whale_monitor::types::{is_permanent_spot_whale_signal, SpotWhaleSignal};
+use crate::storage::retention_policy::{
+    classify_spot, RetentionClass, RetentionPolicy, SpotRetentionFacts,
+};
 
 use super::sqlite::SqliteStore;
 
@@ -46,6 +50,7 @@ pub trait SpotWhaleRepo {
     ) -> anyhow::Result<usize>;
     fn count_spot_whale_signals(&self, symbol: &str) -> anyhow::Result<usize>;
     fn prune_spot_whale_signals_older_than(&self, cutoff_ts: i64) -> anyhow::Result<usize>;
+    fn prune_spot_whale_signals_retention(&self, now_ms: i64) -> anyhow::Result<usize>;
 }
 
 impl SpotWhaleRepo for SqliteStore {
@@ -56,6 +61,30 @@ impl SpotWhaleRepo for SqliteStore {
         let severity = format!("{:?}", signal.severity);
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
         let payload_json = serde_json::to_string(&signal)?;
+        let retention_facts = SpotRetentionFacts {
+            symbol: signal.symbol.clone(),
+            net_volume_base: signal.net_volume_base,
+            multi_exchange_confirmed: signal.multi_exchange_confirmed,
+            discord_sent: signal.discord_sent,
+            behavior_confirmed: false,
+        };
+        let retention_class = classify_spot(&retention_facts);
+        let retention_reason = match retention_class {
+            RetentionClass::Critical => "extreme_net_flow",
+            RetentionClass::Important if signal.discord_sent => "discord_sent",
+            RetentionClass::Important if signal.multi_exchange_confirmed => {
+                "multi_exchange_confirmed"
+            }
+            RetentionClass::Important => "important_net_flow",
+            RetentionClass::Ordinary => "ordinary_candidate",
+        };
+        let configured = spot_whale_runtime_config().retention;
+        let policy = RetentionPolicy {
+            ordinary_days: configured.signals_days,
+            important_days: configured.important_days,
+            critical_days: configured.critical_days,
+        };
+        let retain_until = policy.retain_until(signal.ts, retention_class);
         self.with_write_connection(|conn| {
             conn.execute(
                 r#"
@@ -65,10 +94,10 @@ impl SpotWhaleRepo for SqliteStore {
                   price_move_pct, coinbase_premium_pct, main_exchange, exchanges_json,
                   dynamic_multiple, multi_exchange_confirmed, data_quality, discord_eligible,
                   discord_sent, discord_sent_at, discord_reason, is_permanent, payload_json,
-                  created_at
+                  retention_class, retain_until, retention_reason, retention_version, created_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                          ?26)
+                          ?26, ?27, ?28, ?29, ?30)
                 ON CONFLICT(signal_id) DO UPDATE SET
                   ts = excluded.ts,
                   symbol = excluded.symbol,
@@ -94,6 +123,10 @@ impl SpotWhaleRepo for SqliteStore {
                   discord_reason = excluded.discord_reason,
                   is_permanent = excluded.is_permanent,
                   payload_json = excluded.payload_json,
+                  retention_class = excluded.retention_class,
+                  retain_until = excluded.retain_until,
+                  retention_reason = excluded.retention_reason,
+                  retention_version = excluded.retention_version,
                   created_at = excluded.created_at
                 "#,
                 params![
@@ -122,6 +155,10 @@ impl SpotWhaleRepo for SqliteStore {
                     signal.discord_reason,
                     bool_to_int(signal.is_permanent),
                     payload_json,
+                    retention_class.key(),
+                    retain_until,
+                    retention_reason,
+                    "v1",
                     crate::normalizers::trade::now_ms(),
                 ],
             )
@@ -310,6 +347,16 @@ impl SpotWhaleRepo for SqliteStore {
                 )
                 .context("failed to prune spot whale signals")?;
             Ok(changed)
+        })
+    }
+
+    fn prune_spot_whale_signals_retention(&self, now_ms: i64) -> anyhow::Result<usize> {
+        self.with_write_connection(|conn| {
+            conn.execute(
+                "DELETE FROM spot_whale_signals WHERE retain_until > 0 AND retain_until < ?1",
+                params![now_ms],
+            )
+            .context("failed to prune spot whale retention tiers")
         })
     }
 }

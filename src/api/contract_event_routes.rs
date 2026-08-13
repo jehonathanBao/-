@@ -157,6 +157,7 @@ pub struct ContractRetentionStatusResponse {
     pub flow_retention_days: i64,
     pub signal_retention_days: i64,
     pub impact_b_retention_days: i64,
+    pub critical_retention_days: i64,
     pub signal_protect_severity_s: bool,
     pub signal_protect_impact_a_s: bool,
     pub signal_protect_net_volume_btc: f64,
@@ -824,6 +825,7 @@ pub async fn contract_retention_status_route(
         flow_retention_days: retention.flow_1s_days,
         signal_retention_days: retention.signals_days,
         impact_b_retention_days: retention.impact_b_days,
+        critical_retention_days: retention.critical_days,
         signal_protect_severity_s: true,
         signal_protect_impact_a_s: true,
         signal_protect_net_volume_btc: CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
@@ -1608,11 +1610,10 @@ fn status_matches(filter: Option<&str>, actual: &str) -> bool {
 fn retention_tables(
     store: SqliteStore,
     flow_days: i64,
-    signal_days: i64,
+    _signal_days: i64,
 ) -> anyhow::Result<ContractRetentionTables> {
     let now_ms = now_ms();
     let flow_cutoff = now_ms.saturating_sub(flow_days.max(1) * 24 * 60 * 60 * 1000);
-    let signal_cutoff = now_ms.saturating_sub(signal_days.max(1) * 24 * 60 * 60 * 1000);
     store.with_connection(|conn| {
         let contract_flow_1s = RetentionTableStats {
             oldest_ts: query_min_ts(conn, "contract_flow_1s", "ts_bucket")?,
@@ -1633,11 +1634,10 @@ fn retention_tables(
             oldest_ts: query_min_ts(conn, "contract_whale_signals", "ts")?,
             newest_ts: query_max_ts(conn, "contract_whale_signals", "ts")?,
             row_count: Some(query_count(conn, "contract_whale_signals")?),
-            rows_older_than_retention: Some(query_older_than(
-                conn,
-                "contract_whale_signals",
-                "ts",
-                signal_cutoff,
+            rows_older_than_retention: Some(conn.query_row(
+                "SELECT COUNT(*) FROM contract_whale_signals WHERE retain_until > 0 AND retain_until < ?1",
+                [now_ms],
+                |row| row.get(0),
             )?),
             protected_s_count: Some(conn.query_row(
                 "SELECT COUNT(*) FROM contract_whale_signals WHERE severity = 's'",
@@ -1649,8 +1649,8 @@ fn retention_tables(
                 [CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC],
                 |row| row.get(0),
             )?),
-            has_retention_cleanup: None,
-            reason: None,
+            has_retention_cleanup: Some(true),
+            reason: Some("deadline_tiered_7d_30d_365d".to_string()),
         };
         let main_force_events = RetentionTableStats {
             oldest_ts: query_min_ts(conn, "main_force_events", "started_at")?,

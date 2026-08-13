@@ -179,12 +179,13 @@ single_exchange_penalty = 15
 ct_val_missing_penalty = 20
 
 [contract_whale_monitor.retention]
-flow_1s_days = 14
+flow_1s_days = 7
 # Contract market events (contract_whale_signals): keep at least 7 full days.
 # Values below 7 are clamped up to 7 at runtime. Impact B uses impact_b_days.
 # Impact A/S (and severity S / |net|>=500) stay permanent.
 signals_days = 7
-impact_b_days = 90
+impact_b_days = 30
+critical_days = 365
 
 [contract_whale_monitor.lifecycle]
 update_window_seconds = 30
@@ -406,6 +407,8 @@ duplicate_window_ms = 60000
 # Non-permanent spot rows expire after this many days.
 # Permanent keepers: BTC |net| >= 100, ETH |net| >= 1000.
 signals_days = 7
+important_days = 30
+critical_days = 365
 interval_seconds = 3600
 initial_delay_seconds = 30
 

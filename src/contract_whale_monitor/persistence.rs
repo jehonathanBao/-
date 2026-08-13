@@ -494,7 +494,7 @@ pub async fn prune_contract_whale_retention_nonblocking(
     let impact_b_cutoff = retention_cutoff_ms(now_ms, impact_b_days);
     let started_at = std::time::Instant::now();
     match tokio::task::spawn_blocking(move || {
-        store.prune_contract_whale_retention(flow_cutoff, signal_cutoff, impact_b_cutoff)
+        store.prune_contract_whale_retention_at(now_ms, flow_cutoff, signal_cutoff, impact_b_cutoff)
     })
     .await
     {

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use rusqlite::{params, OptionalExtension};
 
+use crate::contract_whale_monitor::config::contract_whale_runtime_config;
 use crate::contract_whale_monitor::emission::episode_key;
 use crate::contract_whale_monitor::outcome_calibration::ContractWhaleSignalOutcome;
 use crate::contract_whale_monitor::types::{
@@ -11,6 +12,9 @@ use crate::contract_whale_monitor::types::{
     ContractWhaleEmissionFingerprint, ContractWhaleMarketType, ContractWhaleOiExchangeDelta,
     ContractWhaleOiWindowContext, ContractWhalePercentileThreshold, ContractWhaleSeverity,
     ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
+};
+use crate::storage::retention_policy::{
+    classify_contract, ContractRetentionFacts, RetentionClass, RetentionPolicy,
 };
 
 use super::{
@@ -284,6 +288,13 @@ pub trait ContractWhaleRepo {
     ) -> anyhow::Result<Option<ContractWhalePercentileThreshold>>;
     fn prune_contract_whale_retention(
         &self,
+        flow_cutoff_ts: i64,
+        signal_cutoff_ts: i64,
+        impact_b_cutoff_ts: i64,
+    ) -> anyhow::Result<ContractWhaleRetentionPruneResult>;
+    fn prune_contract_whale_retention_at(
+        &self,
+        now_ms: i64,
         flow_cutoff_ts: i64,
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
@@ -1498,6 +1509,21 @@ impl ContractWhaleRepo for SqliteStore {
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
+        self.prune_contract_whale_retention_at(
+            signal_cutoff_ts.saturating_add(7 * 86_400_000),
+            flow_cutoff_ts,
+            signal_cutoff_ts,
+            impact_b_cutoff_ts,
+        )
+    }
+
+    fn prune_contract_whale_retention_at(
+        &self,
+        retention_now_ms: i64,
+        flow_cutoff_ts: i64,
+        signal_cutoff_ts: i64,
+        impact_b_cutoff_ts: i64,
+    ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
         let s_severity = enum_value(ContractWhaleSeverity::S)?;
         self.with_write_connection(|conn| {
             let mut result = ContractWhaleRetentionPruneResult {
@@ -1572,55 +1598,60 @@ impl ContractWhaleRepo for SqliteStore {
                 params![flow_cutoff_ts],
                 &mut result.table_results,
             )?;
-            // Retention tiers:
-            // - impact A/S, severity S, |net|>=500: permanent
-            // - impact B: keep until impact_b_cutoff_ts (default 90d)
-            // - everything else: keep until signal_cutoff_ts (default 7d)
-            result.signal_deleted = prune_contract_table(
-                conn,
-                "contract_whale_signals",
-                "ts",
-                r#"
-                DELETE FROM contract_whale_signals
-                WHERE severity != ?1
-                  AND ABS(COALESCE(net_volume_btc, 0.0)) < ?2
-                  AND UPPER(COALESCE(
-                        json_extract(payload_json, '$.impactLevel'),
-                        json_extract(payload_json, '$.impact_level'),
-                        ''
-                      )) NOT IN ('A', 'S')
-                  AND (
-                        (
-                          UPPER(COALESCE(
+            // Retention tiers are assigned at write time and deleted by the
+            // per-row deadline. This avoids reclassifying an old ordinary
+            // signal as permanent merely because its score was high.
+            result.signal_deleted = if column_exists(conn, "contract_whale_signals", "retain_until")?
+                && column_exists(conn, "contract_whale_signals", "retention_class")?
+            {
+                prune_contract_table(
+                    conn,
+                    "contract_whale_signals",
+                    "retain_until",
+                    r#"
+                    DELETE FROM contract_whale_signals
+                    WHERE retain_until > 0
+                      AND retain_until < ?1
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM contract_whale_discord_outbox outbox
+                        WHERE outbox.signal_id = contract_whale_signals.signal_id
+                          AND outbox.status IN ('pending', 'retry', 'sending')
+                      )
+                    "#,
+                    params![retention_now_ms],
+                    &mut result.table_results,
+                )?
+            } else {
+                prune_contract_table(
+                    conn,
+                    "contract_whale_signals",
+                    "ts",
+                    r#"
+                    DELETE FROM contract_whale_signals
+                    WHERE severity != ?1
+                      AND ABS(COALESCE(net_volume_btc, 0.0)) < ?2
+                      AND UPPER(COALESCE(
                             json_extract(payload_json, '$.impactLevel'),
                             json_extract(payload_json, '$.impact_level'),
                             ''
-                          )) = 'B'
-                          AND ts < ?3
-                        )
-                        OR
-                        (
-                          UPPER(COALESCE(
-                            json_extract(payload_json, '$.impactLevel'),
-                            json_extract(payload_json, '$.impact_level'),
-                            ''
-                          )) != 'B'
-                          AND ts < ?4
-                        )
-                  )
-                "#,
-                params![
-                    s_severity,
-                    CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                    impact_b_cutoff_ts,
-                    signal_cutoff_ts,
-                ],
-                &mut result.table_results,
-            )?;
+                          )) NOT IN ('A', 'S')
+                      AND ((UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), json_extract(payload_json, '$.impact_level'), '')) = 'B' AND ts < ?3)
+                        OR (UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), json_extract(payload_json, '$.impact_level'), '')) != 'B' AND ts < ?4))
+                    "#,
+                    params![
+                        s_severity,
+                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
+                        impact_b_cutoff_ts,
+                        signal_cutoff_ts,
+                    ],
+                    &mut result.table_results,
+                )?
+            };
             if let Some(last_entry) = result.table_results.last_mut() {
                 if last_entry.status == RetentionTableStatus::Ok {
                     last_entry.reason = Some(format!(
-                        "impact_as_permanent_b_days_default_days_net_lt_{}",
+                        "row_deadline_tiers_ordinary_7d_important_30d_critical_365d_net_lt_{}",
                         CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
                     ));
                 }
@@ -2000,6 +2031,46 @@ fn enum_value<T: serde::Serialize>(value: T) -> anyhow::Result<String> {
         .to_string())
 }
 
+fn contract_retention_metadata(signal: &ContractWhaleSignal) -> (String, i64, String, String) {
+    let liquidation_btc =
+        signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0);
+    let facts = ContractRetentionFacts {
+        severity: format!("{:?}", signal.severity),
+        impact_level: signal.impact_level.clone(),
+        total_volume_btc: signal.total_volume_btc,
+        window_sec: signal.window_sec,
+        net_volume_btc: signal.net_volume_btc,
+        liquidation_btc,
+        multi_exchange_confirmed: signal.multi_exchange_confirmed,
+        behavior_confirmed: signal.behavior_assessment.main_force_confirmed,
+        discord_sent: signal.discord_sent,
+    };
+    let class = classify_contract(&facts);
+    let reason = match class {
+        RetentionClass::Critical => "extreme_contract_evidence",
+        RetentionClass::Important if signal.discord_sent => "discord_sent",
+        RetentionClass::Important if signal.behavior_assessment.main_force_confirmed => {
+            "behavior_confirmed"
+        }
+        RetentionClass::Important if signal.net_volume_btc.abs() >= 500.0 => "large_net_flow",
+        RetentionClass::Important => "impact_or_multi_exchange",
+        RetentionClass::Ordinary => "ordinary_candidate",
+    };
+    let configured = contract_whale_runtime_config().retention;
+    let policy = RetentionPolicy {
+        ordinary_days: configured.signals_days,
+        important_days: configured.impact_b_days,
+        critical_days: configured.critical_days,
+    };
+    let retain_until = policy.retain_until(signal.ts, class);
+    (
+        class.key().to_string(),
+        retain_until,
+        reason.to_string(),
+        "v1".to_string(),
+    )
+}
+
 fn upsert_contract_whale_signals_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     signals: &[ContractWhaleSignal],
@@ -2016,9 +2087,10 @@ fn upsert_contract_whale_signals_in_transaction(
           price_start, price_end, price_move_pct, main_exchange, market_type,
           source_role, exchanges_json, active_sources_json, threshold_profile,
           dynamic_multiple, data_quality, discord_eligible, discord_sent,
-          discord_sent_at, payload_json, created_at
+          discord_sent_at, retention_class, retain_until, retention_reason,
+          retention_version, payload_json, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                  NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+                  NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
         ON CONFLICT(signal_id) DO UPDATE SET
           ts = excluded.ts,
           symbol = excluded.symbol,
@@ -2043,6 +2115,10 @@ fn upsert_contract_whale_signals_in_transaction(
           discord_eligible = excluded.discord_eligible,
           discord_sent = excluded.discord_sent,
           discord_sent_at = excluded.discord_sent_at,
+          retention_class = excluded.retention_class,
+          retain_until = excluded.retain_until,
+          retention_reason = excluded.retention_reason,
+          retention_version = excluded.retention_version,
           payload_json = excluded.payload_json,
           created_at = excluded.created_at
         "#,
@@ -2057,6 +2133,8 @@ fn upsert_contract_whale_signals_in_transaction(
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
         let active_sources_json = serde_json::to_string(&signal.active_sources)?;
         let payload_json = serde_json::to_string(signal)?;
+        let (retention_class, retain_until, retention_reason, retention_version) =
+            contract_retention_metadata(signal);
         stmt.execute(params![
             signal.id,
             signal.ts,
@@ -2082,6 +2160,10 @@ fn upsert_contract_whale_signals_in_transaction(
             bool_to_int(signal.discord_eligible),
             bool_to_int(signal.discord_sent),
             signal.discord_sent_at,
+            retention_class,
+            retain_until,
+            retention_reason,
+            retention_version,
             payload_json,
             now,
         ])

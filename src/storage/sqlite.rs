@@ -195,6 +195,14 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "threshold_profile",
         "TEXT NOT NULL DEFAULT 'three_exchange'",
     )?;
+    for (column, definition) in [
+        ("retention_class", "TEXT NOT NULL DEFAULT 'ordinary'"),
+        ("retain_until", "INTEGER NOT NULL DEFAULT 0"),
+        ("retention_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("retention_version", "TEXT NOT NULL DEFAULT 'v1'"),
+    ] {
+        ensure_column(conn, "contract_whale_signals", column, definition)?;
+    }
     ensure_column(conn, "contract_whale_discord_outbox", "episode_key", "TEXT")?;
     conn.execute(
         "UPDATE contract_whale_discord_outbox SET episode_key = signal_id WHERE episode_key IS NULL OR episode_key = ''",
@@ -202,6 +210,51 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
     )?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_contract_whale_discord_outbox_episode ON contract_whale_discord_outbox(episode_key)",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_retention ON contract_whale_signals(retention_class, retain_until, ts)",
+    )?;
+    conn.execute(
+        r#"
+        UPDATE contract_whale_signals
+        SET retention_class = CASE
+              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
+                   AND total_volume_btc >= 20000
+                   AND window_sec >= 60
+                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                THEN 'critical'
+              WHEN discord_sent != 0
+                   OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
+                   OR ABS(COALESCE(net_volume_btc, 0.0)) >= 500
+                THEN 'important'
+              ELSE 'ordinary'
+            END,
+            retain_until = ts + CASE
+              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
+                   AND total_volume_btc >= 20000
+                   AND window_sec >= 60
+                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                THEN 365 * 86400000
+              WHEN discord_sent != 0
+                   OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
+                   OR ABS(COALESCE(net_volume_btc, 0.0)) >= 500
+                THEN 30 * 86400000
+              ELSE 7 * 86400000
+            END,
+            retention_reason = CASE
+              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
+                   AND total_volume_btc >= 20000
+                   AND window_sec >= 60
+                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                THEN 'legacy_extreme_impact'
+              WHEN discord_sent != 0 THEN 'legacy_discord_sent'
+              WHEN ABS(COALESCE(net_volume_btc, 0.0)) >= 500 THEN 'legacy_large_net_flow'
+              ELSE 'legacy_ordinary'
+            END,
+            retention_version = 'v1'
+        WHERE retain_until = 0 OR retention_version != 'v1'
+        "#,
+        [],
     )?;
     ensure_column(
         conn,
@@ -240,6 +293,14 @@ fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "is_permanent",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    for (column, definition) in [
+        ("retention_class", "TEXT NOT NULL DEFAULT 'ordinary'"),
+        ("retain_until", "INTEGER NOT NULL DEFAULT 0"),
+        ("retention_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("retention_version", "TEXT NOT NULL DEFAULT 'v1'"),
+    ] {
+        ensure_column(conn, "spot_whale_signals", column, definition)?;
+    }
     conn.execute(
         r#"
         UPDATE spot_whale_signals
@@ -264,6 +325,40 @@ fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         ],
     )
     .context("failed to backfill spot_whale_signals.is_permanent")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_spot_whale_signals_retention ON spot_whale_signals(retention_class, retain_until, ts)",
+    )?;
+    conn.execute(
+        r#"
+        UPDATE spot_whale_signals
+        SET retention_class = CASE
+              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
+                THEN 'critical'
+              WHEN discord_sent != 0 OR multi_exchange_confirmed != 0
+                   OR ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 1000.0 ELSE 100.0 END
+                THEN 'important'
+              ELSE 'ordinary'
+            END,
+            retain_until = ts + CASE
+              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
+                THEN 365 * 86400000
+              WHEN discord_sent != 0 OR multi_exchange_confirmed != 0
+                   OR ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 1000.0 ELSE 100.0 END
+                THEN 30 * 86400000
+              ELSE 7 * 86400000
+            END,
+            retention_reason = CASE
+              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
+                THEN 'legacy_extreme_spot_flow'
+              WHEN discord_sent != 0 THEN 'legacy_discord_sent'
+              WHEN multi_exchange_confirmed != 0 THEN 'legacy_multi_exchange'
+              ELSE 'legacy_ordinary'
+            END,
+            retention_version = 'v1'
+        WHERE retain_until = 0 OR retention_version != 'v1'
+        "#,
+        [],
+    )?;
     Ok(())
 }
 

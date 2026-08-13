@@ -8,7 +8,6 @@ use super::{
 };
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
-const HOUR_MS: i64 = 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeRetentionPolicy {
@@ -31,10 +30,10 @@ impl Default for RuntimeRetentionPolicy {
     fn default() -> Self {
         Self {
             toxic_events_retention_ms: 30 * DAY_MS,
-            toxic_snapshots_retention_ms: 24 * HOUR_MS,
-            flow_snapshots_retention_ms: 24 * HOUR_MS,
-            venue_health_retention_ms: 24 * HOUR_MS,
-            vpin_buckets_retention_ms: 14 * DAY_MS,
+            toxic_snapshots_retention_ms: 7 * DAY_MS,
+            flow_snapshots_retention_ms: 7 * DAY_MS,
+            venue_health_retention_ms: 7 * DAY_MS,
+            vpin_buckets_retention_ms: 7 * DAY_MS,
             replay_runs_retention_ms: 30 * DAY_MS,
             new_token_l2_metrics_retention_ms: 7 * DAY_MS,
             new_token_l2_outcomes_retention_ms: 365 * DAY_MS,

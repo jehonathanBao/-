@@ -597,15 +597,15 @@ impl SpotWhaleService {
     pub fn run_retention_once(&self, now: i64) -> Option<usize> {
         let store = self.store.as_ref()?;
         let retention = spot_whale_runtime_config().retention;
-        let retention_days = retention.signals_days.max(1);
-        let cutoff = now.saturating_sub(retention_days.saturating_mul(86_400_000));
-        match store.prune_spot_whale_signals_older_than(cutoff) {
+        match store.prune_spot_whale_signals_retention(now) {
             Ok(deleted) => {
                 tracing::info!(
                     target: LOG_TARGET,
                     table = "spot_whale_signals",
                     deleted,
-                    retention_days,
+                    ordinary_days = retention.signals_days.max(1),
+                    important_days = retention.important_days.max(retention.signals_days.max(1)),
+                    critical_days = retention.critical_days.max(retention.important_days.max(retention.signals_days.max(1))),
                     "{} retention completed",
                     LOG_PREFIX
                 );

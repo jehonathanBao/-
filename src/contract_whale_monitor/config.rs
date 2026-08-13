@@ -28,9 +28,10 @@ const DEFAULT_WARMUP_MS: i64 = 60_000;
 const DEFAULT_MIN_DYNAMIC_SAMPLES: usize = 20;
 const DEFAULT_SINGLE_EXCHANGE_DQ_PENALTY: u8 = 15;
 const DEFAULT_CT_VAL_MISSING_DQ_PENALTY: u8 = 20;
-const DEFAULT_FLOW_1S_RETENTION_DAYS: i64 = 14;
+const DEFAULT_FLOW_1S_RETENTION_DAYS: i64 = 7;
 const DEFAULT_SIGNAL_RETENTION_DAYS: i64 = 7;
-const DEFAULT_IMPACT_B_RETENTION_DAYS: i64 = 90;
+const DEFAULT_IMPACT_B_RETENTION_DAYS: i64 = 30;
+const DEFAULT_CRITICAL_RETENTION_DAYS: i64 = 365;
 
 static GLOBAL_CONFIG: OnceLock<RwLock<ContractWhaleRuntimeConfig>> = OnceLock::new();
 
@@ -1199,6 +1200,7 @@ pub struct ContractWhaleRetentionConfig {
     pub flow_1s_days: i64,
     pub signals_days: i64,
     pub impact_b_days: i64,
+    pub critical_days: i64,
 }
 
 impl Default for ContractWhaleRetentionConfig {
@@ -1207,6 +1209,7 @@ impl Default for ContractWhaleRetentionConfig {
             flow_1s_days: DEFAULT_FLOW_1S_RETENTION_DAYS,
             signals_days: DEFAULT_SIGNAL_RETENTION_DAYS,
             impact_b_days: DEFAULT_IMPACT_B_RETENTION_DAYS,
+            critical_days: DEFAULT_CRITICAL_RETENTION_DAYS,
         }
     }
 }
@@ -2087,11 +2090,18 @@ fn load_retention_config(settings: &::config::Config) -> ContractWhaleRetentionC
         "contract_whale_monitor.retention.impact_b_days",
         defaults.impact_b_days,
     )
-    .max(signals_days);
+    .max(DEFAULT_IMPACT_B_RETENTION_DAYS);
+    let critical_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.critical_days",
+        defaults.critical_days,
+    )
+    .max(impact_b_days);
     ContractWhaleRetentionConfig {
         flow_1s_days,
         signals_days,
         impact_b_days,
+        critical_days,
     }
 }
 

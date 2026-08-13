@@ -27,6 +27,12 @@ enable_contract_score = true
 enabled = true
 dry_run = true
 
+[contract_whale_monitor.retention]
+flow_1s_days = 7
+signals_days = 7
+impact_b_days = 30
+critical_days = 365
+
 [contract_whale_monitor.hourly_delta_alert]
 enabled = true
 exchange = "binance"
@@ -91,6 +97,11 @@ role = "disabled"
 [spot_whale_monitor]
 enabled = true
 dry_run = true
+
+[spot_whale_monitor.retention]
+signals_days = 7
+important_days = 30
+critical_days = 365
 
 [spot_whale_monitor.exchanges.binance]
 enabled = true

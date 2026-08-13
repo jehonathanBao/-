@@ -624,6 +624,10 @@ fn spot_whale_service_retention_prunes_only_old_unprotected_rows() {
     let old_weak = signal_with_net(&base, "service-old-weak", 0, 20.0);
     let old_mid = signal_with_net(&base, "service-old-mid", 1, -60.0);
     let old_protected = signal_with_net(&base, "service-old-protected", 2, -120.0);
+    let mut old_weak = old_weak;
+    old_weak.multi_exchange_confirmed = false;
+    let mut old_mid = old_mid;
+    old_mid.multi_exchange_confirmed = false;
     store.upsert_spot_whale_signal(&old_weak).unwrap();
     store.upsert_spot_whale_signal(&old_mid).unwrap();
     store.upsert_spot_whale_signal(&old_protected).unwrap();

@@ -1076,8 +1076,9 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .unwrap();
 
     assert_eq!(result.flow_1s_deleted, 1);
-    // old_weak (C >7d) + old_impact_b_drop (B >90d)
-    assert_eq!(result.signal_deleted, 2);
+    // New tiered policy expires old ordinary and important evidence after
+    // their 7d/30d deadlines; only the recent signal and the 30d boundary row remain.
+    assert_eq!(result.signal_deleted, 5);
     assert_eq!(result.liquidation_deleted, 1);
     assert_eq!(result.oi_deleted, 1);
     assert_eq!(result.funding_deleted, 1);
@@ -1132,12 +1133,12 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .iter()
         .map(|signal| signal.id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(remaining.len(), 5);
-    assert!(remaining_ids.contains(&old_s_signal.id.as_str()));
-    assert!(remaining_ids.contains(&old_large_net_signal.id.as_str()));
-    assert!(remaining_ids.contains(&old_impact_a_signal.id.as_str()));
+    assert_eq!(remaining.len(), 2);
     assert!(remaining_ids.contains(&old_impact_b_keep.id.as_str()));
     assert!(remaining_ids.contains(&fresh_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_s_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_large_net_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_impact_a_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_weak_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_impact_b_drop.id.as_str()));
 }

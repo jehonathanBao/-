@@ -256,6 +256,10 @@ pub const MIGRATIONS: &[&str] = &[
       discord_eligible INTEGER NOT NULL DEFAULT 0,
       discord_sent INTEGER NOT NULL DEFAULT 0,
       discord_sent_at INTEGER,
+      retention_class TEXT NOT NULL DEFAULT 'ordinary',
+      retain_until INTEGER NOT NULL DEFAULT 0,
+      retention_reason TEXT NOT NULL DEFAULT '',
+      retention_version TEXT NOT NULL DEFAULT 'v1',
       payload_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
@@ -338,6 +342,10 @@ pub const MIGRATIONS: &[&str] = &[
       discord_sent_at INTEGER,
       discord_reason TEXT NOT NULL,
       is_permanent INTEGER NOT NULL DEFAULT 0,
+      retention_class TEXT NOT NULL DEFAULT 'ordinary',
+      retain_until INTEGER NOT NULL DEFAULT 0,
+      retention_reason TEXT NOT NULL DEFAULT '',
+      retention_version TEXT NOT NULL DEFAULT 'v1',
       payload_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
