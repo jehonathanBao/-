@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
+import ContractWhaleMonitor, { signalDisplayType } from "../components/ContractWhaleMonitor.jsx";
 import {
   fetchContractEventDebugCounts,
   fetchContractEvents,
@@ -23,6 +23,26 @@ import {
 function hasPriceText(text) {
   return typeof text === "string" && text.includes("69,917");
 }
+
+describe("contract whale behavior labels", () => {
+  it("does not call unconfirmed aggressive flow main force", () => {
+    expect(
+      signalDisplayType({
+        signalType: "aggressive_buy",
+        displaySignalType: "主力拉盘",
+        behaviorState: "insufficient",
+        behaviorType: "insufficient_evidence",
+      }),
+    ).toBe("主动买压");
+    expect(
+      signalDisplayType({
+        signalType: "aggressive_sell",
+        behaviorState: "confirmed",
+        behaviorType: "new_short_build",
+      }),
+    ).toBe("主力建空");
+  });
+});
 
 vi.mock("../api/contractWhale.js", () => ({
   CWM_MAX_PRICE_DEVIATION_PCT: 5,

@@ -30,7 +30,10 @@ use crate::{
             market_context_from_snapshots, percentile_level_for_volume,
             rolling_window_stats_with_config, RollingWindowStatsOptions,
         },
-        behavior::{assess_contract_whale_behavior, behavior_input_from_signal},
+        behavior::{
+            assess_contract_whale_behavior, behavior_input_from_signal,
+            transition_behavior_assessment,
+        },
         classification::resolve_contract_whale_oi_context_from_window,
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
@@ -1378,8 +1381,11 @@ fn apply_resolved_oi_context(
     signal.classification_v2.oi_delta_pct = resolved.oi_delta_pct;
     signal.classification_v2.oi_available = resolved.oi_available;
     signal.classification_v2.oi_reason = resolved.oi_reason;
-    signal.behavior_assessment =
-        assess_contract_whale_behavior(&behavior_input_from_signal(signal));
+    let previous = signal.behavior_assessment.clone();
+    signal.behavior_assessment = transition_behavior_assessment(
+        &previous,
+        assess_contract_whale_behavior(&behavior_input_from_signal(signal)),
+    );
 }
 
 fn apply_oi_window_evidence(
@@ -1427,8 +1433,11 @@ fn apply_oi_window_evidence(
                 .cloned();
         }
     }
-    signal.behavior_assessment =
-        assess_contract_whale_behavior(&behavior_input_from_signal(signal));
+    let previous = signal.behavior_assessment.clone();
+    signal.behavior_assessment = transition_behavior_assessment(
+        &previous,
+        assess_contract_whale_behavior(&behavior_input_from_signal(signal)),
+    );
 }
 
 fn unavailable_oi_context(reason: &str) -> ContractWhaleResolvedOiContext {

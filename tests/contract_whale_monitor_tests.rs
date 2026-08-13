@@ -342,8 +342,9 @@ fn detector_upgrades_multi_exchange_aggressive_buy_to_s_and_discord_eligible() {
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
     assert_eq!(signal.severity, ContractWhaleSeverity::S);
     assert!(signal.score >= 90);
-    assert!(should_push_contract_whale_discord(&signal));
-    assert!(signal.discord_eligible);
+    assert!(!should_push_contract_whale_discord(&signal));
+    assert!(!signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
     assert!(!signal.discord_sent);
 }
 
@@ -1086,9 +1087,9 @@ fn detector_marks_btc_high_signal_pushable_while_data_quality_controls_eligibili
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(should_push_contract_whale_discord(&signal));
+    assert!(!should_push_contract_whale_discord(&signal));
     assert!(!signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "data_quality_display_only");
+    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
     assert!(!signal.discord_sent);
 }
 
@@ -1108,7 +1109,7 @@ fn detector_allows_primary_single_exchange_extreme_high_override() {
     assert!(signal.data_quality <= 68);
     assert!(!signal.discord_eligible);
     assert_eq!(signal.discord_reason, "data_quality_display_only");
-    assert!(should_push_contract_whale_discord(&signal));
+    assert!(!should_push_contract_whale_discord(&signal));
 }
 
 #[test]
@@ -1395,8 +1396,8 @@ fn detector_keeps_low_score_5s_btc_high_display_only() {
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
     assert!(signal.score < 70);
     assert!(!signal.discord_eligible);
-    assert!(should_push_contract_whale_discord(&signal));
-    assert_eq!(signal.discord_reason, "high_without_discord_confirmation");
+    assert!(!should_push_contract_whale_discord(&signal));
+    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
 }
 
 #[test]
@@ -1412,6 +1413,10 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
         rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
     stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("high signal");
+
+    let mut signal = signal;
+    signal.impact_level = Some("A".to_string());
+    signal.signal_level = Some("L3".to_string());
 
     let mut btc_below_gate = signal.clone();
     btc_below_gate.symbol = "BTC".to_string();
@@ -1558,7 +1563,8 @@ fn detector_triggers_15s_critical_threshold() {
     assert_eq!(signal.window_sec, 15);
     assert_eq!(signal.severity, ContractWhaleSeverity::Critical);
     assert_eq!(signal.direction, ContractWhaleDirection::Buy);
-    assert!(signal.discord_eligible);
+    assert!(!signal.discord_eligible);
+    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
 }
 
 #[test]

@@ -6,6 +6,26 @@ use super::{
     },
 };
 
+/// Stable notification/lifecycle identity shared by overlapping windows.
+/// Prefer the lifecycle start when available; raw detector snapshots fall back
+/// to a one-minute event bucket so a 5s/15s/60s burst is not treated as three
+/// unrelated episodes.
+pub fn episode_key(signal: &ContractWhaleSignal) -> String {
+    let anchor = if signal.event_lifecycle.start_time > 0 {
+        signal.event_lifecycle.start_time
+    } else {
+        signal.ts.div_euclid(60_000).saturating_mul(60_000)
+    };
+    format!(
+        "cwm-episode:v1:{}:{:?}:{:?}:{:?}:{}",
+        signal.symbol.to_ascii_uppercase(),
+        signal.direction,
+        signal.signal_type,
+        signal.behavior_assessment.behavior_type,
+        anchor
+    )
+}
+
 pub fn emission_key(signal: &ContractWhaleSignal) -> String {
     format!(
         "{}:{}:{:?}:{:?}",
@@ -158,5 +178,20 @@ mod tests {
             signal.ts + 1,
             &disabled
         ));
+    }
+
+    #[test]
+    fn episode_key_is_stable_across_overlapping_windows() {
+        let mut signal = sample_signal();
+        signal.event_lifecycle.start_time = signal.ts;
+        let mut next = signal.clone();
+        next.id.push_str("-next");
+        next.ts += 15_000;
+        next.window_sec = 60;
+        next.event_lifecycle.start_time = signal.ts;
+        assert_eq!(episode_key(&signal), episode_key(&next));
+
+        next.direction = crate::contract_whale_monitor::types::ContractWhaleDirection::Sell;
+        assert_ne!(episode_key(&signal), episode_key(&next));
     }
 }

@@ -1,5 +1,7 @@
 use super::{
-    behavior::{assess_contract_whale_behavior, BehaviorAssessmentInput},
+    behavior::{
+        assess_contract_whale_behavior, is_behavior_alert_eligible, BehaviorAssessmentInput,
+    },
     classification::classify_contract_whale_signal_v2,
     config::{
         contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
@@ -224,7 +226,7 @@ pub fn inspect_contract_whale_signal_with_config(
         liquidation_suspected,
         liquidation_total_btc: scoring_stats.liquidation_context.total_liq_btc,
     });
-    let signal = ContractWhaleSignal {
+    let mut signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
             stats.symbol,
@@ -338,6 +340,14 @@ pub fn inspect_contract_whale_signal_with_config(
         execution_enabled: false,
         merged_from: Vec::new(),
     };
+    if signal.impact_level.as_deref() == Some("S")
+        && !super::discord::is_historic_s_impact(&signal)
+        && !is_behavior_alert_eligible(&signal.behavior_assessment)
+    {
+        signal.discord_eligible = false;
+        signal.discord_would_send = false;
+        signal.discord_reason = "s_grade_extreme_impact_required".to_string();
+    }
     tracing::info!(
         target: LOG_TARGET,
         event = log_events::SIGNAL_GENERATED,

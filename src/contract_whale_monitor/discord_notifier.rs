@@ -11,8 +11,11 @@ use url::Url;
 use crate::{
     contract_whale_monitor::{
         config::contract_whale_runtime_config,
-        discord::should_push_contract_whale_discord,
+        discord::{
+            notification_lane, should_push_contract_whale_discord, ContractWhaleNotificationLane,
+        },
         discord_gate::classify_contract_whale_signal_semantic,
+        emission::episode_key,
         log_events,
         types::{
             ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
@@ -116,9 +119,7 @@ struct ContractWhaleDiscordCooldownState {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ContractWhaleDiscordCooldownKey {
-    symbol: String,
-    direction: ContractWhaleDirection,
-    signal_type: ContractWhaleSignalType,
+    episode_key: String,
 }
 
 impl ContractWhaleDiscordCooldownStore {
@@ -208,6 +209,20 @@ pub fn evaluate_contract_whale_discord_gate(
     ) {
         return gate(false, "liquidation_inferred_display_only");
     }
+    let lane = notification_lane(signal);
+    if lane == ContractWhaleNotificationLane::Observe {
+        return gate(
+            false,
+            if matches!(
+                signal.severity,
+                ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm
+            ) {
+                "observe_only"
+            } else {
+                "behavior_not_confirmed"
+            },
+        );
+    }
     let semantic_tier = classify_contract_whale_signal_semantic(signal);
     if !semantic_tier.allows_discord() {
         return gate(false, "observe_only");
@@ -249,14 +264,25 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
         .collect::<Vec<_>>()
         .join("\n");
 
+    let lane = notification_lane(signal);
     let description = if signal.liquidation_suspected && !signal.final_result.contains("强平") {
         format!("疑似强平推动，主力确定性降低：{}", signal.final_result)
     } else {
         signal.final_result.clone()
     };
 
+    let lane_label = match lane {
+        ContractWhaleNotificationLane::Behavior => "主力行为确认",
+        ContractWhaleNotificationLane::Impact => "市场冲击",
+        ContractWhaleNotificationLane::Observe => "合约流候选",
+    };
+    let display_signal_type = if lane == ContractWhaleNotificationLane::Behavior {
+        signal_type.to_string()
+    } else {
+        impact_signal_type_label(signal)
+    };
     serde_json::json!({
-        "content": format!("{} 主力合约异动 {severity}: {signal_type}", signal.symbol),
+        "content": format!("{} {lane_label} {severity}: {display_signal_type}", signal.symbol),
         "embeds": [{
             "title": format!("{} Contract Whale Flow", signal.symbol),
             "description": description,
@@ -264,7 +290,7 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
             "fields": [
                 {"name": "Symbol", "value": signal.symbol.clone(), "inline": true},
                 {"name": "Event Type", "value": "contract_whale_flow", "inline": true},
-                {"name": "Detector Type", "value": signal_type, "inline": true},
+                {"name": "Detector Type", "value": display_signal_type, "inline": true},
                 {"name": "Signal Severity", "value": severity, "inline": true},
                 {"name": "Market Impact", "value": market_impact_label(signal), "inline": true},
                 {"name": "Push Reason", "value": push_reason_label(signal), "inline": true},
@@ -288,10 +314,20 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
                 {"name": "Final Result", "value": signal.final_result.clone(), "inline": false}
             ],
             "footer": {
-                "text": format!("Candidate only | Signal: {}", signal.id)
+                "text": format!("Read-only candidate | Lane: {lane_label} | Signal: {}", signal.id)
             }
         }]
     })
+}
+
+fn impact_signal_type_label(signal: &ContractWhaleSignal) -> String {
+    if signal.liquidation_suspected {
+        "清算驱动 / Liquidation Impact".to_string()
+    } else if let Some(level) = signal.impact_level.as_deref() {
+        format!("市场冲击 / Impact {level}")
+    } else {
+        "合约流冲击 / Contract Flow Impact".to_string()
+    }
 }
 
 fn trigger_price_label(total_volume_btc: f64, total_notional_usd: f64) -> String {
@@ -579,9 +615,7 @@ pub async fn notify_contract_whale_discord_with_cooldown(
 
 fn cooldown_key(signal: &ContractWhaleSignal) -> ContractWhaleDiscordCooldownKey {
     ContractWhaleDiscordCooldownKey {
-        symbol: signal.symbol.to_ascii_uppercase(),
-        direction: signal.direction,
-        signal_type: signal.signal_type,
+        episode_key: episode_key(signal),
     }
 }
 

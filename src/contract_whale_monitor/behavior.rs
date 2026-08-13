@@ -59,6 +59,14 @@ pub struct BehaviorAssessment {
     pub supporting_evidence: Vec<String>,
     pub counter_evidence: Vec<String>,
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidation_reason: Option<String>,
+    #[serde(default = "default_behavior_assessment_version")]
+    pub assessment_version: String,
+}
+
+fn default_behavior_assessment_version() -> String {
+    "behavior-v1".to_string()
 }
 
 impl Default for BehaviorAssessment {
@@ -71,6 +79,8 @@ impl Default for BehaviorAssessment {
             supporting_evidence: Vec::new(),
             counter_evidence: vec!["证据不足，不能确认主力行为".to_string()],
             rationale: "仅观察到成交流，未形成可确认的主力行为证据链。".to_string(),
+            invalidation_reason: None,
+            assessment_version: default_behavior_assessment_version(),
         }
     }
 }
@@ -78,7 +88,7 @@ impl Default for BehaviorAssessment {
 pub fn assess_contract_whale_behavior(input: &BehaviorAssessmentInput) -> BehaviorAssessment {
     let mut assessment = BehaviorAssessment::default();
 
-    if input.liquidation_suspected || input.liquidation_total_btc > 0.0 {
+    if input.liquidation_suspected {
         assessment.behavior_type = BehaviorType::LiquidationSweep;
         assessment.state = BehaviorState::Provisional;
         assessment.confidence = 35;
@@ -186,6 +196,39 @@ pub fn assess_contract_whale_behavior(input: &BehaviorAssessmentInput) -> Behavi
     }
 
     assessment
+}
+
+/// Returns whether the behavior lane has enough evidence for a main-force
+/// notification. Market-impact and liquidation alerts intentionally use a
+/// separate gate and must not call this helper as a proxy for impact.
+pub fn is_behavior_alert_eligible(assessment: &BehaviorAssessment) -> bool {
+    assessment.state == BehaviorState::Confirmed
+        && assessment.main_force_confirmed
+        && assessment.confidence >= 80
+        && !matches!(
+            assessment.behavior_type,
+            BehaviorType::InsufficientEvidence | BehaviorType::LiquidationSweep
+        )
+}
+
+/// Reconciles a fresh observation with the last persisted assessment. A
+/// previously confirmed behavior cannot silently become an ordinary event;
+/// it must carry an explicit invalidation state for the operator and audit log.
+pub fn transition_behavior_assessment(
+    previous: &BehaviorAssessment,
+    mut next: BehaviorAssessment,
+) -> BehaviorAssessment {
+    if previous.state == BehaviorState::Confirmed && !matches!(next.state, BehaviorState::Confirmed)
+    {
+        next.state = BehaviorState::Invalidated;
+        next.main_force_confirmed = false;
+        next.invalidation_reason =
+            Some("后续 OI、价格或数据质量证据不足，原确认已失效".to_string());
+        next.counter_evidence
+            .push("确认后的后续证据未能维持原行为结论".to_string());
+        next.rationale = "原主力行为确认已被后续证据撤销，回到只读观察。".to_string();
+    }
+    next
 }
 
 pub fn behavior_input_from_signal(

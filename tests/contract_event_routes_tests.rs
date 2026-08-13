@@ -466,7 +466,7 @@ async fn contract_events_include_resolved_oi_context_fields() {
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
     assert_eq!(item["behaviorType"], "insufficient_evidence");
-    assert_eq!(item["behaviorState"], "insufficient");
+    assert_eq!(item["behaviorState"], "invalidated");
     assert_eq!(item["behaviorMainForceConfirmed"], false);
     assert!(
         item.get("flowDirection").and_then(|v| v.as_str()).is_some(),

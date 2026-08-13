@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::Context;
 use rusqlite::{params, OptionalExtension};
 
+use crate::contract_whale_monitor::emission::episode_key;
 use crate::contract_whale_monitor::outcome_calibration::ContractWhaleSignalOutcome;
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
@@ -800,15 +801,19 @@ impl ContractWhaleRepo for SqliteStore {
             let mut outbox_stmt = tx.prepare(
                 r#"
                 INSERT INTO contract_whale_discord_outbox (
-                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
-                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
-                ON CONFLICT(signal_id) DO NOTHING
+                  signal_id, episode_key, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                )
+                SELECT ?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM contract_whale_discord_outbox WHERE episode_key = ?2
+                )
                 "#,
             )?;
             let mut queued = 0;
             for signal in outbox_signals {
                 queued += outbox_stmt.execute(params![
                     signal.id,
+                    episode_key(signal),
                     signal.symbol,
                     serde_json::to_string(signal)?,
                     now_ms,
@@ -1050,15 +1055,19 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = tx.prepare(
                 r#"
                 INSERT INTO contract_whale_discord_outbox (
-                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
-                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
-                ON CONFLICT(signal_id) DO NOTHING
+                  signal_id, episode_key, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                )
+                SELECT ?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM contract_whale_discord_outbox WHERE episode_key = ?2
+                )
                 "#,
             )?;
             let mut inserted = 0;
             for signal in signals {
                 inserted += stmt.execute(params![
                     signal.id,
+                    episode_key(signal),
                     signal.symbol,
                     serde_json::to_string(signal)?,
                     now_ms,

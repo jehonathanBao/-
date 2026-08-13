@@ -449,7 +449,7 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
         .list_contract_whale_signals("BTC", Some(signal.severity), 10)
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].discord_eligible);
+    assert!(!rows[0].discord_eligible);
     assert!(!rows[0].discord_sent);
 
     let changed = store
@@ -1504,6 +1504,37 @@ fn main_force_events_open_update_and_close_after_quiet_period() {
     assert_eq!(events[0].id, opened.id);
     assert_eq!(events[0].ended_at, Some(cooling.observed_at));
     assert_eq!(events[0].peak_main_force_score, 88.0);
+}
+
+#[test]
+fn discord_outbox_dedupes_overlapping_windows_by_episode_key() {
+    let store = temp_store("cwm-episode-outbox");
+    let mut first = sample_s_signal();
+    first.event_lifecycle.start_time = first.ts;
+    let mut second = first.clone();
+    second.id.push_str("-60s");
+    second.ts += 15_000;
+    second.window_sec = 60;
+
+    assert_eq!(
+        store
+            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&first), first.ts)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&second), second.ts)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .claim_contract_whale_discord_outbox(10, second.ts)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal

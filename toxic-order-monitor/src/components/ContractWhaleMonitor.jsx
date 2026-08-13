@@ -4338,8 +4338,18 @@ function signalTypeLabel(type) {
   return labels[type] || type || "未知";
 }
 
-function signalDisplayType(signal) {
+export function signalDisplayType(signal) {
   if (signal && typeof signal === "object") {
+    const hasBehaviorState = signal.behaviorState != null || signal.behaviorType != null;
+    const behaviorState = String(signal.behaviorState || "insufficient").toLowerCase();
+    if (hasBehaviorState && behaviorState !== "confirmed") {
+      if (signal.signalType === "aggressive_buy") return "主动买压";
+      if (signal.signalType === "aggressive_sell") return "主动卖压";
+    }
+    if (hasBehaviorState && behaviorState === "confirmed") {
+      if (signal.behaviorType === "new_long_build") return "主力建多";
+      if (signal.behaviorType === "new_short_build") return "主力建空";
+    }
     const display = String(signal.displaySignalType || "").trim();
     if (display) return display;
     return signalTypeLabel(signal.signalType);

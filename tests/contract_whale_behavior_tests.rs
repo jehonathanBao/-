@@ -1,5 +1,6 @@
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::behavior::{
-    assess_contract_whale_behavior, BehaviorAssessmentInput, BehaviorState, BehaviorType,
+    assess_contract_whale_behavior, transition_behavior_assessment, BehaviorAssessmentInput,
+    BehaviorState, BehaviorType,
 };
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::types::{
     ContractWhaleOiContextTag, ContractWhalePriceResponseType, ContractWhaleSignalType,
@@ -77,4 +78,65 @@ fn liquidation_sweep_stays_in_impact_lane() {
     assert_eq!(assessment.behavior_type, BehaviorType::LiquidationSweep);
     assert!(!assessment.main_force_confirmed);
     assert!(assessment.state != BehaviorState::Confirmed);
+}
+
+#[test]
+fn incidental_liquidation_does_not_override_confirmed_behavior() {
+    let mut candidate = input(ContractWhaleSignalType::AggressiveBuy);
+    candidate.oi_context = ContractWhaleOiContextTag::NewLongBuild;
+    candidate.oi_available = true;
+    candidate.price_move_pct = Some(0.24);
+    candidate.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+    candidate.liquidation_total_btc = 1.0;
+
+    let assessment = assess_contract_whale_behavior(&candidate);
+
+    assert_eq!(assessment.behavior_type, BehaviorType::NewLongBuild);
+    assert_eq!(assessment.state, BehaviorState::Confirmed);
+    assert!(assessment.main_force_confirmed);
+}
+
+#[test]
+fn behavior_alert_eligibility_requires_confirmed_state_and_confidence() {
+    let mut candidate = input(ContractWhaleSignalType::AggressiveBuy);
+    candidate.oi_context = ContractWhaleOiContextTag::NewLongBuild;
+    candidate.oi_available = true;
+    candidate.price_move_pct = Some(0.24);
+    candidate.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+
+    let assessment = assess_contract_whale_behavior(&candidate);
+    assert!(
+        btc_toxic_flow_monitor_rs::contract_whale_monitor::behavior::is_behavior_alert_eligible(
+            &assessment
+        )
+    );
+
+    let mut provisional = assessment.clone();
+    provisional.state = BehaviorState::Provisional;
+    assert!(
+        !btc_toxic_flow_monitor_rs::contract_whale_monitor::behavior::is_behavior_alert_eligible(
+            &provisional
+        )
+    );
+}
+
+#[test]
+fn confirmed_behavior_is_invalidated_when_followup_evidence_disappears() {
+    let mut candidate = input(ContractWhaleSignalType::AggressiveBuy);
+    candidate.oi_context = ContractWhaleOiContextTag::NewLongBuild;
+    candidate.oi_available = true;
+    candidate.price_move_pct = Some(0.24);
+    candidate.price_response_type = ContractWhalePriceResponseType::TrendFollowUp;
+    let confirmed = assess_contract_whale_behavior(&candidate);
+
+    let degraded = input(ContractWhaleSignalType::AggressiveBuy);
+    let followup = assess_contract_whale_behavior(&degraded);
+    let transitioned = transition_behavior_assessment(&confirmed, followup);
+
+    assert_eq!(transitioned.state, BehaviorState::Invalidated);
+    assert!(!transitioned.main_force_confirmed);
+    assert!(transitioned
+        .invalidation_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("证据")));
 }

@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::{
         aggregator::{aggregate_1s_buckets, rolling_window_stats},
+        behavior::{BehaviorState, BehaviorType},
         detector::detect_contract_whale_signal,
         discord_notifier::{
             build_contract_whale_discord_log_preview, build_contract_whale_discord_payload,
@@ -268,13 +269,38 @@ fn cwm_discord_gate_allows_medium_b_a_s_impact_levels() {
 
     for level in ["B", "A", "S"] {
         let cooldown = ContractWhaleDiscordCooldownStore::new();
-        let signal = sample_medium_impact_signal(level, 80);
+        let mut signal = sample_medium_impact_signal(level, 80);
+        if level == "S" {
+            signal.window_sec = 60;
+            signal.total_volume_btc = 25_000.0;
+            signal.total_volume = 25_000.0;
+            signal.multi_exchange_confirmed = true;
+            signal.dynamic_multiple = Some(12.0);
+            signal.percentile_level = Some(99.9);
+            signal.dominance = 0.78;
+        }
         let decision =
             evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
 
         assert!(decision.allowed, "impact level {level} should be allowed");
         assert_eq!(decision.reason, "eligible");
     }
+}
+
+#[test]
+fn cwm_discord_gate_rejects_ordinary_s_grade_without_extreme_impact() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_medium_impact_signal("S", 80);
+    signal.behavior_assessment.state = BehaviorState::Insufficient;
+    signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
+    signal.behavior_assessment.main_force_confirmed = false;
+    signal.behavior_assessment.confidence = 0;
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "observe_only");
 }
 
 #[test]
@@ -409,14 +435,43 @@ fn cwm_discord_payload_uses_safe_final_fields_only() {
     eth_signal.total_notional_usd = 12_000_000.0;
     eth_signal.order_price_usd = Some(1_750.0);
     eth_signal.current_market_price_usd = Some(1_750.0);
+    eth_signal.behavior_assessment.state = BehaviorState::Insufficient;
+    eth_signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
+    eth_signal.behavior_assessment.main_force_confirmed = false;
+    eth_signal.behavior_assessment.confidence = 0;
     let eth_payload = build_contract_whale_discord_payload(&eth_signal).to_string();
     let eth_preview = build_contract_whale_discord_log_preview(&eth_signal);
-    assert!(eth_payload.contains("ETH 主力合约异动"));
-    assert!(!eth_payload.contains("BTC 主力合约异动"));
+    assert!(eth_payload.contains("ETH 合约流候选"));
+    assert!(!eth_payload.contains("ETH 主力合约异动"));
     assert!(eth_payload.contains("6855 ETH"));
     assert!(eth_payload.contains("-3979 ETH"));
     assert!(!eth_payload.contains("6855 BTC"));
     assert!(eth_preview.contains("ETH CWM S级"));
+}
+
+#[test]
+fn cwm_direct_gate_rejects_unconfirmed_nonimpact_behavior() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_signal_variant(
+        ContractWhaleSeverity::S,
+        ContractWhaleSignalType::AggressiveBuy,
+        ContractWhaleDirection::Buy,
+        "普通高成交量候选",
+        0.31,
+    );
+    signal.impact_level = None;
+    signal.signal_level = None;
+    signal.behavior_assessment.state = BehaviorState::Insufficient;
+    signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
+    signal.behavior_assessment.main_force_confirmed = false;
+    signal.behavior_assessment.confidence = 0;
+    signal.discord_eligible = true;
+    signal.discord_reason = "critical_or_s_gate".to_string();
+
+    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, "behavior_not_confirmed");
 }
 
 #[test]
@@ -590,6 +645,10 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
     signal.impact_z_score = None;
     signal.discord_eligible = true;
     signal.discord_reason = "critical_or_s_gate".to_string();
+    signal.behavior_assessment.state = BehaviorState::Confirmed;
+    signal.behavior_assessment.behavior_type = BehaviorType::NewLongBuild;
+    signal.behavior_assessment.main_force_confirmed = true;
+    signal.behavior_assessment.confidence = 86;
     signal
 }
 

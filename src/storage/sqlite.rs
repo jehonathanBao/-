@@ -195,6 +195,14 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "threshold_profile",
         "TEXT NOT NULL DEFAULT 'three_exchange'",
     )?;
+    ensure_column(conn, "contract_whale_discord_outbox", "episode_key", "TEXT")?;
+    conn.execute(
+        "UPDATE contract_whale_discord_outbox SET episode_key = signal_id WHERE episode_key IS NULL OR episode_key = ''",
+        [],
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_contract_whale_discord_outbox_episode ON contract_whale_discord_outbox(episode_key)",
+    )?;
     ensure_column(
         conn,
         "contract_oi_snapshots",

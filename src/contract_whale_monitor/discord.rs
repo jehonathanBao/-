@@ -1,8 +1,59 @@
 use super::{
+    behavior::is_behavior_alert_eligible,
     config::contract_whale_runtime_config,
     discord_gate::{classify_contract_whale_signal_semantic, impact_level_discord_eligible},
     types::{ContractWhaleSeverity, ContractWhaleSignal},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractWhaleNotificationLane {
+    Behavior,
+    Impact,
+    Observe,
+}
+
+pub fn notification_lane(signal: &ContractWhaleSignal) -> ContractWhaleNotificationLane {
+    if is_behavior_alert_eligible(&signal.behavior_assessment) && signal.multi_exchange_confirmed {
+        return ContractWhaleNotificationLane::Behavior;
+    }
+    if impact_notification_eligible(signal) {
+        return ContractWhaleNotificationLane::Impact;
+    }
+    ContractWhaleNotificationLane::Observe
+}
+
+pub fn impact_notification_eligible(signal: &ContractWhaleSignal) -> bool {
+    if is_s_grade(signal) && !is_historic_s_impact(signal) {
+        return false;
+    }
+    let config = contract_whale_runtime_config();
+    impact_level_discord_eligible(signal, &config)
+        || signal.discord_reason == "high_primary_source_extreme"
+        || signal.discord_reason == "btc_high_gate"
+        || (signal.liquidation_suspected
+            && signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0) >= 50.0)
+}
+
+fn is_s_grade(signal: &ContractWhaleSignal) -> bool {
+    signal.severity == ContractWhaleSeverity::S
+        || signal.impact_level.as_deref() == Some("S")
+        || signal.signal_level.as_deref() == Some("S")
+}
+
+/// S 级只保留可复核的极端冲击：大规模清算或跨市场特大换手。
+/// 普通高分、单窗口放量和单一交易所异常不会越级成为 S 级通知。
+pub fn is_historic_s_impact(signal: &ContractWhaleSignal) -> bool {
+    let liquidation_btc =
+        signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0);
+    let liquidation_sweep = signal.liquidation_suspected && liquidation_btc >= 1_000.0;
+    let extraordinary_turnover = signal.total_volume_btc >= 20_000.0
+        && signal.window_sec >= 60
+        && signal.multi_exchange_confirmed
+        && signal.dynamic_multiple.unwrap_or(0.0) >= 10.0
+        && signal.percentile_level.unwrap_or(0.0) >= 99.5
+        && signal.dominance >= 0.65;
+    liquidation_sweep || extraordinary_turnover
+}
 
 const BTC_MIN_PUSH_TOTAL_VOLUME_BTC: f64 = 500.0;
 const ETH_MIN_PUSH_TOTAL_VOLUME_BTC: f64 = 30_000.0;
@@ -49,6 +100,13 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
         effective_push_total_volume(signal),
     ) {
         return false;
+    }
+    let lane = notification_lane(signal);
+    if lane == ContractWhaleNotificationLane::Observe {
+        return false;
+    }
+    if lane == ContractWhaleNotificationLane::Impact {
+        return true;
     }
     if !classify_contract_whale_signal_semantic(signal).allows_discord() {
         return false;
