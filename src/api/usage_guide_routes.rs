@@ -17,12 +17,16 @@ mod tests {
 
     #[test]
     fn usage_guide_markdown_contains_signal_interpretation_sections() {
-        assert!(USAGE_GUIDE_MARKDOWN.contains("当前有毒订单判断逻辑"));
-        assert!(USAGE_GUIDE_MARKDOWN.contains("mainForceConfirmed = true"));
-        assert!(USAGE_GUIDE_MARKDOWN.contains("OKX 关闭时"));
-        assert!(USAGE_GUIDE_MARKDOWN.contains("信号卡片字段怎么看"));
-        assert!(USAGE_GUIDE_MARKDOWN.contains("合约监控信号怎么解读"));
-        assert!(USAGE_GUIDE_MARKDOWN.contains("Discord 状态怎么理解"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("主力行为状态怎么读"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("behaviorState = confirmed"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("invalidated / 已失效"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("BTC 1H 主动成交差值提醒"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("1H 已收线"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("ordinary / 普通：7 天"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("important / 重要：30 天"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("critical / 关键：365 天"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("S 级市场冲击 ≠ 主力确认"));
+        assert!(USAGE_GUIDE_MARKDOWN.contains("OKX disabled"));
         assert!(!USAGE_GUIDE_MARKDOWN.contains("discord.com/api/webhooks/"));
     }
 }
