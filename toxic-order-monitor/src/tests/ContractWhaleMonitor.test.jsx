@@ -2766,6 +2766,13 @@ describe("ContractWhaleMonitor", () => {
           impactLevel: "A",
           signalLevel: "L3",
           signalLabel: "HIGH IMPACT EVENT",
+          cohortImpactScore: 1.29,
+          cohortZScore: 1.29,
+          cohortPercentile: 90.5,
+          cohortNormalizedStrength: "LOW",
+          cohortImpactLevel: "C",
+          cohortSignalLevel: "L1",
+          cohortSignalLabel: "LOW IMPACT EVENT",
           signalType: "downside_absorption",
           direction: "sell",
           severity: "medium",
@@ -2825,6 +2832,11 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("L3 / A");
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("HIGH IMPACT EVENT");
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("2.14x · z 2.14 · P93");
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: /查看主力合约信号详情 .*raw-contract-whale-signals-closed/ }));
+    expect(screen.getByTestId("contract-detail-body")).toHaveTextContent("页面相对等级");
+    expect(screen.getByTestId("contract-detail-body")).toHaveTextContent("L1 / C");
   });
 
   it("shows a sync lag warning when latest is newer than the historical event stream", async () => {

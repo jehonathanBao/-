@@ -1118,6 +1118,20 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
   const explicitSignalLevel = item?.signalLevel ?? item?.signal_level;
   const explicitSignalLabel = item?.signalLabel ?? item?.signal_label;
   const explicitNormalizedStrength = item?.normalizedStrength ?? item?.normalized_strength;
+  const cohortImpactLevel = String(
+    item?.cohortImpactLevel ?? item?.cohort_impact_level ?? impactLevel,
+  ).toUpperCase();
+  const cohortSignalLevel = String(
+    item?.cohortSignalLevel ?? item?.cohort_signal_level ?? impactLevelToSignalLevel(cohortImpactLevel),
+  ).toUpperCase();
+  const cohortSignalLabel = String(
+    item?.cohortSignalLabel ?? item?.cohort_signal_label ?? impactLevelToSignalLabel(cohortImpactLevel),
+  ).toUpperCase();
+  const cohortNormalizedStrength = String(
+    item?.cohortNormalizedStrength ??
+      item?.cohort_normalized_strength ??
+      impactLevelToNormalizedStrength(cohortImpactLevel),
+  ).toUpperCase();
 
   return {
     impactScore,
@@ -1134,6 +1148,17 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
     signalLabel: explicitSignalLabel
       ? String(explicitSignalLabel).toUpperCase()
       : impactLevelToSignalLabel(impactLevel),
+    cohortImpactScore:
+      numberOrNull(item?.cohortImpactScore ?? item?.cohort_impact_score) ?? impactScore ?? 0,
+    cohortZScore: numberOrNull(item?.cohortZScore ?? item?.cohort_z_score) ?? zScore ?? 0,
+    cohortPercentile:
+      numberOrNull(item?.cohortPercentile ?? item?.cohort_percentile) ?? percentile ?? 0,
+    cohortNormalizedScore:
+      clampRatio(numberOrNull(item?.cohortNormalizedScore ?? item?.cohort_normalized_score) ?? 0),
+    cohortNormalizedStrength,
+    cohortImpactLevel,
+    cohortSignalLevel,
+    cohortSignalLabel,
   };
 }
 
@@ -1196,6 +1221,14 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     impactLevel: impact.impactLevel,
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
+    cohortImpactScore: impact.cohortImpactScore,
+    cohortZScore: impact.cohortZScore,
+    cohortPercentile: impact.cohortPercentile,
+    cohortNormalizedScore: impact.cohortNormalizedScore,
+    cohortNormalizedStrength: impact.cohortNormalizedStrength,
+    cohortImpactLevel: impact.cohortImpactLevel,
+    cohortSignalLevel: impact.cohortSignalLevel,
+    cohortSignalLabel: impact.cohortSignalLabel,
     volume,
     totalVolumeBtc: volume,
     netVolume,
@@ -1241,6 +1274,14 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     impactLevel: impact.impactLevel,
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
+    cohortImpactScore: impact.cohortImpactScore,
+    cohortZScore: impact.cohortZScore,
+    cohortPercentile: impact.cohortPercentile,
+    cohortNormalizedScore: impact.cohortNormalizedScore,
+    cohortNormalizedStrength: impact.cohortNormalizedStrength,
+    cohortImpactLevel: impact.cohortImpactLevel,
+    cohortSignalLevel: impact.cohortSignalLevel,
+    cohortSignalLabel: impact.cohortSignalLabel,
     ts: numberOrNull(item?.endTime) ?? signal.ts,
     symbol: eventSymbol,
     baseAsset: eventSymbol,

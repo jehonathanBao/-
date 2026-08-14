@@ -3590,6 +3590,8 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
                 ["Signal Level", resolveImpactDisplay(signal).signalLevel],
                 ["Signal Label", resolveImpactDisplay(signal).signalLabel],
                 ["Normalized Strength", resolveImpactDisplay(signal).normalizedStrength],
+                ["页面相对等级", `${resolveImpactDisplay(signal).cohortSignalLevel} / ${resolveImpactDisplay(signal).cohortImpactLevel}`],
+                ["页面相对指标", cohortImpactMetricSummary(resolveImpactDisplay(signal))],
                 ["事件质量", eventQualityLabel(signal)],
                 ["合并相似度", formatPct(Number(signal.eventQuality?.mergeSimilarityScore || 0) * 100)],
                 ["假事件标记", eventQualityFlagsLabel(signal)],
@@ -5324,6 +5326,21 @@ function resolveImpactDisplay(item) {
       item?.finalEvent?.normalizedStrength ??
       deriveNormalizedStrengthFromImpact(impactLevel),
   ).toUpperCase();
+  const cohortImpactLevel = String(
+    item?.cohortImpactLevel ??
+      item?.finalEvent?.cohortImpactLevel ??
+      impactLevel,
+  ).toUpperCase();
+  const cohortSignalLevel = String(
+    item?.cohortSignalLevel ??
+      item?.finalEvent?.cohortSignalLevel ??
+      deriveSignalLevelFromImpact(cohortImpactLevel),
+  ).toUpperCase();
+  const cohortSignalLabel = String(
+    item?.cohortSignalLabel ??
+      item?.finalEvent?.cohortSignalLabel ??
+      deriveSignalLabelFromImpact(cohortImpactLevel),
+  ).toUpperCase();
   return {
     impactScore,
     zScore,
@@ -5332,7 +5349,26 @@ function resolveImpactDisplay(item) {
     signalLevel,
     signalLabel,
     normalizedStrength,
+    cohortImpactScore: numberOrNull(item?.cohortImpactScore ?? item?.finalEvent?.cohortImpactScore),
+    cohortZScore: numberOrNull(item?.cohortZScore ?? item?.finalEvent?.cohortZScore),
+    cohortPercentile: numberOrNull(item?.cohortPercentile ?? item?.finalEvent?.cohortPercentile),
+    cohortNormalizedStrength: String(
+      item?.cohortNormalizedStrength ??
+        item?.finalEvent?.cohortNormalizedStrength ??
+        deriveNormalizedStrengthFromImpact(cohortImpactLevel),
+    ).toUpperCase(),
+    cohortImpactLevel,
+    cohortSignalLevel,
+    cohortSignalLabel,
   };
+}
+
+function cohortImpactMetricSummary(impact) {
+  const parts = [];
+  if (impact.cohortImpactScore !== null) parts.push(`${impact.cohortImpactScore.toFixed(2)}x`);
+  if (impact.cohortZScore !== null) parts.push(`z ${impact.cohortZScore.toFixed(2)}`);
+  if (impact.cohortPercentile !== null) parts.push(formatPercentile(impact.cohortPercentile));
+  return parts.join(" · ") || "cohort impact pending";
 }
 
 function impactMetricSummary(impact) {

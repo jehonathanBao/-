@@ -1374,6 +1374,42 @@ describe("contract whale api", () => {
     });
   });
 
+  it("keeps detector impact canonical while exposing cohort diagnostics", async () => {
+    axios.get.mockResolvedValueOnce({
+      data: {
+        active: [
+          {
+            eventId: "impact-consistency-1",
+            symbol: "BTC",
+            impactLevel: "A",
+            signalLevel: "L3",
+            signalLabel: "HIGH IMPACT EVENT",
+            impactScore: 6.357,
+            zScore: 6.357,
+            percentile: 99.5,
+            cohortImpactLevel: "C",
+            cohortSignalLevel: "L1",
+            cohortSignalLabel: "LOW IMPACT EVENT",
+            cohortImpactScore: 1.288,
+            cohortZScore: 1.287,
+            cohortPercentile: 90.476,
+          },
+        ],
+        closed: [],
+      },
+    });
+
+    const payload = await fetchFinalEventsV2({ symbol: "BTC", limit: 100, range: "24h" });
+
+    expect(payload.active[0]).toMatchObject({
+      impactLevel: "A",
+      signalLevel: "L3",
+      cohortImpactLevel: "C",
+      cohortSignalLevel: "L1",
+      cohortPercentile: 90.476,
+    });
+  });
+
   it("maps latest latency metadata for contract whale snapshots", async () => {
     axios.get.mockResolvedValueOnce({
       data: {

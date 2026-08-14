@@ -25,6 +25,22 @@ pub struct FinalEvent {
     pub impact_level: String,
     pub signal_level: String,
     pub signal_label: String,
+    #[serde(default)]
+    pub cohort_impact_score: f64,
+    #[serde(default)]
+    pub cohort_z_score: f64,
+    #[serde(default)]
+    pub cohort_percentile: f64,
+    #[serde(default)]
+    pub cohort_normalized_score: f64,
+    #[serde(default)]
+    pub cohort_normalized_strength: String,
+    #[serde(default)]
+    pub cohort_impact_level: String,
+    #[serde(default)]
+    pub cohort_signal_level: String,
+    #[serde(default)]
+    pub cohort_signal_label: String,
     pub total_volume_btc: f64,
     pub volume: f64,
     pub net_volume: f64,
@@ -179,6 +195,7 @@ impl FinalEvent {
         impact: MarketImpactNormalization,
         context: VolumeDisplayContext,
     ) -> Self {
+        let canonical_impact = detector_impact_or_cohort(signal, &impact);
         let mut source_signal_ids = vec![signal.id.clone()];
         for id in &signal.merged_from {
             if !id.is_empty() && !source_signal_ids.iter().any(|existing| existing == id) {
@@ -200,16 +217,24 @@ impl FinalEvent {
             status: event_status_key(signal.event_lifecycle.status).to_string(),
             window_sec: signal.window_sec,
             raw_volume: impact.raw_volume,
-            // Tape badges use page-cohort relative impact so large events on a
-            // high-volume stream are not all labeled S against the detector baseline.
-            impact_score: impact.impact_score,
-            z_score: impact.z_score,
-            percentile: impact.percentile,
-            normalized_score: impact.normalized_score,
-            normalized_strength: impact.normalized_strength,
-            impact_level: impact.impact_level,
-            signal_level: impact.signal_level,
-            signal_label: impact.signal_label,
+            // The operator-facing grade follows the detector/Discord decision;
+            // page-cohort normalization is exposed separately below.
+            impact_score: canonical_impact.impact_score,
+            z_score: canonical_impact.z_score,
+            percentile: canonical_impact.percentile,
+            normalized_score: canonical_impact.normalized_score,
+            normalized_strength: canonical_impact.normalized_strength,
+            impact_level: canonical_impact.impact_level,
+            signal_level: canonical_impact.signal_level,
+            signal_label: canonical_impact.signal_label,
+            cohort_impact_score: impact.impact_score,
+            cohort_z_score: impact.z_score,
+            cohort_percentile: impact.percentile,
+            cohort_normalized_score: impact.normalized_score,
+            cohort_normalized_strength: impact.normalized_strength,
+            cohort_impact_level: impact.impact_level,
+            cohort_signal_level: impact.signal_level,
+            cohort_signal_label: impact.signal_label,
             total_volume_btc: signal.total_volume_btc,
             volume: signal.total_volume_btc,
             net_volume: signal.net_volume_btc,
@@ -252,6 +277,39 @@ impl FinalEvent {
         self.volume_semantics = context.semantics().to_string();
         self.is_lifecycle_accumulated = context.is_lifecycle_accumulated();
         self
+    }
+}
+
+fn detector_impact_or_cohort(
+    signal: &ContractWhaleSignal,
+    cohort: &MarketImpactNormalization,
+) -> MarketImpactNormalization {
+    MarketImpactNormalization {
+        raw_volume: cohort.raw_volume,
+        impact_score: signal.impact_score.unwrap_or(cohort.impact_score),
+        z_score: signal.impact_z_score.unwrap_or(cohort.z_score),
+        percentile: signal.percentile_level.unwrap_or(cohort.percentile),
+        normalized_score: cohort.normalized_score,
+        normalized_strength: signal
+            .normalized_strength
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| cohort.normalized_strength.clone()),
+        impact_level: signal
+            .impact_level
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| cohort.impact_level.clone()),
+        signal_level: signal
+            .signal_level
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| cohort.signal_level.clone()),
+        signal_label: signal
+            .signal_label
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| cohort.signal_label.clone()),
     }
 }
 
@@ -501,10 +559,14 @@ mod tests {
         assert_eq!(final_event.merged_windows_sec, vec![5, 15]);
         assert_eq!(final_event.buy_volume_btc, Some(1_830.0));
         assert_eq!(final_event.sell_volume_btc, Some(2_450.0));
-        // Tape keeps the page-cohort normalization passed in ("A"), not detector "S".
-        assert_eq!(final_event.impact_level, "A");
-        assert_eq!(final_event.signal_level, "L3");
-        assert_eq!(final_event.signal_label, "HIGH IMPACT EVENT");
+        // The canonical event grade must remain the detector-persisted S.
+        assert_eq!(final_event.impact_level, "S");
+        assert_eq!(final_event.signal_level, "S");
+        assert_eq!(final_event.signal_label, "SHOCK IMPACT EVENT");
+        // The page-cohort normalization remains available as secondary context.
+        assert_eq!(final_event.cohort_impact_level, "A");
+        assert_eq!(final_event.cohort_signal_level, "L3");
+        assert_eq!(final_event.cohort_percentile, 93.0);
     }
 
     fn sample_signal() -> ContractWhaleSignal {
