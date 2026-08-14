@@ -336,8 +336,10 @@ impl ContractWhaleRepo for SqliteStore {
                       ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                       market_type, source_role, product_id,
                       buy_notional_usd, sell_notional_usd, trade_count,
-                      max_single_trade_btc, vwap, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                      buy_trade_count, sell_trade_count, max_single_trade_btc,
+                      max_single_trade_share, vwap, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                              ?13, ?14, ?15, ?16, ?17)
                     ON CONFLICT(ts_bucket, exchange, symbol, market_type) DO UPDATE SET
                       buy_volume_btc = excluded.buy_volume_btc,
                       sell_volume_btc = excluded.sell_volume_btc,
@@ -346,7 +348,10 @@ impl ContractWhaleRepo for SqliteStore {
                       buy_notional_usd = excluded.buy_notional_usd,
                       sell_notional_usd = excluded.sell_notional_usd,
                       trade_count = excluded.trade_count,
+                      buy_trade_count = excluded.buy_trade_count,
+                      sell_trade_count = excluded.sell_trade_count,
                       max_single_trade_btc = excluded.max_single_trade_btc,
+                      max_single_trade_share = excluded.max_single_trade_share,
                       vwap = excluded.vwap,
                       created_at = excluded.created_at
                     "#,
@@ -367,7 +372,10 @@ impl ContractWhaleRepo for SqliteStore {
                         bucket.buy_notional_usd,
                         bucket.sell_notional_usd,
                         bucket.trade_count as i64,
+                        bucket.buy_trade_count as i64,
+                        bucket.sell_trade_count as i64,
                         bucket.max_single_trade_btc,
+                        bucket.max_single_trade_share,
                         bucket.vwap,
                         now,
                     ])
@@ -391,7 +399,8 @@ impl ContractWhaleRepo for SqliteStore {
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                        market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
-                       max_single_trade_btc, vwap
+                       buy_trade_count, sell_trade_count, max_single_trade_btc,
+                       max_single_trade_share, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
                   AND market_type = 'perp'
@@ -412,8 +421,11 @@ impl ContractWhaleRepo for SqliteStore {
                     buy_notional_usd: row.get(8)?,
                     sell_notional_usd: row.get(9)?,
                     trade_count: row.get::<_, i64>(10)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
-                    vwap: row.get(12)?,
+                    buy_trade_count: row.get::<_, i64>(11)?.max(0) as u64,
+                    sell_trade_count: row.get::<_, i64>(12)?.max(0) as u64,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
+                    max_single_trade_share: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
+                    vwap: row.get(15)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -436,7 +448,8 @@ impl ContractWhaleRepo for SqliteStore {
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                        market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
-                       max_single_trade_btc, vwap
+                       buy_trade_count, sell_trade_count, max_single_trade_btc,
+                       max_single_trade_share, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
                   AND market_type = 'perp'
@@ -458,8 +471,11 @@ impl ContractWhaleRepo for SqliteStore {
                     buy_notional_usd: row.get(8)?,
                     sell_notional_usd: row.get(9)?,
                     trade_count: row.get::<_, i64>(10)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
-                    vwap: row.get(12)?,
+                    buy_trade_count: row.get::<_, i64>(11)?.max(0) as u64,
+                    sell_trade_count: row.get::<_, i64>(12)?.max(0) as u64,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
+                    max_single_trade_share: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
+                    vwap: row.get(15)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -2067,7 +2083,7 @@ fn contract_retention_metadata(signal: &ContractWhaleSignal) -> (String, i64, St
         class.key().to_string(),
         retain_until,
         reason.to_string(),
-        "v1".to_string(),
+        "v2".to_string(),
     )
 }
 

@@ -204,7 +204,10 @@ async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate(
                 buy_notional_usd: 21_000_000.0,
                 sell_notional_usd: 0.0,
                 trade_count: 1,
+                buy_trade_count: 1,
+                sell_trade_count: 0,
                 max_single_trade_btc: 300.0,
+                max_single_trade_share: 1.0,
                 vwap: Some(70_000.0),
             },
             ContractFlowBucket {
@@ -219,7 +222,10 @@ async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate(
                 buy_notional_usd: 28_000_000.0,
                 sell_notional_usd: 0.0,
                 trade_count: 1,
+                buy_trade_count: 1,
+                sell_trade_count: 0,
                 max_single_trade_btc: 400.0,
+                max_single_trade_share: 1.0,
                 vwap: Some(70_000.0),
             },
         ])

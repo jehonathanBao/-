@@ -25,6 +25,7 @@ pub mod outcome_calibration;
 pub mod persistence;
 pub mod replay;
 pub mod scoring;
+pub mod shadow;
 pub mod trading;
 pub mod trajectory;
 pub mod types;

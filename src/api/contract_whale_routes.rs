@@ -38,7 +38,7 @@ use crate::{
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
-        discord::meets_contract_whale_display_total_volume,
+        discord::{meets_contract_whale_display_total_volume, sanitize_contract_whale_impact},
         event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
@@ -1456,6 +1456,7 @@ fn enrich_contract_whale_response(
     spot_context: &ContractWhaleSpotConfirmationContext,
 ) {
     for signal in &mut response.items {
+        sanitize_contract_whale_impact(signal);
         signal.spot_confirmation = spot_confirmation_for_signal(signal, spot_context);
         decorate_market_structure_scores(signal, response.summary.overall_data_quality);
     }

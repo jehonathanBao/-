@@ -183,7 +183,10 @@ pub const MIGRATIONS: &[&str] = &[
       buy_notional_usd REAL NOT NULL,
       sell_notional_usd REAL NOT NULL,
       trade_count INTEGER NOT NULL,
+      buy_trade_count INTEGER NOT NULL DEFAULT 0,
+      sell_trade_count INTEGER NOT NULL DEFAULT 0,
       max_single_trade_btc REAL,
+      max_single_trade_share REAL NOT NULL DEFAULT 0,
       vwap REAL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       PRIMARY KEY (ts_bucket, exchange, symbol)

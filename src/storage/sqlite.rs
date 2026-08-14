@@ -170,6 +170,24 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "TEXT NOT NULL DEFAULT 'primary'",
     )?;
     ensure_column(conn, "contract_flow_1s", "product_id", "TEXT")?;
+    ensure_column(
+        conn,
+        "contract_flow_1s",
+        "buy_trade_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "contract_flow_1s",
+        "sell_trade_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "contract_flow_1s",
+        "max_single_trade_share",
+        "REAL NOT NULL DEFAULT 0",
+    )?;
 
     ensure_column(
         conn,
@@ -214,14 +232,51 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_retention ON contract_whale_signals(retention_class, retain_until, ts)",
     )?;
+    // Reclassify legacy S impact labels before calculating retention metadata.
+    // The raw percentile score is diagnostic only; S must have replayable hard
+    // evidence or it is represented as A in every downstream read path.
+    conn.execute(
+        r#"
+        UPDATE contract_whale_signals
+        SET payload_json = json_set(
+            payload_json,
+            '$.impactLevel', 'A',
+            '$.signalLevel', 'L3',
+            '$.signalLabel', 'HIGH IMPACT EVENT'
+        )
+        WHERE retention_version != 'v2'
+          AND UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
+          AND NOT (
+            (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
+             AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
+                + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
+            OR
+            (total_volume_btc >= 20000
+             AND window_sec >= 60
+             AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+             AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
+             AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
+             AND dominance >= 0.65)
+          )
+        "#,
+        [],
+    )?;
     conn.execute(
         r#"
         UPDATE contract_whale_signals
         SET retention_class = CASE
               WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND total_volume_btc >= 20000
-                   AND window_sec >= 60
-                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                   AND (
+                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
+                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
+                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
+                     OR (total_volume_btc >= 20000
+                         AND window_sec >= 60
+                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
+                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
+                         AND dominance >= 0.65)
+                   )
                 THEN 'critical'
               WHEN discord_sent != 0
                    OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
@@ -231,9 +286,17 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
             END,
             retain_until = ts + CASE
               WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND total_volume_btc >= 20000
-                   AND window_sec >= 60
-                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                   AND (
+                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
+                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
+                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
+                     OR (total_volume_btc >= 20000
+                         AND window_sec >= 60
+                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
+                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
+                         AND dominance >= 0.65)
+                   )
                 THEN 365 * 86400000
               WHEN discord_sent != 0
                    OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
@@ -243,16 +306,24 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
             END,
             retention_reason = CASE
               WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND total_volume_btc >= 20000
-                   AND window_sec >= 60
-                   AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
-                THEN 'legacy_extreme_impact'
+                   AND (
+                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
+                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
+                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
+                     OR (total_volume_btc >= 20000
+                         AND window_sec >= 60
+                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
+                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
+                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
+                         AND dominance >= 0.65)
+                   )
+                THEN 'impact_s_hard_evidence'
               WHEN discord_sent != 0 THEN 'legacy_discord_sent'
               WHEN ABS(COALESCE(net_volume_btc, 0.0)) >= 500 THEN 'legacy_large_net_flow'
               ELSE 'legacy_ordinary'
             END,
-            retention_version = 'v1'
-        WHERE retain_until = 0 OR retention_version != 'v1'
+            retention_version = 'v2'
+        WHERE retain_until = 0 OR retention_version != 'v2'
         "#,
         [],
     )?;
@@ -413,7 +484,10 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
           buy_notional_usd REAL NOT NULL,
           sell_notional_usd REAL NOT NULL,
           trade_count INTEGER NOT NULL,
+          buy_trade_count INTEGER NOT NULL DEFAULT 0,
+          sell_trade_count INTEGER NOT NULL DEFAULT 0,
           max_single_trade_btc REAL,
+          max_single_trade_share REAL NOT NULL DEFAULT 0,
           vwap REAL,
           created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
           PRIMARY KEY (ts_bucket, exchange, symbol, market_type)
@@ -421,7 +495,8 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
         INSERT OR REPLACE INTO contract_flow_1s_next (
           ts_bucket, exchange, symbol, market_type, source_role, product_id,
           buy_volume_btc, sell_volume_btc, buy_notional_usd, sell_notional_usd,
-          trade_count, max_single_trade_btc, vwap, created_at
+          trade_count, buy_trade_count, sell_trade_count, max_single_trade_btc,
+          max_single_trade_share, vwap, created_at
         )
         SELECT
           ts_bucket, exchange, symbol,
@@ -429,7 +504,8 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
           COALESCE(NULLIF(source_role, ''), 'primary'),
           product_id,
           buy_volume_btc, sell_volume_btc, buy_notional_usd, sell_notional_usd,
-          trade_count, max_single_trade_btc, vwap, created_at
+          trade_count, buy_trade_count, sell_trade_count, max_single_trade_btc,
+          max_single_trade_share, vwap, created_at
         FROM contract_flow_1s;
         DROP TABLE contract_flow_1s;
         ALTER TABLE contract_flow_1s_next RENAME TO contract_flow_1s;

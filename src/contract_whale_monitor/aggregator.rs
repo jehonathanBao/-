@@ -46,15 +46,26 @@ pub fn aggregate_1s_buckets(trades: &[ContractTrade]) -> Vec<ContractFlowBucket>
             ContractTradeSide::Buy => {
                 bucket.buy_volume_btc += trade.qty_btc;
                 bucket.buy_notional_usd += trade.notional_usd;
+                bucket.buy_trade_count = bucket
+                    .buy_trade_count
+                    .saturating_add(trade.raw_trade_count.unwrap_or(1));
             }
             ContractTradeSide::Sell => {
                 bucket.sell_volume_btc += trade.qty_btc;
                 bucket.sell_notional_usd += trade.notional_usd;
+                bucket.sell_trade_count = bucket
+                    .sell_trade_count
+                    .saturating_add(trade.raw_trade_count.unwrap_or(1));
             }
         }
         bucket.trade_count += trade.raw_trade_count.unwrap_or(1);
         bucket.max_single_trade_btc = bucket.max_single_trade_btc.max(trade.qty_btc);
         let total_volume = bucket.buy_volume_btc + bucket.sell_volume_btc;
+        bucket.max_single_trade_share = if total_volume > f64::EPSILON {
+            (bucket.max_single_trade_btc / total_volume).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         bucket.vwap = if total_volume > 0.0 {
             Some((bucket.buy_notional_usd + bucket.sell_notional_usd) / total_volume)
         } else {

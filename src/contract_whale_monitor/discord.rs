@@ -40,12 +40,12 @@ fn is_s_grade(signal: &ContractWhaleSignal) -> bool {
         || signal.signal_level.as_deref() == Some("S")
 }
 
-/// S 级只保留可复核的极端冲击：大规模清算或跨市场特大换手。
-/// 普通高分、单窗口放量和单一交易所异常不会越级成为 S 级通知。
+/// S 级只保留可复核的极端冲击：大规模实时清算或跨市场特大换手。
+/// 普通高分、单窗口放量和单一交易所异常不会越级成为 S 级事件。
 pub fn is_historic_s_impact(signal: &ContractWhaleSignal) -> bool {
     let liquidation_btc =
         signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0);
-    let liquidation_sweep = signal.liquidation_suspected && liquidation_btc >= 1_000.0;
+    let liquidation_sweep = signal.liquidation_suspected && liquidation_btc >= 2_500.0;
     let extraordinary_turnover = signal.total_volume_btc >= 20_000.0
         && signal.window_sec >= 60
         && signal.multi_exchange_confirmed
@@ -53,6 +53,19 @@ pub fn is_historic_s_impact(signal: &ContractWhaleSignal) -> bool {
         && signal.percentile_level.unwrap_or(0.0) >= 99.5
         && signal.dominance >= 0.65;
     liquidation_sweep || extraordinary_turnover
+}
+
+/// Normalizes the user-facing impact lane after the raw percentile calculation.
+/// The raw score remains available for diagnostics, but an S label is never
+/// exposed without replayable hard evidence.
+pub fn sanitize_contract_whale_impact(signal: &mut ContractWhaleSignal) {
+    let raw_s =
+        signal.impact_level.as_deref() == Some("S") || signal.signal_level.as_deref() == Some("S");
+    if raw_s && !is_historic_s_impact(signal) {
+        signal.impact_level = Some("A".to_string());
+        signal.signal_level = Some("L3".to_string());
+        signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
+    }
 }
 
 const BTC_MIN_PUSH_TOTAL_VOLUME_BTC: f64 = 500.0;
@@ -95,6 +108,23 @@ pub fn build_contract_whale_discord_preview(signal: &ContractWhaleSignal) -> ser
 }
 
 pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool {
+    let min_push_volume =
+        contract_whale_min_push_total_volume_btc(contract_whale_gate_symbol(signal)).unwrap_or(0.0);
+    if signal.severity == ContractWhaleSeverity::High
+        && signal.score < 70
+        && signal.total_volume_btc > min_push_volume + f64::EPSILON
+        && signal.event_lifecycle.volume_accumulated <= signal.total_volume_btc + f64::EPSILON
+    {
+        return false;
+    }
+    if matches!(
+        signal.severity,
+        ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
+    ) && !is_historic_s_impact(signal)
+        && !is_behavior_alert_eligible(&signal.behavior_assessment)
+    {
+        return false;
+    }
     if !meets_contract_whale_push_total_volume(
         contract_whale_gate_symbol(signal),
         effective_push_total_volume(signal),
@@ -114,7 +144,10 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
     matches!(
         signal.severity,
         ContractWhaleSeverity::Critical | ContractWhaleSeverity::S
-    ) || (signal.severity == ContractWhaleSeverity::High && is_btc_contract_symbol(&signal.symbol))
+    ) || (signal.severity == ContractWhaleSeverity::High
+        && is_btc_contract_symbol(&signal.symbol)
+        && (signal.score >= 70
+            || signal.event_lifecycle.volume_accumulated > signal.total_volume_btc + f64::EPSILON))
         || (signal.severity == ContractWhaleSeverity::High
             && ((signal.score >= 85
                 && signal

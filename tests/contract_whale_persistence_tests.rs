@@ -50,7 +50,10 @@ fn contract_flow_1s_upsert_is_idempotent() {
         buy_notional_usd: 700_000.0,
         sell_notional_usd: 140_000.0,
         trade_count: 3,
+        buy_trade_count: 2,
+        sell_trade_count: 1,
         max_single_trade_btc: 8.0,
+        max_single_trade_share: 8.0 / 12.0,
         vwap: Some(70_000.0),
     };
 
@@ -299,7 +302,10 @@ fn contract_flow_1s_keeps_spot_rows_out_of_perp_queries() {
         buy_notional_usd: 700_000.0,
         sell_notional_usd: 140_000.0,
         trade_count: 3,
+        buy_trade_count: 2,
+        sell_trade_count: 1,
         max_single_trade_btc: 8.0,
+        max_single_trade_share: 8.0 / 12.0,
         vwap: Some(70_000.0),
     };
     let spot_bucket = ContractFlowBucket {
@@ -353,7 +359,10 @@ async fn contract_flow_nonblocking_flush_writes_buckets() {
         buy_notional_usd: 350_000.0,
         sell_notional_usd: 70_000.0,
         trade_count: 2,
+        buy_trade_count: 1,
+        sell_trade_count: 1,
         max_single_trade_btc: 5.0,
+        max_single_trade_share: 5.0 / 6.0,
         vwap: Some(70_000.0),
     };
 
@@ -899,7 +908,10 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             buy_notional_usd: 70_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
+            buy_trade_count: 1,
+            sell_trade_count: 0,
             max_single_trade_btc: 1.0,
+            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         },
         ContractFlowBucket {
@@ -914,7 +926,10 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             buy_notional_usd: 140_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
+            buy_trade_count: 1,
+            sell_trade_count: 0,
             max_single_trade_btc: 2.0,
+            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         },
     ];
@@ -1160,7 +1175,10 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
             buy_notional_usd: 70_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
+            buy_trade_count: 1,
+            sell_trade_count: 0,
             max_single_trade_btc: 1.0,
+            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         }])
         .unwrap();
@@ -1240,7 +1258,10 @@ fn contract_flow_history_builds_dynamic_average_and_percentile_thresholds() {
             buy_notional_usd: (100.0 + index as f64) * 70_000.0,
             sell_notional_usd: 20.0 * 70_000.0,
             trade_count: 10,
+            buy_trade_count: 8,
+            sell_trade_count: 2,
             max_single_trade_btc: 100.0 + index as f64,
+            max_single_trade_share: (100.0 + index as f64) / (120.0 + index as f64),
             vwap: Some(70_000.0),
         })
         .collect::<Vec<_>>();

@@ -133,6 +133,7 @@ pub fn inspect_contract_whale_signal_with_config(
         primary_source_extreme_discord_candidate(&scoring_stats, signal_type, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let impact = market_impact_normalization(&scoring_stats);
+    let raw_s_impact = impact.impact_level == "S" || impact.signal_level == "S";
     let btc_high_fallback_allowed =
         btc_high_fallback_allowed(signal_type, price_response_type, score);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
@@ -340,7 +341,8 @@ pub fn inspect_contract_whale_signal_with_config(
         execution_enabled: false,
         merged_from: Vec::new(),
     };
-    if signal.impact_level.as_deref() == Some("S")
+    super::discord::sanitize_contract_whale_impact(&mut signal);
+    if raw_s_impact
         && !super::discord::is_historic_s_impact(&signal)
         && !is_behavior_alert_eligible(&signal.behavior_assessment)
     {

@@ -10,7 +10,10 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     collector_okx::handle_liquidation_order_message,
     config::ContractWhaleRuntimeConfig,
     detector::{detect_contract_whale_signal, detect_contract_whale_signal_with_config},
-    discord::{build_contract_whale_discord_preview, should_push_contract_whale_discord},
+    discord::{
+        build_contract_whale_discord_preview, is_historic_s_impact,
+        should_push_contract_whale_discord,
+    },
     event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
     normalizer::{
         normalize_binance_agg_trade, normalize_binance_force_order,
@@ -1375,6 +1378,65 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
     let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("s signal");
     assert_eq!(signal.severity, ContractWhaleSeverity::S);
     assert!(signal.multi_exchange_confirmed);
+    assert_eq!(signal.impact_level.as_deref(), Some("A"));
+    assert_eq!(signal.signal_level.as_deref(), Some("L3"));
+}
+
+#[test]
+fn historic_s_impact_requires_hard_extreme_evidence() {
+    let now = 1_700_000_015_000;
+    let trades = vec![
+        normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_000.0, false).unwrap(),
+        normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
+    ];
+    let buckets = aggregate_1s_buckets(&trades);
+    let config = three_exchange_config();
+    let mut stats = rolling_window_stats_with_config(
+        &buckets,
+        "BTC",
+        15,
+        now,
+        RollingWindowStatsOptions {
+            price_move_pct: Some(0.31),
+            dynamic_multiple: Some(10.5),
+            dynamic_baseline_btc: None,
+            dynamic_threshold_level: String::new(),
+            data_quality: 94,
+            config: &config,
+        },
+    )
+    .expect("window stats");
+    stats.percentile_level = Some(99.9);
+    let mut signal = detect_contract_whale_signal_with_config(&stats, &config).expect("signal");
+    assert_eq!(signal.impact_level.as_deref(), Some("A"));
+
+    signal.total_volume_btc = 20_000.0;
+    signal.window_sec = 60;
+    signal.multi_exchange_confirmed = true;
+    signal.dynamic_multiple = Some(10.0);
+    signal.percentile_level = Some(99.5);
+    signal.dominance = 0.65;
+    signal.impact_level = Some("S".to_string());
+    assert!(is_historic_s_impact(&signal));
+}
+
+#[test]
+fn one_pulse_and_fragmented_flow_expose_distinct_footprints() {
+    let now = 1_700_000_000_000;
+    let pulse = normalize_binance_agg_trade(now, 70_000.0, 400.0, false).unwrap();
+    let fragmented = (0..40)
+        .map(|index| normalize_binance_agg_trade(now + index, 70_000.0, 10.0, false).unwrap())
+        .collect::<Vec<_>>();
+
+    let pulse_bucket = aggregate_1s_buckets(&[pulse]).pop().expect("pulse bucket");
+    let fragmented_bucket = aggregate_1s_buckets(&fragmented)
+        .pop()
+        .expect("fragmented bucket");
+
+    assert_eq!(pulse_bucket.buy_trade_count, 1);
+    assert_eq!(pulse_bucket.sell_trade_count, 0);
+    assert_eq!(fragmented_bucket.buy_trade_count, 40);
+    assert!(pulse_bucket.max_single_trade_share > fragmented_bucket.max_single_trade_share);
 }
 
 #[test]

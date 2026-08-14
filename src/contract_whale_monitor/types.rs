@@ -261,7 +261,13 @@ pub struct ContractFlowBucket {
     pub buy_notional_usd: f64,
     pub sell_notional_usd: f64,
     pub trade_count: u64,
+    #[serde(default)]
+    pub buy_trade_count: u64,
+    #[serde(default)]
+    pub sell_trade_count: u64,
     pub max_single_trade_btc: f64,
+    #[serde(default)]
+    pub max_single_trade_share: f64,
     pub vwap: Option<f64>,
 }
 

@@ -26,6 +26,7 @@ use crate::{
         config::contract_whale_runtime_config,
         discord::{
             contract_whale_min_display_total_volume_btc, meets_contract_whale_display_total_volume,
+            sanitize_contract_whale_impact,
         },
         event_lifecycle::{
             apply_contract_whale_event_lifecycle, enrich_lifecycle_unique_turnover,
@@ -1463,7 +1464,8 @@ fn db_debug_counts(
 }
 
 fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractEventItem {
-    let event = candidate.event;
+    let mut event = candidate.event;
+    sanitize_contract_whale_impact(&mut event.source_signal);
     let source_signal = &event.source_signal;
     let exchange_spot_count = source_signal.active_sources.spot.len();
     let exchange_contract_count = source_signal.active_sources.contract.len();
