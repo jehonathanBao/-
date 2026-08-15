@@ -174,25 +174,25 @@ git commit -m "fix: raise contract impact grade thresholds"
 **Files:**
 - No additional source changes unless verification finds a defect in the files above.
 
-- [ ] **Step 1: Push the verified commit**
+- [x] **Step 1: Push the verified commit**
 
 ```powershell
 git push origin HEAD
 ```
 
-- [ ] **Step 2: Sync the authorized server and recreate only backend/frontend**
+- [x] **Step 2: Sync the authorized server and recreate only backend/frontend**
 
 Use the established SSH key and deployment path from `docs/server-deployment-runbook.md`. Pull fast-forward only, rebuild the backend/frontend images, and leave database rows and monitoring configuration intact.
 
-- [ ] **Step 3: Verify service and API health**
+- [x] **Step 3: Verify service and API health**
 
 Check `docker compose ps`, `/healthz`, `/readyz`, and the public BTC final-events endpoint. Confirm every newly returned A meets the new evidence floors and that the response remains `readOnly=true` / `executionEnabled=false`.
 
-- [ ] **Step 4: Compare grade distribution before and after**
+- [x] **Step 4: Compare grade distribution before and after**
 
 Fetch the seven-day BTC final-events payload and record counts for C/B/A/S, Discord-sent count, and any A rows that fail the thresholds. If any A fails, stop and report rather than claiming completion.
 
 ### Task 6: Corrective projection follow-up
 
 - [x] Add the final-event projection synchronization regression test after the first deployment showed persisted source grades were not copied to flattened `FinalEvent` fields.
-- [ ] Push and deploy the corrective commit, then repeat the health and grade-distribution checks.
+- [x] Push and deploy the corrective commit, then repeat the health and grade-distribution checks.
