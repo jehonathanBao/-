@@ -55,16 +55,92 @@ pub fn is_historic_s_impact(signal: &ContractWhaleSignal) -> bool {
     liquidation_sweep || extraordinary_turnover
 }
 
+const A_MIN_DATA_QUALITY: u8 = 80;
+const A_MIN_PERCENTILE: f64 = 99.5;
+const A_MIN_MULTIPLE: f64 = 4.0;
+const A_MIN_ABS_PRICE_MOVE_PCT: f64 = 0.5;
+const A_MIN_VOLUME_BTC: f64 = 2_500.0;
+const A_MIN_NOTIONAL_USD: f64 = 150_000_000.0;
+const B_MIN_DATA_QUALITY: u8 = 70;
+const B_MIN_PERCENTILE: f64 = 99.0;
+const B_MIN_MULTIPLE: f64 = 2.5;
+const B_MIN_ABS_PRICE_MOVE_PCT: f64 = 0.15;
+const B_MIN_VOLUME_BTC: f64 = 800.0;
+const B_MIN_NOTIONAL_USD: f64 = 50_000_000.0;
+
+fn finite_at_least(value: Option<f64>, floor: f64) -> bool {
+    value.is_some_and(|value| value.is_finite() && value >= floor)
+}
+
+fn finite_abs_at_least(value: Option<f64>, floor: f64) -> bool {
+    value.is_some_and(|value| value.is_finite() && value.abs() >= floor)
+}
+
+fn has_independent_major_confirmation(signal: &ContractWhaleSignal) -> bool {
+    signal.multi_exchange_confirmed
+        || is_behavior_alert_eligible(&signal.behavior_assessment)
+        || (signal.liquidation_suspected
+            && signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0)
+                > f64::EPSILON)
+}
+
+fn qualifies_major_a(signal: &ContractWhaleSignal) -> bool {
+    signal.data_quality >= A_MIN_DATA_QUALITY
+        && finite_at_least(signal.percentile_level, A_MIN_PERCENTILE)
+        && finite_at_least(signal.impact_score, A_MIN_MULTIPLE)
+        && finite_at_least(signal.impact_z_score, A_MIN_MULTIPLE)
+        && finite_abs_at_least(signal.price_move_pct, A_MIN_ABS_PRICE_MOVE_PCT)
+        && (signal.total_volume_btc.is_finite() && signal.total_volume_btc >= A_MIN_VOLUME_BTC
+            || signal.total_notional_usd.is_finite()
+                && signal.total_notional_usd >= A_MIN_NOTIONAL_USD)
+        && has_independent_major_confirmation(signal)
+}
+
+fn qualifies_material_b(signal: &ContractWhaleSignal) -> bool {
+    signal.data_quality >= B_MIN_DATA_QUALITY
+        && finite_at_least(signal.percentile_level, B_MIN_PERCENTILE)
+        && finite_at_least(signal.impact_score, B_MIN_MULTIPLE)
+        && finite_at_least(signal.impact_z_score, B_MIN_MULTIPLE)
+        && finite_abs_at_least(signal.price_move_pct, B_MIN_ABS_PRICE_MOVE_PCT)
+        && (signal.total_volume_btc.is_finite() && signal.total_volume_btc >= B_MIN_VOLUME_BTC
+            || signal.total_notional_usd.is_finite()
+                && signal.total_notional_usd >= B_MIN_NOTIONAL_USD)
+}
+
+fn set_impact_level(signal: &mut ContractWhaleSignal, impact_level: &str) {
+    let (signal_level, signal_label) = match impact_level {
+        "A" => ("L3", "HIGH IMPACT EVENT"),
+        "B" => ("L2", "MEDIUM IMPACT EVENT"),
+        _ => ("L1", "LOW IMPACT EVENT"),
+    };
+    signal.impact_level = Some(impact_level.to_string());
+    signal.signal_level = Some(signal_level.to_string());
+    signal.signal_label = Some(signal_label.to_string());
+}
+
 /// Normalizes the user-facing impact lane after the raw percentile calculation.
 /// The raw score remains available for diagnostics, but an S label is never
-/// exposed without replayable hard evidence.
+/// exposed without replayable hard evidence. A is reserved for major events
+/// with independent confirmation; other raw A candidates fall to B or C.
 pub fn sanitize_contract_whale_impact(signal: &mut ContractWhaleSignal) {
     let raw_s =
         signal.impact_level.as_deref() == Some("S") || signal.signal_level.as_deref() == Some("S");
-    if raw_s && !is_historic_s_impact(signal) {
-        signal.impact_level = Some("A".to_string());
-        signal.signal_level = Some("L3".to_string());
-        signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
+    if raw_s {
+        if is_historic_s_impact(signal) {
+            return;
+        }
+        set_impact_level(signal, "A");
+    }
+    if signal.impact_level.as_deref() != Some("A") {
+        return;
+    }
+    if qualifies_major_a(signal) {
+        return;
+    }
+    if qualifies_material_b(signal) {
+        set_impact_level(signal, "B");
+    } else {
+        set_impact_level(signal, "C");
     }
 }
 
@@ -114,6 +190,7 @@ pub fn should_push_contract_whale_discord(signal: &ContractWhaleSignal) -> bool 
         && signal.score < 70
         && signal.total_volume_btc > min_push_volume + f64::EPSILON
         && signal.event_lifecycle.volume_accumulated <= signal.total_volume_btc + f64::EPSILON
+        && signal.discord_reason != "high_primary_source_extreme"
     {
         return false;
     }

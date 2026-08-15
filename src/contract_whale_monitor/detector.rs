@@ -350,6 +350,15 @@ pub fn inspect_contract_whale_signal_with_config(
         signal.discord_would_send = false;
         signal.discord_reason = "s_grade_extreme_impact_required".to_string();
     }
+    if signal.impact_level.as_deref() == Some("C")
+        && signal.discord_eligible
+        && signal.discord_reason == "impact_level_gate"
+        && !is_behavior_alert_eligible(&signal.behavior_assessment)
+    {
+        signal.discord_eligible = false;
+        signal.discord_would_send = false;
+        signal.discord_reason = "impact_grade_c_display_only".to_string();
+    }
     tracing::info!(
         target: LOG_TARGET,
         event = log_events::SIGNAL_GENERATED,
