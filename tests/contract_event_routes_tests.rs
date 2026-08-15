@@ -589,6 +589,63 @@ async fn contract_events_mark_far_oi_snapshots_as_unavailable() {
 }
 
 #[tokio::test]
+async fn final_events_v2_projects_sanitized_canonical_impact_grade() {
+    let config = test_config(temp_sqlite_path("final-events-sanitized-impact-grade"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut signal = base_signal("persisted-raw-a", now - 5 * 60 * 1000);
+    signal.impact_level = Some("A".to_string());
+    signal.signal_level = Some("L3".to_string());
+    signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
+    signal.data_quality = 85;
+    signal.percentile_level = Some(99.0);
+    signal.impact_score = Some(10.0);
+    signal.impact_z_score = Some(10.0);
+    signal.total_volume_btc = 638.0;
+    signal.total_volume = 638.0;
+    signal.total_notional_usd = 40_000_000.0;
+    signal.price_move_pct = Some(-0.104);
+    signal.multi_exchange_confirmed = false;
+    signal.liquidation_suspected = false;
+    signal.liquidation_long_btc = 0.0;
+    signal.liquidation_short_btc = 0.0;
+    signal.behavior_assessment = Default::default();
+    store.upsert_contract_whale_signal(&signal).unwrap();
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let payload: serde_json::Value = test_http_client()
+        .get(format!(
+            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
+        ))
+        .send()
+        .await
+        .expect("final events response")
+        .json()
+        .await
+        .expect("final events json");
+    let item = payload["closed"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("closed event");
+    assert_eq!(item["impactLevel"], "C");
+    assert_eq!(item["signalLevel"], "L1");
+    assert_eq!(item["signalLabel"], "LOW IMPACT EVENT");
+    assert_eq!(item["sourceSignal"]["impactLevel"], "C");
+    assert_eq!(item["sourceSignal"]["signalLevel"], "L1");
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn final_events_v2_include_resolved_oi_context_fields() {
     let config = test_config(temp_sqlite_path("final-events-v2-oi-context"));
     let state = AppState::new(config);

@@ -4,7 +4,7 @@
 
 **Goal:** Make A a rare major-impact grade and keep page, Discord, and retention semantics aligned.
 
-**Architecture:** Keep the existing detector and API fields. Apply one fail-closed canonical downgrade function after the signal has all evidence fields, before persistence and Discord decisions. Use explicit threshold constants and boundary tests so the grade cannot drift with the page cohort.
+**Architecture:** Keep the existing detector and API fields. Apply one fail-closed canonical downgrade function after the signal has all evidence fields, before persistence and Discord decisions, and re-apply it to persisted signals before final-event projection. Synchronize the flattened final-event grade with its source signal so historical rows and new rows use the same canonical value. Use explicit threshold constants and boundary tests so the grade cannot drift with the page cohort.
 
 **Tech Stack:** Rust, Cargo integration tests, React/Vitest, Docker Compose, PowerShell read-only health checks.
 
@@ -104,6 +104,10 @@ cargo test --test contract_whale_monitor_tests historic_s_impact_requires_hard_e
 
 Expected: all focused tests pass, including existing S hard-evidence coverage.
 
+- [x] **Step 7: Re-normalize persisted rows before final-event projection**
+
+Apply the sanitizer to projected source signals before constructing `FinalEvent`, then synchronize the flattened `impactLevel`, `signalLevel`, and `signalLabel` fields. This changes API display/retention semantics without rewriting historical database rows.
+
 ---
 
 ### Task 3: Verify frontend/API compatibility and build
@@ -156,7 +160,7 @@ git status --short
 
 The pre-existing untracked V3 plan remains untouched.
 
-- [ ] **Step 3: Commit the verified implementation**
+- [x] **Step 3: Commit the verified implementation**
 
 ```powershell
 git add src/contract_whale_monitor/discord.rs tests/contract_whale_monitor_tests.rs docs/superpowers/specs/2026-08-15-contract-impact-grade-tightening-design.md docs/superpowers/plans/2026-08-15-contract-impact-grade-tightening.md
@@ -187,3 +191,8 @@ Check `docker compose ps`, `/healthz`, `/readyz`, and the public BTC final-event
 - [ ] **Step 4: Compare grade distribution before and after**
 
 Fetch the seven-day BTC final-events payload and record counts for C/B/A/S, Discord-sent count, and any A rows that fail the thresholds. If any A fails, stop and report rather than claiming completion.
+
+### Task 6: Corrective projection follow-up
+
+- [x] Add the final-event projection synchronization regression test after the first deployment showed persisted source grades were not copied to flattened `FinalEvent` fields.
+- [ ] Push and deploy the corrective commit, then repeat the health and grade-distribution checks.

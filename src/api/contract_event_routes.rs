@@ -1254,6 +1254,9 @@ fn project_contract_event_candidates(
     }
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
+    for signal in &mut items {
+        sanitize_contract_whale_impact(signal);
+    }
     items.sort_by(|left, right| {
         right
             .ts
@@ -1466,6 +1469,7 @@ fn db_debug_counts(
 fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractEventItem {
     let mut event = candidate.event;
     sanitize_contract_whale_impact(&mut event.source_signal);
+    synchronize_final_event_impact(&mut event);
     let source_signal = &event.source_signal;
     let exchange_spot_count = source_signal.active_sources.spot.len();
     let exchange_contract_count = source_signal.active_sources.contract.len();
@@ -1536,6 +1540,18 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
         hidden_reason: candidate.hidden_reason,
         hidden_detail: candidate.hidden_detail,
         final_event: event,
+    }
+}
+
+fn synchronize_final_event_impact(event: &mut FinalEvent) {
+    if let Some(impact_level) = event.source_signal.impact_level.as_deref() {
+        event.impact_level = impact_level.to_string();
+    }
+    if let Some(signal_level) = event.source_signal.signal_level.as_deref() {
+        event.signal_level = signal_level.to_string();
+    }
+    if let Some(signal_label) = event.source_signal.signal_label.as_deref() {
+        event.signal_label = signal_label.to_string();
     }
 }
 
