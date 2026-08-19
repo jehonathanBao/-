@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::normalizers::trade::now_ms;
 
 use super::{
-    detector::discord_gate,
+    detector::discord_gate_with_volume,
     types::{SpotWhaleDirection, SpotWhaleSeverity, SpotWhaleSignal, SpotWhaleSignalType},
     LOG_PREFIX, LOG_TARGET,
 };
@@ -138,7 +138,9 @@ pub async fn notify_spot_whale_discord(
 ) -> SpotWhaleDiscordOutcome {
     let now = now_ms();
     let cooldown_store = global_spot_whale_discord_cooldown_store();
-    let (eligible_by_signal, gate_reason) = discord_gate(
+    let (eligible_by_signal, gate_reason) = discord_gate_with_volume(
+        &signal.symbol,
+        signal.total_volume_base,
         signal.severity,
         signal.score,
         signal.multi_exchange_confirmed,

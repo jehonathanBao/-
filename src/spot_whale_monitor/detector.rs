@@ -7,6 +7,8 @@ use super::{
     LOG_PREFIX, LOG_TARGET,
 };
 
+pub const BTC_SPOT_DISCORD_MIN_VOLUME_BASE: f64 = 500.0;
+
 pub fn detect_spot_whale_signal_with_config(
     stats: &SpotWhaleWindowStats,
     config: &SpotWhaleRuntimeConfig,
@@ -20,7 +22,9 @@ pub fn detect_spot_whale_signal_with_config(
         return None;
     }
     let score = score_signal(stats, signal_type, severity, config);
-    let (discord_eligible, discord_reason) = discord_gate(
+    let (discord_eligible, discord_reason) = discord_gate_with_volume(
+        &stats.symbol,
+        stats.total_volume_base,
         severity,
         score,
         stats.multi_exchange_confirmed,
@@ -241,6 +245,22 @@ pub fn discord_gate(
             (false, "medium_or_low_display_only".to_string())
         }
     }
+}
+
+pub fn discord_gate_with_volume(
+    symbol: &str,
+    total_volume_base: f64,
+    severity: SpotWhaleSeverity,
+    score: u8,
+    multi_exchange_confirmed: bool,
+    data_quality: u8,
+) -> (bool, String) {
+    if symbol.trim().eq_ignore_ascii_case("BTC")
+        && (!total_volume_base.is_finite() || total_volume_base <= BTC_SPOT_DISCORD_MIN_VOLUME_BASE)
+    {
+        return (false, "btc_spot_volume_below_threshold".to_string());
+    }
+    discord_gate(severity, score, multi_exchange_confirmed, data_quality)
 }
 
 fn price_impact_score(stats: &SpotWhaleWindowStats, signal_type: SpotWhaleSignalType) -> f64 {

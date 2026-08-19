@@ -7,7 +7,7 @@ use btc_toxic_flow_monitor_rs::{
     normalizers::trade::now_ms,
     spot_whale_monitor::{
         config::SpotWhaleRuntimeConfig,
-        detector::{detect_spot_whale_signal_with_config, discord_gate},
+        detector::{detect_spot_whale_signal_with_config, discord_gate, discord_gate_with_volume},
         normalizer::{
             normalize_binance_spot_trade, normalize_bitfinex_trade_value,
             normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
@@ -116,6 +116,19 @@ fn spot_discord_gate_rejects_medium_and_low_quality() {
     let (eligible, reason) = discord_gate(SpotWhaleSeverity::Critical, 95, true, 69);
     assert!(!eligible);
     assert_eq!(reason, "data_quality_display_only");
+}
+
+#[test]
+fn btc_spot_discord_gate_requires_volume_above_500() {
+    let (eligible, reason) =
+        discord_gate_with_volume("BTC", 500.0, SpotWhaleSeverity::Critical, 95, true, 95);
+    assert!(!eligible);
+    assert_eq!(reason, "btc_spot_volume_below_threshold");
+
+    let (eligible, reason) =
+        discord_gate_with_volume("BTC", 500.01, SpotWhaleSeverity::Critical, 95, true, 95);
+    assert!(eligible);
+    assert_eq!(reason, "critical_or_s_gate");
 }
 
 #[test]
