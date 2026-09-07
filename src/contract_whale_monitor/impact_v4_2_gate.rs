@@ -8,19 +8,21 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
     impact_forecast::{
-        event_id, ContractWhaleHorizonOutcome, ContractWhaleMultiHorizonImpactForecast,
+        event_id, independent_calibration_outcomes, valid_calibration_outcome,
+        ContractWhaleHorizonOutcome, ContractWhaleMultiHorizonImpactForecast,
+        CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
     },
+    impact_v4_2::{effective_sample_size, CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION},
     types::ContractWhaleSignal,
 };
 use crate::storage::{contract_whale_repo::ContractWhaleRepo, SqliteStore};
 
-pub const GATE_VERSION: &str = "cwm_v4_2_auto_gate_v1";
+pub const GATE_VERSION: &str = "cwm_v4_2_auto_gate_v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -101,67 +103,119 @@ fn cohort_key(forecast: &ContractWhaleMultiHorizonImpactForecast, horizon: &str)
 }
 
 fn aligned_success(direction: &str, markout: f64) -> bool {
-    match direction.to_ascii_lowercase().as_str() {
-        "bullish" | "buy" => markout > 0.0,
-        "bearish" | "sell" => markout < 0.0,
-        _ => false,
-    }
+    markout.is_finite()
+        && markout > 0.0
+        && matches!(
+            direction.to_ascii_lowercase().as_str(),
+            "bullish" | "bearish" | "buy" | "sell"
+        )
+}
+
+struct GateEvidence {
+    expected_episodes: BTreeSet<String>,
+    outcomes: Vec<ContractWhaleHorizonOutcome>,
 }
 
 fn gate_outcomes(
     store: &SqliteStore,
     forecast: &ContractWhaleMultiHorizonImpactForecast,
     horizon_sec: u64,
-) -> anyhow::Result<Vec<ContractWhaleHorizonOutcome>> {
-    let rows = store.with_connection(|conn| {
+) -> anyhow::Result<GateEvidence> {
+    let duration_ms = i64::try_from(horizon_sec)?
+        .checked_mul(1_000)
+        .ok_or_else(|| anyhow::anyhow!("invalid gate horizon"))?;
+    let latest_mature_event = forecast.event_ts.saturating_sub(duration_ms);
+    store.with_connection(|conn| {
+        // The bounded population is selected from immutable forecast candidates,
+        // including candidates with absent, closed, malformed or degraded outcomes.
+        // Limit independent episodes, not outcome rows or repeated event versions.
+        let mut candidates = conn.prepare(
+            "SELECT f.episode_id FROM contract_whale_impact_forecasts f
+              WHERE f.symbol = ?1 AND f.event_ts <= ?2 AND f.event_ts < ?3
+                AND f.forecast_version IN (?4, ?5)
+                AND lower(json_extract(f.payload_json, '$.direction')) = lower(?6)
+                AND f.episode_id != ?7 AND f.event_id != ?8 AND trim(f.episode_id) != ''
+                AND EXISTS (SELECT 1 FROM json_each(f.payload_json, '$.horizons') h
+                             WHERE json_extract(h.value, '$.horizonSec') = ?9)
+              GROUP BY f.episode_id
+              ORDER BY MAX(f.event_ts) DESC, f.episode_id LIMIT 5000",
+        )?;
+        let expected_episodes = candidates
+            .query_map(
+                rusqlite::params![
+                    forecast.symbol,
+                    latest_mature_event,
+                    forecast.event_ts,
+                    CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+                    CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+                    forecast.direction,
+                    forecast.episode_id,
+                    forecast.event_id,
+                    horizon_sec as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<BTreeSet<_>, _>>()?;
         let mut stmt = conn.prepare(
             "SELECT payload_json FROM contract_whale_behavior_horizon_outcomes
-              WHERE symbol = ?1 AND horizon_sec = ?2 AND event_ts < ?3
-                AND outcome_version = ?4 AND state = 'complete'
-              ORDER BY event_ts DESC LIMIT 5000",
+              WHERE symbol = ?1 AND horizon_sec = ?2 AND event_ts <= ?3
+                AND outcome_version IN (?4, ?5)
+                AND episode_id IN (SELECT value FROM json_each(?6))
+              ORDER BY event_ts, event_id, outcome_version",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![
                 forecast.symbol,
                 horizon_sec as i64,
-                forecast.event_ts,
-                super::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION
+                latest_mature_event,
+                CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+                CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+                serde_json::to_string(&expected_episodes)?,
             ],
             |row| row.get::<_, String>(0),
         )?;
-        rows.map(|row| {
-            let payload = row?;
-            serde_json::from_str::<ContractWhaleHorizonOutcome>(&payload)
-                .context("invalid V4.2 outcome payload")
+        let mut outcomes = Vec::new();
+        for row in rows {
+            // Bad payloads remain uncovered candidates; do not drop them from
+            // the denominator or let a bad row manufacture a successful sample.
+            if let Ok(outcome) = serde_json::from_str::<ContractWhaleHorizonOutcome>(&row?) {
+                outcomes.push(outcome);
+            }
+        }
+        Ok(GateEvidence {
+            expected_episodes,
+            outcomes,
         })
-        .collect::<Result<Vec<_>, _>>()
-    })?;
-    Ok(rows)
+    })
 }
 
 fn calculate(
     forecast: &ContractWhaleMultiHorizonImpactForecast,
-    outcomes: &[ContractWhaleHorizonOutcome],
+    evidence: &GateEvidence,
     config: &super::config::ContractWhaleImpactV4HybridConfig,
     now: i64,
     horizon: &str,
     horizon_sec: u64,
 ) -> (GateDecision, GateCohortStatus) {
     let key = cohort_key(forecast, horizon);
-    let mut episodes = BTreeSet::new();
     let mut raw = 0usize;
-    let mut effective = 0.0;
-    let mut wins = 0usize;
+    let mut weights = Vec::new();
+    let mut wins = 0.0;
     let mut quality = 0.0;
-    let mut eligible = 0usize;
-    for outcome in outcomes.iter().filter(|item| {
+    let priors = independent_calibration_outcomes(evidence.outcomes.iter().filter(|item| {
         item.horizon_sec == horizon_sec
-            && item.signed_markout_bps.is_some()
-            && item.event_ts < forecast.event_ts
+            && evidence.expected_episodes.contains(&item.episode_id)
+            && valid_calibration_outcome(
+                item,
+                &forecast.symbol,
+                forecast.event_ts,
+                &forecast.episode_id,
+                &forecast.event_id,
+            )
             && item.direction.eq_ignore_ascii_case(&forecast.direction)
-    }) {
+    }));
+    for outcome in priors {
         raw += 1;
-        episodes.insert(outcome.episode_id.clone());
         let weight = if outcome.behavior == forecast.behavior
             && outcome.market_regime == forecast.market_regime
         {
@@ -171,28 +225,32 @@ fn calculate(
         } else {
             0.60
         };
-        effective += weight;
+        weights.push(weight);
         let markout = outcome.signed_markout_bps.unwrap_or(0.0);
         if aligned_success(&forecast.direction, markout) {
-            wins += 1;
+            wins += weight;
         }
-        quality += outcome.data_quality as f64;
-        eligible += 1;
+        quality += outcome.data_quality as f64 * weight;
     }
-    let unique = episodes.len();
-    let accuracy = if eligible == 0 {
+    let unique = raw;
+    let effective = effective_sample_size(&weights);
+    let total_weight = weights.iter().sum::<f64>();
+    let accuracy = if total_weight == 0.0 {
         0.0
     } else {
-        wins as f64 / eligible as f64
+        wins / total_weight
     };
-    let quality_mean = if eligible == 0 {
+    let quality_mean = if total_weight == 0.0 {
         0.0
     } else {
-        quality / eligible as f64
+        quality / total_weight
     };
-    // Every stored closed outcome is a covered candidate.  A zero here means
-    // the gate is not allowed to pretend a missing outcome is a success.
-    let coverage = if raw == 0 { 0.0 } else { 1.0 };
+    let expected = evidence.expected_episodes.len();
+    let coverage = if expected == 0 {
+        0.0
+    } else {
+        raw as f64 / expected as f64
+    };
     let canary_pass = raw >= config.auto_gate_min_canary_samples
         && effective >= config.auto_gate_min_canary_effective_samples
         && accuracy >= config.auto_gate_min_accuracy - 0.03
@@ -216,6 +274,12 @@ fn calculate(
         // These are explicit emergency controls. Normal operation starts
         // armed and reaches OPEN from sample evidence alone.
         (GateState::ForcedClosed, false, "operator_emergency_close")
+    } else if expected == 0 {
+        (
+            GateState::ShadowCollecting,
+            false,
+            "expected_candidates_unavailable",
+        )
     } else if open_pass {
         (GateState::Open, true, "open_thresholds_passed")
     } else if config.auto_gate_canary_enabled && canary_pass {
@@ -224,7 +288,11 @@ fn calculate(
         (
             GateState::ShadowCollecting,
             false,
-            "insufficient_calibration_evidence",
+            if raw < expected {
+                "missing_or_invalid_outcomes"
+            } else {
+                "insufficient_calibration_evidence"
+            },
         )
     };
     let status = GateCohortStatus {
@@ -313,8 +381,9 @@ fn canary_slot_available(
     store.with_connection(|conn| {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM contract_whale_v42_gate_evaluations
-              WHERE gate_version = ?1 AND evaluated_at_ms >= ?2 AND allowed = 1",
-            rusqlite::params![GATE_VERSION, since],
+              WHERE evaluated_at_ms >= ?1 AND evaluated_at_ms <= ?2 AND allowed = 1",
+            // A calibration namespace migration must not reset the daily cap.
+            rusqlite::params![since, now],
             |row| row.get(0),
         )?;
         Ok(count < config.auto_gate_max_alerts_per_day as i64)
@@ -338,6 +407,15 @@ pub fn evaluate_forecast_gate(
         .find(|item| item.horizon == forecast.dominant_horizon)
         .or_else(|| forecast.horizons.first())
         .ok_or_else(|| anyhow::anyhow!("forecast has no horizon"))?;
+    if forecast.forecast_version != CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION {
+        return Ok(GateDecision {
+            allowed: false,
+            state: GateState::ForcedClosed.as_str().to_string(),
+            reason: "forecast_version_ineligible".to_string(),
+            cohort_key: cohort_key(forecast, &selected.horizon),
+            ..Default::default()
+        });
+    }
     if !forecast.source_policy.eq_ignore_ascii_case("binance_only")
         || !forecast.binance_evidence_complete
     {
@@ -445,6 +523,10 @@ pub fn health(
 }
 
 #[cfg(test)]
+#[path = "impact_gate_calibration_tests.rs"]
+mod calibration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -461,7 +543,7 @@ mod tests {
     #[test]
     fn directional_markout_is_aligned() {
         assert!(aligned_success("bullish", 1.0));
-        assert!(aligned_success("bearish", -1.0));
+        assert!(aligned_success("bearish", 1.0));
         assert!(!aligned_success("bullish", -1.0));
     }
 }

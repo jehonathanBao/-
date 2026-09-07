@@ -5,7 +5,7 @@
 //! never uses observations at or after the event timestamp when building a
 //! forecast for that event.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,17 +14,99 @@ use super::{
         build_detection_behavior, BehaviorDirectionBias, ContractWhaleBehaviorHypothesis,
     },
     types::{
-        ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-        ContractOiSnapshot, ContractReferencePriceSnapshot, ContractWhaleMarketType,
-        ContractWhaleSignal,
+        ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket, ContractOiSnapshot,
+        ContractReferencePriceSnapshot, ContractWhaleMarketType, ContractWhaleSignal,
     },
 };
 
-pub const CONTRACT_WHALE_IMPACT_FORECAST_VERSION: &str = "cwm_impact_v4_1";
+pub const CONTRACT_WHALE_IMPACT_FORECAST_VERSION: &str = "cwm_impact_v4_1_calibration_v2";
 pub const HORIZONS_SEC: [u64; 4] = [900, 3_600, 14_400, 86_400];
 pub const V4_1_DEFAULT_FEE_BPS: f64 = 6.0;
 pub const V4_1_DEFAULT_SLIPPAGE_BPS: f64 = 4.0;
 pub const V4_1_DEFAULT_SAFETY_MARGIN_BPS: f64 = 5.0;
+pub const CALIBRATION_MIN_PRICE_COVERAGE: f64 = 0.80;
+pub const CALIBRATION_MIN_DATA_QUALITY: u8 = 70;
+
+pub(super) fn calibration_version_rank(version: &str) -> Option<u8> {
+    if version == super::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION {
+        Some(2)
+    } else if version == CONTRACT_WHALE_IMPACT_FORECAST_VERSION {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+pub(super) fn valid_calibration_outcome(
+    outcome: &ContractWhaleHorizonOutcome,
+    symbol: &str,
+    cutoff_ts: i64,
+    current_episode: &str,
+    current_event: &str,
+) -> bool {
+    let Some(maturity) = i64::try_from(outcome.horizon_sec)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .and_then(|duration| outcome.event_ts.checked_add(duration))
+    else {
+        return false;
+    };
+    outcome.symbol.eq_ignore_ascii_case(symbol)
+        && HORIZONS_SEC.contains(&outcome.horizon_sec)
+        && outcome.event_ts < cutoff_ts
+        && maturity <= cutoff_ts
+        // evaluated_at is processing time (possibly a later historical replay),
+        // not the observation cutoff. Corrected outcomes only read through maturity.
+        && outcome.evaluated_at >= maturity
+        && !outcome.episode_id.trim().is_empty()
+        && !outcome.event_id.trim().is_empty()
+        && outcome.episode_id != current_episode
+        && outcome.event_id != current_event
+        && outcome.state == "complete"
+        && calibration_version_rank(&outcome.outcome_version).is_some()
+        && matches!(outcome.direction.to_ascii_lowercase().as_str(), "bullish" | "bearish" | "buy" | "sell")
+        && outcome.signed_markout_bps.is_some_and(f64::is_finite)
+        && [outcome.entry_price, outcome.end_price].into_iter().all(|price| price.is_some_and(|value| value.is_finite() && value > 0.0))
+        && [outcome.mfe_bps, outcome.mae_bps].into_iter().flatten().all(f64::is_finite)
+        && outcome.price_coverage.is_finite()
+        && (CALIBRATION_MIN_PRICE_COVERAGE..=1.0).contains(&outcome.price_coverage)
+        && outcome.data_quality >= CALIBRATION_MIN_DATA_QUALITY
+        && outcome.reference_price_available
+        && !outcome.price_data_degraded
+}
+
+/// One eligible observation per independent episode and horizon. Prefer the
+/// corrected hybrid version, then the earliest event and evaluation. The final
+/// payload tie-break makes conflicting duplicate input deterministic as well.
+pub(super) fn independent_calibration_outcomes<'a>(
+    outcomes: impl IntoIterator<Item = &'a ContractWhaleHorizonOutcome>,
+) -> Vec<&'a ContractWhaleHorizonOutcome> {
+    let mut episodes = BTreeMap::<(String, &str, u64), &ContractWhaleHorizonOutcome>::new();
+    for outcome in outcomes {
+        let key = (
+            outcome.symbol.to_ascii_uppercase(),
+            outcome.episode_id.as_str(),
+            outcome.horizon_sec,
+        );
+        let replace = episodes.get(&key).is_none_or(|previous| {
+            calibration_version_rank(&outcome.outcome_version)
+                .cmp(&calibration_version_rank(&previous.outcome_version))
+                .then_with(|| previous.event_ts.cmp(&outcome.event_ts))
+                .then_with(|| previous.event_id.cmp(&outcome.event_id))
+                .then_with(|| previous.evaluated_at.cmp(&outcome.evaluated_at))
+                .then_with(|| {
+                    serde_json::to_string(previous)
+                        .unwrap_or_default()
+                        .cmp(&serde_json::to_string(outcome).unwrap_or_default())
+                })
+                .is_gt()
+        });
+        if replace {
+            episodes.insert(key, outcome);
+        }
+    }
+    episodes.into_values().collect()
+}
 
 fn next_maturity_threshold(samples: usize) -> usize {
     match samples {
@@ -376,14 +458,12 @@ pub fn evaluate_horizon_outcomes(
         preferred_source,
         &flow_prices,
     );
-    let entry = reference_price_at_or_before(&reference_path, signal.ts, 120_000)
-        .or_else(|| reference_price_near(&reference_path, signal.ts, 120_000))
-        .or_else(|| {
-            signal
-                .order_price_usd
-                .filter(|value| value.is_finite() && *value > 0.0)
-                .map(|price| (price, "event_vwap".to_string()))
-        });
+    let entry = reference_price_at_or_before(&reference_path, signal.ts, 120_000).or_else(|| {
+        signal
+            .order_price_usd
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|price| (price, "event_vwap".to_string()))
+    });
     let entry_price = entry.as_ref().map(|(price, _)| *price);
     let entry_price_source = entry.as_ref().map(|(_, source)| source.clone());
     let regime = market_regime(&signal.market_driver.market_state);
@@ -400,17 +480,20 @@ pub fn evaluate_horizon_outcomes(
             if now_ms < target_ts {
                 return None;
             }
-            let end = reference_price_near(&reference_path, target_ts, freshness_ms(horizon_sec));
+            let end =
+                reference_price_at_or_before(&reference_path, target_ts, freshness_ms(horizon_sec));
             let end_price = end.as_ref().map(|(price, _)| *price);
             let end_price_source = end.as_ref().map(|(_, source)| source.clone());
-            let path = reference_path
+            let observations = preferred_observations(&reference_path, signal.ts, target_ts);
+            let path = observations
                 .iter()
                 .filter(|(ts, _)| *ts >= signal.ts && *ts <= target_ts)
                 .map(|(_, (price, _))| *price)
                 .collect::<Vec<_>>();
             let signed = |price: Option<f64>| match (entry_price, price, direction.1) {
                 (Some(entry), Some(price), direction) if direction != 0.0 => {
-                    Some(((price / entry) - 1.0) * 10_000.0 * direction)
+                    let value = ((price / entry) - 1.0) * 10_000.0 * direction;
+                    value.is_finite().then_some(value)
                 }
                 _ => None,
             };
@@ -437,28 +520,18 @@ pub fn evaluate_horizon_outcomes(
                     .filter(|value| value.is_finite())
             });
             let complete = markout.is_some();
-            let structure = structure_break_evidence(
-                &reference_path,
-                signal.ts,
-                target_ts,
-                direction.1,
-            );
-            let (oi_change_btc, oi_change_pct) = oi_change(
-                inputs.oi_snapshots,
-                &signal.symbol,
-                signal.ts,
-                target_ts,
-            );
+            let structure =
+                structure_break_evidence(&reference_path, signal.ts, target_ts, direction.1);
+            let (oi_change_btc, oi_change_pct) =
+                oi_change(inputs.oi_snapshots, &signal.symbol, signal.ts, target_ts);
             let funding_change = funding_change(
                 inputs.funding_snapshots,
                 &signal.symbol,
                 signal.ts,
                 target_ts,
             );
-            let liquidation_stream_available = market_stream_available(
-                signal,
-                ContractWhaleMarketType::Liquidation,
-            );
+            let liquidation_stream_available =
+                market_stream_available(signal, ContractWhaleMarketType::Liquidation);
             let (liquidation_long_btc, liquidation_short_btc) = liquidation_sum(
                 inputs.liquidation_buckets,
                 &signal.symbol,
@@ -470,7 +543,15 @@ pub fn evaluate_horizon_outcomes(
                     || liquidation_short_btc.unwrap_or(0.0) > 0.0,
             );
             let expected_points = (horizon_sec / 60).max(1) as usize;
-            let price_coverage = (path.len() as f64 / expected_points as f64).clamp(0.0, 1.0);
+            // Half-open, event-relative minute slots: (T0, T0 + horizon].
+            // Repeated/second-level observations never increase minute coverage.
+            let covered_slots = observations
+                .iter()
+                .filter(|(ts, _)| *ts > signal.ts && *ts <= target_ts)
+                .map(|(ts, _)| (ts - signal.ts - 1).div_euclid(60_000))
+                .collect::<BTreeSet<_>>()
+                .len();
+            let price_coverage = (covered_slots as f64 / expected_points as f64).clamp(0.0, 1.0);
             let reference_price_available = entry_price_source
                 .as_deref()
                 .is_some_and(|source| matches!(source, "index" | "mark"))
@@ -492,7 +573,7 @@ pub fn evaluate_horizon_outcomes(
             if !liquidation_stream_available {
                 missing_evidence.push("liquidation_stream".to_string());
             }
-            if price_coverage < 0.80 {
+            if price_coverage < CALIBRATION_MIN_PRICE_COVERAGE {
                 degraded_reasons.push("price_coverage_below_80pct".to_string());
             }
             Some(ContractWhaleHorizonOutcome {
@@ -553,18 +634,16 @@ pub fn build_forecast(
     let regime = market_regime(&signal.market_driver.market_state);
     let intensity = intensity_bucket(signal.score);
     // Strictly before the event.  This is the core anti-leakage boundary.
-    let historical = historical
-        .iter()
-        .filter(|outcome| {
-            outcome.symbol.eq_ignore_ascii_case(&signal.symbol)
-                && outcome.event_ts < signal.ts
-                && outcome
-                    .event_ts
-                    .saturating_add((outcome.horizon_sec as i64).saturating_mul(1_000))
-                    <= signal.ts
-                && outcome.outcome_version == CONTRACT_WHALE_IMPACT_FORECAST_VERSION
-        })
-        .collect::<Vec<_>>();
+    let current_event = event_id(signal);
+    let historical = independent_calibration_outcomes(historical.iter().filter(|outcome| {
+        valid_calibration_outcome(
+            outcome,
+            &signal.symbol,
+            signal.ts,
+            &current_event,
+            &current_event,
+        )
+    }));
     let transaction_cost_bps = v4_transaction_cost_bps(signal.funding_rate);
     let event_reference = reference_for_forecast(signal, reference_prices);
     let exact_total = historical
@@ -639,10 +718,8 @@ pub fn build_forecast(
     let maturity_state = maturity_state(effective_sample_count).to_string();
     let impact_score = impact_score(&horizons, direction.as_str());
     let scenario_type = scenario_type(&behavior.hypothesis, &horizons, direction.as_str());
-    let liquidation_stream_available = market_stream_available(
-        signal,
-        ContractWhaleMarketType::Liquidation,
-    );
+    let liquidation_stream_available =
+        market_stream_available(signal, ContractWhaleMarketType::Liquidation);
     let perp_flow_confirmed = Some(
         signal
             .main_exchange
@@ -660,12 +737,10 @@ pub fn build_forecast(
         .oi_available
         .then_some(signal.classification_v2.oi_delta_pct.is_some());
     let price_response_confirmed = Some(
-        signal.price_response_type
-            != super::types::ContractWhalePriceResponseType::NoClearResponse,
+        signal.price_response_type != super::types::ContractWhalePriceResponseType::NoClearResponse,
     );
-    let liquidation_observed = liquidation_stream_available.then_some(
-        signal.liquidation_long_btc > 0.0 || signal.liquidation_short_btc > 0.0,
-    );
+    let liquidation_observed = liquidation_stream_available
+        .then_some(signal.liquidation_long_btc > 0.0 || signal.liquidation_short_btc > 0.0);
     let reference_price_available = event_reference
         .as_ref()
         .is_some_and(|(_, source)| matches!(source.as_str(), "index" | "mark"));
@@ -738,10 +813,7 @@ pub fn build_forecast(
         episode_id: event_id(signal),
         symbol: signal.symbol.clone(),
         event_ts: signal.ts,
-        local_received_at_ms: signal
-            .event_lifecycle
-            .latest_snapshot_ts
-            .max(signal.ts),
+        local_received_at_ms: signal.event_lifecycle.latest_snapshot_ts.max(signal.ts),
         freshness_ms: signal
             .event_lifecycle
             .latest_snapshot_ts
@@ -793,7 +865,8 @@ pub fn build_forecast(
         sample_weight: if effective_sample_count > 0 { 1.0 } else { 0.0 },
         raw_sample_count: effective_sample_count,
         next_maturity_threshold: next_maturity_threshold(effective_sample_count),
-        samples_until_next_maturity: next_maturity_threshold(effective_sample_count).saturating_sub(effective_sample_count),
+        samples_until_next_maturity: next_maturity_threshold(effective_sample_count)
+            .saturating_sub(effective_sample_count),
         direction_probability: None,
         early_warning: false,
         external_alert_enabled: false,
@@ -810,10 +883,19 @@ pub fn evaluate_trade_plan_state(
     now_ms: i64,
 ) -> (String, String) {
     if forecast.effective_sample_count == 0 || forecast.direction == "unknown" {
-        return ("no_trade".to_string(), "sample_or_direction_insufficient".to_string());
+        return (
+            "no_trade".to_string(),
+            "sample_or_direction_insufficient".to_string(),
+        );
     }
-    if matches!(forecast.behavior.as_str(), "long_liquidation_cascade" | "short_squeeze") {
-        return ("no_trade".to_string(), "forced_flow_is_risk_warning_only".to_string());
+    if matches!(
+        forecast.behavior.as_str(),
+        "long_liquidation_cascade" | "short_squeeze"
+    ) {
+        return (
+            "no_trade".to_string(),
+            "forced_flow_is_risk_warning_only".to_string(),
+        );
     }
     let plan = &forecast.trade_plan;
     let latest = outcomes
@@ -822,9 +904,15 @@ pub fn evaluate_trade_plan_state(
         .max_by_key(|outcome| outcome.horizon_sec);
     let Some(latest) = latest else {
         if now_ms >= forecast.event_ts.saturating_add(86_400_000) {
-            return ("expired_unconfirmed".to_string(), "confirmation_window_expired".to_string());
+            return (
+                "expired_unconfirmed".to_string(),
+                "confirmation_window_expired".to_string(),
+            );
         }
-        return ("awaiting_confirmation".to_string(), "waiting_for_closed_reference_price".to_string());
+        return (
+            "awaiting_confirmation".to_string(),
+            "waiting_for_closed_reference_price".to_string(),
+        );
     };
     let price = latest.end_price.unwrap_or_default();
     let confirmation = plan.confirmation_price;
@@ -834,19 +922,31 @@ pub fn evaluate_trade_plan_state(
     let structure_confirmed = latest.structure_break == Some(true);
     if let Some(level) = invalidation {
         if (bullish && price <= level) || (!bullish && price >= level) {
-            return ("invalidated".to_string(), "price_crossed_invalidation_boundary".to_string());
+            return (
+                "invalidated".to_string(),
+                "price_crossed_invalidation_boundary".to_string(),
+            );
         }
     }
     if let Some(level) = confirmation {
         let price_confirmed = (bullish && price >= level) || (!bullish && price <= level);
         if price_confirmed && oi_aligned && structure_confirmed && forecast.evidence_complete {
-            return ("confirmed".to_string(), "closed_boundary_oi_structure_evidence_aligned".to_string());
+            return (
+                "confirmed".to_string(),
+                "closed_boundary_oi_structure_evidence_aligned".to_string(),
+            );
         }
     }
     if now_ms >= forecast.event_ts.saturating_add(86_400_000) {
-        ("expired_unconfirmed".to_string(), "confirmation_window_expired".to_string())
+        (
+            "expired_unconfirmed".to_string(),
+            "confirmation_window_expired".to_string(),
+        )
     } else {
-        ("awaiting_confirmation".to_string(), "confirmation_conditions_not_all_met".to_string())
+        (
+            "awaiting_confirmation".to_string(),
+            "confirmation_conditions_not_all_met".to_string(),
+        )
     }
 }
 
@@ -859,10 +959,13 @@ fn weighted_prices(
     let structure_lookback = 60 * 60 * 1_000;
     let mut grouped = BTreeMap::<i64, (f64, f64)>::new();
     for bucket in buckets {
+        // Flow buckets aggregate one second and have no last-trade timestamp.
+        // Only their closing timestamp is safe for historical reference use.
+        let observed_at = bucket.ts_bucket.saturating_add(999);
         if !bucket.symbol.eq_ignore_ascii_case(&signal.symbol)
             || !bucket.exchange.eq_ignore_ascii_case("binance")
             || bucket.ts_bucket < signal.ts.saturating_sub(structure_lookback)
-            || bucket.ts_bucket > now_ms.min(signal.ts.saturating_add(max_horizon))
+            || observed_at > now_ms.min(signal.ts.saturating_add(max_horizon))
         {
             continue;
         }
@@ -876,7 +979,7 @@ fn weighted_prices(
         if volume <= f64::EPSILON {
             continue;
         }
-        let entry = grouped.entry(bucket.ts_bucket).or_default();
+        let entry = grouped.entry(observed_at).or_default();
         entry.0 += price * volume;
         entry.1 += volume;
     }
@@ -887,7 +990,25 @@ fn weighted_prices(
         .collect()
 }
 
-type ReferencePath = Vec<(i64, (f64, String))>;
+type ReferencePoint = (i64, (f64, String));
+
+struct ReferencePath {
+    observations: Vec<ReferencePoint>,
+    prefer_mark: bool,
+}
+
+impl ReferencePath {
+    fn source_rank(&self, source: &str) -> u8 {
+        match source {
+            "mark" if self.prefer_mark => 0,
+            "index" if !self.prefer_mark => 0,
+            "index" | "mark" => 1,
+            "futures_last" => 2,
+            "spot" => 3,
+            _ => 4,
+        }
+    }
+}
 
 fn preferred_reference_path(
     signal: &ContractWhaleSignal,
@@ -903,7 +1024,7 @@ fn preferred_reference_path(
             && snapshot.price > 0.0
     }) {
         grouped
-            .entry(snapshot.ts_bucket)
+            .entry(snapshot.event_time_ms)
             .or_default()
             .insert(snapshot.price_source.clone(), snapshot.price);
     }
@@ -914,20 +1035,30 @@ fn preferred_reference_path(
     };
     let mut path = grouped
         .into_iter()
-        .filter_map(|(ts, values)| {
-            source_order.iter().find_map(|source| {
+        .flat_map(|(ts, values)| {
+            source_order.iter().filter_map(move |source| {
                 values
                     .get(*source)
                     .copied()
                     .map(|price| (ts, (price, (*source).to_string())))
             })
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<Vec<_>>();
     for (ts, price) in flow_prices {
-        path.entry(*ts)
-            .or_insert((*price, "perp_vwap".to_string()));
+        if price.is_finite() && *price > 0.0 {
+            path.push((*ts, (*price, "perp_vwap".to_string())));
+        }
     }
-    path.into_iter().collect()
+    path.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1 .1.cmp(&right.1 .1))
+            .then_with(|| left.1 .0.total_cmp(&right.1 .0))
+    });
+    ReferencePath {
+        observations: path,
+        prefer_mark: preferred_source == "mark",
+    }
 }
 
 fn reference_price_at_or_before(
@@ -935,30 +1066,50 @@ fn reference_price_at_or_before(
     target_ts: i64,
     freshness_ms: i64,
 ) -> Option<(f64, String)> {
-    path.iter()
+    path.observations
+        .iter()
         .filter(|(ts, (price, _))| {
             *ts <= target_ts
                 && target_ts.saturating_sub(*ts) <= freshness_ms
                 && price.is_finite()
                 && *price > 0.0
         })
-        .max_by_key(|(ts, _)| *ts)
+        .min_by(|left, right| {
+            path.source_rank(&left.1 .1)
+                .cmp(&path.source_rank(&right.1 .1))
+                .then_with(|| right.0.cmp(&left.0))
+        })
         .map(|(_, (price, source))| (*price, source.clone()))
 }
 
-fn reference_price_near(
-    path: &ReferencePath,
-    target_ts: i64,
-    freshness_ms: i64,
-) -> Option<(f64, String)> {
-    path.iter()
-        .filter(|(ts, (price, _))| {
-            ts.abs_diff(target_ts) <= freshness_ms.max(0) as u64
-                && price.is_finite()
-                && *price > 0.0
-        })
-        .min_by_key(|(ts, _)| ts.abs_diff(target_ts))
-        .map(|(_, (price, source))| (*price, source.clone()))
+fn preferred_observations(path: &ReferencePath, from_ts: i64, to_ts: i64) -> Vec<ReferencePoint> {
+    let mut latest = BTreeMap::<&str, &ReferencePoint>::new();
+    let mut selected = BTreeMap::new();
+    for point in path
+        .observations
+        .iter()
+        .take_while(|point| point.0 <= to_ts)
+    {
+        latest.insert(point.1 .1.as_str(), point);
+        if point.0 < from_ts {
+            continue;
+        }
+        if let Some(best) = latest
+            .values()
+            .filter(|candidate| point.0.saturating_sub(candidate.0) <= 120_000)
+            .min_by_key(|candidate| path.source_rank(&candidate.1 .1))
+        {
+            if best.0 >= from_ts {
+                // Preserve the actual observation timestamp; no fabricated
+                // forward-filled points may increase coverage or excursions.
+                let value = selected.entry(best.0).or_insert_with(|| best.1.clone());
+                if path.source_rank(&best.1 .1) < path.source_rank(&value.1) {
+                    *value = best.1.clone();
+                }
+            }
+        }
+    }
+    selected.into_iter().collect()
 }
 
 /// A conservative, deterministic structure label based only on the preceding
@@ -974,7 +1125,12 @@ fn structure_break_evidence(
     if direction == 0.0 {
         return ContractWhaleStructureBreakEvidence::default();
     }
-    let prior = prices
+    let observations = preferred_observations(
+        prices,
+        event_ts.saturating_sub(4 * 60 * 60 * 1_000),
+        target_ts,
+    );
+    let prior = observations
         .iter()
         .filter(|(ts, (price, _))| {
             *ts < event_ts
@@ -984,13 +1140,10 @@ fn structure_break_evidence(
         })
         .map(|(_, (price, _))| *price)
         .collect::<Vec<_>>();
-    let post = prices
+    let post = observations
         .iter()
         .filter(|(ts, (price, _))| {
-            *ts >= event_ts
-                && *ts <= target_ts
-                && price.is_finite()
-                && *price > 0.0
+            *ts >= event_ts && *ts <= target_ts && price.is_finite() && *price > 0.0
         })
         .map(|(_, (price, _))| *price)
         .collect::<Vec<_>>();
@@ -1015,10 +1168,13 @@ fn structure_break_evidence(
     } else {
         prior_low - buffer
     };
-    let confirmed_close = post
-        .iter()
-        .copied()
-        .find(|price| if direction > 0.0 { *price >= threshold } else { *price <= threshold });
+    let confirmed_close = post.iter().copied().find(|price| {
+        if direction > 0.0 {
+            *price >= threshold
+        } else {
+            *price <= threshold
+        }
+    });
     let did_break = confirmed_close.is_some();
     let final_close = post.last().copied();
     let prior_change = prior
@@ -1035,7 +1191,14 @@ fn structure_break_evidence(
     };
     let distance_atr = confirmed_close.map(|close| {
         if atr > f64::EPSILON {
-            (close - if direction > 0.0 { prior_high } else { prior_low }).abs() / atr
+            (close
+                - if direction > 0.0 {
+                    prior_high
+                } else {
+                    prior_low
+                })
+            .abs()
+                / atr
         } else {
             0.0
         }
@@ -1043,23 +1206,38 @@ fn structure_break_evidence(
     ContractWhaleStructureBreakEvidence {
         structure_break: Some(did_break),
         break_direction: did_break.then(|| if direction > 0.0 { "up" } else { "down" }.to_string()),
-        broken_level: did_break.then_some(if direction > 0.0 { prior_high } else { prior_low }),
+        broken_level: did_break.then_some(if direction > 0.0 {
+            prior_high
+        } else {
+            prior_low
+        }),
         confirmed_close,
         atr_at_event: atr.is_finite().then_some(atr),
         distance_atr,
         structure_state_before: Some(state_before.to_string()),
-        structure_state_after: Some(if did_break {
-            if direction > 0.0 { "bullish_break" } else { "bearish_break" }
-        } else if final_close.is_some() {
-            "range_held"
-        } else {
-            "unavailable"
-        }.to_string()),
+        structure_state_after: Some(
+            if did_break {
+                if direction > 0.0 {
+                    "bullish_break"
+                } else {
+                    "bearish_break"
+                }
+            } else if final_close.is_some() {
+                "range_held"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+        ),
     }
 }
 
 fn freshness_ms(horizon_sec: u64) -> i64 {
-    if horizon_sec >= 14_400 { 180_000 } else { 120_000 }
+    if horizon_sec >= 14_400 {
+        180_000
+    } else {
+        120_000
+    }
 }
 
 fn nearest_oi<'a>(
@@ -1073,6 +1251,8 @@ fn nearest_oi<'a>(
         .filter(|value| {
             value.exchange == super::types::ContractExchange::Binance
                 && value.symbol.eq_ignore_ascii_case(symbol)
+                && value.ts <= target_ts
+                && value.oi_btc.is_finite()
                 && value.ts.abs_diff(target_ts) <= max_gap_ms.max(0) as u64
         })
         .min_by_key(|value| value.ts.abs_diff(target_ts))
@@ -1107,6 +1287,8 @@ fn funding_change(
             .filter(|value| {
                 value.exchange == super::types::ContractExchange::Binance
                     && value.symbol.eq_ignore_ascii_case(symbol)
+                    && value.ts <= target
+                    && value.funding_rate.is_finite()
                     && value.ts.abs_diff(target) <= 15 * 60 * 1_000
             })
             .min_by_key(|value| value.ts.abs_diff(target))
@@ -1126,7 +1308,7 @@ fn liquidation_sum(
         value.exchange.eq_ignore_ascii_case("binance")
             && value.symbol.eq_ignore_ascii_case(symbol)
             && value.ts_bucket >= event_ts
-            && value.ts_bucket <= target_ts
+            && value.ts_bucket.saturating_add(999) <= target_ts
     });
     let (mut long, mut short, mut count) = (0.0, 0.0, 0usize);
     for value in matching {
@@ -1160,14 +1342,12 @@ fn reference_for_forecast(
     reference_prices: &[ContractReferencePriceSnapshot],
 ) -> Option<(f64, String)> {
     let path = preferred_reference_path(signal, reference_prices, "index", &[]);
-    reference_price_at_or_before(&path, signal.ts, 120_000)
-        .or_else(|| reference_price_near(&path, signal.ts, 120_000))
-        .or_else(|| {
-            signal
-                .order_price_usd
-                .filter(|value| value.is_finite() && *value > 0.0)
-                .map(|value| (value, "event_vwap".to_string()))
-        })
+    reference_price_at_or_before(&path, signal.ts, 120_000).or_else(|| {
+        signal
+            .order_price_usd
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| (value, "event_vwap".to_string()))
+    })
 }
 
 fn prior_structure_levels(
@@ -1179,8 +1359,8 @@ fn prior_structure_levels(
         .filter(|value| {
             value.exchange == super::types::ContractExchange::Binance
                 && matches!(value.price_source.as_str(), "index" | "mark")
-                && value.ts_bucket < event_ts
-                && value.ts_bucket >= event_ts.saturating_sub(4 * 60 * 60 * 1_000)
+                && value.event_time_ms < event_ts
+                && value.event_time_ms >= event_ts.saturating_sub(4 * 60 * 60 * 1_000)
                 && value.price.is_finite()
                 && value.price > 0.0
         })
@@ -1240,16 +1420,11 @@ fn build_trade_plan(
             "OI不下降且与价格跌破方向一致"
         }
         .to_string(),
-        confirmation_flow_condition: "Binance现货与永续主动流同向，且参考价格数据完整"
-            .to_string(),
+        confirmation_flow_condition: "Binance现货与永续主动流同向，且参考价格数据完整".to_string(),
     }
 }
 
-fn confirmation_text(
-    behavior: &str,
-    direction: &str,
-    plan: &ContractWhaleTradePlan,
-) -> String {
+fn confirmation_text(behavior: &str, direction: &str, plan: &ContractWhaleTradePlan) -> String {
     let boundary = plan
         .confirmation_price
         .map(|value| format!("{value:.2}"))
@@ -1259,16 +1434,16 @@ fn confirmation_text(
     } else {
         format!(
             "已收盘价格{} {boundary}，OI与方向一致，Binance现货和永续同向",
-            if direction == "bullish" { "突破" } else { "跌破" }
+            if direction == "bullish" {
+                "突破"
+            } else {
+                "跌破"
+            }
         )
     }
 }
 
-fn invalidation_text(
-    behavior: &str,
-    direction: &str,
-    plan: &ContractWhaleTradePlan,
-) -> String {
+fn invalidation_text(behavior: &str, direction: &str, plan: &ContractWhaleTradePlan) -> String {
     let boundary = plan
         .invalidation_price
         .map(|value| format!("{value:.2}"))
@@ -1278,7 +1453,11 @@ fn invalidation_text(
     } else {
         format!(
             "已收盘价格{} {boundary}，或OI/现货与行为假设反向，或数据质量降级",
-            if direction == "bullish" { "跌破" } else { "突破" }
+            if direction == "bullish" {
+                "跌破"
+            } else {
+                "突破"
+            }
         )
     }
 }
@@ -1314,7 +1493,10 @@ fn forecast_data_streams(
         streams.push("binance_force_order".to_string());
     }
     if reference_price_available {
-        streams.extend(["binance_mark_price".to_string(), "binance_index_price".to_string()]);
+        streams.extend([
+            "binance_mark_price".to_string(),
+            "binance_index_price".to_string(),
+        ]);
     }
     streams
 }
@@ -1323,36 +1505,51 @@ fn forecast_data_stream_health(
     signal: &ContractWhaleSignal,
     reference_prices: &[ContractReferencePriceSnapshot],
 ) -> Vec<ContractWhaleDataStreamStatus> {
-    let received_at = signal
-        .event_lifecycle
-        .latest_snapshot_ts
-        .max(signal.ts);
+    let received_at = signal.event_lifecycle.latest_snapshot_ts.max(signal.ts);
     let mut health = Vec::new();
-    let mut push = |stream: &str, available: bool, last_event_ts: Option<i64>, reason: Option<&str>| {
-        health.push(ContractWhaleDataStreamStatus {
-            stream: stream.to_string(),
-            status: if available { "available" } else { "unavailable" }.to_string(),
-            last_event_ts,
-            last_received_at_ms: available.then_some(received_at),
-            freshness_ms: last_event_ts.map(|ts| received_at.saturating_sub(ts).max(0)),
-            reconnect_count: None,
-            gap_count: None,
-            parse_failure_count: None,
-            degraded_reason: reason.map(str::to_string),
-        });
-    };
-    let binance_perp = signal.active_contract_sources.iter().any(|source| {
-        source.eq_ignore_ascii_case("binance")
-    }) || signal
-        .main_exchange
-        .as_deref()
-        .is_some_and(|source| source.eq_ignore_ascii_case("binance"));
-    let binance_spot = signal.active_sources.spot.iter().any(|source| {
-        source.exchange.eq_ignore_ascii_case("binance") && source.enabled
-    });
+    let mut push =
+        |stream: &str, available: bool, last_event_ts: Option<i64>, reason: Option<&str>| {
+            health.push(ContractWhaleDataStreamStatus {
+                stream: stream.to_string(),
+                status: if available {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+                .to_string(),
+                last_event_ts,
+                last_received_at_ms: available.then_some(received_at),
+                freshness_ms: last_event_ts.map(|ts| received_at.saturating_sub(ts).max(0)),
+                reconnect_count: None,
+                gap_count: None,
+                parse_failure_count: None,
+                degraded_reason: reason.map(str::to_string),
+            });
+        };
+    let binance_perp = signal
+        .active_contract_sources
+        .iter()
+        .any(|source| source.eq_ignore_ascii_case("binance"))
+        || signal
+            .main_exchange
+            .as_deref()
+            .is_some_and(|source| source.eq_ignore_ascii_case("binance"));
+    let binance_spot = signal
+        .active_sources
+        .spot
+        .iter()
+        .any(|source| source.exchange.eq_ignore_ascii_case("binance") && source.enabled);
     let last_reference = reference_prices
         .iter()
-        .filter(|row| matches!(row.price_source.as_str(), "mark" | "index"))
+        .filter(|row| {
+            row.exchange == super::types::ContractExchange::Binance
+                && row.symbol.eq_ignore_ascii_case(&signal.symbol)
+                && matches!(row.price_source.as_str(), "mark" | "index")
+                && row.price.is_finite()
+                && row.price > 0.0
+                && row.event_time_ms <= signal.ts
+                && signal.ts.saturating_sub(row.event_time_ms) <= 120_000
+        })
         .map(|row| row.event_time_ms)
         .max();
     push(
@@ -1371,7 +1568,9 @@ fn forecast_data_stream_health(
         "binance_mark_index",
         last_reference.is_some(),
         last_reference,
-        last_reference.is_none().then_some("mark_index_not_available"),
+        last_reference
+            .is_none()
+            .then_some("mark_index_not_available"),
     );
     push(
         "binance_open_interest",
@@ -1383,7 +1582,10 @@ fn forecast_data_stream_health(
         "binance_funding",
         signal.funding_rate.is_some(),
         signal.funding_rate.map(|_| signal.ts),
-        signal.funding_rate.is_none().then_some("funding_unavailable"),
+        signal
+            .funding_rate
+            .is_none()
+            .then_some("funding_unavailable"),
     );
     let force_available = market_stream_available(signal, ContractWhaleMarketType::Liquidation);
     push(
@@ -1583,8 +1785,9 @@ fn horizon_rating(
     net_median_bps: Option<f64>,
     follow_through_rate: Option<f64>,
 ) -> String {
-    let min_follow_through =
-        super::config::contract_whale_runtime_config().impact_v4_1.min_follow_through_rate;
+    let min_follow_through = super::config::contract_whale_runtime_config()
+        .impact_v4_1
+        .min_follow_through_rate;
     if sample_count < 30 {
         return "U".to_string();
     }
@@ -1646,7 +1849,9 @@ fn dominant_horizon(horizons: &[ContractWhaleHorizonStats]) -> String {
     horizons
         .iter()
         .filter(|item| {
-            item.sample_count >= 30 && item.median_bps.is_some() && item.follow_through_rate.is_some()
+            item.sample_count >= 30
+                && item.median_bps.is_some()
+                && item.follow_through_rate.is_some()
         })
         .max_by(|left, right| {
             let left_score =
@@ -1692,8 +1897,9 @@ fn scenario_type(
     let adverse = valid.iter().filter(|value| **value < 0.0).count();
     let positive = valid.iter().filter(|value| **value > 0.0).count();
     let adjacent_reversal = horizons.windows(2).any(|pair| {
-        let min_structure =
-            super::config::contract_whale_runtime_config().impact_v4_1.min_structure_break_rate;
+        let min_structure = super::config::contract_whale_runtime_config()
+            .impact_v4_1
+            .min_structure_break_rate;
         pair.iter().all(|item| {
             item.sample_count >= 30
                 && item.median_bps.is_some_and(|value| value < 0.0)
@@ -1718,8 +1924,9 @@ fn impact_grade(
     direction: &str,
     evidence_complete: bool,
 ) -> String {
-    let min_follow_through =
-        super::config::contract_whale_runtime_config().impact_v4_1.min_follow_through_rate;
+    let min_follow_through = super::config::contract_whale_runtime_config()
+        .impact_v4_1
+        .min_follow_through_rate;
     if samples < 30 || score <= 0.0 || matches!(direction, "unknown" | "neutral") {
         return "U".to_string();
     }
@@ -1777,6 +1984,10 @@ pub fn horizon_label(horizon_sec: u64) -> &'static str {
         _ => "unknown",
     }
 }
+
+#[cfg(test)]
+#[path = "impact_calibration_tests.rs"]
+pub(super) mod calibration_tests;
 
 #[cfg(test)]
 mod tests {
