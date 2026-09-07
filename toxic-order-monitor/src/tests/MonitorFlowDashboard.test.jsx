@@ -34,6 +34,8 @@ describe("MonitorFlowDashboard", () => {
     expect(screen.queryByText("MARKET CONSENSUS")).not.toBeInTheDocument();
     expect(screen.queryByText("合约市场事件")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /合约事件带/ })).toHaveAttribute("href", "/contract-whale/btc");
+    expect(screen.getByRole('region', { name: '主力观察工作台' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '事件时间轴' })).toBeInTheDocument();
   });
 
   it("filters the tape and can pause automatic refresh", async () => {

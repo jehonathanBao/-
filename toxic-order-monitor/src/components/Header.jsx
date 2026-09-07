@@ -13,8 +13,8 @@ export default function Header({ highUnhandledCount, discordConnected, runtimeBo
   return (
     <header className="workspace-command-header" data-testid="workspace-command-header">
       <div className="workspace-command-brand">
-        <p>WORKSPACE <span aria-hidden="true">/</span> MARKET INTELLIGENCE</p>
-        <h2>市场监控工作台</h2>
+        <p>OBSERVATION <span aria-hidden="true">/</span> SESSION</p>
+        <h2>市场运行概况</h2>
       </div>
 
       <div className="workspace-command-metrics">

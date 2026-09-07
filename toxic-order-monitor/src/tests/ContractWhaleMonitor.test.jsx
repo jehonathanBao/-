@@ -1235,6 +1235,11 @@ vi.mock("../api/contractWhale.js", () => ({
 }));
 
 describe("ContractWhaleMonitor", () => {
+  it('provides an event timeline and a full-width research workspace', async () => {
+    render(<ContractWhaleMonitor />);
+    expect(await screen.findByRole('region', { name: '事件时间轴' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '深度研究' })).toBeInTheDocument();
+  });
   it("labels the new chart as event-only prices and does not mislabel loaded notional as 24h turnover", async () => {
     render(<ContractWhaleMonitor lockedSymbol="BTC" />);
     expect(await screen.findByRole("heading", { name: "BTC 事件价格轨迹" })).toBeInTheDocument();

@@ -35,8 +35,10 @@ export default function App() {
 
 function RouteLoading() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
-      正在加载工作区…
+    <div className="control-room-loading" role="status">
+      <span className="control-room-loading-mark" aria-hidden="true">M</span>
+      <strong>合约主力监控</strong>
+      <span>正在加载工作区…</span>
     </div>
   );
 }

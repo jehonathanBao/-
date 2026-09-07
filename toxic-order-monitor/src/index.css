@@ -24,7 +24,7 @@ body {
   color: #e5edf7;
 }
 
-/* The monitor overview and shared financial theme live in styles/terminal.css. */
+/* The current control-room visual system lives in styles/control-room.css. */
 
 .workspace-shell {
   --workspace-bg: #090c10;

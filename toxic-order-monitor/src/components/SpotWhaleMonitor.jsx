@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import EventTraceTimeline from "./EventTraceTimeline.jsx";
+import PriceChart from "./PriceChart.jsx";
 import {
   fetchSpotWhaleHistory,
   fetchSpotWhaleLatest,
@@ -182,7 +184,7 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
   const currentPage = pageIndex + 1;
 
   return (
-    <section className="workspace-monitor-panel console-panel mb-5 p-5">
+    <section className="workspace-monitor-panel console-panel control-room-spot mb-5 p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[0.28em] text-cyan-300">{assetSymbol} SPOT WHALE FLOW</p>
@@ -226,6 +228,19 @@ export default function SpotWhaleMonitor({ lockedSymbol = "BTC" }) {
       </div>
 
       <SpotTrendBar symbol={filters.symbol} trend={summary.trend60s} />
+
+      <div className="spot-control-room-grid">
+        <PriceChart
+          key={assetSymbol}
+          symbol={assetSymbol}
+          title={`${assetSymbol} 现货事件价格`}
+          description="现货事件触发价 · 非连续行情"
+          points={visibleItems.map((item) => ({ time: item.ts, price: signalTriggerPrice(item) }))}
+          loading={state.loading}
+          discrete
+        />
+        <EventTraceTimeline items={visibleItems} onSelect={setSelectedSignalId} selectedId={selectedSignalId} />
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-2 text-xs md:grid-cols-2">
         {["binance", "coinbase", "bitfinex"].map((exchange) => (

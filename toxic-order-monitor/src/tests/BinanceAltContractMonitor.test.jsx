@@ -45,6 +45,13 @@ vi.mock("../api/binanceAltContract.js", () => ({
 }));
 
 describe("BinanceAltContractMonitor", () => {
+  it("provides a timestamped multi-asset timeline without combining asset prices", async () => {
+    render(<BinanceAltContractMonitor />);
+    expect(screen.getByRole("region", { name: "事件时间轴" })).toBeInTheDocument();
+    expect(await screen.findByTestId("alt-contract-row-bacm-sol-s")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-line")).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

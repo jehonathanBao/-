@@ -140,12 +140,12 @@ describe("Unified workspace shell", () => {
 
     expect(screen.getByTestId("workspace-shell")).toHaveClass("workspace-shell");
     expect(screen.getByTestId("workspace-main")).toHaveClass("workspace-main");
-    expect(screen.getByTestId("workspace-sidebar")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-topbar")).toBeInTheDocument();
     expect(screen.getAllByText("RUNTIME UNKNOWN").length).toBeGreaterThan(0);
     expect(screen.queryByText("READ ONLY")).not.toBeInTheDocument();
 
     if (activeLabel) {
-      expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
+      expect(within(screen.getByRole("navigation", { name: "当前工作区" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
     }
 
     if (contractRoute) {
@@ -223,10 +223,10 @@ describe("Unified workspace shell", () => {
 
     expect(await screen.findByTestId("workspace-shell")).toBeInTheDocument();
     expect(screen.getByTestId("workspace-main")).toBeInTheDocument();
-    expect(screen.getByTestId("workspace-sidebar")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-topbar")).toBeInTheDocument();
 
     if (activeLabel) {
-      expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
+      expect(within(screen.getByRole("navigation", { name: "当前工作区" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
     }
 
     if (contractRoute) {

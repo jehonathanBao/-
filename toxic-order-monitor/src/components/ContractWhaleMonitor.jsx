@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import PriceChart from "./PriceChart.jsx";
+import EventTraceTimeline from "./EventTraceTimeline.jsx";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractEventDebugCounts,
@@ -982,7 +983,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         className="contract-primary-grid"
         data-testid="primary-analysis-grid"
       >
-        <div className="min-w-0">
+        <div className="min-w-0 control-room-contract-chart">
           <PriceChart
             key={assetSymbol}
             points={visibleContractEvents.map(item => ({
@@ -997,6 +998,15 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             loading={state.contractEventsLoading}
             discrete
           />
+          <EventTraceTimeline items={visibleContractEvents} onSelect={setSelectedSignalId} selectedId={selectedSignalId} />
+        </div>
+        <ContractDeskInsightRail
+          intelligence={currentDisplayIntelligence}
+          latestItems={latestItems}
+          summary={summary}
+        />
+      </section>
+      <section className="control-room-event-workspace" aria-label="合约事件工作区">
           <div className="contract-filter-dock">
             <ContractWhaleFilters
               filters={filters}
@@ -1046,15 +1056,10 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             previousIntelligence={displayIntelligence}
             summary={summary}
           />
-        </div>
-
-        <ContractDeskInsightRail
-          intelligence={currentDisplayIntelligence}
-          latestItems={latestItems}
-          summary={summary}
-        />
       </section>
 
+      <section className="control-room-research" aria-label="深度研究">
+        <header className="control-room-research-header"><div><p className="control-room-eyebrow">RESEARCH WORKSPACE</p><h2>深度研究</h2></div><p>结构证据 / 生命周期 / 主力轨迹</p></header>
       <EventFirstJumpNavigation />
 
       <section
@@ -1134,6 +1139,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       />
 
       <MainForceEventsSection events={whaleEvents} symbol={filters.symbol} />
+      </section>
 
       {selectedSignal ? (
         <ContractWhaleDetailModal

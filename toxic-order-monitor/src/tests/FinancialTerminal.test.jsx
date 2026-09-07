@@ -25,9 +25,22 @@ describe("financial terminal navigation and motion", () => {
     for (const label of ["总览", "合约市场", "现货市场", "信号中心", "工作区"]) {
       expect(within(nav).getByText(label)).toBeInTheDocument();
     }
-    expect(within(nav).getAllByRole("link")).toHaveLength(14);
-    expect(screen.getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getAllByRole("link")).toHaveLength(5);
+    const contextNav = screen.getByRole("navigation", { name: "当前工作区" });
+    expect(within(contextNav).getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "合约主力监控", exact: true })).toHaveAttribute("href", "/dashboard");
+    expect(screen.queryByTestId("workspace-sidebar")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("全部模块")).toHaveAttribute("aria-label", "全部模块");
     expect(screen.getByRole("link", { name: "跳到主要内容" })).toHaveAttribute("href", "#workspace-main");
+  });
+
+  it("switches workspaces while keeping the entire module directory available", async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+    await user.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('link', { name: '现货市场' }));
+    expect(within(screen.getByRole('navigation', { name: '当前工作区' })).getByRole('link', { name: 'BTC 现货监控' })).toHaveAttribute('aria-current', 'page');
+    await user.click(screen.getByText('全部模块', { exact: true }));
+    expect(within(screen.getByRole('navigation', { name: '全部模块目录' })).getAllByRole('link')).toHaveLength(15);
   });
 
   it("links the existing settings control to its actual page", () => {

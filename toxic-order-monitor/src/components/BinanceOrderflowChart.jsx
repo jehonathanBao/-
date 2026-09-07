@@ -294,12 +294,14 @@ function Metric({ label, value, tone }) {
   );
 }
 
-function buildChartOption(candles, hasDelta, symbol = "BTCUSDT", interval = "1h", zoom = DEFAULT_ZOOM, deltaSource = "monitor") {
+export function buildChartOption(candles, hasDelta, symbol = "BTCUSDT", interval = "1h", zoom = DEFAULT_ZOOM, deltaSource = "monitor") {
   // Extra category slots create a right-side gutter without adding synthetic
   // series values (ECharts leaves those future categories empty).
+  // Scale the gutter down for short histories so the default zoom still contains real candles.
+  const futureSlots = Math.min(FUTURE_SLOTS, Math.floor(candles.length * 0.4));
   const categories = [
     ...candles.map((candle) => formatTime(candle.time)),
-    ...Array.from({ length: FUTURE_SLOTS }, () => ""),
+    ...Array.from({ length: futureSlots }, () => ""),
   ];
   const markRule = getDeltaMarkRule(symbol, interval);
   const largeDeltaMarkers = hasDelta ? candles.flatMap((candle, index) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowUpRightIcon, ArrowPathIcon, PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
 import PriceChart from "./PriceChart.jsx";
+import EventTraceTimeline from "./EventTraceTimeline.jsx";
 import { fetchMonitorFlowSnapshot } from "../api/monitorFlow.js";
 
 const REFRESH_INTERVAL_MS = 8_000;
@@ -146,8 +147,25 @@ export default function MonitorFlowDashboard({
         <HudCell label="Discord 通知" value={discordConnected ? "已配置" : "独立门控"} detail={health.discordDetail} tone={discordConnected ? "ok" : "neutral"} />
       </div>
 
-      <div className="terminal-overview-grid">
+      <section className="terminal-overview-grid control-room-overview" aria-label="主力观察工作台">
+        <aside className="control-room-market-list" aria-label="市场观察入口">
+          <div><p className="control-room-eyebrow">MARKET DIRECTORY</p><h2>观察市场</h2></div>
+          {[
+            ['01', 'BTC / PERP', '比特币合约', '/contract-whale/btc'],
+            ['02', 'ETH / PERP', '以太坊合约', '/contract-whale/eth'],
+            ['03', 'SPOT FLOW', '现货成交证据', '/spot-monitor/btc'],
+            ['04', 'ORDER FLOW', '主动买卖与 Delta', '/binance-orderflow'],
+            ['05', 'ALT MARKETS', '山寨合约异动', '/alt-contract-monitor'],
+          ].map(([number, title, subtitle, href]) => <Link key={number} to={href}><small>{number}</small><span><strong>{title}</strong><em>{subtitle}</em></span><ArrowUpRightIcon aria-hidden="true"/></Link>)}
+          <div className="control-room-market-note"><span aria-hidden="true">＋</span><p>跟踪市场证据<br/>不推断账户身份</p></div>
+        </aside>
+        <div className="control-room-price-stack">
         <PriceChart points={pricePoints} title="BTC 价格走势" symbol="BTC" loading={loading} description="Binance 永续 · 1H K 线收盘价" />
+          <section className="monitor-flow-panel monitor-flow-pulse">
+            <header className="monitor-flow-panel-header"><div><p>FLOW SNAPSHOT</p><h2>BTC 当前脉冲</h2></div><Link to="/binance-orderflow">查看订单流 <ArrowUpRightIcon aria-hidden="true" /></Link></header>
+            <div className="monitor-flow-pulse-grid">{pulse.map(item => <PulseCell item={item} key={item.label} />)}</div>
+          </section>
+        </div>
         <aside className="terminal-focus-card">
           <div className="terminal-section-title"><div><p>ON THE RADAR</p><h2>重点观察</h2></div><span className="terminal-section-number">02</span></div>
           {focus ? <>
@@ -160,14 +178,9 @@ export default function MonitorFlowDashboard({
           <Link className="terminal-focus-link" to={focus?.href || "/contract-whale/btc"}>打开合约监控<ArrowUpRightIcon aria-hidden="true" /></Link>
           <p className="terminal-disclaimer">公开成交证据推断 · 不代表账户身份确认</p>
         </aside>
-      </div>
-
-      <section className="monitor-flow-panel monitor-flow-pulse">
-        <header className="monitor-flow-panel-header">
-          <div><p>FLOW SNAPSHOT</p><h2>BTC 当前脉冲</h2></div><Link to="/binance-orderflow">查看订单流 <ArrowUpRightIcon aria-hidden="true" /></Link>
-        </header>
-        <div className="monitor-flow-pulse-grid">{pulse.map(item => <PulseCell item={item} key={item.label} />)}</div>
       </section>
+
+      <EventTraceTimeline items={visibleEvents} />
 
       <div className="monitor-flow-layout">
         <section className="monitor-flow-panel monitor-flow-tape">
@@ -219,7 +232,7 @@ export default function MonitorFlowDashboard({
           ))}
         </div>
       </section>
-      <footer className="terminal-page-footer"><span>WHALE DESK / MARKET INTELLIGENCE</span><span>行情仅供观察 · 通知沿用原有门控</span></footer>
+      <footer className="terminal-page-footer"><span>合约主力监控 / MAIN FORCE INTELLIGENCE</span><span>行情仅供观察 · 通知沿用原有门控</span></footer>
     </section>
   );
 }

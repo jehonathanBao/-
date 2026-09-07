@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -255,25 +255,27 @@ describe("Dashboard interactions", () => {
     expect(screen.queryByTestId("signal-card-sig_003")).not.toBeInTheDocument();
   });
 
-  it("opens the BTC contract monitor from the dedicated sidebar route", async () => {
+  it("opens the BTC contract workspace with top navigation and a complete module directory", async () => {
     renderDashboard("/contract-whale/btc");
 
     expect(screen.getByTestId("workspace-main")).toHaveClass("contract-workspace-main");
-    expect(screen.getByTestId("workspace-sidebar")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-topbar")).toBeInTheDocument();
     expect(screen.queryByText("盘口异常监控大屏")).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
-    expect(screen.getByRole("link", { name: "BTC 合约监控" })).toHaveAttribute("href", "/contract-whale/btc");
-    expect(screen.getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("href", "/contract-whale/eth");
+    await userEvent.click(screen.getByText("全部模块", { selector: "summary span" }));
+    const directory = within(screen.getByRole("navigation", { name: "全部模块目录" }));
+    expect(directory.getByRole("link", { name: "监控首页" })).toHaveAttribute("href", "/dashboard");
+    expect(directory.getByRole("link", { name: "BTC 合约监控" })).toHaveAttribute("href", "/contract-whale/btc");
+    expect(directory.getByRole("link", { name: "ETH 合约监控" })).toHaveAttribute("href", "/contract-whale/eth");
     expect(screen.queryByRole("link", { name: "BTC/ETH 合约监控" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "强平瀑布预测" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "妖币控盘监控" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "山寨合约异常" })).toHaveAttribute("href", "/alt-contract-monitor");
-    expect(screen.getByRole("link", { name: "新币合约监控" })).toHaveAttribute("href", "/new-token-watch");
-    expect(screen.getByRole("link", { name: "BTC 现货监控" })).toHaveAttribute("href", "/spot-monitor/btc");
-    expect(screen.getByRole("link", { name: "ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor/eth");
+    expect(directory.getByRole("link", { name: "山寨合约异常" })).toHaveAttribute("href", "/alt-contract-monitor");
+    expect(directory.getByRole("link", { name: "新币合约监控" })).toHaveAttribute("href", "/new-token-watch");
+    expect(directory.getByRole("link", { name: "BTC 现货监控" })).toHaveAttribute("href", "/spot-monitor/btc");
+    expect(directory.getByRole("link", { name: "ETH 现货监控" })).toHaveAttribute("href", "/spot-monitor/eth");
     expect(screen.queryByRole("link", { name: "BTC/ETH 现货监控" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
+    expect(directory.getByRole("link", { name: "使用指南" })).toHaveAttribute("href", "/usage-guide");
     expect((await screen.findAllByText("BTC 合约监控")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("BTC CONTRACT WHALE FLOW").length).toBeGreaterThan(0);
     expect(screen.getByText(/只读提醒/)).toBeInTheDocument();

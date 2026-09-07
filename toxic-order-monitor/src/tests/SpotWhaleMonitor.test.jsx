@@ -87,6 +87,15 @@ vi.mock("../api/spotWhale.js", () => ({
 }));
 
 describe("SpotWhaleMonitor", () => {
+  it("opens the existing spot detail from a timestamped observation timeline", async () => {
+    render(<SpotWhaleMonitor lockedSymbol="BTC" />);
+    expect(screen.getByRole("region", { name: "BTC 现货事件价格" })).toBeInTheDocument();
+    const event = await screen.findByRole("button", { name: /^查看 BTC .+ 事件$/ });
+    await userEvent.click(event);
+    expect(screen.getByText("Spot Candidate Review")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-line")).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

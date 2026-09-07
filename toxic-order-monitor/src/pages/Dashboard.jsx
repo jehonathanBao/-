@@ -29,6 +29,14 @@ const CLEAR_CACHE_CONFIRM =
 const DISCORD_PUSH_CONFIRM =
   "确认推送该高风险候选信号到 Discord？\n该操作会真实发送到告警频道。";
 
+const WORKSPACE_HEADINGS = {
+  "/signals": { eyebrow: "SIGNAL INTELLIGENCE", title: "信号研判", description: "按风险与证据审阅候选信号，保留原始告警口径。" },
+  "/history": { eyebrow: "EVENT ARCHIVE", title: "事件档案", description: "回看已加载的历史候选、处理状态与推送记录。" },
+  "/rules": { eyebrow: "ALERT POLICY", title: "告警规则", description: "检查当前信号分级与通知门槛，不改变运行策略。" },
+  "/discord": { eyebrow: "DELIVERY WORKSPACE", title: "通知工作区", description: "查看通知连接、推送记录与候选预览。" },
+  "/settings": { eyebrow: "SYSTEM WORKSPACE", title: "系统工作区", description: "查看运行边界与系统状态，监控与交易执行保持分离。" },
+};
+
 export default function Dashboard() {
   const location = useLocation();
   const viewMode = viewModeFromPath(location.pathname);
@@ -312,7 +320,7 @@ export default function Dashboard() {
 
   return (
     <div
-      className={`workspace-shell flex min-h-screen flex-col lg:flex-row ${isContractWhaleView ? "contract-workspace-shell" : ""}`}
+      className={`workspace-shell control-room-shell ${isContractWhaleView ? "contract-workspace-shell" : ""}`}
       data-testid="workspace-shell"
     >
       <Sidebar runtimeBoundary={runtimeBoundary} />
@@ -352,6 +360,9 @@ export default function Dashboard() {
                 />
               ) : (
                 <>
+                  {WORKSPACE_HEADINGS[location.pathname] ? (
+                    <WorkspacePageHeader {...WORKSPACE_HEADINGS[location.pathname]} />
+                  ) : null}
                   {signalsRequest.phase === "error" ? (
                     <div className="mb-5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100" role="status">
                       信号快照刷新失败（{signalsRequest.errorCode || "UNKNOWN"}）；已保留此前候选，运行边界视为未知，推送已关闭。

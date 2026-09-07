@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import EventTraceTimeline from "./EventTraceTimeline.jsx";
 import {
   displayThresholdForSignal,
   fetchBinanceAltContractHistory,
@@ -106,7 +107,7 @@ export default function BinanceAltContractMonitor() {
   const selectedSignal = visibleItems.find((item) => item.id === selectedSignalId) || null;
 
   return (
-    <section className="console-panel mb-5 p-4 md:p-5">
+    <section className="console-panel control-room-alt mb-5 p-4 md:p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="max-w-3xl">
           <p className="console-label text-cyan-300">Binance Alt Contract Anomaly</p>
@@ -139,6 +140,8 @@ export default function BinanceAltContractMonitor() {
         }}
         symbolOptions={symbolOptions}
       />
+
+      <EventTraceTimeline items={visibleItems} onSelect={setSelectedSignalId} selectedId={selectedSignalId} />
 
       <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/6 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">

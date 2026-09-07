@@ -7,7 +7,7 @@ export default function UsageGuide() {
     loading: true,
     markdown: "",
     sourcePath: "docs/usage-guide.md",
-    title: "有毒订单监控用户使用指南",
+    title: "合约主力监控用户使用指南",
   });
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export default function UsageGuide() {
     };
   }, []);
 
-  const blocks = parseMarkdown(guide.markdown);
+  const blocks = parseMarkdown(guide.markdown.replace(/^(#{1,6}\s+)有毒订单监控/gm, "$1合约主力监控"));
 
   return (
     <article className="rounded-2xl border border-slate-700/60 bg-slate-900/70 shadow-glow">
