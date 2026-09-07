@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowUpRightIcon, ArrowPathIcon, PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
 import PriceChart from "./PriceChart.jsx";
 import EventTraceTimeline from "./EventTraceTimeline.jsx";
+import MarketObservatory from "./observatory/MarketObservatory.jsx";
 import { fetchMonitorFlowSnapshot } from "../api/monitorFlow.js";
 
 const REFRESH_INTERVAL_MS = 8_000;
@@ -180,6 +181,13 @@ export default function MonitorFlowDashboard({
         </aside>
       </section>
 
+      <MarketObservatory
+        samples={snapshot?.orderflow?.source === "binance_futures_kline_public_fallback" ? [] : snapshot?.orderflow?.candles}
+        observations={snapshot?.contract?.events}
+        symbol="BTC"
+        paused={paused}
+        stale={Boolean(refreshError || snapshot?.contract?.error)}
+      />
       <EventTraceTimeline items={visibleEvents} />
 
       <div className="monitor-flow-layout">

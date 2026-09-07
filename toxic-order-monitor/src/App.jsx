@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useParams } from "react-router-dom";
 
 const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
 const BinanceOrderflowRoute = lazy(() => import("./pages/BinanceOrderflowRoute.jsx"));
+const InstrumentPreview = import.meta.env.DEV ? lazy(() => import("./pages/InstrumentPreview.jsx")) : null;
 
 const MAINSTREAM_ASSETS = new Set(["btc", "eth"]);
 
@@ -10,6 +11,7 @@ export default function App() {
   return (
     <Suspense fallback={<RouteLoading />}>
       <Routes>
+      {InstrumentPreview ? <Route path="/design-preview" element={<InstrumentPreview />} /> : null}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/contract-whale" element={<Navigate to="/contract-whale/btc" replace />} />

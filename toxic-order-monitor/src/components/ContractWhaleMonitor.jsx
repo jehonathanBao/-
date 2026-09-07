@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import PriceChart from "./PriceChart.jsx";
 import EventTraceTimeline from "./EventTraceTimeline.jsx";
+import MarketObservatory from "./observatory/MarketObservatory.jsx";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractEventDebugCounts,
@@ -1006,6 +1007,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           summary={summary}
         />
       </section>
+      <MarketObservatory key={assetSymbol} samples={visibleContractEvents} observations={visibleContractEvents} symbol={assetSymbol} mode="events" stale={state.dataSlices.historical.state !== "fresh"} />
       <section className="control-room-event-workspace" aria-label="合约事件工作区">
           <div className="contract-filter-dock">
             <ContractWhaleFilters

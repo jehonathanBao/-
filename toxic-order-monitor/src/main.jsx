@@ -6,6 +6,7 @@ import PageErrorBoundary from "./components/PageErrorBoundary.jsx";
 import PageShellSkeleton from "./components/PageShellSkeleton.jsx";
 import "./index.css";
 import "./styles/control-room.css";
+import "./styles/instrument-desk.css";
 
 const rootElement = document.getElementById("root");
 
