@@ -27,6 +27,42 @@ vi.mock("axios", () => ({
 }));
 
 describe("contract whale api", () => {
+  it("canonical grade cannot be synthesized from legacy scores or a forecast", () => {
+    for (const fields of [
+      { impactGradeState: "confirmed", assessmentStatus: "evidence_missing", impactGrade: "A" },
+      { impactGradeState: "confirmed", assessmentStatus: "graded", impactGrade: "UNRATED" },
+      { impactGradeState: "confirmed", impactGradeVersion: "cwm_impact_v3_3" },
+    ]) {
+      const signal = normalizeContractWhaleSignal({
+        ...fields, id: "canonical-missing", symbol: "BTC", score: 100,
+        percentile: 100, impactScore: 100, zScore: 10,
+        multiHorizonImpact: { impactGrade: "S", signalSeverity: "S" },
+      });
+      expect(signal.impactGrade).toBe("UNRATED");
+      expect(signal.signalLevel).toBe("N/A");
+    }
+  });
+
+  it("canonical grade normalization keeps actor attribution unknown and price validation separate", () => {
+    const signal = normalizeContractWhaleSignal({ id: "unknown-actors", symbol: "ETH" });
+    expect(signal.liquidationForce.primaryDriver).toBe("unknown");
+    expect(signal.liquidationForce.flowAttribution).toMatchObject({ whalePct: 0, retailPct: 0, unknownPct: 1 });
+    expect(signal.marketDriver.primaryDriver).toBe("unknown");
+    expect(signal.marketDriver.whaleIntentPct).toBe(0);
+    const observed = normalizeContractWhaleSignal({
+      id: "sampled-liquidation", symbol: "ETH",
+      liquidationForce: { primaryDriver: "liquidation_cascade_candidate", flowAttribution: {
+        whalePct: 0, retailPct: 0, liquidationPct: 0.2, unknownPct: 0.8,
+        semantics: "sampled_liquidation_to_flow_ratio_not_participant_shares",
+      } },
+      behaviorAssessment: { confidenceScore: 20, confidenceLevel: "low", attribution: "active_flow_unattributed",
+        postEventValidation: { state: "confirmed", markoutBps: 30 } },
+    });
+    expect(observed.liquidationForce.flowAttribution.unknownPct).toBe(0.8);
+    expect(observed.liquidationForce.flowAttribution.semantics).toBe("sampled_liquidation_to_flow_ratio_not_participant_shares");
+    expect(observed.behaviorAssessment).toMatchObject({ confidenceScore: 20, confidenceLevel: "low", attribution: "active_flow_unattributed" });
+  });
+
   beforeEach(() => {
     axios.get.mockReset();
     vi.stubEnv("VITE_API_BASE_URL", "");

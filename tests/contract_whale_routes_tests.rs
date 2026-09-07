@@ -1463,6 +1463,7 @@ fn final_event_store_response_keeps_source_signal_as_read_only_projection_eviden
 
 #[test]
 fn final_event_store_computes_cross_event_impact_normalization() {
+    use btc_toxic_flow_monitor_rs::normalization::market_impact::MarketImpactBaseline;
     let mut low = persisted_signal(1_700_000_000_000, ContractWhaleSeverity::Medium);
     low.id = "contract-whale:BTC:15:1700000000000:low".to_string();
     low.total_volume_btc = 520.0;
@@ -1488,6 +1489,7 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     high.total_volume_btc = 1_500.0;
     high.net_volume_btc = 1_280.0;
     high.total_notional_usd = 96_000_000.0;
+    let canonical = high.clone();
 
     let response = build_contract_whale_history_response(
         vec![high, mid, low],
@@ -1506,10 +1508,21 @@ fn final_event_store_computes_cross_event_impact_normalization() {
         .iter()
         .find(|event| (event.raw_volume - 1_500.0).abs() < f64::EPSILON)
         .expect("highest-volume event should be present");
-    assert!(strongest.impact_score > 1.0);
-    assert!(strongest.z_score > 1.0);
-    assert!(strongest.percentile >= 90.0);
-    assert_eq!(strongest.normalized_strength, "EXTREME");
+    // Cohort statistics remain available as diagnostics, but a page's largest
+    // row cannot manufacture canonical evidence or an event importance grade.
+    let cohort = MarketImpactBaseline::from_volumes(
+        response.items.iter().map(|signal| signal.total_volume_btc),
+    )
+    .normalize(strongest.raw_volume);
+    assert!(cohort.impact_score > 1.0);
+    assert!(cohort.z_score > 1.0);
+    assert!(cohort.percentile >= 90.0);
+    assert_eq!(cohort.normalized_strength, "EXTREME");
+    assert_eq!(strongest.impact_grade, canonical.impact_level.unwrap());
+    assert_eq!(strongest.impact_score, canonical.impact_score.unwrap());
+    assert_eq!(strongest.z_score, canonical.impact_z_score.unwrap());
+    assert_eq!(strongest.percentile, canonical.percentile_level.unwrap());
+    assert_eq!(strongest.normalized_strength, canonical.normalized_strength.unwrap());
     assert_eq!(strongest.direction_bias, "buy");
 }
 

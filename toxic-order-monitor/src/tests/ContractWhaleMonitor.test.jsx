@@ -26,6 +26,7 @@ function hasPriceText(text) {
 
 vi.mock("../api/contractWhale.js", () => ({
   CWM_MAX_PRICE_DEVIATION_PCT: 5,
+  fetchContractWhaleV42Gate: vi.fn(async () => null),
   fetchContractWhaleSummary: vi.fn(() =>
     Promise.resolve({
       summary: {
@@ -1234,6 +1235,57 @@ vi.mock("../api/contractWhale.js", () => ({
 }));
 
 describe("ContractWhaleMonitor", () => {
+  it.each([
+    ["A", "confirmed", "graded", "C", "事件重要性 A"],
+    ["UNRATED", "evidence_insufficient", "evidence_missing", "S", "事件未评级"],
+  ])("canonical grade %s stays primary with forecast diagnostics", async (grade, state, status, forecastGrade, label) => {
+    const user = userEvent.setup();
+    const { normalizeContractWhaleSignal } = await vi.importActual("../api/contractWhale.js");
+    const response = await fetchFinalEventsV2.getMockImplementation()();
+    const base = response.active[0];
+    const item = {
+      ...base,
+      ...normalizeContractWhaleSignal({
+        ...base,
+        impactGrade: grade, impactLevel: grade, impactGradeState: state,
+        impactGradeVersion: "cwm_impact_v3_3", assessmentStatus: status,
+        impactReasonCodes: status === "graded" ? [] : ["evidence_missing"],
+        multiHorizonImpact: {
+          forecastVersion: "cwm_impact_v4_2_hybrid_calibration_v2",
+          impactGrade: forecastGrade, signalSeverity: forecastGrade,
+          maturityState: "insufficient_data", maturityLevel: "M0", horizons: [],
+        },
+        behaviorAssessment: {
+          hypothesis: "active_buy_pressure", attribution: "active_flow_unattributed",
+          confidenceScore: 20, confidenceLevel: "low", decisionState: "observe",
+          postEventValidation: { state: "confirmed", markoutBps: 30, signed: true },
+        },
+        liquidationForce: { flowAttribution: { whalePct: 0.9, retailPct: 0.1 }, stopHuntProbability: 90 },
+      }),
+    };
+    fetchFinalEventsV2.mockResolvedValueOnce({ ...response, active: [item], closed: [] });
+    const historyResponse = await fetchContractEvents.getMockImplementation()();
+    fetchContractEvents.mockResolvedValueOnce({ ...historyResponse, items: [item] });
+    const latestResponse = await fetchContractWhaleLatest.getMockImplementation()();
+    fetchContractWhaleLatest.mockResolvedValueOnce({ ...latestResponse, items: [item] });
+    render(<ContractWhaleMonitor />);
+    const tape = await screen.findByTestId("raw-contract-whale-signals");
+    await waitFor(() => expect(tape).toHaveTextContent(label));
+    expect(tape).not.toHaveTextContent(`V4.2 ${forecastGrade}级`);
+    await user.click(within(tape).getByRole("button", { name: /查看主力合约信号详情/ }));
+    const dialog = await screen.findByRole("dialog", { name: "主力合约信号详情" });
+    expect(within(dialog).getByTestId("contract-detail-summary")).toHaveTextContent(grade === "A" ? "A · confirmed" : "UNRATED · evidence_insufficient");
+    expect(within(dialog).getByTestId("behavior-evidence-card")).toHaveTextContent("20/100 · low");
+    expect(within(dialog).getByTestId("behavior-evidence-card")).toHaveTextContent("主动流·未归因");
+    expect(dialog).not.toHaveTextContent("Whale initiated");
+    expect(dialog).not.toHaveTextContent("Retail follow");
+    expect(dialog).not.toHaveTextContent("Stop Hunt");
+    expect(dialog).toHaveTextContent("启发式权重");
+    await user.click(within(dialog).getByRole("button", { name: "关闭主力合约信号详情" }));
+    await user.selectOptions(screen.getByLabelText("事件重要性"), "A");
+    await waitFor(() => expect(fetchContractEvents).toHaveBeenLastCalledWith(expect.objectContaining({ impact_level: "A" })));
+  });
+
   afterEach(() => {
     cleanup();
     window.sessionStorage.clear();
@@ -2274,7 +2326,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText("峰值窗口流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("V3 评级").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("事件重要性").length).toBeGreaterThan(0);
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getAllByText(/已加载 \d+ 条/).length).toBeGreaterThan(0);
@@ -2298,7 +2350,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("67.6%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("9.4x").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P99.9").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("V4.2 模型估算");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("事件未评级");
     expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("RATING UNAVAILABLE");
     expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("baseline insufficient");
     expect(screen.getAllByText("+0.31%").length).toBeGreaterThan(0);
@@ -2649,7 +2701,7 @@ describe("ContractWhaleMonitor", () => {
     await screen.findByText("主力合约监控");
     expect(screen.getByRole("option", { name: "大于 500（正负）" })).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
-    const impactSelect = screen.getByLabelText("V3 评级");
+    const impactSelect = screen.getByLabelText("事件重要性");
     expect(impactSelect).toHaveDisplayValue("全部");
     await user.selectOptions(impactSelect, "A");
     expect(impactSelect).toHaveDisplayValue("A");
@@ -3405,7 +3457,7 @@ describe("ContractWhaleMonitor", () => {
 
     expect(screen.getByRole("dialog", { name: "主力合约信号详情" })).toBeInTheDocument();
     expect(screen.getByText("Discord Gate")).toBeInTheDocument();
-    expect(screen.getAllByText("V3 评级").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("事件重要性").length).toBeGreaterThan(0);
     expect(screen.getAllByText("B · confirmed").length).toBeGreaterThan(0);
     expect(screen.getByText("评级证据")).toBeInTheDocument();
     expect(screen.getByText("B / L2")).toBeInTheDocument();

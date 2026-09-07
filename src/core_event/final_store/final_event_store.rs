@@ -209,6 +209,20 @@ impl FinalEvent {
         impact: MarketImpactNormalization,
         context: VolumeDisplayContext,
     ) -> Self {
+        let mut canonical_signal = signal.clone();
+        if signal.impact_grade_version.is_none()
+            || !matches!(signal.impact_level.as_deref(), Some("S" | "A" | "B" | "C"))
+            || !(assessment_status_from_signal(signal) == "graded"
+                || signal.impact_grade_state.as_deref() == Some("provisional")
+                    && assessment_status_from_signal(signal) == "assessment_pending")
+        {
+            crate::contract_whale_monitor::impact_grade::apply_unavailable_impact_assessment_to_signal(
+                &mut canonical_signal,
+                signal.impact_grade_version.as_deref().unwrap_or(crate::contract_whale_monitor::impact_grade::CONTRACT_EVENT_IMPACT_GRADE_VERSION),
+                signal.impact_reason_codes.first().map(String::as_str).unwrap_or("v3_assessment_unavailable"),
+            );
+        }
+        let signal = &canonical_signal;
         let mut source_signal_ids = vec![signal.id.clone()];
         for id in &signal.merged_from {
             if !id.is_empty() && !source_signal_ids.iter().any(|existing| existing == id) {
@@ -247,11 +261,11 @@ impl FinalEvent {
             status: event_status_key(signal.event_lifecycle.status).to_string(),
             window_sec: signal.window_sec,
             raw_volume: impact.raw_volume,
-            impact_score: impact.impact_score,
-            z_score: impact.z_score,
-            percentile: impact.percentile,
-            normalized_score: impact.normalized_score,
-            normalized_strength: impact.normalized_strength,
+            impact_score: signal.impact_score.unwrap_or_default(),
+            z_score: signal.impact_z_score.unwrap_or_default(),
+            percentile: signal.percentile_level.unwrap_or_default(),
+            normalized_score: signal.impact_score.unwrap_or_default().clamp(0.0, 1.0),
+            normalized_strength: signal.normalized_strength.clone().unwrap_or_else(|| "PENDING".into()),
             impact_level: stable_impact_level,
             impact_grade: signal
                 .impact_level
@@ -262,15 +276,11 @@ impl FinalEvent {
                 .clone()
                 .unwrap_or_else(|| "evidence_insufficient".to_string()),
             impact_grade_version: signal.impact_grade_version.clone(),
-            impact_reason_codes: if signal.impact_reason_codes.is_empty() {
-                vec!["v3_assessment_unavailable".to_string()]
-            } else {
-                signal.impact_reason_codes.clone()
-            },
+            impact_reason_codes: signal.impact_reason_codes.clone(),
             assessment_status: assessment_status_from_signal(signal),
             impact_evidence: None,
             behavior_assessment: None,
-            multi_horizon_impact: None,
+            multi_horizon_impact: signal.multi_horizon_impact.clone(),
             relative_rank: None,
             signal_level: stable_signal_level,
             signal_label: stable_signal_label,
@@ -554,7 +564,9 @@ mod tests {
 
     #[test]
     fn final_event_exposes_volume_semantics_fields() {
-        let signal = sample_signal();
+        let mut signal = sample_signal();
+        signal.impact_grade_state = Some("confirmed".into());
+        signal.impact_grade_version = Some(crate::contract_whale_monitor::impact_grade::CONTRACT_EVENT_IMPACT_GRADE_VERSION.into());
         let final_event = FinalEvent::from_contract_signal_with_impact(
             &signal,
             MarketImpactNormalization {
@@ -594,6 +606,91 @@ mod tests {
         assert_eq!(final_event.impact_level, "S");
         assert_eq!(final_event.signal_level, "S");
         assert_eq!(final_event.signal_label, "SHOCK IMPACT EVENT");
+    }
+
+    fn canonical_assessment() -> crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment {
+        use crate::contract_whale_monitor::{impact_grade::*, ContractWhaleRuntimeConfig};
+        let mut episode: ContractImpactEpisode = serde_json::from_str(include_str!("../../../tests/fixtures/contract_whale_impact/ordinary-2026-07.json")).unwrap();
+        episode.total_volume_btc = 3_000.0;
+        episode.total_notional_usd = 190_000_000.0;
+        episode.peak_abs_price_move_pct = Some(0.6);
+        episode.robust_percentile = Some(99.5);
+        episode.robust_z = Some(4.5);
+        assess_contract_impact_episode(&episode, &ContractWhaleRuntimeConfig::default(), episode.end_time_ms)
+    }
+
+    #[test]
+    fn canonical_grade_projection_never_falls_back_to_cohort_or_legacy_s() {
+        let signal = sample_signal();
+        let event = FinalEvent::from_contract_signal(&signal);
+        assert_eq!(event.impact_grade, "UNRATED");
+        assert_eq!(event.impact_level, "UNRATED");
+        assert_eq!(event.signal_level, "N/A");
+    }
+
+    #[test]
+    fn canonical_grade_routes_and_nested_signal_keep_a_with_forecast_c_and_unavailable_with_s() {
+        use crate::{api::contract_event_routes::decorate_v3_final_events, storage::{ContractEventGradeRepo, SqliteStore}};
+        use crate::contract_whale_monitor::{impact_forecast::build_forecast, impact_grade::*};
+        let path = std::env::temp_dir().join(format!("canonical-grade-{}.sqlite", uuid::Uuid::new_v4()));
+        {
+            let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
+            store.migrate().unwrap();
+            let repo = ContractEventGradeRepo::new(store.clone());
+            let mut signal = sample_signal();
+            let mut value = canonical_assessment();
+            value.event_id = signal.event_lifecycle.event_id.clone();
+            value.episode_id = value.event_id.clone();
+            assert_eq!(value.grade, ContractEventImpactGrade::A);
+            repo.upsert_assessment(&value, signal.ts).unwrap();
+            let mut forecast = build_forecast(&signal, &[], &[], signal.ts);
+            forecast.impact_grade = "C".into();
+            signal.multi_horizon_impact = Some(forecast);
+            let mut items = vec![FinalEvent::from_contract_signal(&signal)];
+            decorate_v3_final_events(Some(&store), &mut items);
+            assert_eq!(items[0].impact_grade, "A");
+            assert_eq!(items[0].source_signal.impact_level.as_deref(), Some("A"));
+            assert_eq!(items[0].source_signal.multi_horizon_impact.as_ref().unwrap().impact_grade, "C");
+
+            value.state = ImpactGradeState::EvidenceInsufficient;
+            value.status = AssessmentStatus::EvidenceMissing;
+            value.reason_codes = vec!["evidence_missing".into()];
+            repo.upsert_assessment(&value, signal.ts + 1).unwrap();
+            signal.multi_horizon_impact.as_mut().unwrap().impact_grade = "S".into();
+            items[0] = FinalEvent::from_contract_signal(&signal);
+            decorate_v3_final_events(Some(&store), &mut items);
+            assert_eq!(items[0].impact_grade, "UNRATED");
+            assert_eq!(items[0].assessment_status, "evidence_missing");
+            assert_eq!(items[0].source_signal.impact_level.as_deref(), Some("UNRATED"));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn canonical_grade_notifier_enforces_score_quality_severity_and_assessment_status() {
+        use crate::contract_whale_monitor::{discord_notifier::*, impact_grade::*};
+        let settings = ContractWhaleDiscordSettings::dry_run_for_tests();
+        let cooldown = ContractWhaleDiscordCooldownStore::new();
+        let mut signal = sample_signal();
+        signal.severity = ContractWhaleSeverity::High;
+        signal.score = 80;
+        signal.data_quality = 70;
+        let value = canonical_assessment();
+        let check = |signal: &ContractWhaleSignal, value: &ContractEventImpactAssessment| evaluate_contract_whale_discord_v3_gate(&settings, signal, value, &cooldown, signal.ts);
+        assert!(check(&signal, &value).allowed);
+        for case in 0..4 {
+            let mut invalid = signal.clone();
+            let mut assessment = value.clone();
+            match case {
+                0 => invalid.score = 79,
+                1 => invalid.data_quality = 69,
+                2 => invalid.severity = ContractWhaleSeverity::Medium,
+                _ => assessment.status = AssessmentStatus::EvidenceMissing,
+            }
+            assert!(!check(&invalid, &assessment).allowed, "case {case}");
+        }
+        cooldown.record_sent(&signal, signal.ts);
+        assert_eq!(check(&signal, &value).reason, "duplicate");
     }
 
     fn sample_signal() -> ContractWhaleSignal {

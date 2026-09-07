@@ -347,13 +347,15 @@ impl Default for ContractWhaleImpactGradeConfig {
             // V3 is the sole production rating source. Shadow mode remains
             // opt-in through configuration for controlled rollback/replay.
             shadow_mode: false,
-            grade_version: "cwm_impact_v3_2".to_string(),
+            grade_version: super::impact_grade::CONTRACT_EVENT_IMPACT_GRADE_VERSION.to_string(),
             baseline_lookback_days: 90,
             baseline_min_samples: 10_000,
             // A shock episode closes after a short inactivity gap. Longer
             // streams are handled as separate episodes and never chained
             // into an unbounded backfill query.
             episode_gap_seconds: 120,
+            // Required distinct eligible perp venues, capped by the configured
+            // eligible set (never by the currently healthy/observed set).
             min_confirmed_sources: 2,
             s,
             a,

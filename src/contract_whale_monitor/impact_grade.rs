@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{config::ContractWhaleRuntimeConfig, types::ContractWhaleSignal};
 
+pub const CONTRACT_EVENT_IMPACT_GRADE_VERSION: &str = "cwm_impact_v3_3";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ContractEventImpactGrade {
@@ -111,6 +113,9 @@ pub struct ContractImpactEpisode {
     pub live_liquidation_notional_usd: Option<f64>,
     pub peak_abs_price_move_pct: Option<f64>,
     pub peak_abs_oi_change_pct: Option<f64>,
+    /// Distinct perp venues with actual fresh trade evidence at the episode
+    /// cutoff. Producers must exclude stale/missing trades; stream names (spot,
+    /// OI, funding) are not venue confirmations. Historical cutoffs are causal.
     pub confirmed_sources: Vec<String>,
     pub data_quality: u8,
     pub robust_percentile: Option<f64>,
@@ -277,6 +282,7 @@ pub fn apply_unavailable_impact_assessment_to_signal(
     signal.impact_grade_state = Some(ImpactGradeState::EvidenceInsufficient.as_str().to_string());
     signal.impact_grade_version = Some(grade_version.to_string());
     signal.impact_reason_codes = vec![reason_code.to_string()];
+    signal.impact_score = None;
 }
 
 pub fn assess_contract_impact_episode(
@@ -284,6 +290,18 @@ pub fn assess_contract_impact_episode(
     config: &ContractWhaleRuntimeConfig,
     assessed_at_ms: i64,
 ) -> ContractEventImpactAssessment {
+    let eligible = config.threshold_profile_resolution().eligible_keys();
+    let confirmed = episode
+        .confirmed_sources
+        .iter()
+        .map(|source| source.trim().to_ascii_lowercase())
+        .filter(|source| eligible.contains(source))
+        .collect::<std::collections::BTreeSet<_>>();
+    let required_sources = config
+        .impact_grade_v3
+        .min_confirmed_sources
+        .min(eligible.len())
+        .max(1);
     let evidence = ImpactGradeEvidence {
         data_quality: episode.data_quality,
         peak_window_volume_btc: Some(episode.peak_window_volume_btc),
@@ -295,7 +313,7 @@ pub fn assess_contract_impact_episode(
         live_liquidation_notional_usd: episode.live_liquidation_notional_usd,
         unique_turnover_btc: episode.unique_turnover_btc,
         unique_turnover_notional_usd: episode.unique_turnover_notional_usd,
-        confirmed_source_count: episode.confirmed_sources.len(),
+        confirmed_source_count: confirmed.len(),
         baseline_sample_count: episode.baseline_sample_count,
         flow_anomaly_score: None,
         market_impact_score: None,
@@ -305,8 +323,10 @@ pub fn assess_contract_impact_episode(
 
     let grade_config = &config.impact_grade_v3;
     if episode.baseline_sample_count < grade_config.baseline_min_samples
-        || episode.robust_percentile.is_none()
-        || episode.robust_z.is_none()
+        || !episode
+            .robust_percentile
+            .is_some_and(|value| value.is_finite() && (0.0..=100.0).contains(&value))
+        || !episode.robust_z.is_some_and(f64::is_finite)
     {
         reason_codes.push("baseline_insufficient".to_string());
         return assessment(
@@ -320,11 +340,13 @@ pub fn assess_contract_impact_episode(
         );
     }
 
-    // Price response and multi-source confirmation are hard evidence for V3.
+    // Price response and configured-source confirmation are hard evidence.
     // Missing values must never be coerced to zero (which previously made an
-    // absent price move look like perfect absorption), and a single venue
-    // cannot promote an event into A/S.
-    if episode.peak_abs_price_move_pct.is_none() {
+    // absent price move look like perfect absorption).
+    if !episode
+        .peak_abs_price_move_pct
+        .is_some_and(|value| value.is_finite() && value >= 0.0)
+    {
         reason_codes.push("evidence_missing".to_string());
         reason_codes.push("price_response_missing".to_string());
         return assessment(
@@ -337,9 +359,14 @@ pub fn assess_contract_impact_episode(
             assessed_at_ms,
         );
     }
-    if episode.confirmed_sources.len() < grade_config.min_confirmed_sources {
+    if confirmed.len() < required_sources {
         reason_codes.push("evidence_missing".to_string());
         reason_codes.push("confirmed_sources_insufficient".to_string());
+        reason_codes.push(format!(
+            "configured_eligible_sources:{}",
+            eligible.join(",")
+        ));
+        reason_codes.push(format!("required_source_count:{required_sources}"));
         return assessment(
             episode,
             ContractEventImpactGrade::C,
@@ -351,12 +378,43 @@ pub fn assess_contract_impact_episode(
         );
     }
 
+    if episode.data_quality < grade_config.b.min_data_quality.max(70)
+        || !episode.total_volume_btc.is_finite()
+        || episode.total_volume_btc <= 0.0
+        || !episode.total_notional_usd.is_finite()
+        || episode.total_notional_usd <= 0.0
+        || !episode.net_volume_btc.is_finite()
+    {
+        return assessment(
+            episode,
+            ContractEventImpactGrade::C,
+            ImpactGradeState::EvidenceInsufficient,
+            vec![
+                "evidence_missing".into(),
+                "market_evidence_quality_insufficient".into(),
+            ],
+            evidence,
+            &grade_config.grade_version,
+            assessed_at_ms,
+        );
+    }
+    reason_codes.push(format!(
+        "configured_eligible_sources:{}",
+        eligible.join(",")
+    ));
+    reason_codes.push(format!("required_source_count:{required_sources}"));
+
     let percentile = episode.robust_percentile.unwrap_or_default();
     let robust_z = episode.robust_z.unwrap_or_default();
-    let liquidation_btc = episode.live_liquidation_btc.unwrap_or_default();
-    let liquidation_usd = episode.live_liquidation_notional_usd.unwrap_or_default();
-    let unique_turnover_btc = episode.unique_turnover_btc.unwrap_or_default();
-    let unique_turnover_usd = episode.unique_turnover_notional_usd.unwrap_or_default();
+    let finite_positive = |value: Option<f64>| {
+        value
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or_default()
+    };
+    let liquidation_btc = finite_positive(episode.live_liquidation_btc);
+    let liquidation_usd = finite_positive(episode.live_liquidation_notional_usd);
+    let unique_turnover_btc = finite_positive(episode.unique_turnover_btc);
+    let unique_turnover_usd = finite_positive(episode.unique_turnover_notional_usd);
     let price_move_pct = episode
         .peak_abs_price_move_pct
         .expect("price evidence checked above");
@@ -366,14 +424,29 @@ pub fn assess_contract_impact_episode(
         episode.net_volume_btc,
         episode.total_volume_btc,
     );
+    let s = &grade_config.s;
+    let is_btc = episode.symbol.eq_ignore_ascii_case("BTC");
+    // USD thresholds give equal economic evidence equal weight across symbols.
+    // BTC native-unit fallback is retained only for historical evidence lacking USD.
+    let hard_score = if episode.live_liquidation_notional_usd.is_some()
+        || episode.unique_turnover_notional_usd.is_some()
+        || !is_btc
+    {
+        (liquidation_usd / s.min_live_liquidation_notional_usd.unwrap_or(f64::INFINITY))
+            .max(unique_turnover_usd / s.min_unique_turnover_notional_usd.unwrap_or(f64::INFINITY))
+    } else {
+        (liquidation_btc / s.min_live_liquidation_btc.unwrap_or(f64::INFINITY))
+            .max(unique_turnover_btc / s.min_unique_turnover_btc.unwrap_or(f64::INFINITY))
+    } * 100.0;
     let market_impact_score = dual_axis_market_score(
         price_move_pct,
-        episode.peak_abs_oi_change_pct,
-        liquidation_btc,
-        unique_turnover_btc,
+        episode
+            .peak_abs_oi_change_pct
+            .filter(|value| value.is_finite()),
+        hard_score,
     );
     let confidence_score = ((episode.data_quality as f64) * 0.7
-        + (episode.confirmed_sources.len().min(2) as f64 / 2.0) * 30.0)
+        + (confirmed.len() as f64 / eligible.len().max(1) as f64) * 30.0)
         .clamp(0.0, 100.0);
     let mut evidence = evidence;
     evidence.flow_anomaly_score = Some(flow_anomaly_score);
@@ -382,13 +455,11 @@ pub fn assess_contract_impact_episode(
     // High flow with low price efficiency is an absorption/suppression setup;
     // it must not be mechanically downgraded by the trend confirmation floor.
     let absorption_confirmed = flow_anomaly_score >= 80.0 && price_move_pct < 0.10;
-    let s = &grade_config.s;
     let a = &grade_config.a;
     let b = &grade_config.b;
     // Base-unit thresholds are only meaningful for BTC.  Other symbols use
     // canonical USD thresholds so ETH/alt contracts are not compared as if
     // their native units were BTC.
-    let is_btc = episode.symbol.eq_ignore_ascii_case("BTC");
     let has_s_hard_evidence = liquidation_usd
         >= s.min_live_liquidation_notional_usd.unwrap_or(f64::INFINITY)
         || unique_turnover_usd >= s.min_unique_turnover_notional_usd.unwrap_or(f64::INFINITY)
@@ -401,7 +472,8 @@ pub fn assess_contract_impact_episode(
         && percentile >= s.min_robust_percentile
         && (price_move_pct >= s.min_abs_price_move_pct || absorption_confirmed);
     if s_eligible {
-        let reason = if liquidation_btc >= s.min_live_liquidation_btc.unwrap_or(f64::INFINITY)
+        let reason = if (is_btc
+            && liquidation_btc >= s.min_live_liquidation_btc.unwrap_or(f64::INFINITY))
             || liquidation_usd >= s.min_live_liquidation_notional_usd.unwrap_or(f64::INFINITY)
         {
             "s_live_liquidation_extreme"
@@ -417,9 +489,6 @@ pub fn assess_contract_impact_episode(
             }
             .to_string(),
         );
-        if episode.confirmed_sources.len() < grade_config.min_confirmed_sources {
-            reason_codes.push("s_single_source_low_confidence".to_string());
-        }
         return assessment(
             episode,
             ContractEventImpactGrade::S,
@@ -453,13 +522,11 @@ pub fn assess_contract_impact_episode(
         if absorption_confirmed {
             reason_codes.push("absorption_low_price_efficiency".to_string());
         }
-        if episode.confirmed_sources.len() < grade_config.min_confirmed_sources {
-            reason_codes.push("single_source_low_confidence".to_string());
-        }
         let state = if !has_s_hard_evidence
             && percentile >= s.min_robust_percentile
             && (price_move_pct >= s.min_abs_price_move_pct || absorption_confirmed)
-            && (episode.total_volume_btc >= s.min_unique_turnover_btc.unwrap_or(f64::INFINITY)
+            && ((is_btc
+                && episode.total_volume_btc >= s.min_unique_turnover_btc.unwrap_or(f64::INFINITY))
                 || episode.total_notional_usd
                     >= s.min_unique_turnover_notional_usd.unwrap_or(f64::INFINITY))
         {
@@ -535,15 +602,10 @@ fn dual_axis_flow_score(percentile: f64, robust_z: f64, net_volume: f64, total_v
     (percentile_score * 0.5 + z_score * 0.3 + dominance * 0.2).clamp(0.0, 100.0)
 }
 
-fn dual_axis_market_score(
-    price_move_pct: f64,
-    oi_change_pct: Option<f64>,
-    liquidation_btc: f64,
-    turnover_btc: f64,
-) -> f64 {
+fn dual_axis_market_score(price_move_pct: f64, oi_change_pct: Option<f64>, hard_score: f64) -> f64 {
     let price = (price_move_pct.abs() / 1.0 * 100.0).clamp(0.0, 100.0);
     let oi = (oi_change_pct.unwrap_or_default().abs() / 1.0 * 100.0).clamp(0.0, 100.0);
-    let hard = ((liquidation_btc.max(turnover_btc) / 1_000.0) * 100.0).clamp(0.0, 100.0);
+    let hard = hard_score.clamp(0.0, 100.0);
     (price * 0.45 + oi * 0.2 + hard * 0.35).clamp(0.0, 100.0)
 }
 
@@ -592,5 +654,129 @@ fn assessment(
         reason_codes,
         assessed_at_ms,
         evidence,
+    }
+}
+
+#[cfg(test)]
+mod canonical_grade_tests {
+    use super::*;
+
+    fn config() -> ContractWhaleRuntimeConfig {
+        let mut config = ContractWhaleRuntimeConfig::default();
+        config.exchanges.bitfinex.enabled = false;
+        config
+    }
+
+    fn episode() -> ContractImpactEpisode {
+        ContractImpactEpisode {
+            episode_id: "canonical-grade-episode".into(),
+            symbol: "BTC".into(),
+            start_time_ms: 1_700_000_000_000,
+            end_time_ms: 1_700_000_060_000,
+            source_event_ids: vec!["canonical-grade-source".into()],
+            peak_window_volume_btc: 8_000.0,
+            total_volume_btc: 8_000.0,
+            total_notional_usd: 500_000_000.0,
+            net_volume_btc: 6_000.0,
+            unique_turnover_btc: None,
+            unique_turnover_notional_usd: None,
+            live_liquidation_btc: Some(2_500.0),
+            live_liquidation_notional_usd: Some(250_000_000.0),
+            peak_abs_price_move_pct: Some(2.0),
+            peak_abs_oi_change_pct: Some(0.4),
+            confirmed_sources: vec!["binance".into()],
+            data_quality: 90,
+            robust_percentile: Some(99.95),
+            robust_z: Some(6.0),
+            baseline_sample_count: 20_000,
+        }
+    }
+
+    #[test]
+    fn canonical_grade_binance_only_reaches_s_without_lowering_hard_floors() {
+        let config = config();
+        let value = assess_contract_impact_episode(&episode(), &config, 1_700_000_060_000);
+        assert_eq!(value.grade, ContractEventImpactGrade::S);
+        assert_eq!(value.status, AssessmentStatus::Graded);
+        assert_eq!(value.grade_version, "cwm_impact_v3_3");
+        assert_eq!(value.evidence.confirmed_source_count, 1);
+        assert_eq!(value.evidence.confidence_score, Some(93.0));
+        let mut ordinary = episode();
+        ordinary.live_liquidation_btc = None;
+        ordinary.live_liquidation_notional_usd = None;
+        assert_ne!(
+            assess_contract_impact_episode(&ordinary, &config, 0).grade,
+            ContractEventImpactGrade::S
+        );
+    }
+
+    #[test]
+    fn canonical_grade_extra_expected_venue_cannot_be_replaced_by_duplicate_or_spot_oi() {
+        let config = ContractWhaleRuntimeConfig::default();
+        let mut episode = episode();
+        episode.confirmed_sources = vec![
+            "binance".into(),
+            "BINANCE".into(),
+            "binance_spot".into(),
+            "binance_oi".into(),
+            "coinbase".into(),
+        ];
+        let value = assess_contract_impact_episode(&episode, &config, 0);
+        assert_eq!(value.status, AssessmentStatus::EvidenceMissing);
+        assert_eq!(value.evidence.confirmed_source_count, 1);
+        assert!(value
+            .reason_codes
+            .contains(&"configured_eligible_sources:binance,bitfinex".into()));
+    }
+
+    #[test]
+    fn canonical_grade_missing_stale_or_invalid_evidence_stays_ungraded() {
+        let config = config();
+        for case in 0..7 {
+            let mut episode = episode();
+            // Stale trades must be excluded from confirmed_sources by the producer.
+            match case {
+                0 => episode.confirmed_sources.clear(),
+                1 => episode.data_quality = 0,
+                2 => episode.peak_abs_price_move_pct = None,
+                3 => episode.peak_abs_price_move_pct = Some(f64::NAN),
+                4 => episode.baseline_sample_count = 0,
+                5 => episode.robust_percentile = Some(f64::NAN),
+                _ => episode.robust_z = Some(f64::INFINITY),
+            }
+            let value = assess_contract_impact_episode(&episode, &config, 0);
+            assert_ne!(value.status, AssessmentStatus::Graded, "case {case}");
+            assert_eq!(
+                value.state,
+                ImpactGradeState::EvidenceInsufficient,
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_grade_uses_usd_for_non_btc_market_axis_and_materiality() {
+        let config = config();
+        let mut first = episode();
+        first.symbol = "ETH".into();
+        first.peak_abs_price_move_pct = Some(0.6);
+        first.live_liquidation_notional_usd = Some(25_000_000.0);
+        first.live_liquidation_btc = Some(20_000.0);
+        let mut second = first.clone();
+        second.symbol = "SOL".into();
+        second.live_liquidation_btc = Some(200.0);
+        let a = assess_contract_impact_episode(&first, &config, 0);
+        let b = assess_contract_impact_episode(&second, &config, 0);
+        assert_eq!(a.grade, ContractEventImpactGrade::A);
+        assert_eq!(a.grade, b.grade);
+        assert_eq!(
+            a.evidence.market_impact_score,
+            b.evidence.market_impact_score
+        );
+        first.total_notional_usd = 10_000_000.0;
+        assert_eq!(
+            assess_contract_impact_episode(&first, &config, 0).grade,
+            ContractEventImpactGrade::C
+        );
     }
 }

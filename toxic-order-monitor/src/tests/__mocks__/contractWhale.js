@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 
 export const CWM_MAX_PRICE_DEVIATION_PCT = 5;
+export const fetchContractWhaleV42Gate = vi.fn(async () => null);
 
 export const mockContractWhaleSummary = {
   status: "平静",

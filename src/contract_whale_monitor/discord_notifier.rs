@@ -13,7 +13,7 @@ use crate::{
         config::contract_whale_runtime_config,
         discord::should_push_contract_whale_discord,
         discord_gate::classify_contract_whale_signal_semantic,
-        impact_grade::{ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeState},
+        impact_grade::ContractEventImpactAssessment,
         log_events,
         types::{
             ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
@@ -244,13 +244,17 @@ pub fn evaluate_contract_whale_discord_v3_gate(
     if !settings.enabled {
         return gate(false, "disabled");
     }
-    if assessment.state != ImpactGradeState::Confirmed
-        || !matches!(
-            assessment.grade,
-            ContractEventImpactGrade::A | ContractEventImpactGrade::S
-        )
-    {
+    if !super::discord_gate::impact_grade_v3_discord_eligible(assessment) {
         return gate(false, "v3_grade_not_confirmed");
+    }
+    if signal.score < 80 {
+        return gate(false, "low_score");
+    }
+    if signal.data_quality < 70 {
+        return gate(false, "data_quality_low");
+    }
+    if !matches!(signal.severity, ContractWhaleSeverity::High | ContractWhaleSeverity::Critical | ContractWhaleSeverity::S) {
+        return gate(false, "observe_only");
     }
     if signal.discord_reason == "warmup_collect_only" {
         return gate(false, "warmup_collect_only");

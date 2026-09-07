@@ -2636,7 +2636,7 @@ function HiddenContractEventsPanel({ items, loading }) {
                 <HeaderCell>价格</HeaderCell>
                 <HeaderCell>偏离比例</HeaderCell>
                 <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
-                <HeaderCell>V4.2 影响评级</HeaderCell>
+                <HeaderCell>事件重要性</HeaderCell>
                 <HeaderCell>说明</HeaderCell>
               </tr>
             </thead>
@@ -2721,7 +2721,7 @@ const ContractEventTapeTable = memo(function ContractEventTapeTable({
           <TapeHeaderCell>时间</TapeHeaderCell>
           <TapeHeaderCell>市场 / 事件</TapeHeaderCell>
           <TapeHeaderCell>方向</TapeHeaderCell>
-          <TapeHeaderCell>V4.2 影响评级</TapeHeaderCell>
+          <TapeHeaderCell>事件重要性</TapeHeaderCell>
           <TapeHeaderCell title={volumeTooltip}>{volumeLabel}</TapeHeaderCell>
           <TapeHeaderCell>净流量</TapeHeaderCell>
           <TapeHeaderCell>名义价值</TapeHeaderCell>
@@ -2857,7 +2857,7 @@ const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSig
           <HeaderCell>检测强度（内部）</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
-          <HeaderCell>V4.2 影响评级</HeaderCell>
+          <HeaderCell>事件重要性</HeaderCell>
           <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
           <HeaderCell>价格</HeaderCell>
           <HeaderCell>价格偏离</HeaderCell>
@@ -3569,7 +3569,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
         </div>
 
         <div className="contract-detail-summary" data-testid="contract-detail-summary">
-          <ContractDetailMetric label="V3 RATING" value={`${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`} />
+          <ContractDetailMetric label="事件重要性" value={`${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`} />
           <ContractDetailMetric label="事件状态" value={eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"} />
           <ContractDetailMetric
             label={signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || `总流量 ${quantityUnit}`}
@@ -3848,7 +3848,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <DetailSection title="Discord Gate">
               <DetailGrid
                 rows={[
-                  ["V3 评级", `${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`],
+                  ["事件重要性", `${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`],
                   ["评级证据", discordImpactLabel(signal)],
                   ["推送原因", discordReasonLabel(signal)],
                   ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
@@ -3908,7 +3908,7 @@ function DetailGrid({ rows }) {
 function MarketDriverPanel({ signal }) {
   const driver = signal.marketDriver || {};
   const rows = [
-    ["Whale Intent", driver.whaleIntentPct, "主动鲸鱼资金"],
+    ["Active Flow", driver.whaleIntentPct, "主动流模型"],
     ["Liquidity Force", driver.liquidityForcingPct, "流动性真空 / 风险单"],
     ["Derivatives", driver.derivativesPressurePct, "清算 / OI / Funding"],
     ["Reflexivity", driver.reflexivityPct, "趋势反馈放大"],
@@ -3921,7 +3921,7 @@ function MarketDriverPanel({ signal }) {
           <h5 className="mt-1 text-sm font-bold text-white">
             Primary Driver: {marketDriverLabel(driver.primaryDriver)}
           </h5>
-          <p className="mt-1 text-xs text-slate-400">{driver.interpretation || "价格主要由主动资金流驱动。"}</p>
+          <p className="mt-1 text-xs text-slate-400">启发式权重 · 不代表参与者份额或已确认归因</p>
         </div>
         <span className="rounded-full border border-cyan-300/25 px-2 py-1 text-[11px] font-bold text-cyan-100">
           {marketDriverStateLabel(driver.marketState)}
@@ -3962,25 +3962,26 @@ function LiquidationForcePanel({ signal }) {
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <MetricStack label="Long Liq Pressure" value={formatScore(force.longLiquidationPressure)} detail="longs forced sell" />
           <MetricStack label="Short Squeeze" value={formatScore(force.shortSqueezePressure)} detail="shorts forced buy" />
-          <MetricStack label="Stop Hunt" value={formatScore(force.stopHuntProbability)} detail="wick / reversal risk" />
+          <MetricStack label="扫损形态分数" value={formatScore(force.stopHuntProbability)} detail="启发式形态评分，不是概率" />
           <MetricStack label="Cascade" value={formatScore(force.cascadeIntensity)} detail={formatUsd(force.estimatedForcedSizeUsd)} />
         </div>
         <div className="mt-3 space-y-2">
-          <ProgressRow label="Whale initiated" value={Number(flow.whalePct || 0) * 100} />
-          <ProgressRow label="Retail follow" value={Number(flow.retailPct || 0) * 100} />
-          <ProgressRow label="Forced liquidation" value={Number(flow.liquidationPct || 0) * 100} />
+          <p className="text-xs text-slate-400">参与者归因未知 · 无法测量鲸鱼或散户份额</p>
+          <ProgressRow label="采样强平 / 总流量比值" value={Number(flow.liquidationPct || 0) * 100} />
+          <ProgressRow label="未归因流量" value={Number(flow.unknownPct ?? 1) * 100} />
+          <p className="text-[11px] text-slate-500">采样覆盖存在缺口，比值不代表参与者构成。</p>
         </div>
       </div>
       <div className="rounded-xl border border-slate-800 bg-slate-950/45 p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="console-label">Price Impact Attribution</p>
-            <h5 className="mt-1 text-sm font-bold text-white">价格驱动力拆解</h5>
+            <p className="console-label">Price Impact Model</p>
+            <h5 className="mt-1 text-sm font-bold text-white">价格驱动启发式分解 · 非测量归因</h5>
           </div>
           <span className="text-xs text-slate-500">alert-only · read-only</span>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <MetricStack label="Whale flow" value={formatSignedPct(impact.whaleImpact)} detail="主动资金影响" />
+          <MetricStack label="Active flow model" value={formatSignedPct(impact.whaleImpact)} detail="主动流模型分量" />
           <MetricStack label="Liquidation" value={formatSignedPct(impact.liquidationCascade)} detail="强制平仓影响" />
           <MetricStack label="Stop-loss sweep" value={formatSignedPct(impact.stopLossSweep)} detail="扫损影响" />
           <MetricStack label="Absorption" value={formatSignedPct(impact.passiveAbsorption)} detail="被动吸收抵消" />
@@ -4135,7 +4136,7 @@ function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
         <option value="abs500">大于 500（正负）</option>
         <option value="abs1000">大于 1000（正负）</option>
       </FilterSelect>
-      <FilterSelect label="V3 评级" value={filters.impact_level || "all"} onChange={(value) => update("impact_level", value)}>
+      <FilterSelect label="事件重要性" value={filters.impact_level || "all"} onChange={(value) => update("impact_level", value)}>
         <option value="all">全部</option>
         <option value="S">S</option>
         <option value="A">A</option>
@@ -5275,49 +5276,25 @@ function eventQualityBadge(item) {
 function impactNormalizationBadge(item) {
   const impact = resolveImpactDisplay(item);
   const forecast = multiHorizonImpactForItem(item);
-  if (forecast) {
-    const forecastVersionLabel = String(forecast.forecastVersion || "").includes("v4_2") ? "V4.2" : "V4.1";
-    const v4SignalLevel = ["S", "A", "B", "C"].includes(forecast.impactGrade)
-      ? forecast.impactGrade
-      : "U";
-    const v4State = V4_STATE_LABELS[forecast.maturityState] || forecast.maturityState || "评级快照";
-    const v4Scenario = V4_SCENARIO_LABELS[forecast.scenarioType] || forecast.scenarioType || "暂无明确优势";
-    return (
-      <span className="contract-impact-badge block">
-        <span className={`block text-xs font-bold ${signalLevelClass(v4SignalLevel)}`}>
-          {`${forecastVersionLabel} ${forecast.signalSeverity || forecast.impactGrade}级`}
-        </span>
-        <span className="block text-[10px] font-semibold uppercase tracking-wide text-violet-200">
-          {v4State} · {v4Scenario} · {forecast.predictionSource || "model_estimate"}
-        </span>
-        <span className="block text-[10px] text-slate-400">
-          {forecast.dominantHorizon} · N={forecast.rawSampleCount ?? forecast.effectiveSampleCount} · 有效N={Number(forecast.effectiveSampleCount || 0).toFixed(1)}
-        </span>
-        <span className="block text-[10px] text-slate-600">
-          V3参考 {impact.impactGrade}
-        </span>
-        <BehaviorCompactBadge item={item} />
-      </span>
-    );
-  }
   const gradeState = String(impact.assessmentStatus || impact.impactGradeState || "pending").replaceAll("_", " ");
-
   return (
     <span className="contract-impact-badge block">
-      <span className="block text-xs font-bold text-slate-400">
-          V4.2 模型估算
+      <span className={`block text-xs font-bold ${signalLevelClass(impact.signalLevel)}`}>
+        {impact.impactGrade === "UNRATED" ? "事件未评级" : `事件重要性 ${impact.impactGrade}`}
       </span>
       <span className="block text-[10px] font-semibold uppercase tracking-wide text-cyan-300">
         {gradeState}
       </span>
-        {impact.signalLabel ? <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span> : null}
+      {impact.signalLabel ? <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span> : null}
+      <span className="block text-[10px] text-slate-500">{impactMetricSummary(impact)}</span>
+      {forecast ? (
         <span className="block text-[10px] text-slate-500">
-          {impactMetricSummary(impact)}
+          预测诊断 · {forecast.maturityLevel || V4_STATE_LABELS[forecast.maturityState] || forecast.maturityState} · N={forecast.rawSampleCount ?? forecast.effectiveSampleCount ?? 0}
         </span>
-        <span className="block text-[10px] text-slate-600">V3参考 {impact.impactGrade}</span>
-        <BehaviorCompactBadge item={item} />
+      ) : null}
+      <BehaviorCompactBadge item={item} />
     </span>
-    );
+  );
 }
 
 const BEHAVIOR_LABELS = {
@@ -5487,7 +5464,7 @@ function ImpactV4Card({ item }) {
   const impact = multiHorizonImpactForItem(item);
   if (!impact) {
     return (
-      <DetailSection title="V4.2 多周期影响评级" className="mt-4">
+      <DetailSection title="V4.2 预测诊断" className="mt-4">
         <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-500" data-testid="impact-v4-card-missing">
           V4.2 预测快照尚未生成
         </p>
@@ -5512,13 +5489,12 @@ function ImpactV4Card({ item }) {
     ["不可变预测", impact.computedAtMs],
     ...impact.horizons.map((horizon) => [`${horizon.horizon}结果`, impact.eventTs && horizon.horizonSec ? impact.eventTs + horizon.horizonSec * 1000 : null]),
   ];
-  const gradeLabel = impact.impactGrade === "U" ? "U · 不可评级" : `${impact.impactGrade} · ${impact.impactScore.toFixed(0)}`;
   const versionLabel = String(impact.forecastVersion || "").includes("v4_2") ? "V4.2" : "V4.1";
   return (
-    <DetailSection title={`${versionLabel} 多周期影响评级`} className="mt-4">
+    <DetailSection title={`${versionLabel} 预测诊断`} className="mt-4">
       <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-4" data-testid="impact-v4-card">
         <div className="grid gap-3 md:grid-cols-5">
-          <ContractDetailMetric label="信号评级" value={`${impact.signalSeverity || impact.impactGrade} · ${gradeLabel.split(" · ").slice(1).join(" · ")}`} />
+          <ContractDetailMetric label="模型影响分数（非事件评级）" value={Number(impact.impactScore || 0).toFixed(0)} />
           <ContractDetailMetric label="主导周期" value={impact.dominantHorizon} />
           <ContractDetailMetric label="情景" value={V4_SCENARIO_LABELS[impact.scenarioType] || impact.scenarioType} />
           <ContractDetailMetric label="样本成熟度" value={`${impact.maturityLevel || impact.maturityState} · 原始N=${impact.rawSampleCount ?? 0} · 有效N=${Number(impact.effectiveSampleCount || 0).toFixed(1)}`} />
@@ -5555,10 +5531,10 @@ function ImpactV4Card({ item }) {
         <div className="mt-3 overflow-x-auto">
           <p className="mb-2 text-xs font-bold text-violet-200">③ 多周期影响</p>
           <div className="grid min-w-[980px] grid-cols-10 gap-2 text-xs text-slate-300">
-            {["周期评级 / N", "净中位", "P25", "P75", "MFE", "MAE", "延续率", "结构突破", "预期价格", "回退层级"].map((header) => <span key={header} className="font-semibold text-violet-200">{header}</span>)}
+            {["周期 / N", "净中位", "P25", "P75", "MFE", "MAE", "延续率", "结构突破", "预期价格", "回退层级"].map((header) => <span key={header} className="font-semibold text-violet-200">{header}</span>)}
             {impact.horizons.map((horizon) => (
               <div className="contents" key={horizon.horizon}>
-                <span>{horizon.horizon} · {horizon.rating || impact.signalSeverity || "C"} · N={horizon.rawSampleCount ?? horizon.sampleCount}<small className="block text-slate-500">有效N={Number(horizon.effectiveSampleCount || 0).toFixed(1)} · 模型 {(Number(horizon.modelWeight || 0) * 100).toFixed(0)}%</small></span>
+                <span>{horizon.horizon} · N={horizon.rawSampleCount ?? horizon.sampleCount}<small className="block text-slate-500">有效N={Number(horizon.effectiveSampleCount || 0).toFixed(1)} · 模型 {(Number(horizon.modelWeight || 0) * 100).toFixed(0)}%</small></span>
                 <span>{formatBps(horizon.netMedianBps)}</span>
                 <span>{formatBps(horizon.p25Bps)}</span>
                 <span>{formatBps(horizon.p75Bps)}</span>
@@ -5597,7 +5573,7 @@ function ImpactV4Card({ item }) {
         <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-slate-400">
           {timeline.map(([label, ts]) => <span key={label}>{label} · {ts ? (Date.now() >= ts ? new Date(ts).toLocaleString() : "待到期") : "不可用"}</span>)}
         </div>
-        <p className="mt-2 text-[11px] text-slate-500">数据源：Binance 单源 · 成本 {formatBps(impact.transactionCostBps)} · 训练截止 {impact.trainingCutoffTs ? new Date(impact.trainingCutoffTs).toLocaleString() : "—"} · {impact.strategyMode} · 方向性告警由样本门控自动决定 · 经验统计不是概率承诺</p>
+        <p className="mt-2 text-[11px] text-slate-500">数据源：{impact.sourcePolicy || "未提供"} · 成本 {formatBps(impact.transactionCostBps)} · 训练截止 {impact.trainingCutoffTs ? new Date(impact.trainingCutoffTs).toLocaleString() : "—"} · {impact.strategyMode} · 预测样本门控不改变事件重要性；告警仍须通过事件与安全门槛 · 经验统计不是概率承诺</p>
       </div>
     </DetailSection>
   );
@@ -5645,18 +5621,16 @@ function resolveImpactDisplay(item) {
               ? "assessment_pending"
               : "baseline_insufficient")
   ).toLowerCase();
-  const gradeUnavailable = assessmentStatus !== "graded" && impactGradeState !== "provisional";
   const rawGrade = String(
     item?.impactGrade ?? item?.finalEvent?.impactGrade ?? item?.impactLevel ?? item?.finalEvent?.impactLevel ?? "",
   ).toUpperCase();
-  const impactLevel = String(
-    gradeUnavailable
-      ? "PENDING"
-      : rawGrade || deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore, zScore),
-  ).toUpperCase();
+  const gradeUnavailable = !["S", "A", "B", "C"].includes(rawGrade)
+    || !(impactGradeState === "confirmed" && assessmentStatus === "graded"
+      || impactGradeState === "provisional" && assessmentStatus === "assessment_pending");
+  const impactLevel = gradeUnavailable ? "UNRATED" : rawGrade;
   const signalLevel = String(
     gradeUnavailable
-      ? ""
+      ? "N/A"
       : item?.signalLevel ??
           item?.finalEvent?.signalLevel ??
           deriveSignalLevelFromImpact(impactLevel),
@@ -6035,7 +6009,7 @@ function marketDriverLabel(value) {
     derivatives_pressure: "Derivatives Pressure",
     reflexivity_feedback: "Reflexivity Feedback",
   };
-  return labels[value] || "Whale Intent";
+  return labels[value] || "Unknown";
 }
 
 function marketDriverStateLabel(value) {
@@ -6049,7 +6023,7 @@ function marketDriverStateLabel(value) {
     derivatives_pressure_regime: "Derivatives Pressure",
     reflexive_trend_phase: "Reflexive Trend",
   };
-  return labels[value] || "Whale-led Expansion";
+  return labels[value] || "Unknown";
 }
 
 function liquidationDriverLabel(value) {
@@ -6057,8 +6031,10 @@ function liquidationDriverLabel(value) {
     whale_initiated_flow: "Whale Flow",
     liquidation_cascade: "Liquidation",
     retail_follow_flow: "Retail Follow",
+    active_flow_unattributed: "Active Flow · Unattributed",
+    liquidation_cascade_candidate: "Liquidation Cascade · Candidate",
   };
-  return labels[value] || "Whale Flow";
+  return labels[value] || "Unknown";
 }
 
 function liquidationZoneSideLabel(value) {

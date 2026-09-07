@@ -1842,6 +1842,9 @@ fn apply_v3_grade_to_signal(
 }
 
 fn apply_v3_unavailable_grade(event: &mut FinalEvent, version: &str) {
+    crate::contract_whale_monitor::impact_grade::apply_unavailable_impact_assessment_to_signal(
+        &mut event.source_signal, version, "v3_assessment_unavailable",
+    );
     event.impact_level = "UNRATED".to_string();
     event.impact_grade = "UNRATED".to_string();
     event.impact_grade_state = "evidence_insufficient".to_string();
@@ -1856,6 +1859,8 @@ fn apply_v3_unavailable_grade(event: &mut FinalEvent, version: &str) {
     event.normalized_strength = "PENDING".to_string();
     event.z_score = 0.0;
     event.percentile = 0.0;
+    event.impact_score = 0.0;
+    event.normalized_score = 0.0;
 }
 
 fn apply_behavior_assessment(
@@ -1911,11 +1916,10 @@ fn apply_v3_grade_to_final_event(
     event: &mut FinalEvent,
     assessment: &crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment,
 ) {
-    if matches!(
-        assessment.state,
-        crate::contract_whale_monitor::impact_grade::ImpactGradeState::EvidenceInsufficient
-    ) {
+    if assessment.status != crate::contract_whale_monitor::impact_grade::AssessmentStatus::Graded
+        && assessment.state != crate::contract_whale_monitor::impact_grade::ImpactGradeState::Provisional {
         apply_v3_unavailable_grade(event, &assessment.grade_version);
+        apply_v3_grade_to_signal(&mut event.source_signal, assessment);
         event.impact_reason_codes = assessment.reason_codes.clone();
         event.assessment_status = assessment.status.as_str().to_string();
         if let Some(reason) = assessment.reason_codes.first() {
@@ -1924,6 +1928,7 @@ fn apply_v3_grade_to_final_event(
         event.impact_evidence = serde_json::to_value(&assessment.evidence).ok();
         return;
     }
+    apply_v3_grade_to_signal(&mut event.source_signal, assessment);
     let grade = serde_json::to_string(&assessment.grade)
         .unwrap_or_else(|_| "\"C\"".to_string())
         .trim_matches('"')
@@ -1961,6 +1966,9 @@ fn apply_v3_grade_to_final_event(
     .to_string();
     event.z_score = assessment.evidence.robust_z.unwrap_or(0.0);
     event.percentile = assessment.evidence.robust_percentile.unwrap_or(0.0);
+    event.impact_score = event.source_signal.impact_score.unwrap_or_default();
+    event.normalized_score = event.impact_score.clamp(0.0, 1.0);
+    event.signal_label = event.source_signal.signal_label.clone().unwrap_or_default();
 }
 
 fn severity_key(severity: ContractWhaleSeverity) -> &'static str {

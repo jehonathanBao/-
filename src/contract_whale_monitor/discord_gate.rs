@@ -10,13 +10,15 @@ use super::{
 };
 
 use super::impact_grade::{
-    ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeState,
+    AssessmentStatus, ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeState,
 };
 
 /// V3 external delivery gate. Relative rank, legacy severity, and provisional
 /// assessments are intentionally excluded from this decision.
 pub fn impact_grade_v3_discord_eligible(assessment: &ContractEventImpactAssessment) -> bool {
     assessment.state == ImpactGradeState::Confirmed
+        && assessment.status == AssessmentStatus::Graded
+        && assessment.evidence.data_quality >= 70
         && matches!(
             assessment.grade,
             ContractEventImpactGrade::A | ContractEventImpactGrade::S

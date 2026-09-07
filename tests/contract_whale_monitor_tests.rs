@@ -1093,7 +1093,7 @@ fn detector_marks_btc_high_signal_pushable_while_data_quality_controls_eligibili
 }
 
 #[test]
-fn detector_allows_primary_single_exchange_extreme_high_override() {
+fn detector_rejects_low_quality_primary_single_exchange_extreme_override() {
     let now = 1_700_000_060_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 63_000.0, 1_453.5, false).unwrap(),
@@ -1102,13 +1102,9 @@ fn detector_allows_primary_single_exchange_extreme_high_override() {
     let buckets = aggregate_1s_buckets(&trades);
     let stats =
         rolling_window_stats(&buckets, "BTC", 60, now, Some(0.22), None, 68).expect("60s stats");
-    let signal = detect_contract_whale_signal(&stats).expect("high override signal");
-
-    assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(signal.data_quality <= 68);
-    assert!(!signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "data_quality_display_only");
-    assert!(should_push_contract_whale_discord(&signal));
+    // Raw quality 68 cannot bypass the effective-quality requirement when
+    // another configured confirmation venue is absent.
+    assert!(detect_contract_whale_signal(&stats).is_none());
 }
 
 #[test]
@@ -1381,7 +1377,7 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
 }
 
 #[test]
-fn detector_keeps_low_score_5s_btc_high_display_only() {
+fn detector_keeps_low_score_5s_btc_medium_display_only() {
     let now = 1_700_000_005_000;
     let trades = vec![
         normalize_binance_agg_trade(now - 1_000, 70_000.0, 600.0, false).unwrap(),
@@ -1396,11 +1392,13 @@ fn detector_keeps_low_score_5s_btc_high_display_only() {
 
     assert_eq!(signal.window_sec, 5);
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
-    assert_eq!(signal.severity, ContractWhaleSeverity::High);
+    // OKX is disabled by default; its volume cannot promote the remaining
+    // Binance flow into the High tier.
+    assert_eq!(signal.severity, ContractWhaleSeverity::Medium);
     assert!(signal.score < 70);
     assert!(!signal.discord_eligible);
-    assert!(should_push_contract_whale_discord(&signal));
-    assert_eq!(signal.discord_reason, "high_without_discord_confirmation");
+    assert!(!should_push_contract_whale_discord(&signal));
+    assert_eq!(signal.discord_reason, "medium_observe_only");
 }
 
 #[test]
@@ -1415,7 +1413,12 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
     let mut stats =
         rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
     stats.percentile_level = Some(99.0);
-    let signal = detect_contract_whale_signal(&stats).expect("high signal");
+    let mut signal = detect_contract_whale_signal(&stats).expect("display signal");
+    // Isolate the volume boundary using a signal that meets the independent
+    // source severity, score and quality floors.
+    signal.severity = ContractWhaleSeverity::High;
+    signal.score = 85;
+    signal.data_quality = 85;
 
     let mut btc_below_gate = signal.clone();
     btc_below_gate.symbol = "BTC".to_string();

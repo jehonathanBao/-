@@ -1131,23 +1131,12 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
   ).toLowerCase();
   const impactReasonCodes = normalizeStringArray(item?.impactReasonCodes ?? item?.impact_reason_codes);
   const unavailableReason = impactReasonCodes[0] || "baseline_insufficient";
-  const gradeUnavailable = impactGradeState === "evidence_insufficient";
   // `impactLevel` predates V3. It is trusted only when the backend attaches a
   // versioned assessment snapshot; otherwise a legacy A/S must fail closed.
   const canonicalGrade =
     namedImpactGrade ??
     (impactGradeVersion ? item?.impactLevel ?? item?.impact_level ?? null : null);
   const normalizedGrade = canonicalGrade ? String(canonicalGrade).toUpperCase() : null;
-  const impactLevel = gradeUnavailable
-    ? "UNRATED"
-    : ["C", "B", "A", "S"].includes(normalizedGrade)
-      ? normalizedGrade
-      : impactLevelFromLegacySignals(
-          dynamicThresholdLevel ?? item?.dynamicThresholdLevel ?? item?.dynamic_threshold_level,
-          percentile,
-          impactScore,
-          zScore,
-      );
   const impactEvidence = item?.impactEvidence ?? item?.impact_evidence ?? null;
   const assessmentStatus = String(
     item?.assessmentStatus ?? item?.assessment_status ??
@@ -1159,6 +1148,10 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
             impactGradeState === "provisional" || impactReasonCodes.includes("v3_assessment_unavailable")
               ? "assessment_pending" : "baseline_insufficient")
   ).toLowerCase();
+  const gradeUnavailable = !["C", "B", "A", "S"].includes(normalizedGrade)
+    || !(impactGradeState === "confirmed" && assessmentStatus === "graded"
+      || impactGradeState === "provisional" && assessmentStatus === "assessment_pending");
+  const impactLevel = gradeUnavailable ? "UNRATED" : normalizedGrade;
   return {
     impactScore,
     zScore,
@@ -1971,7 +1964,7 @@ function normalizeLiquidationForce(value) {
   const impact = source.priceImpact && typeof source.priceImpact === "object" ? source.priceImpact : {};
   return {
     activeZone: source.activeZone ? String(source.activeZone) : "neutral",
-    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : (flow.dominantDriver ? String(flow.dominantDriver) : "whale_initiated_flow"),
+    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : (flow.dominantDriver ? String(flow.dominantDriver) : "unknown"),
     longLiquidationPressure: clampScore(numberOrNull(source.longLiquidationPressure) ?? 0),
     shortSqueezePressure: clampScore(numberOrNull(source.shortSqueezePressure) ?? 0),
     stopHuntProbability: clampScore(numberOrNull(source.stopHuntProbability) ?? 0),
@@ -1979,10 +1972,12 @@ function normalizeLiquidationForce(value) {
     estimatedForcedSizeUsd: numberOrNull(source.estimatedForcedSizeUsd) ?? 0,
     zones: Array.isArray(source.zones) ? source.zones.map(normalizeLiquidationZone) : [],
     flowAttribution: {
-      whalePct: clampRatio(numberOrNull(flow.whalePct) ?? 1),
+      whalePct: clampRatio(numberOrNull(flow.whalePct) ?? 0),
       retailPct: clampRatio(numberOrNull(flow.retailPct) ?? 0),
       liquidationPct: clampRatio(numberOrNull(flow.liquidationPct) ?? 0),
-      dominantDriver: flow.dominantDriver ? String(flow.dominantDriver) : "whale_initiated_flow",
+      unknownPct: clampRatio(numberOrNull(flow.unknownPct) ?? (1 - clampRatio(numberOrNull(flow.liquidationPct) ?? 0))),
+      semantics: String(flow.semantics || "actor_attribution_unavailable"),
+      dominantDriver: flow.dominantDriver ? String(flow.dominantDriver) : "unknown",
     },
     priceImpact: {
       whaleImpact: numberOrNull(impact.whaleImpact) ?? 0,
@@ -2008,14 +2003,14 @@ function normalizeLiquidationZone(value) {
 function normalizeMarketDriver(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
-    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : "whale_intent",
-    marketState: source.marketState ? String(source.marketState) : "whale_led_expansion",
-    whaleIntentPct: clampRatio(numberOrNull(source.whaleIntentPct) ?? 1),
+    primaryDriver: source.primaryDriver ? String(source.primaryDriver) : "unknown",
+    marketState: source.marketState ? String(source.marketState) : "unknown",
+    whaleIntentPct: clampRatio(numberOrNull(source.whaleIntentPct) ?? 0),
     liquidityForcingPct: clampRatio(numberOrNull(source.liquidityForcingPct) ?? 0),
     derivativesPressurePct: clampRatio(numberOrNull(source.derivativesPressurePct) ?? 0),
     reflexivityPct: clampRatio(numberOrNull(source.reflexivityPct) ?? 0),
     components: Array.isArray(source.components) ? source.components.map(normalizeMarketDriverComponent) : [],
-    interpretation: source.interpretation ? String(source.interpretation) : "价格主要由主动资金流驱动。",
+    interpretation: source.interpretation ? String(source.interpretation) : "驱动归因不可用。",
   };
 }
 

@@ -182,15 +182,17 @@ ct_val_missing_penalty = 20
 
 [contract_whale_monitor.impact_grade_v3]
 enabled = true
-# V3 remains queryable as an audit reference but no longer owns directional
-# production decisions.
+# Sole canonical event importance grade; forecasts are optional diagnostics.
 shadow_mode = false
-grade_version = "cwm_impact_v3_2"
+grade_version = "cwm_impact_v3_3"
 baseline_lookback_days = 90
 # Baseline samples come from aligned raw market windows. The effective range is
 # capped by flow_1s_days at runtime so this remains storage-bounded.
 baseline_min_samples = 10000
 episode_gap_seconds = 120
+# Distinct eligible perp venues, capped by the configured eligible venue count.
+# Binance spot/OI are evidence streams, not additional venues. Missing configured
+# venues never reduce this requirement; Binance-only therefore requires one.
 min_confirmed_sources = 2
 
 [contract_whale_monitor.impact_v4_1]
