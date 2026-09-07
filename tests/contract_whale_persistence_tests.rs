@@ -60,6 +60,90 @@ fn sqlite_connections_use_the_production_wal_profile() {
 }
 
 #[test]
+fn oi_and_funding_preserve_subminute_times_and_never_backdate_rollups() {
+    let store = temp_store("causal-subminute-oi-funding");
+    let times = [615_000, 630_000, 645_000];
+    let oi = times
+        .iter()
+        .enumerate()
+        .map(|(i, ts)| ContractOiSnapshot {
+            ts: *ts,
+            exchange: ContractExchange::Binance,
+            symbol: "BTC".into(),
+            oi_btc: 100_000.0 + i as f64 * 420.0,
+            oi_notional_usd: None,
+            ct_val_available: true,
+            evidence_degraded_reason: None,
+        })
+        .collect::<Vec<_>>();
+    let funding = times
+        .iter()
+        .enumerate()
+        .map(|(i, ts)| ContractFundingSnapshot {
+            ts: *ts,
+            exchange: ContractExchange::Binance,
+            symbol: "BTC".into(),
+            funding_rate: 0.001 + i as f64 * 0.001,
+        })
+        .collect::<Vec<_>>();
+    store.upsert_contract_oi_snapshots(&oi).unwrap();
+    store.upsert_contract_funding_snapshots(&funding).unwrap();
+    let observed = store
+        .list_contract_oi_snapshots_between("BTC", 600000, 630000)
+        .unwrap();
+    assert_eq!(
+        observed.iter().map(|row| row.ts).collect::<Vec<_>>(),
+        vec![615000, 630000]
+    );
+    assert_eq!(observed[1].oi_btc, 100420.0);
+    let rates = store
+        .list_contract_funding_snapshots_between("BTC", 600000, 630000)
+        .unwrap();
+    assert_eq!(
+        rates.iter().map(|row| row.ts).collect::<Vec<_>>(),
+        vec![615000, 630000]
+    );
+    assert_eq!(rates[1].funding_rate, 0.002);
+    assert!(store
+        .list_contract_oi_snapshots_between("BTC", 600000, 610000)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_contract_funding_snapshots_between("BTC", 600000, 610000)
+        .unwrap()
+        .is_empty());
+    // Simulate raw retention in this disposable fixture only: minute-only history
+    // becomes available at minute close, never at the fabricated minute start.
+    store
+        .with_write_connection(|conn| {
+            conn.execute("DELETE FROM contract_oi_snapshots", [])?;
+            conn.execute("DELETE FROM contract_funding_snapshots", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(store
+        .list_contract_oi_snapshots_between("BTC", 600000, 659998)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .list_contract_funding_snapshots_between("BTC", 600000, 659998)
+        .unwrap()
+        .is_empty());
+    let rolled = store
+        .list_contract_oi_snapshots_between("BTC", 600000, 659999)
+        .unwrap();
+    assert_eq!(rolled.len(), 1);
+    assert_eq!(rolled[0].ts, 659999);
+    assert_eq!(rolled[0].oi_btc, 100840.0);
+    let rolled = store
+        .list_contract_funding_snapshots_between("BTC", 600000, 659999)
+        .unwrap();
+    assert_eq!(rolled.len(), 1);
+    assert_eq!(rolled[0].ts, 659999);
+    assert_eq!(rolled[0].funding_rate, 0.003);
+}
+
+#[test]
 fn contract_flow_1s_upsert_is_idempotent() {
     let store = temp_store("contract-flow-1s");
     let mut bucket = ContractFlowBucket {
@@ -1241,28 +1325,28 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
                 "INSERT INTO contract_event_impact_grades
                  (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
                   evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
-                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'A', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                 VALUES (?1, 'cwm_impact_v3_3', ?1, 'BTC', 'A', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
                 rusqlite::params![old_impact_a_event_id, now],
             )?;
             conn.execute(
                 "INSERT INTO contract_event_impact_grades
                  (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
                   evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
-                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'S', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                 VALUES (?1, 'cwm_impact_v3_3', ?1, 'BTC', 'S', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
                 rusqlite::params![old_s_event_id, now],
             )?;
             conn.execute(
                 "INSERT INTO contract_event_impact_grades
                  (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
                   evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
-                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                 VALUES (?1, 'cwm_impact_v3_3', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
                 rusqlite::params![old_impact_b_keep_event_id, now],
             )?;
             conn.execute(
                 "INSERT INTO contract_event_impact_grades
                  (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
                   evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
-                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                 VALUES (?1, 'cwm_impact_v3_3', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
                 rusqlite::params![old_impact_b_drop_event_id, now],
             )?;
             Ok(())

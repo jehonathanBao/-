@@ -175,6 +175,7 @@ pub fn evaluate_contract_whale_discord_gate(
     cooldown_store: &ContractWhaleDiscordCooldownStore,
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
+    if signal.sustained_flow.is_some() { return gate(false, "sustained_candidate_display_only"); }
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
     let config = super::config::contract_whale_runtime_config();
     let impact_level_override = super::discord_gate::impact_level_discord_eligible(signal, &config);
@@ -241,6 +242,7 @@ pub fn evaluate_contract_whale_discord_v3_gate(
     cooldown_store: &ContractWhaleDiscordCooldownStore,
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
+    if signal.sustained_flow.is_some() { return gate(false, "sustained_candidate_display_only"); }
     if !settings.enabled {
         return gate(false, "disabled");
     }

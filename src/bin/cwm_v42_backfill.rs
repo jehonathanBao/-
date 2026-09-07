@@ -2,12 +2,18 @@ use std::env;
 
 use anyhow::{anyhow, bail, Context};
 use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
-    impact_forecast::{event_id, evaluate_trade_plan_state, ContractWhaleOutcomeInputs, ContractWhaleV4DecisionState},
-    impact_v4_2::{build_hybrid_forecast, evaluate_v42_outcomes, CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION},
+    impact_forecast::{
+        evaluate_trade_plan_state, event_id, ContractWhaleOutcomeInputs,
+        ContractWhaleV4DecisionState,
+    },
+    impact_v4_2::{
+        build_hybrid_forecast, evaluate_v42_outcomes, CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+    },
     types::ContractWhaleSignal,
 };
 use btc_toxic_flow_monitor_rs::storage::{
-    contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery}, SqliteStore,
+    contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
+    SqliteStore,
 };
 
 #[derive(Debug, Clone)]
@@ -33,7 +39,7 @@ struct Report {
     checkpoint_key: &'static str,
 }
 
-const JOB_KEY: &str = "cwm_v4_2_hybrid_walk_forward";
+const JOB_KEY: &str = "cwm_v4_2_hybrid_walk_forward_calibration_v2";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,21 +48,30 @@ async fn main() -> anyhow::Result<()> {
     let store = SqliteStore::open(&options.sqlite)?;
     let report = run(store, options).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if report.failed > 0 { bail!("V4.2 backfill completed with {} failed events", report.failed); }
+    if report.failed > 0 {
+        bail!(
+            "V4.2 backfill completed with {} failed events",
+            report.failed
+        );
+    }
     Ok(())
 }
 
 async fn run(store: SqliteStore, options: Options) -> anyhow::Result<Report> {
-    if options.rebuild && !options.write { bail!("--rebuild-v4-2 requires --write"); }
+    if options.rebuild && !options.write {
+        bail!("--rebuild-v4-2 requires --write");
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let existing_checkpoint = if options.rebuild {
         None
     } else {
         store.get_contract_whale_v4_backfill_checkpoint(JOB_KEY)?
     };
-    let resume_after = existing_checkpoint
-        .as_ref()
-        .and_then(|checkpoint| checkpoint.last_event_ts.zip(checkpoint.last_event_id.clone()));
+    let resume_after = existing_checkpoint.as_ref().and_then(|checkpoint| {
+        checkpoint
+            .last_event_ts
+            .zip(checkpoint.last_event_id.clone())
+    });
     let mut signals = store.query_contract_whale_signals(&ContractWhaleSignalQuery {
         symbol: options.symbol.clone().map(|v| v.to_ascii_uppercase()),
         from_ts: options.from_ts,
@@ -69,11 +84,17 @@ async fn run(store: SqliteStore, options: Options) -> anyhow::Result<Report> {
     signals.retain(binance_only);
     let skipped = before.saturating_sub(signals.len());
     if let Some((resume_ts, resume_id)) = resume_after.as_ref() {
-        signals.retain(|signal| signal.ts > *resume_ts || (signal.ts == *resume_ts && signal.id > *resume_id));
+        signals.retain(|signal| {
+            signal.ts > *resume_ts || (signal.ts == *resume_ts && signal.id > *resume_id)
+        });
     }
     if options.rebuild && options.write {
-        store.delete_contract_whale_impact_forecasts_for_version(CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION)?;
-        store.delete_contract_whale_horizon_outcomes_for_version(CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION)?;
+        store.delete_contract_whale_impact_forecasts_for_version(
+            CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        )?;
+        store.delete_contract_whale_horizon_outcomes_for_version(
+            CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        )?;
     }
     let mut history = std::collections::BTreeMap::<String, Vec<_>>::new();
     let mut forecasts = Vec::new();
@@ -81,14 +102,21 @@ async fn run(store: SqliteStore, options: Options) -> anyhow::Result<Report> {
     let mut states = Vec::new();
     let mut processed = 0;
     let mut failed = 0;
-    let mut last_event_ts = existing_checkpoint.as_ref().and_then(|checkpoint| checkpoint.last_event_ts);
-    let mut last_event_id = existing_checkpoint.as_ref().and_then(|checkpoint| checkpoint.last_event_id.clone());
+    let mut last_event_ts = existing_checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.last_event_ts);
+    let mut last_event_id = existing_checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.last_event_id.clone());
     for signal in signals {
         let symbol = signal.symbol.clone();
         last_event_ts = Some(signal.ts);
         last_event_id = Some(signal.id.clone());
         if !history.contains_key(&symbol) {
-            history.insert(symbol.clone(), store.list_contract_whale_horizon_outcomes_before(&symbol, signal.ts, 100_000)?);
+            history.insert(
+                symbol.clone(),
+                store.list_contract_whale_horizon_outcomes_before(&symbol, signal.ts, 100_000)?,
+            );
         }
         let from_ts = signal.ts.saturating_sub(4 * 60 * 60 * 1_000);
         let to_ts = now.min(signal.ts.saturating_add(86_400_000));
@@ -97,17 +125,30 @@ async fn run(store: SqliteStore, options: Options) -> anyhow::Result<Report> {
         let oi = store.list_contract_oi_snapshots_between(&symbol, from_ts, to_ts)?;
         let funding = store.list_contract_funding_snapshots_between(&symbol, from_ts, to_ts)?;
         let liq = store.list_contract_liquidation_buckets_between(&symbol, signal.ts, to_ts)?;
-        let Some(prior) = history.get_mut(&symbol) else { failed += 1; continue; };
+        let Some(prior) = history.get_mut(&symbol) else {
+            failed += 1;
+            continue;
+        };
         let forecast = build_hybrid_forecast(&signal, prior, &refs, signal.ts);
-        let event_outcomes = evaluate_v42_outcomes(&signal, ContractWhaleOutcomeInputs {
-            flow_buckets: &flow, reference_prices: &refs, oi_snapshots: &oi,
-            funding_snapshots: &funding, liquidation_buckets: &liq,
-        }, now);
+        let event_outcomes = evaluate_v42_outcomes(
+            &signal,
+            ContractWhaleOutcomeInputs {
+                flow_buckets: &flow,
+                reference_prices: &refs,
+                oi_snapshots: &oi,
+                funding_snapshots: &funding,
+                liquidation_buckets: &liq,
+            },
+            now,
+        );
         let (state, reason) = evaluate_trade_plan_state(&forecast, &event_outcomes, now);
         states.push(ContractWhaleV4DecisionState {
-            event_id: event_id(&signal), forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION.to_string(),
-            state, reason,
-            updated_at_ms: now, decided_at_ms: Some(now),
+            event_id: event_id(&signal),
+            forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION.to_string(),
+            state,
+            reason,
+            updated_at_ms: now,
+            decided_at_ms: Some(now),
         });
         if options.write {
             prior.extend(event_outcomes.iter().cloned());
@@ -125,29 +166,84 @@ async fn run(store: SqliteStore, options: Options) -> anyhow::Result<Report> {
             processed_count: processed, forecast_count: forecasts_written, outcome_count: outcomes_written,
             skipped_count: skipped, degraded_count: 0, failed_count: failed, last_error: None, updated_at_ms: now,
         })?;
-        Ok(Report { forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION, dry_run: false, processed, forecasts_written, outcomes_written, skipped, failed, checkpoint_key: JOB_KEY })
+        Ok(Report {
+            forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+            dry_run: false,
+            processed,
+            forecasts_written,
+            outcomes_written,
+            skipped,
+            failed,
+            checkpoint_key: JOB_KEY,
+        })
     } else {
-        Ok(Report { forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION, dry_run: true, processed, forecasts_written: 0, outcomes_written: 0, skipped, failed, checkpoint_key: JOB_KEY })
+        Ok(Report {
+            forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+            dry_run: true,
+            processed,
+            forecasts_written: 0,
+            outcomes_written: 0,
+            skipped,
+            failed,
+            checkpoint_key: JOB_KEY,
+        })
     }
 }
 
 fn binance_only(signal: &ContractWhaleSignal) -> bool {
-    let active = signal.active_contract_sources.iter().all(|s| s.eq_ignore_ascii_case("binance"))
-        && signal.active_contract_sources.iter().any(|s| s.eq_ignore_ascii_case("binance"));
-    let contributions = signal.exchanges.iter().all(|v| v.exchange.eq_ignore_ascii_case("binance"))
-        && signal.exchanges.iter().any(|v| v.exchange.eq_ignore_ascii_case("binance"));
+    let active = signal
+        .active_contract_sources
+        .iter()
+        .all(|s| s.eq_ignore_ascii_case("binance"))
+        && signal
+            .active_contract_sources
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case("binance"));
+    let contributions = signal
+        .exchanges
+        .iter()
+        .all(|v| v.exchange.eq_ignore_ascii_case("binance"))
+        && signal
+            .exchanges
+            .iter()
+            .any(|v| v.exchange.eq_ignore_ascii_case("binance"));
     active || contributions
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> anyhow::Result<Options> {
-    let mut options = Options { sqlite: env::var("SQLITE_PATH").unwrap_or_else(|_| ".runtime/btc-toxic-flow.sqlite".to_string()), symbol: None, from_ts: None, to_ts: None, limit: 100_000, write: false, rebuild: false };
+    let mut options = Options {
+        sqlite: env::var("SQLITE_PATH")
+            .unwrap_or_else(|_| ".runtime/btc-toxic-flow.sqlite".to_string()),
+        symbol: None,
+        from_ts: None,
+        to_ts: None,
+        limit: 100_000,
+        write: false,
+        rebuild: false,
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--sqlite" => options.sqlite = next(&mut args, "--sqlite")?,
             "--symbol" => options.symbol = Some(next(&mut args, "--symbol")?),
-            "--from-ts" => options.from_ts = Some(next(&mut args, "--from-ts")?.parse().context("invalid --from-ts")?),
-            "--to-ts" => options.to_ts = Some(next(&mut args, "--to-ts")?.parse().context("invalid --to-ts")?),
-            "--limit" => options.limit = next(&mut args, "--limit")?.parse().context("invalid --limit")?,
+            "--from-ts" => {
+                options.from_ts = Some(
+                    next(&mut args, "--from-ts")?
+                        .parse()
+                        .context("invalid --from-ts")?,
+                )
+            }
+            "--to-ts" => {
+                options.to_ts = Some(
+                    next(&mut args, "--to-ts")?
+                        .parse()
+                        .context("invalid --to-ts")?,
+                )
+            }
+            "--limit" => {
+                options.limit = next(&mut args, "--limit")?
+                    .parse()
+                    .context("invalid --limit")?
+            }
             "--write" => options.write = true,
             "--dry-run" => options.write = false,
             "--rebuild-v4-2" => options.rebuild = true,
@@ -159,7 +255,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> anyhow::Result<Options>
 }
 
 fn next(args: &mut impl Iterator<Item = String>, name: &str) -> anyhow::Result<String> {
-    args.next().ok_or_else(|| anyhow!("{name} requires a value"))
+    args.next()
+        .ok_or_else(|| anyhow!("{name} requires a value"))
 }
 
 fn usage() -> &'static str {

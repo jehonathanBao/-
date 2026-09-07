@@ -55,14 +55,14 @@ use crate::{
             build_forecast, evaluate_horizon_outcomes, evaluate_trade_plan_state,
             ContractWhaleV4DecisionState, CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
         },
+        impact_grade::{
+            apply_impact_assessment_to_signal, apply_unavailable_impact_assessment_to_signal,
+        },
         impact_v4_2::{
             build_hybrid_forecast, evaluate_v42_outcomes,
             CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
         },
         impact_v4_2_gate::{evaluate_signal_gate, GateDecision},
-        impact_grade::{
-            apply_impact_assessment_to_signal, apply_unavailable_impact_assessment_to_signal,
-        },
         log_events as cwm_log_events,
         outcome_calibration::evaluate_contract_whale_signal_outcome,
         persistence::{
@@ -72,8 +72,8 @@ use crate::{
             persist_contract_funding_snapshots_nonblocking,
             persist_contract_oi_snapshots_nonblocking,
             persist_contract_reference_prices_nonblocking,
-            persist_contract_whale_signals_nonblocking,
-            spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
+            persist_contract_whale_signals_nonblocking, spawn_contract_whale_retention_task,
+            ContractWhalePersistenceOutcome,
         },
         types::{
             ContractExchange, ContractFundingSnapshot, ContractLiquidationOrder,
@@ -217,6 +217,7 @@ struct AppStateInner {
     operator_api_token: Option<String>,
     contract_whale_store: Option<SqliteStore>,
     contract_whale_flow_flush_cursor_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
+    contract_sustained_scan_ms: Arc<RwLock<std::collections::BTreeMap<String, i64>>>,
     contract_event_projection_runtime: ContractEventProjectionRuntime,
     contract_whale_projection_runtime: ContractWhaleProjectionRuntime,
     contract_retention_runtime: ContractRetentionRuntime,
@@ -527,6 +528,9 @@ impl AppState {
                 contract_whale_flow_flush_cursor_ms: Arc::new(RwLock::new(
                     std::collections::BTreeMap::new(),
                 )),
+                contract_sustained_scan_ms: Arc::new(
+                    RwLock::new(std::collections::BTreeMap::new()),
+                ),
                 contract_event_projection_runtime: ContractEventProjectionRuntime::new(),
                 contract_whale_projection_runtime: ContractWhaleProjectionRuntime::new(),
                 contract_retention_runtime: ContractRetentionRuntime::new(),
@@ -1127,6 +1131,21 @@ impl AppState {
             ContractWhaleDiscordSettings::from_env(self.config().contract_whale_monitor.dry_run);
         let grade_config = contract_whale_runtime_config().impact_grade_v3;
         for mut item in claimed {
+            if item.signal.ts <= self.booted_at_ms() {
+                let finish_store = store.clone();
+                let signal_id = item.signal_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    finish_store.finish_contract_whale_discord_outbox(
+                        &signal_id,
+                        ContractWhaleDiscordOutboxStatus::Skipped,
+                        None,
+                        None,
+                        Some("cached_before_boot_display_only"),
+                    )
+                })
+                .await;
+                continue;
+            }
             let grade_repo = ContractEventGradeRepo::new(store.clone());
             let grade_version = grade_config.grade_version.clone();
             let sent_grade_version = grade_version.clone();
@@ -1205,12 +1224,7 @@ impl AppState {
                     global_contract_whale_discord_cooldown_store(),
                     now,
                 );
-                let decision = self.merge_v42_gate_decision(
-                    &item.signal,
-                    base,
-                    Some(&store),
-                    now,
-                );
+                let decision = self.merge_v42_gate_decision(&item.signal, base, Some(&store), now);
                 if !decision.allowed {
                     let finish_store = store.clone();
                     let signal_id = item.signal_id.clone();
@@ -1308,7 +1322,7 @@ impl AppState {
         }
         let state = self.clone();
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
@@ -1426,12 +1440,26 @@ impl AppState {
                     }
                 }
                 let mut v4_outcomes = Vec::new();
+                let event_ids = v4_signals.iter().map(crate::contract_whale_monitor::impact_forecast::event_id).collect::<Vec<_>>();
+                let mut frozen_base = std::collections::BTreeMap::new();
+                let mut frozen_hybrid = std::collections::BTreeMap::new();
+                for chunk in event_ids.chunks(500) {
+                    let ids = chunk.iter().map(String::as_str).collect::<Vec<_>>();
+                    frozen_base.extend(evaluation_store.load_contract_whale_impact_forecasts(&ids, CONTRACT_WHALE_IMPACT_FORECAST_VERSION)?);
+                    frozen_hybrid.extend(evaluation_store.load_contract_whale_impact_forecasts(&ids, CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION)?);
+                }
                 let mut v4_forecasts = Vec::new();
                 let mut v42_outcomes = Vec::new();
                 let mut v42_forecasts = Vec::new();
                 let mut v4_decision_states = Vec::new();
                 let mut v42_decision_states = Vec::new();
-                for signal in v4_signals {
+                for signal in contract_calibration_anchors(v4_signals, &frozen_base, &frozen_hybrid) {
+                    let event_id = crate::contract_whale_monitor::impact_forecast::event_id(&signal);
+                    let history = historical_by_symbol.get(&signal.symbol).map(Vec::as_slice).unwrap_or(&[]);
+                    if frozen_base.contains_key(&event_id) && frozen_hybrid.contains_key(&event_id)
+                        && !contract_calibration_due(&event_id, signal.ts, history, now) {
+                        continue;
+                    }
                     let from_ts = signal.ts.saturating_sub(4 * 60 * 60 * 1_000);
                     let to_ts = now.min(signal.ts.saturating_add(86_400_000));
                     let buckets = evaluation_store.list_contract_flow_buckets_between(
@@ -1448,19 +1476,19 @@ impl AppState {
                     let liquidation_buckets = evaluation_store
                         .list_contract_liquidation_buckets_between(&signal.symbol, signal.ts, to_ts)?;
                     if let Some(history) = historical_by_symbol.get_mut(&signal.symbol) {
-                        let v4_forecast = build_forecast(
-                            &signal,
-                            history,
-                            &reference_prices,
-                            now,
-                        );
-                        v4_forecasts.push(v4_forecast.clone());
-                        v42_forecasts.push(build_hybrid_forecast(
+                        let v4_forecast = frozen_base.get(&event_id).cloned().unwrap_or_else(|| build_forecast(
                             &signal,
                             history,
                             &reference_prices,
                             now,
                         ));
+                        v4_forecasts.push(v4_forecast.clone());
+                        v42_forecasts.push(frozen_hybrid.get(&event_id).cloned().unwrap_or_else(|| build_hybrid_forecast(
+                            &signal,
+                            history,
+                            &reference_prices,
+                            now,
+                        )));
                         let outcomes = evaluate_horizon_outcomes(
                             &signal,
                             crate::contract_whale_monitor::impact_forecast::ContractWhaleOutcomeInputs {
@@ -1506,7 +1534,6 @@ impl AppState {
                             updated_at_ms: now,
                             decided_at_ms: Some(now),
                         });
-                        history.extend(outcomes.iter().cloned());
                         v4_outcomes.extend(outcomes);
                         v42_outcomes.extend(v42_values);
                     }
@@ -1525,8 +1552,18 @@ impl AppState {
             })
             .await;
         match result {
-            Ok(Ok((legacy_written, v4_outcome_written, v4_forecast_written, v42_outcome_written, v42_forecast_written)))
-                if legacy_written + v4_outcome_written + v4_forecast_written + v42_outcome_written + v42_forecast_written > 0 =>
+            Ok(Ok((
+                legacy_written,
+                v4_outcome_written,
+                v4_forecast_written,
+                v42_outcome_written,
+                v42_forecast_written,
+            ))) if legacy_written
+                + v4_outcome_written
+                + v4_forecast_written
+                + v42_outcome_written
+                + v42_forecast_written
+                > 0 =>
             {
                 tracing::debug!(
                     target: CWM_LOG_TARGET,
@@ -1732,10 +1769,8 @@ impl AppState {
         }))
         .await;
 
-        for (
-            symbol,
-            (binance_oi, binance_funding, binance_reference, okx_oi, okx_funding),
-        ) in symbol_results
+        for (symbol, (binance_oi, binance_funding, binance_reference, okx_oi, okx_funding)) in
+            symbol_results
         {
             if runtime_config
                 .exchanges
@@ -1847,10 +1882,7 @@ impl AppState {
         let reference_outcome =
             persist_contract_reference_prices_nonblocking(store, reference_prices).await;
 
-        if oi_outcome.written > 0
-            || funding_outcome.written > 0
-            || reference_outcome.written > 0
-        {
+        if oi_outcome.written > 0 || funding_outcome.written > 0 || reference_outcome.written > 0 {
             tracing::info!(
                 target: CWM_LOG_TARGET,
                 event = "contract_market_context_poll",
@@ -1894,6 +1926,7 @@ impl AppState {
                 .map(|store| load_market_context(store, &flow_state, &symbol))
                 .unwrap_or_default();
             let venue_health = self.venue_health();
+            let flow_buckets = self.contract_evidence_buckets(&symbol, flow_state.updated_at);
             let response = build_contract_whale_response_with_runtime_and_baselines(
                 &flow_state,
                 &symbol,
@@ -1902,6 +1935,7 @@ impl AppState {
                 config.enabled,
                 config.dry_run,
                 ContractWhaleResponseRuntime {
+                    flow_buckets: &flow_buckets,
                     venue_health: Some(&venue_health),
                     baselines: &baselines,
                     liquidations: &liquidations,
@@ -1911,6 +1945,11 @@ impl AppState {
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
             let mut candidates = response.items;
+            candidates.extend(self.sustained_contract_candidates(&symbol).await);
+            crate::api::contract_whale_routes::enrich_production_evidence(self, &mut candidates);
+            for signal in &mut candidates {
+                crate::contract_whale_monitor::sustained_flow::set_episode_identity(signal);
+            }
             let mut impact_grade_materialization_failed = false;
             if runtime_config.impact_grade_v3.enabled {
                 if let Err(error) = materialize_contract_whale_impact_grades_nonblocking(
@@ -2129,17 +2168,16 @@ impl AppState {
                             global_contract_whale_discord_cooldown_store(),
                             now,
                         );
-                        let decision = self.merge_v42_gate_decision(
-                            &signal,
-                            base,
-                            store.as_ref(),
-                            now,
-                        );
+                        let decision =
+                            self.merge_v42_gate_decision(&signal, base, store.as_ref(), now);
                         if !decision.allowed {
                             self.record_scan_log(
                                 "debug",
                                 cwm_log_events::DISCORD_SKIPPED,
-                                format!("{} discord skipped for {}: {}", CWM_LOG_PREFIX, signal.symbol, decision.reason),
+                                format!(
+                                    "{} discord skipped for {}: {}",
+                                    CWM_LOG_PREFIX, signal.symbol, decision.reason
+                                ),
                                 Some(signal.symbol.clone()),
                                 Some(signal.id.clone()),
                             );
@@ -2244,18 +2282,13 @@ impl AppState {
         if !base.allowed {
             return base;
         }
-        let gate: GateDecision = evaluate_signal_gate(
-            store,
-            signal,
-            &config.impact_v4_2,
-            now,
-        )
-        .unwrap_or_else(|error| GateDecision {
-            allowed: false,
-            state: "FORCED_CLOSED".to_string(),
-            reason: format!("v42_gate_evaluation_failed:{error}"),
-            ..Default::default()
-        });
+        let gate: GateDecision = evaluate_signal_gate(store, signal, &config.impact_v4_2, now)
+            .unwrap_or_else(|error| GateDecision {
+                allowed: false,
+                state: "FORCED_CLOSED".to_string(),
+                reason: format!("v42_gate_evaluation_failed:{error}"),
+                ..Default::default()
+            });
         if gate.allowed {
             base
         } else {
@@ -2264,6 +2297,53 @@ impl AppState {
                 reason: format!("v42_gate_{}", gate.reason),
             }
         }
+    }
+
+    async fn sustained_contract_candidates(
+        &self,
+        symbol: &str,
+    ) -> Vec<crate::contract_whale_monitor::types::ContractWhaleSignal> {
+        let now = crate::normalizers::trade::now_ms();
+        {
+            let mut scans = self.inner.contract_sustained_scan_ms.write();
+            if scans
+                .get(symbol)
+                .is_some_and(|last| now.saturating_sub(*last) < 60_000)
+            {
+                return Vec::new();
+            }
+            scans.insert(symbol.to_string(), now);
+        }
+        let Some(store) = self.contract_whale_store() else {
+            return Vec::new();
+        };
+        let symbol = symbol.to_string();
+        let booted = self.booted_at_ms();
+        let config = contract_whale_runtime_config();
+        match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<crate::contract_whale_monitor::types::ContractWhaleSignal>> {
+            load_sustained_contract_candidates(&store, &symbol, now, booted, &config)
+        }).await {
+            Ok(Ok(signals)) => signals,
+            _ => { tracing::warn!(target: CWM_LOG_TARGET, "sustained public-flow evidence unavailable"); Vec::new() }
+        }
+    }
+
+    pub(crate) fn contract_evidence_buckets(
+        &self,
+        symbol: &str,
+        at: i64,
+    ) -> Vec<crate::contract_whale_monitor::types::ContractFlowBucket> {
+        let canonical = contract_flow_base_asset(symbol);
+        let trades = self
+            .inner
+            .flow_service
+            .get_trades_since(at.saturating_sub(300_000));
+        let trades = trades
+            .iter()
+            .filter(|trade| trade.ts <= at)
+            .filter_map(|trade| normalized_trade_to_contract_trade(trade, &canonical))
+            .collect::<Vec<_>>();
+        aggregate_1s_buckets(&trades)
     }
 
     async fn flush_live_contract_flow_buckets_for_symbol(
@@ -2974,6 +3054,109 @@ fn contract_flow_flush_rewind_ms() -> i64 {
     5_000
 }
 
+fn load_sustained_contract_candidates(
+    store: &impl ContractWhaleRepo,
+    symbol: &str,
+    now: i64,
+    booted: i64,
+    config: &crate::contract_whale_monitor::config::ContractWhaleRuntimeConfig,
+) -> anyhow::Result<Vec<crate::contract_whale_monitor::types::ContractWhaleSignal>> {
+    let cutoff = crate::contract_whale_monitor::sustained_flow::closed_window_end(now) - 1;
+    let context = load_market_context(
+        store,
+        &crate::types::flow::FlowState {
+            symbol: symbol.into(),
+            updated_at: cutoff,
+            windows: Default::default(),
+        },
+        symbol,
+    );
+    let buckets = store.list_contract_flow_buckets_between(
+        symbol,
+        cutoff.saturating_sub(3 * 3_600_000),
+        cutoff,
+    )?;
+    Ok(crate::contract_whale_monitor::sustained_flow::candidates(
+        &buckets, symbol, now, booted, &context, config,
+    ))
+}
+
+/// One immutable event-time/hypothesis anchor per frozen episode. If the retained
+/// query no longer includes that anchor, skip it rather than substitute a later signal.
+fn contract_calibration_anchors(
+    mut signals: Vec<crate::contract_whale_monitor::types::ContractWhaleSignal>,
+    frozen_base: &std::collections::BTreeMap<
+        String,
+        crate::contract_whale_monitor::impact_forecast::ContractWhaleMultiHorizonImpactForecast,
+    >,
+    frozen_hybrid: &std::collections::BTreeMap<
+        String,
+        crate::contract_whale_monitor::impact_forecast::ContractWhaleMultiHorizonImpactForecast,
+    >,
+) -> Vec<crate::contract_whale_monitor::types::ContractWhaleSignal> {
+    use crate::contract_whale_monitor::{
+        behavior_assessment::build_detection_behavior, impact_forecast::event_id,
+    };
+    signals.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.id.cmp(&b.id)));
+    let mut seen = std::collections::BTreeSet::new();
+    signals
+        .into_iter()
+        .filter(|signal| {
+            let id = event_id(signal);
+            if seen.contains(&id) {
+                return false;
+            }
+            let behavior = build_detection_behavior(signal, None, signal.ts);
+            let hypothesis =
+                serde_json::to_value(behavior.hypothesis).expect("serializable hypothesis");
+            let direction =
+                serde_json::to_value(behavior.direction_bias).expect("serializable direction");
+            for frozen in [frozen_base.get(&id), frozen_hybrid.get(&id)]
+                .into_iter()
+                .flatten()
+            {
+                if frozen.event_ts != signal.ts
+                    || hypothesis.as_str() != Some(frozen.behavior.as_str())
+                    || direction.as_str() != Some(frozen.direction.as_str())
+                {
+                    return false;
+                }
+            }
+            seen.insert(id)
+        })
+        .collect()
+}
+
+fn contract_calibration_due(
+    event_id: &str,
+    event_ts: i64,
+    outcomes: &[crate::contract_whale_monitor::impact_forecast::ContractWhaleHorizonOutcome],
+    now: i64,
+) -> bool {
+    use crate::contract_whale_monitor::impact_forecast::HORIZONS_SEC;
+    HORIZONS_SEC.iter().any(|seconds| {
+        let mature_at = event_ts.saturating_add(*seconds as i64 * 1000);
+        if now < mature_at {
+            return false;
+        }
+        [
+            CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+            CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        ]
+        .iter()
+        .any(|version| {
+            !outcomes.iter().any(|row| {
+                row.event_id == event_id
+                    && row.horizon_sec == *seconds
+                    && row.outcome_version == *version
+                    && (row.state == "complete"
+                        || row.evaluated_at >= mature_at.saturating_add(600_000)
+                        || now.saturating_sub(row.evaluated_at) < 60_000)
+            })
+        })
+    })
+}
+
 fn normalized_trade_to_contract_trade(
     trade: &NormalizedTrade,
     requested_symbol: &str,
@@ -3185,6 +3368,231 @@ mod tests {
             buckets_after_second_flush.len(),
             "repeated flush should upsert rather than duplicate rows"
         );
+    }
+
+    #[tokio::test]
+    async fn production_evidence_is_event_aligned_and_persistable() {
+        use crate::contract_whale_monitor::types::ContractWhaleSignal;
+        use crate::spot_whale_monitor::types::{SpotExchange, SpotTrade, SpotTradeSide};
+        let mut config = test_config(temp_sqlite_path("producer-evidence"));
+        config.spot_whale_monitor.enabled = true;
+        let state = AppState::new(config);
+        let now = crate::normalizers::trade::now_ms();
+        for second in 0..90 {
+            state
+                .flow_service_for_tests()
+                .add_trade_for_tests(NormalizedTrade {
+                    venue: Venue::Binance,
+                    symbol: "BTC-PERP".into(),
+                    ts: now - second * 1000,
+                    price: 60000.0 + second as f64,
+                    size_btc: 2.0,
+                    size_usd: (60000.0 + second as f64) * 2.0,
+                    aggressor_side: AggressorSide::Buy,
+                    trade_id: Some(format!("evidence-{second}")),
+                });
+        }
+        // Below the standalone whale threshold: ordinary spot trades still provide context.
+        for second in 1..=3 {
+            state.spot_whale_service().ingest_trade(SpotTrade {
+                ts: now - second * 1000,
+                exchange: SpotExchange::Binance,
+                symbol: "BTC".into(),
+                market: "spot".into(),
+                price: 60000.0,
+                qty_base: 0.01,
+                notional_usd: 600.0,
+                side: SpotTradeSide::Buy,
+                trade_id: Some(format!("small-spot-{second}")),
+            });
+        }
+        let buckets = state.contract_evidence_buckets("BTC", now);
+        let micro = crate::contract_whale_monitor::aggregator::micro_volatility_from_buckets(
+            &buckets,
+            "BTC",
+            now,
+            &crate::contract_whale_monitor::config::contract_whale_runtime_config(),
+        );
+        assert!(micro.sample_count >= 60);
+        assert_eq!(micro.source, "flow_1s_vwap");
+        let mut signal: ContractWhaleSignal = serde_json::from_value(serde_json::json!({
+            "id":"producer-test","ts":now,"symbol":"BTC","windowSec":15,"signalType":"aggressive_buy",
+            "direction":"buy","severity":"high","score":80,"totalVolumeBtc":100,"netVolumeBtc":80,
+            "totalNotionalUsd":6000000,"dominance":0.8,"mainExchange":"binance","exchanges":[],"dataQuality":90,
+            "discordEligible":false,"discordSent":false,"discordReason":"test","finalResult":"test",
+            "readOnly":true,"analysisOnly":true,"executionEnabled":false
+        })).expect("fixture");
+        crate::api::contract_whale_routes::enrich_production_evidence(
+            &state,
+            std::slice::from_mut(&mut signal),
+        );
+        assert_eq!(signal.spot_confirmation.status, "confirmed");
+        assert_eq!(signal.spot_confirmation.latest_signal_at, Some(now - 1000));
+        let store = state.contract_whale_store().expect("test database");
+        store
+            .upsert_contract_whale_signal(&signal)
+            .expect("persist event evidence");
+        let restored = store
+            .list_contract_whale_signals("BTC", None, 10)
+            .expect("reload event evidence")
+            .into_iter()
+            .find(|row| row.id == signal.id)
+            .expect("persisted signal");
+        assert_eq!(
+            restored.spot_confirmation.confirmation_type,
+            "confirms_contract_direction"
+        );
+        let mut cached = signal.clone();
+        cached.id = "cached-pre-boot-test".into();
+        cached.ts = state.booted_at_ms() - 1;
+        store
+            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&cached), now)
+            .expect("queue cached fixture");
+        state.process_contract_whale_discord_outbox_once().await;
+        let reason: String = store
+            .with_connection(|conn| {
+                Ok(conn.query_row(
+                    "SELECT last_error FROM contract_whale_discord_outbox WHERE signal_id = ?1",
+                    [&cached.id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read skipped outbox");
+        assert_eq!(reason, "cached_before_boot_display_only");
+        signal.ts = now - 4000;
+        crate::api::contract_whale_routes::enrich_production_evidence(
+            &state,
+            std::slice::from_mut(&mut signal),
+        );
+        assert_eq!(
+            signal.spot_confirmation.status, "no_spot_sample",
+            "future spot is not event evidence"
+        );
+    }
+
+    #[test]
+    fn calibration_uses_one_frozen_anchor_and_never_a_later_observation() {
+        use crate::contract_whale_monitor::impact_forecast::{build_forecast, event_id};
+        let mut anchor: crate::contract_whale_monitor::types::ContractWhaleSignal =
+            serde_json::from_value(serde_json::json!({
+                "id":"anchor","ts":600000,"symbol":"BTC","windowSec":60,"signalType":"aggressive_buy",
+                "direction":"buy","severity":"high","score":80,"totalVolumeBtc":100,"netVolumeBtc":80,
+                "totalNotionalUsd":6000000,"dominance":0.8,"mainExchange":"binance","exchanges":[],"dataQuality":90,
+                "discordEligible":false,"discordSent":false,"discordReason":"test","finalResult":"test",
+                "readOnly":true,"analysisOnly":true,"executionEnabled":false
+            })).unwrap();
+        anchor.event_lifecycle.event_id = "same-episode".into();
+        let mut later = anchor.clone();
+        later.id = "later".into();
+        later.ts += 60000;
+        let empty = Default::default();
+        let selected = super::contract_calibration_anchors(
+            vec![later.clone(), anchor.clone()],
+            &empty,
+            &empty,
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, anchor.id);
+        let frozen = build_forecast(&selected[0], &[], &[], later.ts);
+        let base = [(event_id(&anchor), frozen.clone())].into_iter().collect();
+        let selected =
+            super::contract_calibration_anchors(vec![later.clone(), anchor.clone()], &base, &empty);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].ts, frozen.event_ts);
+        // Both outcome versions receive exactly this anchored signal from the production loop.
+        let outcomes = crate::contract_whale_monitor::impact_forecast::evaluate_horizon_outcomes(
+            &selected[0],
+            crate::contract_whale_monitor::impact_forecast::ContractWhaleOutcomeInputs {
+                flow_buckets: &[],
+                reference_prices: &[],
+                oi_snapshots: &[],
+                funding_snapshots: &[],
+                liquidation_buckets: &[],
+            },
+            anchor.ts + 86400000,
+        );
+        assert!(!outcomes.is_empty());
+        assert!(outcomes.iter().all(|row| row.event_ts == frozen.event_ts
+            && row.signal_id == anchor.id
+            && row.direction == frozen.direction));
+        assert!(super::contract_calibration_anchors(vec![later.clone()], &base, &empty).is_empty());
+        let mismatched = [(event_id(&later), build_forecast(&later, &[], &[], later.ts))]
+            .into_iter()
+            .collect();
+        assert!(
+            super::contract_calibration_anchors(vec![anchor, later], &base, &mismatched).is_empty()
+        );
+    }
+
+    #[test]
+    fn sustained_producer_loads_oi_and_funding_at_closed_event_cutoff() {
+        use crate::contract_whale_monitor::{
+            config::ContractWhaleRuntimeConfig,
+            types::{
+                ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractOiSnapshot,
+            },
+        };
+        let state = AppState::new(test_config(temp_sqlite_path("sustained-causal-context")));
+        let store = state.contract_whale_store().unwrap();
+        let at = 10_845_000;
+        let cutoff = 10_799_999;
+        let rows = (0..10800)
+            .map(|second| ContractFlowBucket {
+                ts_bucket: second * 1000,
+                symbol: "BTC".into(),
+                exchange: "binance".into(),
+                buy_volume_btc: if second >= 7200 { 0.02 } else { 0.0101 },
+                sell_volume_btc: 0.01,
+                buy_notional_usd: if second >= 7200 { 1200.0 } else { 606.0 },
+                sell_notional_usd: 600.0,
+                trade_count: 10,
+                vwap: Some(60000.0),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        store.upsert_contract_flow_buckets(&rows).unwrap();
+        let oi = |ts, value| ContractOiSnapshot {
+            ts,
+            symbol: "BTC".into(),
+            exchange: ContractExchange::Binance,
+            oi_btc: value,
+            oi_notional_usd: None,
+            ct_val_available: true,
+            evidence_degraded_reason: None,
+        };
+        let funding = |ts, rate| ContractFundingSnapshot {
+            ts,
+            symbol: "BTC".into(),
+            exchange: ContractExchange::Binance,
+            funding_rate: rate,
+        };
+        store
+            .upsert_contract_oi_snapshots(&[oi(cutoff + 30000, 999999.0)])
+            .unwrap();
+        store
+            .upsert_contract_funding_snapshots(&[funding(cutoff + 30000, 0.5)])
+            .unwrap();
+        let config = ContractWhaleRuntimeConfig::default();
+        let missing =
+            super::load_sustained_contract_candidates(&store, "BTC", at, 0, &config).unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].ts, cutoff);
+        assert_eq!(missing[0].oi_change_pct, None);
+        assert_eq!(missing[0].funding_rate, None);
+        store
+            .upsert_contract_oi_snapshots(&[
+                oi(cutoff - 300000, 100000.0),
+                oi(cutoff - 1000, 101000.0),
+            ])
+            .unwrap();
+        store
+            .upsert_contract_funding_snapshots(&[funding(cutoff - 1000, 0.001)])
+            .unwrap();
+        let causal =
+            super::load_sustained_contract_candidates(&store, "BTC", at, 0, &config).unwrap();
+        assert_eq!(causal.len(), 1);
+        assert_eq!(causal[0].oi_change_pct, Some(1.0));
+        assert_eq!(causal[0].funding_rate, Some(0.001));
     }
 
     fn temp_sqlite_path(name: &str) -> String {

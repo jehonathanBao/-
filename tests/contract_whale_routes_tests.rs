@@ -123,6 +123,7 @@ fn contract_whale_exchange_health_does_not_use_another_symbols_global_trade() {
         true,
         true,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: Some(&venue_health),
             baselines: &BTreeMap::new(),
             liquidations: &BTreeMap::new(),
@@ -169,6 +170,7 @@ fn contract_whale_exchange_health_prioritizes_reconnecting_over_stale_symbol_flo
         true,
         true,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: Some(&venue_health),
             baselines: &BTreeMap::new(),
             liquidations: &BTreeMap::new(),
@@ -204,6 +206,7 @@ fn contract_whale_response_filters_latest_signals_by_severity() {
         true,
         true,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: None,
             baselines: &BTreeMap::from([(
                 15,
@@ -471,6 +474,7 @@ fn contract_whale_response_includes_dynamic_and_percentile_quality_baselines() {
         true,
         true,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: None,
             baselines: &baselines,
             liquidations: &liquidations,
@@ -509,6 +513,7 @@ fn contract_whale_summary_exposes_warmup_and_disables_push_during_warmup() {
         true,
         false,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: None,
             baselines: &BTreeMap::new(),
             liquidations: &BTreeMap::new(),
@@ -570,6 +575,7 @@ fn contract_whale_response_merges_same_wave_multi_window_signals() {
         true,
         false,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: None,
             baselines: &baselines,
             liquidations: &BTreeMap::new(),
@@ -706,7 +712,10 @@ fn trading_decision_response_fails_closed_without_confirmed_v3_grade() {
     assert_eq!(decision.noise_suppression.tradeable_setups, 0);
     assert_eq!(decision.strategy_status, "experimental");
     assert!(!decision.strategy_production_ready);
-    assert_eq!(decision.strategy_gate_reason, "walk_forward_validation_pending");
+    assert_eq!(
+        decision.strategy_gate_reason,
+        "walk_forward_validation_pending"
+    );
     assert!(decision
         .no_trade_zones
         .iter()
@@ -1489,7 +1498,12 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     high.total_volume_btc = 1_500.0;
     high.net_volume_btc = 1_280.0;
     high.total_notional_usd = 96_000_000.0;
-    let canonical = high.clone();
+    high.impact_level = None;
+    high.impact_score = None;
+    high.impact_z_score = None;
+    high.percentile_level = None;
+    high.normalized_strength = None;
+    high.impact_grade_state = Some("evidence_insufficient".into());
 
     let response = build_contract_whale_history_response(
         vec![high, mid, low],
@@ -1518,11 +1532,11 @@ fn final_event_store_computes_cross_event_impact_normalization() {
     assert!(cohort.z_score > 1.0);
     assert!(cohort.percentile >= 90.0);
     assert_eq!(cohort.normalized_strength, "EXTREME");
-    assert_eq!(strongest.impact_grade, canonical.impact_level.unwrap());
-    assert_eq!(strongest.impact_score, canonical.impact_score.unwrap());
-    assert_eq!(strongest.z_score, canonical.impact_z_score.unwrap());
-    assert_eq!(strongest.percentile, canonical.percentile_level.unwrap());
-    assert_eq!(strongest.normalized_strength, canonical.normalized_strength.unwrap());
+    assert_eq!(strongest.impact_grade, "UNRATED");
+    assert_eq!(strongest.impact_score, 0.0);
+    assert_eq!(strongest.z_score, 0.0);
+    assert_eq!(strongest.percentile, 0.0);
+    assert_eq!(strongest.normalized_strength, "PENDING");
     assert_eq!(strongest.direction_bias, "buy");
 }
 
@@ -1694,13 +1708,16 @@ fn contract_whale_history_response_clusters_same_intent_trajectory() {
     );
     assert_eq!(latest.whale_action.action_type, "aggressive_buy");
     assert_eq!(latest.trajectory.actions.len(), 2);
-    assert_eq!(latest.trajectory.intent, "accumulation");
+    assert_eq!(
+        latest.trajectory.intent, "unknown",
+        "two actions over 45 seconds are insufficient for a sustained hypothesis"
+    );
     assert_eq!(
         latest.trajectory.regime_path,
         vec!["accumulation".to_string()]
     );
     assert!(latest.trajectory.stealth_profile.gamma > 0.0);
-    assert!(latest.trajectory.conclusion.contains("主力分批吸筹"));
+    assert!(latest.trajectory.conclusion.contains("证据不足"));
 }
 
 #[test]
@@ -2037,6 +2054,74 @@ fn high_conviction_window() -> FlowWindow {
             stale_venues: vec![],
         },
     }
+}
+
+#[test]
+fn producer_builder_keeps_sampled_micro_volatility_in_persisted_signal() {
+    use btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractFlowBucket;
+    let _guard = contract_whale_test_guard();
+    reset_contract_whale_runtime_config();
+    let window = high_conviction_window();
+    let now = window.now_ts;
+    let flow = FlowState {
+        symbol: "BTC-PERP".into(),
+        updated_at: now,
+        windows: BTreeMap::from([("15000".into(), window)]),
+    };
+    let buckets = (0..90)
+        .map(|second| ContractFlowBucket {
+            ts_bucket: now - second * 1000,
+            exchange: "binance".into(),
+            symbol: "BTC".into(),
+            buy_volume_btc: 10.0,
+            buy_notional_usd: 700000.0,
+            trade_count: 10,
+            vwap: Some(70000.0 + second as f64),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let response = build_contract_whale_response_with_runtime_and_baselines(
+        &flow,
+        "BTC",
+        50,
+        None,
+        true,
+        true,
+        ContractWhaleResponseRuntime {
+            flow_buckets: &buckets,
+            venue_health: None,
+            baselines: &BTreeMap::new(),
+            liquidations: &BTreeMap::new(),
+            market_context: &Default::default(),
+            booted_at_ms: None,
+        },
+    );
+    let signal = response.items.first().expect("qualified producer signal");
+    assert_eq!(
+        signal
+            .classification_v2
+            .dynamic_thresholds
+            .volatility_source,
+        "flow_1s_vwap"
+    );
+    assert!(
+        signal
+            .classification_v2
+            .dynamic_thresholds
+            .volatility_sample_count
+            >= 60
+    );
+    let snapshot = serde_json::to_value(signal).unwrap();
+    assert_eq!(
+        snapshot["dynamicThresholds"]["volatilitySource"],
+        "flow_1s_vwap"
+    );
+    assert!(
+        snapshot["dynamicThresholds"]["volatilitySampleCount"]
+            .as_u64()
+            .unwrap()
+            >= 60
+    );
 }
 
 fn breakdown(buy: f64, sell: f64) -> VenueFlowBreakdown {

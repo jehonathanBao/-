@@ -177,6 +177,11 @@ fn one_aggregated_episode_can_materialize_multiple_source_events() {
     assert!(repo
         .episode_alert_already_sent(&second.episode_id, &second.grade_version)
         .unwrap());
+    assert!(
+        repo.episode_alert_already_sent(&second.episode_id, "next_grade_version")
+            .unwrap(),
+        "a calibration version change cannot replay an already delivered episode"
+    );
     assert!(!repo
         .mark_episode_alert_sent(&second.episode_id, &second.grade_version, 1_700_000_100_003,)
         .unwrap());

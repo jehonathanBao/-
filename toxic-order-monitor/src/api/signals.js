@@ -36,7 +36,7 @@ export async function fetchSignals() {
 }
 
 function demoSignalsIfEnabled() {
-  if (import.meta.env.VITE_USE_DEMO_SIGNALS !== "true") {
+  if (!import.meta.env.DEV || import.meta.env.VITE_USE_DEMO_SIGNALS !== "true") {
     return [];
   }
   return mockSignals.map((signal) => ({

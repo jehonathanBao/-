@@ -1800,7 +1800,7 @@ fn detector_marks_liquidation_suspected_and_reduces_master_confidence() {
     assert_eq!(signal.liquidation_long_btc, 1_200.0);
     assert_eq!(
         signal.liquidation_force.primary_driver,
-        "liquidation_cascade"
+        "liquidation_cascade_candidate"
     );
     assert_eq!(
         signal.liquidation_force.active_zone,
@@ -1814,7 +1814,11 @@ fn detector_marks_liquidation_suspected_and_reduces_master_confidence() {
     assert!(signal.market_driver.derivatives_pressure_pct > signal.market_driver.whale_intent_pct);
     assert!(signal.market_driver.interpretation.contains("强制流"));
     assert!(signal.liquidation_force.long_liquidation_pressure >= 60);
-    assert!(signal.liquidation_force.flow_attribution.liquidation_pct > 0.40);
+    let attribution = &signal.liquidation_force.flow_attribution;
+    assert_eq!(attribution.liquidation_pct, 0.35, "preserve the observed sampled ratio without shape inflation");
+    assert_eq!(attribution.whale_pct, 0.0);
+    assert_eq!(attribution.retail_pct, 0.0);
+    assert_eq!(attribution.unknown_pct, 0.65);
     assert_eq!(signal.oi_bias.as_deref(), Some("falling"));
     assert_eq!(signal.funding_bias.as_deref(), Some("long"));
     assert!(signal.score < 90);

@@ -1,9 +1,12 @@
-use std::time::Duration;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
+use parking_lot::RwLock;
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use super::{
     log_events,
@@ -20,17 +23,71 @@ use super::{
 };
 
 pub const BINANCE_BTC_USDT_PERP_AGG_TRADE_STREAM: &str =
-    "wss://fstream.binance.com/ws/btcusdt@aggTrade";
+    "wss://fstream.binance.com/market/ws/btcusdt@aggTrade";
 pub const BINANCE_BTC_USDT_PERP_FORCE_ORDER_STREAM: &str =
-    "wss://fstream.binance.com/ws/btcusdt@forceOrder";
+    "wss://fstream.binance.com/market/ws/btcusdt@forceOrder";
 pub const BINANCE_BTC_USDT_PERP_OPEN_INTEREST_URL: &str =
     "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT";
 pub const BINANCE_BTC_USDT_PERP_PREMIUM_INDEX_URL: &str =
     "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
 const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
 
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiquidationStreamHealth {
+    pub connected: bool,
+    pub last_frame_at_ms: Option<i64>,
+    pub last_order_at_ms: Option<i64>,
+    pub order_count: u64,
+}
+
+impl LiquidationStreamHealth {
+    fn status(&self, at: i64) -> &'static str {
+        if !self.connected {
+            "disconnected"
+        } else if self
+            .last_frame_at_ms
+            .is_none_or(|ts| ts > at || at.saturating_sub(ts) > 90_000)
+        {
+            "stale"
+        } else if self.order_count == 0 {
+            "healthy_empty"
+        } else {
+            "healthy"
+        }
+    }
+}
+
+fn health_registry() -> &'static RwLock<BTreeMap<String, LiquidationStreamHealth>> {
+    static HEALTH: OnceLock<RwLock<BTreeMap<String, LiquidationStreamHealth>>> = OnceLock::new();
+    HEALTH.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+pub fn collector_health() -> serde_json::Value {
+    let at = crate::normalizers::trade::now_ms();
+    serde_json::json!({
+        "volumeSemantics": "sampled_liquidation_orders_not_total_market_liquidations",
+        "symbols": health_registry().read().iter().map(|(symbol, health)|
+            (symbol.clone(), serde_json::json!({"status":health.status(at),"health":health})))
+            .collect::<BTreeMap<_,_>>()
+    })
+}
+
 pub fn collector_status() -> &'static str {
-    "ready"
+    let health = health_registry().read();
+    if health.is_empty() {
+        return "not_started";
+    }
+    if health.values().all(|item| {
+        matches!(
+            item.status(crate::normalizers::trade::now_ms()),
+            "healthy" | "healthy_empty"
+        )
+    }) {
+        "healthy"
+    } else {
+        "degraded"
+    }
 }
 
 pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiquidationOrder>) {
@@ -45,19 +102,27 @@ pub async fn run_binance_force_order_collector_for_symbol(
     sender: mpsc::Sender<ContractLiquidationOrder>,
 ) {
     let stream_url = format!(
-        "wss://fstream.binance.com/ws/{}@forceOrder",
+        "wss://fstream.binance.com/market/ws/{}@forceOrder",
         binance_usdt_perp_symbol(symbol).to_ascii_lowercase()
     );
     let mut reconnect_attempt = 0_u32;
+    let health_key = symbol.to_ascii_uppercase();
+    health_registry()
+        .write()
+        .entry(health_key.clone())
+        .or_default();
     loop {
+        if sender.is_closed() {
+            return;
+        }
         tracing::info!(
             target: LOG_TARGET,
             event = log_events::WS_CONNECTED,
             "{} connecting binance forceOrder stream",
             LOG_PREFIX
         );
-        match connect_async(&stream_url).await {
-            Ok((ws, _)) => {
+        match tokio::time::timeout(Duration::from_secs(10), connect_async(&stream_url)).await {
+            Ok(Ok((ws, _))) => {
                 reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
@@ -66,19 +131,76 @@ pub async fn run_binance_force_order_collector_for_symbol(
                     symbol,
                     LOG_PREFIX
                 );
-                let (_, mut read) = ws.split();
-                while let Some(message) = read.next().await {
+                health_registry().write().insert(
+                    health_key.clone(),
+                    LiquidationStreamHealth {
+                        connected: true,
+                        last_frame_at_ms: Some(crate::normalizers::trade::now_ms()),
+                        ..Default::default()
+                    },
+                );
+                let (mut write, mut read) = ws.split();
+                let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+                heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    let message = tokio::select! {
+                        _ = sender.closed() => { health_registry().write().entry(health_key.clone()).or_default().connected = false; return; },
+                        _ = heartbeat.tick() => {
+                            let stale = health_registry().read().get(&health_key).is_none_or(|health|
+                                health.status(crate::normalizers::trade::now_ms()) == "stale");
+                            if stale || write.send(Message::Ping(Vec::new())).await.is_err() { break; }
+                            continue;
+                        },
+                        message = read.next() => match message { Some(message) => message, None => break },
+                    };
                     match message {
                         Ok(message) => {
+                            health_registry()
+                                .write()
+                                .entry(health_key.clone())
+                                .or_default()
+                                .last_frame_at_ms = Some(crate::normalizers::trade::now_ms());
+                            if let Message::Ping(payload) = message {
+                                if write.send(Message::Pong(payload)).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                            if matches!(message, Message::Close(_)) {
+                                break;
+                            }
                             if let Ok(text) = message.to_text() {
-                                    if let Some(order) = handle_force_order_message_for_symbol(symbol, text) {
-                                    if sender.send(order).await.is_err() {
+                                if let Some(order) =
+                                    handle_force_order_message_for_symbol(symbol, text)
+                                {
+                                    {
+                                        let mut health = health_registry().write();
+                                        let item = health.entry(health_key.clone()).or_default();
+                                        item.last_order_at_ms = Some(order.ts);
+                                        item.order_count = item.order_count.saturating_add(1);
+                                    }
+                                    if tokio::time::timeout(
+                                        Duration::from_secs(5),
+                                        sender.send(order),
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
+                                        tracing::warn!(target: LOG_TARGET, "liquidation consumer backpressure; reconnecting");
+                                        break;
+                                    }
+                                    if sender.is_closed() {
                                         tracing::warn!(
                                             target: LOG_TARGET,
                                             event = log_events::WS_DISCONNECTED,
                                             "{} binance forceOrder receiver dropped",
                                             LOG_PREFIX
                                         );
+                                        health_registry()
+                                            .write()
+                                            .entry(health_key.clone())
+                                            .or_default()
+                                            .connected = false;
                                         return;
                                     }
                                 }
@@ -96,8 +218,13 @@ pub async fn run_binance_force_order_collector_for_symbol(
                         }
                     }
                 }
+                health_registry()
+                    .write()
+                    .entry(health_key.clone())
+                    .or_default()
+                    .connected = false;
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     event = log_events::WS_DISCONNECTED,
@@ -105,6 +232,9 @@ pub async fn run_binance_force_order_collector_for_symbol(
                     "{} binance forceOrder connect failed",
                     LOG_PREFIX
                 );
+            }
+            Err(_) => {
+                tracing::warn!(target: LOG_TARGET, "binance forceOrder connect timed out");
             }
         }
         reconnect_attempt = reconnect_attempt.saturating_add(1);
@@ -119,6 +249,23 @@ pub async fn run_binance_force_order_collector_for_symbol(
             LOG_PREFIX
         );
         tokio::time::sleep(Duration::from_millis(next_delay_ms)).await;
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+    #[test]
+    fn empty_stream_requires_live_heartbeat_not_a_hardcoded_ready_label() {
+        let mut health = LiquidationStreamHealth::default();
+        assert_eq!(health.status(100_000), "disconnected");
+        health.connected = true;
+        assert_eq!(health.status(100_000), "stale");
+        health.last_frame_at_ms = Some(99_000);
+        assert_eq!(health.status(100_000), "healthy_empty");
+        assert_eq!(health.status(200_000), "stale");
+        health.order_count = 1;
+        assert_eq!(health.status(100_000), "healthy");
     }
 }
 
@@ -213,15 +360,17 @@ pub async fn fetch_binance_reference_history_for_symbol(
                     last_error.unwrap_or_else(|| "unknown error".to_string())
                 )
             })?;
-            let rows = payload
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("binance {source} history response is not an array"))?;
+            let rows = payload.as_array().ok_or_else(|| {
+                anyhow::anyhow!("binance {source} history response is not an array")
+            })?;
             if rows.is_empty() {
                 break;
             }
             let mut newest = cursor;
             for row in rows {
-                let Some(values) = row.as_array() else { continue };
+                let Some(values) = row.as_array() else {
+                    continue;
+                };
                 let Some(open_ts) = values.first().and_then(serde_json::Value::as_i64) else {
                     continue;
                 };
@@ -344,7 +493,11 @@ pub fn normalize_binance_reference_prices(
     };
     push("mark", mark, event_time_ms);
     push("index", index, event_time_ms);
-    push("futures_last", positive(futures.get("price")), received_at_ms);
+    push(
+        "futures_last",
+        positive(futures.get("price")),
+        received_at_ms,
+    );
     push("spot", positive(spot.get("price")), received_at_ms);
     rows
 }

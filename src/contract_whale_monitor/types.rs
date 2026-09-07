@@ -1040,6 +1040,10 @@ impl Default for ContractWhaleLiquidationZone {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleForcedFlowAttribution {
+    #[serde(default = "unknown_attribution_share")]
+    pub unknown_pct: f64,
+    #[serde(default)]
+    pub semantics: String,
     #[serde(default)]
     pub whale_pct: f64,
     #[serde(default)]
@@ -1053,12 +1057,18 @@ pub struct ContractWhaleForcedFlowAttribution {
 impl Default for ContractWhaleForcedFlowAttribution {
     fn default() -> Self {
         Self {
-            whale_pct: 1.0,
+            unknown_pct: 1.0,
+            semantics: "participant_identity_unavailable_sampled_liquidations_only".into(),
+            whale_pct: 0.0,
             retail_pct: 0.0,
             liquidation_pct: 0.0,
-            dominant_driver: "whale_initiated_flow".to_string(),
+            dominant_driver: "active_flow_unattributed".to_string(),
         }
     }
+}
+
+fn unknown_attribution_share() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1114,7 +1124,7 @@ impl Default for ContractWhaleLiquidationForce {
     fn default() -> Self {
         Self {
             active_zone: "neutral".to_string(),
-            primary_driver: "whale_initiated_flow".to_string(),
+            primary_driver: "active_flow_unattributed".to_string(),
             long_liquidation_pressure: 0,
             short_squeeze_pressure: 0,
             stop_hunt_probability: 0,
@@ -1172,14 +1182,14 @@ pub struct ContractWhaleMarketDriver {
 impl Default for ContractWhaleMarketDriver {
     fn default() -> Self {
         Self {
-            primary_driver: "whale_intent".to_string(),
-            market_state: "whale_led_expansion".to_string(),
-            whale_intent_pct: 1.0,
+            primary_driver: "active_flow_unattributed".to_string(),
+            market_state: "unknown".to_string(),
+            whale_intent_pct: 0.0,
             liquidity_forcing_pct: 0.0,
             derivatives_pressure_pct: 0.0,
             reflexivity_pct: 0.0,
             components: Vec::new(),
-            interpretation: "市场主要由主动资金流驱动。".to_string(),
+            interpretation: "主导行为证据不足，交易者身份不可识别。".to_string(),
         }
     }
 }
@@ -1292,6 +1302,8 @@ impl Default for ContractWhaleEventQuality {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sustained_flow: Option<super::sustained_flow::SustainedFlowEvidence>,
     pub id: String,
     pub ts: i64,
     pub symbol: String,

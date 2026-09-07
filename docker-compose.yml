@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-development}
     container_name: toxic-bot
     restart: unless-stopped
     mem_limit: ${BACKEND_MEMORY_LIMIT:-3g}
@@ -148,6 +150,8 @@ services:
     build:
       context: ./toxic-order-monitor
       dockerfile: Dockerfile.frontend
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-development}
     container_name: toxic-frontend
     restart: unless-stopped
     mem_limit: ${FRONTEND_MEMORY_LIMIT:-256m}

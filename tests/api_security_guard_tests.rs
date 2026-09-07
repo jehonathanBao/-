@@ -432,6 +432,10 @@ async fn healthz_and_readyz_return_operator_safe_status() {
     assert_eq!(health.status(), reqwest::StatusCode::OK);
     let health_payload: serde_json::Value = health.json().await.expect("health json");
     assert_eq!(health_payload["ok"], true);
+    assert_eq!(
+        health_payload["sourceRevision"],
+        option_env!("BUILD_GIT_SHA").unwrap_or("development")
+    );
     assert_eq!(health_payload["runtimeModified"], false);
 
     let ready = test_http_get(format!("http://{addr}/readyz"))

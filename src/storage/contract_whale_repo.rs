@@ -5,10 +5,10 @@ use rusqlite::{params, params_from_iter, OptionalExtension};
 
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-    ContractOiSnapshot, ContractReferencePriceSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
-    ContractWhaleEmissionFingerprint, ContractWhaleMarketType, ContractWhaleOiExchangeDelta,
-    ContractWhaleOiWindowContext, ContractWhalePercentileThreshold, ContractWhaleSeverity,
-    ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
+    ContractOiSnapshot, ContractReferencePriceSnapshot, ContractWhaleActiveSources,
+    ContractWhaleDirection, ContractWhaleEmissionFingerprint, ContractWhaleMarketType,
+    ContractWhaleOiExchangeDelta, ContractWhaleOiWindowContext, ContractWhalePercentileThreshold,
+    ContractWhaleSeverity, ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
 use crate::contract_whale_monitor::{
     behavior_assessment::BehaviorOutcomeMarkouts,
@@ -344,7 +344,10 @@ pub trait ContractWhaleRepo {
         &self,
         outcomes: &[ContractWhaleHorizonOutcome],
     ) -> anyhow::Result<usize>;
-    fn delete_contract_whale_horizon_outcomes_for_version(&self, version: &str) -> anyhow::Result<usize>;
+    fn delete_contract_whale_horizon_outcomes_for_version(
+        &self,
+        version: &str,
+    ) -> anyhow::Result<usize>;
     fn list_contract_whale_horizon_outcomes_before(
         &self,
         symbol: &str,
@@ -360,7 +363,10 @@ pub trait ContractWhaleRepo {
         &self,
         forecasts: &[ContractWhaleMultiHorizonImpactForecast],
     ) -> anyhow::Result<usize>;
-    fn delete_contract_whale_impact_forecasts_for_version(&self, version: &str) -> anyhow::Result<usize>;
+    fn delete_contract_whale_impact_forecasts_for_version(
+        &self,
+        version: &str,
+    ) -> anyhow::Result<usize>;
     fn upsert_contract_whale_v4_decision_states(
         &self,
         states: &[ContractWhaleV4DecisionState],
@@ -784,20 +790,25 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = conn.prepare(
                 r#"
                 SELECT ts, exchange, symbol, oi_btc, oi_notional_usd,
-                       ct_val_available, evidence_degraded_reason, 0 AS source_rank
+                       ct_val_available, evidence_degraded_reason
                 FROM contract_oi_snapshots
                 WHERE symbol = ?1 AND ts >= ?2 AND ts <= ?3
                 UNION ALL
-                SELECT ts_bucket, exchange, symbol, oi_btc, oi_notional_usd,
-                       1, evidence_degraded_reason, 1 AS source_rank
-                FROM contract_oi_1m
-                WHERE symbol = ?1 AND ts_bucket >= ?2 AND ts_bucket <= ?3
-                ORDER BY ts ASC, exchange ASC, symbol ASC, source_rank ASC
+                SELECT m.ts_bucket + 59999, m.exchange, m.symbol, m.oi_btc, m.oi_notional_usd,
+                       1, COALESCE(m.evidence_degraded_reason, 'minute_rollup_close_time')
+                FROM contract_oi_1m m
+                WHERE m.symbol = ?1 AND m.ts_bucket >= ?2 - 59999 AND m.ts_bucket <= ?3 - 59999
+                  AND NOT EXISTS (
+                    SELECT 1 FROM contract_oi_snapshots r
+                    WHERE r.symbol = m.symbol AND r.exchange = m.exchange
+                      AND r.ts >= m.ts_bucket AND r.ts < m.ts_bucket + 60000
+                  )
+                ORDER BY ts ASC, exchange ASC, symbol ASC
                 "#,
             )?;
             let rows = stmt.query_map(params![symbol, from_ts, to_ts], |row| {
                 let exchange_key: String = row.get(1)?;
-                let snapshot = ContractOiSnapshot {
+                Ok(ContractOiSnapshot {
                     ts: row.get(0)?,
                     exchange: exchange_from_key(exchange_key.as_str()),
                     symbol: row.get(2)?,
@@ -805,27 +816,11 @@ impl ContractWhaleRepo for SqliteStore {
                     oi_notional_usd: row.get(4)?,
                     ct_val_available: row.get::<_, i64>(5)? != 0,
                     evidence_degraded_reason: row.get(6)?,
-                };
-                Ok((
-                    format!(
-                        "{}:{}:{}",
-                        exchange_key,
-                        snapshot.symbol,
-                        snapshot.ts.div_euclid(60_000)
-                    ),
-                    snapshot,
-                ))
+                })
             })?;
-            let mut snapshots = Vec::new();
-            let mut last_key = None;
-            for row in rows {
-                let (key, snapshot) = row?;
-                if last_key.as_deref() != Some(key.as_str()) {
-                    snapshots.push(snapshot);
-                    last_key = Some(key);
-                }
-            }
-            Ok(snapshots)
+            // Keep every real observation at its actual timestamp. Minute rollups
+            // are a conservative closed-minute fallback only after raw retention.
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
 
@@ -1037,17 +1032,23 @@ impl ContractWhaleRepo for SqliteStore {
                 [job_key],
                 |row| {
                     Ok(ContractWhaleV4BackfillCheckpoint {
-                        job_key: row.get(0)?, status: row.get(1)?, last_event_ts: row.get(2)?,
-                        last_event_id: row.get(3)?, processed_count: row.get::<_, i64>(4)?.max(0) as usize,
+                        job_key: row.get(0)?,
+                        status: row.get(1)?,
+                        last_event_ts: row.get(2)?,
+                        last_event_id: row.get(3)?,
+                        processed_count: row.get::<_, i64>(4)?.max(0) as usize,
                         forecast_count: row.get::<_, i64>(5)?.max(0) as usize,
                         outcome_count: row.get::<_, i64>(6)?.max(0) as usize,
                         skipped_count: row.get::<_, i64>(7)?.max(0) as usize,
                         degraded_count: row.get::<_, i64>(8)?.max(0) as usize,
                         failed_count: row.get::<_, i64>(9)?.max(0) as usize,
-                        last_error: row.get(10)?, updated_at_ms: row.get(11)?,
+                        last_error: row.get(10)?,
+                        updated_at_ms: row.get(11)?,
                     })
                 },
-            ).optional().map_err(Into::into)
+            )
+            .optional()
+            .map_err(Into::into)
         })
     }
 
@@ -1071,11 +1072,20 @@ impl ContractWhaleRepo for SqliteStore {
                   failed_count=excluded.failed_count, last_error=excluded.last_error,
                   updated_at_ms=excluded.updated_at_ms
                 "#,
-                params![checkpoint.job_key, checkpoint.status, checkpoint.last_event_ts,
-                    checkpoint.last_event_id, checkpoint.processed_count as i64,
-                    checkpoint.forecast_count as i64, checkpoint.outcome_count as i64,
-                    checkpoint.skipped_count as i64, checkpoint.degraded_count as i64,
-                    checkpoint.failed_count as i64, checkpoint.last_error, checkpoint.updated_at_ms],
+                params![
+                    checkpoint.job_key,
+                    checkpoint.status,
+                    checkpoint.last_event_ts,
+                    checkpoint.last_event_id,
+                    checkpoint.processed_count as i64,
+                    checkpoint.forecast_count as i64,
+                    checkpoint.outcome_count as i64,
+                    checkpoint.skipped_count as i64,
+                    checkpoint.degraded_count as i64,
+                    checkpoint.failed_count as i64,
+                    checkpoint.last_error,
+                    checkpoint.updated_at_ms
+                ],
             )?;
             Ok(())
         })
@@ -1094,39 +1104,26 @@ impl ContractWhaleRepo for SqliteStore {
                 FROM contract_funding_snapshots
                 WHERE symbol = ?1 AND ts >= ?2 AND ts <= ?3
                 UNION ALL
-                SELECT ts_bucket, exchange, symbol, funding_rate
-                FROM contract_funding_1m
-                WHERE symbol = ?1 AND ts_bucket >= ?2 AND ts_bucket <= ?3
+                SELECT m.ts_bucket + 59999, m.exchange, m.symbol, m.funding_rate
+                FROM contract_funding_1m m
+                WHERE m.symbol = ?1 AND m.ts_bucket >= ?2 - 59999 AND m.ts_bucket <= ?3 - 59999
+                  AND NOT EXISTS (
+                    SELECT 1 FROM contract_funding_snapshots r
+                    WHERE r.symbol = m.symbol AND r.exchange = m.exchange
+                      AND r.ts >= m.ts_bucket AND r.ts < m.ts_bucket + 60000
+                  )
                 ORDER BY ts ASC, exchange ASC, symbol ASC
                 "#,
             )?;
             let rows = stmt.query_map(params![symbol, from_ts, to_ts], |row| {
-                let snapshot = ContractFundingSnapshot {
+                Ok(ContractFundingSnapshot {
                     ts: row.get(0)?,
                     exchange: exchange_from_key(row.get::<_, String>(1)?.as_str()),
                     symbol: row.get(2)?,
                     funding_rate: row.get(3)?,
-                };
-                Ok((
-                    format!(
-                        "{}:{}:{}",
-                        row.get::<_, String>(1)?,
-                        snapshot.symbol,
-                        snapshot.ts.div_euclid(60_000)
-                    ),
-                    snapshot,
-                ))
+                })
             })?;
-            let mut snapshots = Vec::new();
-            let mut last_key = None;
-            for row in rows {
-                let (key, snapshot) = row?;
-                if last_key.as_deref() != Some(key.as_str()) {
-                    snapshots.push(snapshot);
-                    last_key = Some(key);
-                }
-            }
-            Ok(snapshots)
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
 
@@ -1944,13 +1941,19 @@ impl ContractWhaleRepo for SqliteStore {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
-                SELECT payload_json
-                  FROM contract_whale_behavior_horizon_outcomes
-                 WHERE symbol = ?1
-                   AND event_ts < ?2
-                   AND outcome_version = ?3
-                 ORDER BY event_ts DESC
-                 LIMIT ?4
+                WITH eligible_episode_horizons AS (
+                    SELECT episode_id, horizon_sec, MAX(event_ts) AS latest_event
+                    FROM contract_whale_behavior_horizon_outcomes
+                    WHERE symbol = ?1 AND event_ts < ?2 AND outcome_version IN (?3, ?5)
+                    GROUP BY episode_id, horizon_sec
+                    ORDER BY latest_event DESC, episode_id, horizon_sec LIMIT ?4
+                )
+                SELECT outcome.payload_json
+                FROM contract_whale_behavior_horizon_outcomes outcome
+                JOIN eligible_episode_horizons selected
+                  ON selected.episode_id = outcome.episode_id AND selected.horizon_sec = outcome.horizon_sec
+                WHERE outcome.symbol = ?1 AND outcome.event_ts < ?2 AND outcome.outcome_version IN (?3, ?5)
+                ORDER BY outcome.event_ts DESC, outcome.event_id, outcome.outcome_version
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -1958,7 +1961,8 @@ impl ContractWhaleRepo for SqliteStore {
                     symbol,
                     before_ts,
                     crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
-                    limit as i64
+                    limit as i64,
+                    crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION
                 ],
                 |row| row.get::<_, String>(0),
             )?;
@@ -1970,7 +1974,10 @@ impl ContractWhaleRepo for SqliteStore {
         })
     }
 
-    fn delete_contract_whale_horizon_outcomes_for_version(&self, version: &str) -> anyhow::Result<usize> {
+    fn delete_contract_whale_horizon_outcomes_for_version(
+        &self,
+        version: &str,
+    ) -> anyhow::Result<usize> {
         self.with_write_connection(|conn| {
             Ok(conn.execute(
                 "DELETE FROM contract_whale_behavior_horizon_outcomes WHERE outcome_version = ?1",
@@ -2068,7 +2075,10 @@ impl ContractWhaleRepo for SqliteStore {
         })
     }
 
-    fn delete_contract_whale_impact_forecasts_for_version(&self, version: &str) -> anyhow::Result<usize> {
+    fn delete_contract_whale_impact_forecasts_for_version(
+        &self,
+        version: &str,
+    ) -> anyhow::Result<usize> {
         self.with_write_connection(|conn| {
             Ok(conn.execute(
                 "DELETE FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",

@@ -6,5 +6,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    setupFiles: ["src/tests/networkBoundarySetup.js"],
+    maxWorkers: 2,
   },
 });

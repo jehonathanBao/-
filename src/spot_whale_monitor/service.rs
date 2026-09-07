@@ -172,6 +172,75 @@ impl SpotWhaleService {
         self.set_exchange_status(SpotExchange::Bitfinex, "disconnected", false, None);
     }
 
+    /// Public-market evidence as of an event, independent of the spot whale threshold.
+    pub(crate) fn contract_flow_context(
+        &self,
+        symbol: &str,
+        at: i64,
+        window_sec: u64,
+    ) -> crate::contract_whale_monitor::types::ContractWhaleSpotConfirmationContext {
+        use crate::contract_whale_monitor::types::ContractWhaleSpotConfirmationContext as Context;
+        if !self.enabled || !spot_whale_runtime_config().exchanges.binance_enabled {
+            return Context {
+                status: "disabled".into(),
+                ..Context::default()
+            };
+        }
+        let from = at.saturating_sub(window_sec.clamp(5, 3600) as i64 * 1000);
+        let state = self.state.read();
+        let mut buy = 0.0;
+        let mut sell = 0.0;
+        let mut latest = None;
+        let mut count = 0;
+        for trade in state.trades.iter().filter(|trade| {
+            trade.exchange == SpotExchange::Binance
+                && trade.symbol.eq_ignore_ascii_case(symbol)
+                && trade.ts > from
+                && trade.ts <= at
+                && trade.qty_base.is_finite()
+                && trade.qty_base > 0.0
+        }) {
+            match trade.side {
+                SpotTradeSide::Buy => buy += trade.qty_base,
+                SpotTradeSide::Sell => sell += trade.qty_base,
+            }
+            count += 1;
+            latest = Some(latest.unwrap_or(trade.ts).max(trade.ts));
+        }
+        if count < 3 || latest.is_none_or(|ts| at.saturating_sub(ts) > 5000) {
+            return Context {
+                status: "no_spot_sample".into(),
+                confirmation_type: "unavailable".into(),
+                ..Context::default()
+            };
+        }
+        let total = buy + sell;
+        let net = buy - sell;
+        let dominance = net.abs() / total;
+        Context {
+            status: "available".into(),
+            confirmation_type: "spot_context_only".into(),
+            direction: if dominance < 0.10 {
+                "neutral"
+            } else if net > 0.0 {
+                "buy"
+            } else {
+                "sell"
+            }
+            .into(),
+            score: (dominance * 75.0).round().clamp(0.0, 75.0) as u8,
+            latest_signal_at: latest,
+            signal_type: Some("binance_spot_public_flow".into()),
+            total_volume_btc: Some(total),
+            net_volume_btc: Some(net),
+            dominance: Some(dominance),
+            final_result: Some(
+                "Event-time public spot flow; not actor identity or probability".into(),
+            ),
+            ..Context::default()
+        }
+    }
+
     pub fn ingest_live_trade(&self, trade: SpotTrade) {
         let signals = self.ingest_trade(trade);
         for signal in signals {

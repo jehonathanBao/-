@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::{
     market_data::event_bus::{MarketDataBus, MarketDataEvent},
@@ -16,7 +17,10 @@ use crate::{
 
 use super::manager::{mark_book, mark_message, mark_parse_error, mark_trade, set_status};
 
-const URL: &str = "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth20@100ms/ethusdt@trade/ethusdt@depth20@100ms";
+const MARKET_URL: &str =
+    "wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade";
+const BOOK_URL: &str =
+    "wss://fstream.binance.com/public/stream?streams=btcusdt@depth20@100ms/ethusdt@depth20@100ms";
 const REST_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
 const CONNECT_TIMEOUT_SECS: u64 = 8;
 const REST_POLL_INTERVAL_MS: u64 = 1000;
@@ -49,18 +53,52 @@ struct RestAggTrade {
 }
 
 pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHealth>>>) {
+    let connected = Arc::new(RwLock::new([false; 2]));
+    tokio::join!(
+        run_channel(
+            MARKET_URL,
+            0,
+            connected.clone(),
+            bus.clone(),
+            health.clone()
+        ),
+        run_channel(BOOK_URL, 1, connected, bus, health)
+    );
+}
+
+fn channel_status(
+    connected: &RwLock<[bool; 2]>,
+    channel: usize,
+    status: VenueConnectionStatus,
+) -> VenueConnectionStatus {
+    let mut states = connected.write();
+    states[channel] = matches!(status, VenueConnectionStatus::Connected);
+    if matches!(status, VenueConnectionStatus::Connected) && !states.iter().all(|live| *live) {
+        VenueConnectionStatus::Degraded
+    } else {
+        status
+    }
+}
+
+async fn run_channel(
+    url: &str,
+    channel: usize,
+    connected: Arc<RwLock<[bool; 2]>>,
+    bus: MarketDataBus,
+    health: Arc<RwLock<BTreeMap<String, VenueHealth>>>,
+) {
     let rest_client = reqwest::Client::new();
     loop {
         set_status(
             &bus,
             &health,
             Venue::Binance,
-            VenueConnectionStatus::Connecting,
+            channel_status(&connected, channel, VenueConnectionStatus::Connecting),
             None,
         );
         match tokio::time::timeout(
             Duration::from_secs(CONNECT_TIMEOUT_SECS),
-            connect_async(URL),
+            connect_async(url),
         )
         .await
         {
@@ -69,13 +107,24 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                     &bus,
                     &health,
                     Venue::Binance,
-                    VenueConnectionStatus::Connected,
+                    channel_status(&connected, channel, VenueConnectionStatus::Connected),
                     None,
                 );
-                let (_, mut read) = ws.split();
-                while let Some(message) = read.next().await {
+                let (mut write, mut read) = ws.split();
+                while let Ok(Some(message)) =
+                    tokio::time::timeout(Duration::from_secs(30), read.next()).await
+                {
                     match message {
                         Ok(message) => {
+                            if let Message::Ping(payload) = message {
+                                if write.send(Message::Pong(payload)).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                            if matches!(message, Message::Close(_)) {
+                                break;
+                            }
                             if let Ok(text) = message.to_text() {
                                 mark_message(&bus, &health, Venue::Binance);
                                 handle_message(text, &bus, &health);
@@ -86,7 +135,11 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                                 &bus,
                                 &health,
                                 Venue::Binance,
-                                VenueConnectionStatus::Degraded,
+                                channel_status(
+                                    &connected,
+                                    channel,
+                                    VenueConnectionStatus::Degraded,
+                                ),
                                 Some(error.to_string()),
                             );
                             break;
@@ -99,10 +152,12 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                     &bus,
                     &health,
                     Venue::Binance,
-                    VenueConnectionStatus::Error,
+                    channel_status(&connected, channel, VenueConnectionStatus::Error),
                     Some(error.to_string()),
                 );
-                if let Err(error) = run_rest_polling(&rest_client, &bus, &health).await {
+                if let Err(error) =
+                    run_rest_polling(&rest_client, &bus, &health, channel == 0).await
+                {
                     set_status(
                         &bus,
                         &health,
@@ -117,12 +172,14 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
                     &bus,
                     &health,
                     Venue::Binance,
-                    VenueConnectionStatus::Degraded,
+                    channel_status(&connected, channel, VenueConnectionStatus::Degraded),
                     Some(format!(
                         "binance websocket connect timed out after {CONNECT_TIMEOUT_SECS}s; using REST fallback"
                     )),
                 );
-                if let Err(error) = run_rest_polling(&rest_client, &bus, &health).await {
+                if let Err(error) =
+                    run_rest_polling(&rest_client, &bus, &health, channel == 0).await
+                {
                     set_status(
                         &bus,
                         &health,
@@ -137,7 +194,7 @@ pub async fn run(bus: MarketDataBus, health: Arc<RwLock<BTreeMap<String, VenueHe
             &bus,
             &health,
             Venue::Binance,
-            VenueConnectionStatus::Reconnecting,
+            channel_status(&connected, channel, VenueConnectionStatus::Reconnecting),
             None,
         );
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -148,6 +205,7 @@ async fn run_rest_polling(
     client: &reqwest::Client,
     bus: &MarketDataBus,
     health: &Arc<RwLock<BTreeMap<String, VenueHealth>>>,
+    market_channel: bool,
 ) -> anyhow::Result<()> {
     set_status(
         bus,
@@ -164,8 +222,11 @@ async fn run_rest_polling(
         if tokio::time::Instant::now() >= fallback_deadline {
             return Ok(());
         }
-        fetch_rest_trades(client, bus, health).await?;
-        fetch_rest_depth(client, bus, health).await?;
+        if market_channel {
+            fetch_rest_trades(client, bus, health).await?;
+        } else {
+            fetch_rest_depth(client, bus, health).await?;
+        }
     }
 }
 
@@ -298,6 +359,24 @@ fn parse_levels(levels: Vec<[String; 2]>) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn book_connection_cannot_hide_a_disconnected_trade_stream() {
+        let state = RwLock::new([false; 2]);
+        assert_eq!(
+            channel_status(&state, 1, VenueConnectionStatus::Connected),
+            VenueConnectionStatus::Degraded
+        );
+        assert_eq!(
+            channel_status(&state, 0, VenueConnectionStatus::Connected),
+            VenueConnectionStatus::Connected
+        );
+        channel_status(&state, 0, VenueConnectionStatus::Reconnecting);
+        assert_eq!(
+            channel_status(&state, 1, VenueConnectionStatus::Connected),
+            VenueConnectionStatus::Degraded
+        );
+    }
 
     fn test_health() -> Arc<RwLock<BTreeMap<String, VenueHealth>>> {
         let mut map = BTreeMap::new();

@@ -220,6 +220,20 @@ fn cwm_v3_discord_gate_uses_confirmed_grade_not_legacy_rank() {
     signal.discord_reason = "medium_or_low_display_only".to_string();
     let mut assessment = sample_v3_assessment(ContractEventImpactGrade::A);
 
+    let unsafe_source = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &signal,
+        &assessment,
+        &cooldown,
+        signal.ts,
+    );
+    assert!(
+        !unsafe_source.allowed,
+        "canonical A cannot bypass source quality floors"
+    );
+    signal.severity = ContractWhaleSeverity::High;
+    signal.score = 80;
+    signal.data_quality = 70;
     let allowed = evaluate_contract_whale_discord_v3_gate(
         &settings,
         &signal,

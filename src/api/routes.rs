@@ -29,6 +29,7 @@ pub async fn healthz() -> Json<serde_json::Value> {
         "ok": true,
         "readOnly": true,
         "runtimeModified": false,
+        "sourceRevision": option_env!("BUILD_GIT_SHA").unwrap_or("development"),
         "status": "healthy"
     }))
 }

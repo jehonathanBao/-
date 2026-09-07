@@ -19,7 +19,7 @@ use super::{
 const BINANCE_FUTURES_STREAM_BASE: &str = "wss://fstream.binance.com/market/stream?streams=";
 const BINANCE_ALL_MARKET_CONTEXT_STREAM_URL: &str =
     "wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s/!ticker@arr";
-const BINANCE_FORCE_ORDER_STREAM_URL: &str = "wss://fstream.binance.com/ws/!forceOrder@arr";
+const BINANCE_FORCE_ORDER_STREAM_URL: &str = "wss://fstream.binance.com/market/ws/!forceOrder@arr";
 const BINANCE_FUTURES_REST_BASE: &str = "https://fapi.binance.com";
 const RECONNECT_DELAY_MS: u64 = 1_000;
 const MAX_STREAMS_PER_CONNECTION: usize = 200;

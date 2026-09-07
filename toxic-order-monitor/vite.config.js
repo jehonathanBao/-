@@ -10,7 +10,17 @@ const operatorToken = process.env.OPERATOR_TOKEN || process.env.OPERATOR_API_TOK
 export default defineConfig({
   root,
   cacheDir: "node_modules/.vite",
-  plugins: [react()],
+  plugins: [react(), {
+    name: "public-build-provenance",
+    generateBundle() {
+      const revision = process.env.VITE_GIT_SHA || "development";
+      if (!/^(development|[a-f0-9]{40})$/.test(revision)) {
+        throw new Error("Invalid public source revision");
+      }
+      this.emitFile({ type: "asset", fileName: "build-info.json",
+        source: JSON.stringify({ sourceRevision: revision }) });
+    },
+  }],
   build: {
     rollupOptions: {
       input: {

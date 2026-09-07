@@ -1225,6 +1225,7 @@ fn observed_metric_lineage() -> std::collections::BTreeMap<String, MetricLineage
 
 fn sample_cwm_signal() -> ContractWhaleSignal {
     let mut signal = ContractWhaleSignal {
+        sustained_flow: None,
         id: "contract-whale:BTC:15:1700000000000:buy".to_string(),
         ts: 1_700_000_000_000,
         symbol: "BTC".to_string(),

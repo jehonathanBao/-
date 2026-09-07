@@ -1305,6 +1305,7 @@ mod tests {
 
     fn sample_cwm_signal(ts: i64) -> ContractWhaleSignal {
         let mut signal = ContractWhaleSignal {
+            sustained_flow: None,
             id: format!("contract-whale:BTC:15:{ts}:buy"),
             ts,
             symbol: "BTC".to_string(),

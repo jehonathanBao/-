@@ -855,6 +855,13 @@ describe("signals api mapping", () => {
     expect(signals.length).toBeGreaterThan(0);
     expect(signals.every((signal) => signal.isLive === false)).toBe(true);
   });
+
+  it("never substitutes demo data in a production build", async () => {
+    vi.stubEnv("DEV", false);
+    vi.stubEnv("VITE_USE_DEMO_SIGNALS", "true");
+    axios.get.mockResolvedValueOnce({ data: { items: [] } });
+    expect(await fetchSignals()).toEqual([]);
+  });
 });
 
 function inboxItem({

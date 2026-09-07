@@ -364,6 +364,7 @@ struct ContractWhaleWarmupState {
 }
 
 pub struct ContractWhaleResponseRuntime<'a> {
+    pub flow_buckets: &'a [ContractFlowBucket],
     pub venue_health: Option<&'a VenueHealthMap>,
     pub baselines: &'a BTreeMap<u64, ContractWhaleQualityBaseline>,
     pub liquidations: &'a BTreeMap<u64, ContractWhaleLiquidationContext>,
@@ -432,6 +433,7 @@ fn build_contract_whale_summary_value(
         symbol_enabled,
         config.dry_run,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health: Some(&venue_health),
             baselines: &baselines,
             liquidations: &liquidations,
@@ -999,6 +1001,7 @@ pub async fn contract_whale_rating_health_route(State(state): State<AppState>) -
     Ok(Json(serde_json::json!({
         "dataState":"fresh", "degraded":false, "servedAt":now,
         "collectorStatus": crate::contract_whale_monitor::collector_binance::collector_status(),
+        "liquidationCollector": crate::contract_whale_monitor::collector_binance::collector_health(),
         "snapshot":snapshot
     })))
 }
@@ -1172,6 +1175,7 @@ pub async fn contract_whale_trading_decisions_route(
                     config.enabled,
                     config.dry_run,
                     ContractWhaleResponseRuntime {
+                        flow_buckets: &[],
                         venue_health: Some(&venue_health),
                         baselines: &BTreeMap::new(),
                         liquidations: &BTreeMap::new(),
@@ -1322,6 +1326,7 @@ pub async fn contract_whale_intelligence_terminal_route(
                     config.enabled,
                     config.dry_run,
                     ContractWhaleResponseRuntime {
+                        flow_buckets: &[],
                         venue_health: Some(&venue_health),
                         baselines: &BTreeMap::new(),
                         liquidations: &BTreeMap::new(),
@@ -1433,6 +1438,7 @@ fn build_contract_whale_terminal_live_or_persisted_response(
             enabled,
             dry_run,
             ContractWhaleResponseRuntime {
+                flow_buckets: &[],
                 venue_health: Some(venue_health),
                 baselines: &baselines,
                 liquidations: &liquidations,
@@ -1880,10 +1886,26 @@ fn enrich_contract_whale_response(
     spot_context: &ContractWhaleSpotConfirmationContext,
 ) {
     for signal in &mut response.items {
-        signal.spot_confirmation = spot_confirmation_for_signal(signal, spot_context);
+        // Historical snapshots keep event-time evidence. Current spot is summary context only.
         decorate_market_structure_scores(signal, response.summary.overall_data_quality);
     }
     refresh_response_summary_from_items(response, spot_context);
+}
+
+pub(crate) fn enrich_production_evidence(state: &AppState, items: &mut [ContractWhaleSignal]) {
+    if let Some(store) = state.contract_whale_store() {
+        let diagnostics = decorate_contract_whale_oi_contexts(&store, items);
+        state.record_contract_whale_oi_resolver_diagnostics(diagnostics);
+    }
+    for signal in items {
+        let context = state.spot_whale_service().contract_flow_context(
+            &signal.symbol,
+            signal.ts,
+            signal.window_sec,
+        );
+        signal.spot_confirmation = spot_confirmation_for_signal(signal, &context);
+        decorate_market_structure_scores(signal, signal.data_quality);
+    }
 }
 
 fn decorate_market_structure_scores(signal: &mut ContractWhaleSignal, _data_quality: u8) {
@@ -2078,6 +2100,16 @@ fn spot_confirmation_for_signal(
 ) -> ContractWhaleSpotConfirmationContext {
     if base.status != "available" {
         return base.clone();
+    }
+    if base
+        .latest_signal_at
+        .is_none_or(|ts| ts > signal.ts || signal.ts.saturating_sub(ts) > 60_000)
+    {
+        return ContractWhaleSpotConfirmationContext {
+            status: "no_spot_sample".into(),
+            confirmation_type: "unavailable_at_event".into(),
+            ..Default::default()
+        };
     }
     let contract_direction = direction_key(signal.direction);
     let spot_direction = base.direction.as_str();
@@ -3715,6 +3747,7 @@ pub fn build_contract_whale_response_with_runtime(
         enabled,
         dry_run,
         ContractWhaleResponseRuntime {
+            flow_buckets: &[],
             venue_health,
             baselines: &BTreeMap::new(),
             liquidations: &BTreeMap::new(),
@@ -3759,7 +3792,7 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
         let Some(window) = flow_window_for_seconds(flow_state, window_sec) else {
             continue;
         };
-        let Some(stats) = stats_from_flow_window(
+        let Some(mut stats) = stats_from_flow_window(
             window,
             symbol,
             now,
@@ -3771,6 +3804,13 @@ pub fn build_contract_whale_response_with_runtime_and_baselines(
             continue;
         };
         detector_input_windows += 1;
+        stats.micro_volatility =
+            crate::contract_whale_monitor::aggregator::micro_volatility_from_buckets(
+                runtime.flow_buckets,
+                symbol,
+                now,
+                &contract_whale_runtime_config(),
+            );
         let decision =
             inspect_contract_whale_signal_with_config(&stats, &contract_whale_runtime_config());
         if let Some(signal) = decision.signal {
@@ -4454,22 +4494,27 @@ pub(crate) fn load_market_context(
 
 fn data_quality_score(window: &FlowWindow) -> u8 {
     let runtime_config = contract_whale_runtime_config();
-    let active_exchange_count = window
-        .venue_breakdown
+    let expected = runtime_config.enabled_exchanges();
+    if expected.is_empty() {
+        return 0;
+    }
+    let fresh = expected
         .iter()
-        .filter(|(exchange, breakdown)| {
-            runtime_config.exchange_enabled(exchange)
-                && breakdown.aggressive_buy_btc + breakdown.aggressive_sell_btc > 0.0
+        .filter(|exchange| {
+            window.venue_breakdown.get(*exchange).is_some_and(|row| {
+                let total = row.aggressive_buy_btc + row.aggressive_sell_btc;
+                total.is_finite()
+                    && total > 0.0
+                    && row.trade_count > 0
+                    && row.last_trade_ts.is_some_and(|ts| {
+                        ts <= window.now_ts && window.now_ts.saturating_sub(ts) <= 5000
+                    })
+                    && !window.data_quality.stale_venues.contains(exchange)
+            })
         })
         .count();
-    let has_active_trades = active_exchange_count > 0;
-    if has_active_trades && active_exchange_count >= 2 {
-        85
-    } else if has_active_trades {
-        70
-    } else {
-        40
-    }
+    // Completeness relative to configured sources, not a reward for venue count.
+    (40.0 + 55.0 * fresh as f64 / expected.len() as f64).round() as u8
 }
 
 fn market_context_quality_score(base: u8, context: &ContractWhaleMarketContext) -> u8 {

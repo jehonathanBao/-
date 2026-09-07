@@ -137,6 +137,7 @@ pub fn rolling_window_stats_with_config(
     for bucket in buckets {
         if !bucket.symbol.eq_ignore_ascii_case(symbol)
             || bucket.ts_bucket < start_ts
+            || bucket.ts_bucket > now_ts
             || !config.exchange_enabled(&bucket.exchange)
         {
             continue;
@@ -250,7 +251,7 @@ pub fn rolling_window_stats_with_config(
     })
 }
 
-fn micro_volatility_from_buckets(
+pub(crate) fn micro_volatility_from_buckets(
     buckets: &[ContractFlowBucket],
     symbol: &str,
     now_ts: i64,
@@ -350,6 +351,7 @@ pub fn liquidation_context_for_window(
     for bucket in buckets {
         if !bucket.symbol.eq_ignore_ascii_case(symbol)
             || bucket.ts_bucket < start_ts
+            || bucket.ts_bucket > now_ts
             || !config.exchange_enabled(&bucket.exchange)
         {
             continue;

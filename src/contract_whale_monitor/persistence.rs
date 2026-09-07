@@ -430,10 +430,26 @@ fn enrich_impact_fragments_with_raw_evidence(
 
     for fragment in fragments {
         let fragment_from = fragment.start_time_ms.saturating_sub(window_ms);
+        let fresh_sources = flow_buckets
+            .iter()
+            .filter(|bucket| {
+                bucket.ts_bucket >= fragment.end_time_ms.saturating_sub(5_000)
+                    && bucket.ts_bucket.saturating_add(999) <= fragment.end_time_ms
+                    && bucket.trade_count > 0
+                    && bucket.buy_notional_usd.is_finite()
+                    && bucket.sell_notional_usd.is_finite()
+                    && bucket.buy_notional_usd + bucket.sell_notional_usd > 0.0
+            })
+            .map(|bucket| bucket.exchange.to_ascii_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+        fragment
+            .confirmed_sources
+            .retain(|source| fresh_sources.contains(source));
         let fragment_flow_buckets = flow_buckets
             .iter()
             .filter(|bucket| {
-                bucket.ts_bucket >= fragment_from && bucket.ts_bucket <= fragment.end_time_ms
+                bucket.ts_bucket >= fragment_from
+                    && bucket.ts_bucket.saturating_add(999) <= fragment.end_time_ms
             })
             .map(|bucket| ImpactBucketContribution {
                 identity: format!(
@@ -454,7 +470,9 @@ fn enrich_impact_fragments_with_raw_evidence(
             }
             fragment.confirmed_sources = volume_by_source
                 .into_iter()
-                .filter(|(_, volume)| *volume >= MIN_CONFIRMED_SOURCE_VOLUME_BTC)
+                .filter(|(source, volume)| {
+                    *volume >= MIN_CONFIRMED_SOURCE_VOLUME_BTC && fresh_sources.contains(source)
+                })
                 .map(|(source, _)| source)
                 .collect();
             // Persist the deduplicated market-window turnover whenever the
@@ -484,7 +502,8 @@ fn enrich_impact_fragments_with_raw_evidence(
         fragment.liquidation_buckets = liquidation_buckets
             .iter()
             .filter(|bucket| {
-                bucket.ts_bucket >= fragment_from && bucket.ts_bucket <= fragment.end_time_ms
+                bucket.ts_bucket >= fragment_from
+                    && bucket.ts_bucket.saturating_add(999) <= fragment.end_time_ms
             })
             .map(|bucket| ImpactBucketContribution {
                 identity: format!(
@@ -1258,8 +1277,7 @@ pub async fn prune_contract_whale_retention_nonblocking(
     let funding_raw_cutoff = retention_cutoff_ms(now_ms, retention.funding_raw_days);
     let liquidation_cutoff = retention_cutoff_ms(now_ms, retention.liquidation_days);
     let reference_price_cutoff = retention_cutoff_ms(now_ms, retention.reference_price_days);
-    let aggregate_context_cutoff =
-        retention_cutoff_ms(now_ms, retention.aggregate_context_days);
+    let aggregate_context_cutoff = retention_cutoff_ms(now_ms, retention.aggregate_context_days);
     let signal_cutoff = retention_cutoff_ms(now_ms, retention.signals_days);
     let impact_b_cutoff = retention_cutoff_ms(now_ms, retention.impact_b_days);
     let started_at = std::time::Instant::now();
@@ -1533,6 +1551,20 @@ mod impact_materialization_tests {
         );
         assert_eq!(episodes[0].live_liquidation_btc, Some(3.0));
         assert_eq!(episodes[0].live_liquidation_notional_usd, Some(300_000.0));
+
+        let mut stale = fragment("stale-evidence");
+        stale.end_time_ms += 10_000;
+        enrich_impact_fragments_with_raw_evidence(
+            &store,
+            "BTC",
+            15,
+            std::slice::from_mut(&mut stale),
+        )
+        .unwrap();
+        assert!(
+            stale.confirmed_sources.is_empty(),
+            "old volume is not a fresh source confirmation"
+        );
 
         let _ = std::fs::remove_file(path);
     }

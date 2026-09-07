@@ -14,7 +14,7 @@ use super::{
     },
 };
 
-pub const CONTRACT_WHALE_BEHAVIOR_VERSION: &str = "cwm_behavior_v1";
+pub const CONTRACT_WHALE_BEHAVIOR_VERSION: &str = "cwm_behavior_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BehaviorOutcomeMarkouts {
@@ -156,13 +156,15 @@ pub fn build_detection_behavior(
             .main_exchange
             .as_deref()
             .is_some_and(|source| source.eq_ignore_ascii_case("binance"));
-    let binance_spot = signal.active_sources.spot.iter().any(|source| {
-        source.exchange.eq_ignore_ascii_case("binance") && source.enabled
-    });
+    let binance_spot = aligned_spot_evidence(signal);
     let source_strength = 100.0
         * ((if binance_perp { 1 } else { 0 })
             + (if binance_spot { 1 } else { 0 })
-            + (if signal.classification_v2.oi_available { 1 } else { 0 })) as f64
+            + (if signal.classification_v2.oi_available {
+                1
+            } else {
+                0
+            })) as f64
         / 3.0;
     let attribution_completeness = attribution_completeness(signal);
     let mut confidence = (0.30 * f64::from(signal.data_quality)
@@ -240,10 +242,11 @@ pub fn apply_post_event_validation(
         return assessment;
     }
     let threshold = assessment.confirmation_rule.threshold_bps.abs();
-    let latest = markouts
-        .iter()
-        .rev()
-        .find_map(|(horizon, markout)| markout.map(|value| (horizon.as_str(), value)));
+    let latest = markouts.iter().rev().find_map(|(horizon, markout)| {
+        markout
+            .filter(|value| value.is_finite())
+            .map(|value| (horizon.as_str(), value))
+    });
     let Some((horizon, markout)) = latest else {
         return assessment;
     };
@@ -256,7 +259,23 @@ pub fn apply_post_event_validation(
     } else {
         BehaviorDecisionState::AwaitingConfirmation
     };
-    assessment.decision_state = state;
+    // Price follow-through validates the price hypothesis, never missing actor evidence.
+    let can_confirm = matches!(
+        assessment.decision_state,
+        BehaviorDecisionState::AwaitingConfirmation | BehaviorDecisionState::Confirmed
+    ) && assessment.contradicting_evidence.is_empty()
+        && ["oi_available", "spot_confirmation"].iter().all(|code| {
+            assessment
+                .supporting_evidence
+                .iter()
+                .any(|item| item.code == *code)
+        });
+    if (state != BehaviorDecisionState::Confirmed || can_confirm)
+        && (assessment.decision_state != BehaviorDecisionState::Observe
+            || state == BehaviorDecisionState::Invalidated)
+    {
+        assessment.decision_state = state;
+    }
     assessment.post_event_validation = Some(BehaviorPostEventValidation {
         horizon: horizon.to_string(),
         markout_bps: markout,
@@ -383,8 +402,6 @@ fn attribution_completeness(signal: &ContractWhaleSignal) -> f64 {
     let oi = f64::from(signal.classification_v2.oi_available) * 35.0;
     let liquidation = if signal.liquidation_long_btc > 0.0 || signal.liquidation_short_btc > 0.0 {
         25.0
-    } else if !signal.liquidation_suspected {
-        15.0
     } else {
         0.0
     };
@@ -393,7 +410,7 @@ fn attribution_completeness(signal: &ContractWhaleSignal) -> f64 {
     } else {
         0.0
     };
-    let spot = if signal.spot_confirmation.score > 0 {
+    let spot = if aligned_spot_evidence(signal) {
         15.0
     } else {
         0.0
@@ -421,9 +438,7 @@ fn add_signal_evidence(
     } else {
         missing.push(evidence("binance_perp_flow_unavailable", None));
     }
-    if signal.active_sources.spot.iter().any(|source| {
-        source.exchange.eq_ignore_ascii_case("binance") && source.enabled
-    }) {
+    if aligned_spot_evidence(signal) {
         supporting.push(evidence(
             "binance_spot_flow",
             Some(f64::from(signal.spot_confirmation.score)),
@@ -446,9 +461,14 @@ fn add_signal_evidence(
     } else {
         missing.push(evidence("price_response_unclear", None));
     }
-    if signal.spot_confirmation.score > 0 {
+    if aligned_spot_evidence(signal) {
         supporting.push(evidence(
             "spot_confirmation",
+            Some(f64::from(signal.spot_confirmation.score)),
+        ));
+    } else if signal.spot_confirmation.status == "divergent" {
+        contradicting.push(evidence(
+            "spot_divergence",
             Some(f64::from(signal.spot_confirmation.score)),
         ));
     } else {
@@ -481,6 +501,16 @@ fn add_signal_evidence(
     if signal.classification_v2.oi_evidence_degraded {
         contradicting.push(evidence("oi_evidence_degraded", None));
     }
+}
+
+fn aligned_spot_evidence(signal: &ContractWhaleSignal) -> bool {
+    signal.spot_confirmation.status == "confirmed"
+        && signal.spot_confirmation.confirmation_type == "confirms_contract_direction"
+        && signal.spot_confirmation.score > 0
+        && signal
+            .spot_confirmation
+            .latest_signal_at
+            .is_some_and(|ts| ts <= signal.ts && signal.ts.saturating_sub(ts) <= 60_000)
 }
 
 fn confidence_level(score: u8) -> BehaviorConfidenceLevel {
@@ -556,11 +586,15 @@ mod tests {
     }
 
     #[test]
-    fn outcome_only_changes_decision_state() {
+    fn price_follow_through_does_not_confirm_missing_behavior_evidence() {
         let original = build_detection_behavior(&signal(), None, 10);
         let result =
             apply_post_event_validation(original.clone(), &[("30s".to_string(), Some(20.0))], 40);
-        assert_eq!(result.decision_state, BehaviorDecisionState::Confirmed);
+        assert_eq!(result.decision_state, BehaviorDecisionState::Observe);
+        assert_eq!(
+            result.post_event_validation.as_ref().unwrap().state,
+            BehaviorDecisionState::Confirmed
+        );
         assert_eq!(result.hypothesis, original.hypothesis);
         assert_eq!(result.confidence_score, original.confidence_score);
     }

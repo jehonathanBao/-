@@ -67,6 +67,9 @@ fn reconstruct_trajectory(
     mut actions: Vec<ContractWhaleAction>,
 ) -> ContractWhaleTrajectory {
     actions.sort_by_key(|action| action.ts);
+    actions.dedup_by(|a, b| {
+        a.ts == b.ts && a.exchange == b.exchange && a.action_type == b.action_type
+    });
     let start_ts = actions.first().map(|action| action.ts).unwrap_or_default();
     let end_ts = actions.last().map(|action| action.ts).unwrap_or_default();
     let regime_path = compact_regime_path(&actions);
@@ -100,7 +103,16 @@ fn action_type(signal: &ContractWhaleSignal) -> &'static str {
 }
 
 fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
-    if actions.is_empty() {
+    let independent = actions
+        .iter()
+        .map(|action| action.ts)
+        .collect::<BTreeSet<_>>();
+    let duration = independent
+        .last()
+        .zip(independent.first())
+        .map(|(end, start)| end.saturating_sub(*start))
+        .unwrap_or(0);
+    if independent.len() < 3 || duration < 60_000 {
         return "unknown";
     }
     let stop_hunt_count = actions
@@ -138,6 +150,43 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
         "liquidity_manipulation"
     } else {
         "unknown"
+    }
+}
+
+#[cfg(test)]
+mod evidence_regressions {
+    use super::*;
+
+    fn buy(ts: i64) -> ContractWhaleAction {
+        ContractWhaleAction {
+            ts,
+            symbol: "BTC".to_string(),
+            action_type: "aggressive_buy".to_string(),
+            volume: 100.0,
+            price_impact: 0.1,
+            exchange: "binance".to_string(),
+        }
+    }
+
+    #[test]
+    fn one_action_is_not_sustained_accumulation() {
+        assert_eq!(infer_intent(&[buy(1_000)]), "unknown");
+    }
+
+    #[test]
+    fn duplicate_actions_are_not_independent_evidence() {
+        assert_eq!(
+            infer_intent(&[buy(1_000), buy(1_000), buy(1_000)]),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn sustained_independent_buy_actions_support_a_hypothesis() {
+        assert_eq!(
+            infer_intent(&[buy(1_000), buy(31_000), buy(61_000)]),
+            "accumulation"
+        );
     }
 }
 
@@ -234,10 +283,10 @@ fn compute_aggressiveness_curve(actions: &[ContractWhaleAction]) -> Vec<f64> {
 
 fn trajectory_conclusion(intent: &str) -> &'static str {
     match intent {
-        "accumulation" => "连续买方压力和承接行为占优，疑似主力分批吸筹。",
-        "distribution" => "连续卖方压力占优，疑似主力分段派发或退出流动性。",
-        "stop_hunting" => "轨迹包含清算/扫损特征，更接近止损流动性猎取。",
-        "liquidity_manipulation" => "多段信号方向接近但意图混合，更像区间内流动性测试。",
+        "accumulation" => "持续买方压力候选；需结合持仓量区分建仓与空头平仓，不能识别交易者身份。",
+        "distribution" => "持续卖方压力候选；需结合持仓量区分建仓与多头平仓，不能识别交易者身份。",
+        "stop_hunting" => "出现清算或扫损形态；不能据此确认主动猎取止损的意图。",
+        "liquidity_manipulation" => "多段方向混合，交易意图尚不能归因。",
         _ => "单点轨迹证据不足，保持观察。",
     }
 }

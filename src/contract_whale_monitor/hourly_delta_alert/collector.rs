@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -14,7 +14,7 @@ use super::{
 use crate::contract_whale_monitor::{LOG_PREFIX, LOG_TARGET};
 
 pub const BINANCE_BTC_USDT_PERP_KLINE_1H_STREAM: &str =
-    "wss://fstream.binance.com/ws/btcusdt@kline_1h";
+    "wss://fstream.binance.com/market/ws/btcusdt@kline_1h";
 pub const BINANCE_FUTURES_KLINES_URL: &str = "https://fapi.binance.com/fapi/v1/klines";
 const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
 
@@ -30,8 +30,13 @@ pub async fn run_binance_hourly_kline_collector(
             "{} connecting binance 1h kline stream",
             LOG_PREFIX
         );
-        match connect_async(BINANCE_BTC_USDT_PERP_KLINE_1H_STREAM).await {
-            Ok((ws, _)) => {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            connect_async(BINANCE_BTC_USDT_PERP_KLINE_1H_STREAM),
+        )
+        .await
+        {
+            Ok(Ok((ws, _))) => {
                 reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
@@ -39,8 +44,10 @@ pub async fn run_binance_hourly_kline_collector(
                     "{} binance 1h kline stream connected",
                     LOG_PREFIX
                 );
-                let (_, mut read) = ws.split();
-                while let Some(message) = read.next().await {
+                let (mut write, mut read) = ws.split();
+                while let Ok(Some(message)) =
+                    tokio::time::timeout(Duration::from_secs(90), read.next()).await
+                {
                     match message {
                         Ok(Message::Text(text)) => {
                             match parse_binance_kline_ws_message(&text, &config.exchange) {
@@ -74,6 +81,11 @@ pub async fn run_binance_hourly_kline_collector(
                             }
                         }
                         Ok(Message::Close(_)) => break,
+                        Ok(Message::Ping(payload)) => {
+                            if write.send(Message::Pong(payload)).await.is_err() {
+                                break;
+                            }
+                        }
                         Ok(_) => {}
                         Err(error) => {
                             tracing::warn!(
@@ -88,7 +100,7 @@ pub async fn run_binance_hourly_kline_collector(
                     }
                 }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     event = format!("{LOG_EVENTS_PREFIX}.ws.connect_failed"),
@@ -97,6 +109,7 @@ pub async fn run_binance_hourly_kline_collector(
                     LOG_PREFIX
                 );
             }
+            Err(_) => tracing::warn!(target: LOG_TARGET, "binance hourly kline connect timed out"),
         }
 
         reconnect_attempt = reconnect_attempt.saturating_add(1);

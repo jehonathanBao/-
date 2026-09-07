@@ -1,8 +1,10 @@
 ARG RUST_IMAGE=rust:1-bookworm
 FROM ${RUST_IMAGE} AS builder
 
-ARG CARGO_BUILD_JOBS=2
+ARG CARGO_BUILD_JOBS=1
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+ARG SOURCE_REVISION=development
+ENV BUILD_GIT_SHA=${SOURCE_REVISION}
 
 WORKDIR /app
 
@@ -15,6 +17,8 @@ COPY web ./web
 RUN cargo build --release --bin btc-toxic-flow-monitor-rs --bin cwm_v4_backfill --bin cwm_v42_backfill
 
 FROM debian:bookworm-slim AS runtime
+ARG SOURCE_REVISION=development
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION}
 
 WORKDIR /app
 

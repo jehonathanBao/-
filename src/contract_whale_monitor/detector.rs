@@ -85,6 +85,21 @@ pub fn inspect_contract_whale_signal_with_config(
     stats: &ContractWhaleWindowStats,
     config: &ContractWhaleRuntimeConfig,
 ) -> ContractWhaleDetectionDecision {
+    inspect_with_admission(stats, config, false)
+}
+
+pub(crate) fn sustained_candidate_signal(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+) -> Option<ContractWhaleSignal> {
+    inspect_with_admission(stats, config, true).signal
+}
+
+fn inspect_with_admission(
+    stats: &ContractWhaleWindowStats,
+    config: &ContractWhaleRuntimeConfig,
+    sustained: bool,
+) -> ContractWhaleDetectionDecision {
     if !config.symbol_enabled(&stats.symbol) {
         return rejected(ContractWhaleDetectorRejectReason::SymbolDisabled);
     }
@@ -109,7 +124,7 @@ pub fn inspect_contract_whale_signal_with_config(
     let liquidation_suspected = liquidation_suspected(&scoring_stats, config);
     scoring_stats.liquidation_driven = liquidation_suspected;
     let severity = classify_severity(&scoring_stats, signal_type, config, &resolution);
-    if severity == ContractWhaleSeverity::Calm {
+    if severity == ContractWhaleSeverity::Calm && !sustained {
         return rejected(reject_reason_for_calm(
             &scoring_stats,
             signal_type,
@@ -117,6 +132,11 @@ pub fn inspect_contract_whale_signal_with_config(
             &resolution,
         ));
     }
+    let severity = if sustained {
+        ContractWhaleSeverity::Medium
+    } else {
+        severity
+    };
     let score_breakdown = score_contract_whale_breakdown_with_profile(
         &scoring_stats,
         signal_type,
@@ -211,6 +231,7 @@ pub fn inspect_contract_whale_signal_with_config(
     let net_volume = round(stats.net_volume_btc, 3);
     let final_result = final_result_text(&classification_v2, liquidation_suspected);
     let signal = ContractWhaleSignal {
+        sustained_flow: None,
         id: format!(
             "contract-whale:{}:{}:{}:{}",
             stats.symbol,
@@ -424,16 +445,18 @@ fn build_liquidation_force(
             + (abs_price_move / 0.35).clamp(0.0, 1.0) * 0.30
             + (stats.dynamic_multiple.unwrap_or(0.0) / 10.0).clamp(0.0, 1.0) * 0.25,
     );
-    let forced_pct =
-        (liq_ratio * 1.35 + (liquidation_suspected as u8 as f64) * 0.15).clamp(0.0, 0.80);
-    let retail_pct = ((1.0 - forced_pct) * (1.0 - dominance) * 0.45).clamp(0.0, 0.35);
-    let whale_pct = (1.0 - forced_pct - retail_pct).clamp(0.0, 1.0);
-    let dominant_driver = if forced_pct >= whale_pct && forced_pct >= retail_pct {
-        "liquidation_cascade"
-    } else if retail_pct > whale_pct {
-        "retail_follow_flow"
+    // The stream is sampled, and residual flow reveals neither wallet size nor identity.
+    let forced_pct = if total_liq > 0.0 {
+        liq_ratio.clamp(0.0, 1.0)
     } else {
-        "whale_initiated_flow"
+        0.0
+    };
+    let retail_pct = 0.0;
+    let whale_pct = 0.0;
+    let dominant_driver = if forced_pct >= 0.25 {
+        "liquidation_cascade_candidate"
+    } else {
+        "active_flow_unattributed"
     }
     .to_string();
 
@@ -501,6 +524,8 @@ fn build_liquidation_force(
         estimated_forced_size_usd: round(stats.liquidation_context.liq_notional_usd, 2),
         zones,
         flow_attribution: ContractWhaleForcedFlowAttribution {
+            unknown_pct: round(1.0 - forced_pct, 4),
+            semantics: "sampled_liquidation_to_flow_ratio_not_participant_shares".into(),
             whale_pct: round(whale_pct, 4),
             retail_pct: round(retail_pct, 4),
             liquidation_pct: round(forced_pct, 4),
@@ -583,7 +608,7 @@ fn build_market_driver(
     let derivatives_pct = derivatives_raw / total;
     let reflexivity_pct = reflexivity_raw / total;
     let drivers = [
-        ("whale_intent", whale_pct, whale_raw),
+        ("active_flow_unattributed", whale_pct, whale_raw),
         ("liquidity_forcing", liquidity_pct, liquidity_raw),
         ("derivatives_pressure", derivatives_pct, derivatives_raw),
         ("reflexivity_feedback", reflexivity_pct, reflexivity_raw),
@@ -596,7 +621,7 @@ fn build_market_driver(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied()
-        .unwrap_or(("whale_intent", whale_pct, whale_raw));
+        .unwrap_or(("active_flow_unattributed", whale_pct, whale_raw));
     let market_state = market_driver_state(primary_driver, liquidation_force, stats);
     let components = drivers
         .into_iter()
@@ -633,8 +658,8 @@ fn market_driver_state(
             _ => "derivatives_pressure_regime",
         },
         "reflexivity_feedback" => "reflexive_trend_phase",
-        _ if stats.net_volume_btc < 0.0 => "whale_led_distribution",
-        _ => "whale_led_expansion",
+        _ if stats.net_volume_btc < 0.0 => "active_sell_pressure",
+        _ => "active_buy_pressure",
     }
 }
 
@@ -650,10 +675,10 @@ fn market_driver_interpretation(primary_driver: &str, market_state: &str) -> Str
         "reflexivity_feedback" => {
             "价格移动已进入反馈放大阶段，趋势、成交和参与者反应正在互相强化。".to_string()
         }
-        _ if market_state == "whale_led_distribution" => {
-            "价格主要由主动卖方资金推动，当前更接近鲸鱼主导的派发/砸盘。".to_string()
+        _ if market_state == "active_sell_pressure" => {
+            "主动卖方压力占优；模型权重不是主力占比，不能证明交易者身份。".to_string()
         }
-        _ => "价格主要由主动鲸鱼资金推动，清算和反馈因素为辅助。".to_string(),
+        _ => "主动买方压力占优；模型权重不是主力占比，不能证明交易者身份。".to_string(),
     }
 }
 

@@ -695,6 +695,7 @@ mod tests {
 
     fn sample_signal() -> ContractWhaleSignal {
         ContractWhaleSignal {
+            sustained_flow: None,
             id: "contract-whale:BTC:15:1700000000000:buy".to_string(),
             ts: 1_700_000_000_000,
             symbol: "BTC".to_string(),
@@ -894,6 +895,8 @@ mod tests {
                     reason: "short squeeze cluster".to_string(),
                 }],
                 flow_attribution: ContractWhaleForcedFlowAttribution {
+                    unknown_pct: 0.54,
+                    semantics: "sampled_liquidation_to_flow_ratio_not_participant_shares".into(),
                     whale_pct: 0.42,
                     retail_pct: 0.12,
                     liquidation_pct: 0.46,

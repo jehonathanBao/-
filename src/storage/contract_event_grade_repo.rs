@@ -75,8 +75,12 @@ impl ContractEventGradeRepo {
     ) -> anyhow::Result<()> {
         let reason_codes_json = serde_json::to_string(&assessment.reason_codes)?;
         let evidence_json = serde_json::to_string(&assessment.evidence)?;
-        let grade = serde_json::to_string(&assessment.grade)?.trim_matches('"').to_string();
-        let state = serde_json::to_string(&assessment.state)?.trim_matches('"').to_string();
+        let grade = serde_json::to_string(&assessment.grade)?
+            .trim_matches('"')
+            .to_string();
+        let state = serde_json::to_string(&assessment.state)?
+            .trim_matches('"')
+            .to_string();
         self.store.with_transaction(|tx| {
             // Keep exactly one authoritative grade row per episode.  The
             // alias table below is the fan-out index for source/projection
@@ -165,7 +169,11 @@ impl ContractEventGradeRepo {
         grade_version: &str,
     ) -> anyhow::Result<Option<ContractEventImpactAssessment>> {
         let mut candidate_ids = Vec::<String>::new();
-        for alias in aliases.iter().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        for alias in aliases
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
             if !candidate_ids.iter().any(|candidate| candidate == alias) {
                 candidate_ids.push(alias.to_string());
             }
@@ -311,16 +319,16 @@ impl ContractEventGradeRepo {
     pub fn episode_alert_already_sent(
         &self,
         episode_id: &str,
-        grade_version: &str,
+        _grade_version: &str,
     ) -> anyhow::Result<bool> {
         self.store.with_connection(|conn| {
             conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM contract_event_impact_grades
-                     WHERE episode_id = ?1 AND grade_version = ?2
+                     WHERE episode_id = ?1
                        AND discord_sent_at_ms IS NOT NULL
                  )",
-                params![episode_id, grade_version],
+                params![episode_id],
                 |row| row.get(0),
             )
             .context("failed to check contract impact episode alert status")
