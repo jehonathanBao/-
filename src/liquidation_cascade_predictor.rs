@@ -106,6 +106,7 @@ pub struct LcpPriceZone {
 #[serde(rename_all = "camelCase")]
 pub struct LcpCascadeResponse {
     pub symbol: String,
+    #[serde(rename = "cascadePressureScore", alias = "cascadeProbability")]
     pub cascade_probability: f64,
     pub status: CascadeStatus,
     pub direction: CascadeDirection,

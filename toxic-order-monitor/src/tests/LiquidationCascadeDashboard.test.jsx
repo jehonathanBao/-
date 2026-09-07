@@ -129,7 +129,7 @@ function mockRequestsBySymbol(promises, options = {}) {
   fetchLiquidationCascade.mockImplementation((symbol) =>
     waitForRequest(symbol).then(() => readyResult({
       symbol: options.cascadeSymbolByRequest?.[symbol] || baseSymbol(symbol),
-      cascadeProbability: symbol === "ETHUSDT" ? 0.95 : 0.99,
+      cascadePressureScore: symbol === "ETHUSDT" ? 0.95 : 0.99,
       status: symbol === "ETHUSDT" ? "IMMINENT" : "ACTIVE",
       direction: "UP",
       components: {},

@@ -11,11 +11,9 @@ use url::Url;
 use crate::{
     contract_whale_monitor::{
         config::contract_whale_runtime_config,
-        discord::{
-            notification_lane, should_push_contract_whale_discord, ContractWhaleNotificationLane,
-        },
+        discord::should_push_contract_whale_discord,
         discord_gate::classify_contract_whale_signal_semantic,
-        emission::episode_key,
+        impact_grade::{ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeState},
         log_events,
         types::{
             ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignal,
@@ -119,7 +117,9 @@ struct ContractWhaleDiscordCooldownState {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ContractWhaleDiscordCooldownKey {
-    episode_key: String,
+    symbol: String,
+    direction: ContractWhaleDirection,
+    signal_type: ContractWhaleSignalType,
 }
 
 impl ContractWhaleDiscordCooldownStore {
@@ -209,20 +209,6 @@ pub fn evaluate_contract_whale_discord_gate(
     ) {
         return gate(false, "liquidation_inferred_display_only");
     }
-    let lane = notification_lane(signal);
-    if lane == ContractWhaleNotificationLane::Observe {
-        return gate(
-            false,
-            if matches!(
-                signal.severity,
-                ContractWhaleSeverity::Medium | ContractWhaleSeverity::Calm
-            ) {
-                "observe_only"
-            } else {
-                "behavior_not_confirmed"
-            },
-        );
-    }
     let semantic_tier = classify_contract_whale_signal_semantic(signal);
     if !semantic_tier.allows_discord() {
         return gate(false, "observe_only");
@@ -245,6 +231,39 @@ pub fn evaluate_contract_whale_discord_gate(
     gate(true, "eligible")
 }
 
+/// Production V3 delivery decision. The grade assessment is the only
+/// importance/rank input; settings, warmup and cooldown are operational
+/// safeguards rather than an alternate rating path.
+pub fn evaluate_contract_whale_discord_v3_gate(
+    settings: &ContractWhaleDiscordSettings,
+    signal: &ContractWhaleSignal,
+    assessment: &ContractEventImpactAssessment,
+    cooldown_store: &ContractWhaleDiscordCooldownStore,
+    now_ms: i64,
+) -> ContractWhaleDiscordGateDecision {
+    if !settings.enabled {
+        return gate(false, "disabled");
+    }
+    if assessment.state != ImpactGradeState::Confirmed
+        || !matches!(
+            assessment.grade,
+            ContractEventImpactGrade::A | ContractEventImpactGrade::S
+        )
+    {
+        return gate(false, "v3_grade_not_confirmed");
+    }
+    if signal.discord_reason == "warmup_collect_only" {
+        return gate(false, "warmup_collect_only");
+    }
+    if let Some(reason) = cooldown_store.skip_reason(signal, settings.cooldown_sec, now_ms) {
+        return gate(false, reason);
+    }
+    if settings.dry_run {
+        return gate(true, "dry_run");
+    }
+    gate(true, "v3_confirmed_grade")
+}
+
 pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Value {
     let severity = severity_label(signal.severity);
     let direction = direction_label(signal.direction);
@@ -264,25 +283,14 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
         .collect::<Vec<_>>()
         .join("\n");
 
-    let lane = notification_lane(signal);
     let description = if signal.liquidation_suspected && !signal.final_result.contains("强平") {
         format!("疑似强平推动，主力确定性降低：{}", signal.final_result)
     } else {
         signal.final_result.clone()
     };
 
-    let lane_label = match lane {
-        ContractWhaleNotificationLane::Behavior => "主力行为确认",
-        ContractWhaleNotificationLane::Impact => "市场冲击",
-        ContractWhaleNotificationLane::Observe => "合约流候选",
-    };
-    let display_signal_type = if lane == ContractWhaleNotificationLane::Behavior {
-        signal_type.to_string()
-    } else {
-        impact_signal_type_label(signal)
-    };
     serde_json::json!({
-        "content": format!("{} {lane_label} {severity}: {display_signal_type}", signal.symbol),
+        "content": format!("{} 主力合约异动 {severity}: {signal_type}", signal.symbol),
         "embeds": [{
             "title": format!("{} Contract Whale Flow", signal.symbol),
             "description": description,
@@ -290,7 +298,7 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
             "fields": [
                 {"name": "Symbol", "value": signal.symbol.clone(), "inline": true},
                 {"name": "Event Type", "value": "contract_whale_flow", "inline": true},
-                {"name": "Detector Type", "value": display_signal_type, "inline": true},
+                {"name": "Detector Type", "value": signal_type, "inline": true},
                 {"name": "Signal Severity", "value": severity, "inline": true},
                 {"name": "Market Impact", "value": market_impact_label(signal), "inline": true},
                 {"name": "Push Reason", "value": push_reason_label(signal), "inline": true},
@@ -314,20 +322,10 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
                 {"name": "Final Result", "value": signal.final_result.clone(), "inline": false}
             ],
             "footer": {
-                "text": format!("Read-only candidate | Lane: {lane_label} | Signal: {}", signal.id)
+                "text": format!("Candidate only | Signal: {}", signal.id)
             }
         }]
     })
-}
-
-fn impact_signal_type_label(signal: &ContractWhaleSignal) -> String {
-    if signal.liquidation_suspected {
-        "清算驱动 / Liquidation Impact".to_string()
-    } else if let Some(level) = signal.impact_level.as_deref() {
-        format!("市场冲击 / Impact {level}")
-    } else {
-        "合约流冲击 / Contract Flow Impact".to_string()
-    }
 }
 
 fn trigger_price_label(total_volume_btc: f64, total_notional_usd: f64) -> String {
@@ -452,9 +450,40 @@ pub async fn notify_contract_whale_discord_with_cooldown(
     store: Option<SqliteStore>,
     cooldown_store: &ContractWhaleDiscordCooldownStore,
 ) -> ContractWhaleDiscordOutcome {
-    let payload = build_contract_whale_discord_payload(signal);
     let gate_decision =
         evaluate_contract_whale_discord_gate(settings, signal, cooldown_store, now_ms());
+    notify_contract_whale_discord_with_gate(settings, signal, store, cooldown_store, gate_decision)
+        .await
+}
+
+/// Send an already-confirmed v3 assessment without re-running the legacy
+/// severity/score gate. The payload and transport safeguards remain shared.
+pub async fn notify_contract_whale_discord_v3(
+    settings: &ContractWhaleDiscordSettings,
+    signal: &ContractWhaleSignal,
+    assessment: &ContractEventImpactAssessment,
+    store: Option<SqliteStore>,
+    cooldown_store: &ContractWhaleDiscordCooldownStore,
+) -> ContractWhaleDiscordOutcome {
+    let gate_decision = evaluate_contract_whale_discord_v3_gate(
+        settings,
+        signal,
+        assessment,
+        cooldown_store,
+        now_ms(),
+    );
+    notify_contract_whale_discord_with_gate(settings, signal, store, cooldown_store, gate_decision)
+        .await
+}
+
+async fn notify_contract_whale_discord_with_gate(
+    settings: &ContractWhaleDiscordSettings,
+    signal: &ContractWhaleSignal,
+    store: Option<SqliteStore>,
+    cooldown_store: &ContractWhaleDiscordCooldownStore,
+    gate_decision: ContractWhaleDiscordGateDecision,
+) -> ContractWhaleDiscordOutcome {
+    let payload = build_contract_whale_discord_payload(signal);
     if !gate_decision.allowed {
         tracing::info!(
             target: LOG_TARGET,
@@ -615,7 +644,9 @@ pub async fn notify_contract_whale_discord_with_cooldown(
 
 fn cooldown_key(signal: &ContractWhaleSignal) -> ContractWhaleDiscordCooldownKey {
     ContractWhaleDiscordCooldownKey {
-        episode_key: episode_key(signal),
+        symbol: signal.symbol.to_ascii_uppercase(),
+        direction: signal.direction,
+        signal_type: signal.signal_type,
     }
 }
 

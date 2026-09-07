@@ -171,12 +171,12 @@ if ($frontendRunning) {
     Write-Host "前端容器未运行" -ForegroundColor Red
 }
 
-Write-Host "检查宿主机5173和容器上游5174端口是否监听..." -ForegroundColor Cyan
-$portListening = netstat -ano | Select-String "5173|5174"
+Write-Host "检查宿主机5173端口是否监听..." -ForegroundColor Cyan
+$portListening = netstat -ano | Select-String "5173"
 if ($portListening) {
-    Write-Host "5173/5174端口正在监听" -ForegroundColor Green
+    Write-Host "5173端口正在监听" -ForegroundColor Green
 } else {
-    Write-Host "5173/5174端口未监听" -ForegroundColor Red
+    Write-Host "5173端口未监听" -ForegroundColor Red
 }
 
 Write-Host "脚本执行完成: $(Get-Date)" -ForegroundColor Gray

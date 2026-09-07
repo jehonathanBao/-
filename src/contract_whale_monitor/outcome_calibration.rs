@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 
-use super::types::{ContractFlowBucket, ContractWhaleActiveFlowDirection, ContractWhaleSignal};
+use super::types::{
+    ContractFlowBucket, ContractWhaleActiveFlowDirection, ContractWhaleSignal,
+    ContractWhaleStructureInterpretation,
+};
 
-pub const CONTRACT_WHALE_OUTCOME_VERSION: &str = "v2_volatility_shadow";
+pub const CONTRACT_WHALE_OUTCOME_VERSION: &str = "v3_impact_grade_outcomes";
 
 const HORIZON_PRICE_FRESHNESS_MS: i64 = 5_000;
 const HISTORICAL_L2_UNAVAILABLE: &str = "historical_l2_unavailable";
@@ -11,6 +14,8 @@ const HISTORICAL_L2_UNAVAILABLE: &str = "historical_l2_unavailable";
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleSignalOutcome {
     pub signal_id: String,
+    #[serde(default)]
+    pub episode_id: Option<String>,
     pub symbol: String,
     pub signal_ts: i64,
     pub signal_type: String,
@@ -61,13 +66,10 @@ pub fn evaluate_contract_whale_signal_outcome(
     if now_ms < signal.ts.saturating_add(30_000) {
         return None;
     }
-    let direction = match signal.classification_v2.flow_direction {
-        ContractWhaleActiveFlowDirection::BuyDominant => Some(1.0),
-        ContractWhaleActiveFlowDirection::SellDominant => Some(-1.0),
-        ContractWhaleActiveFlowDirection::Balanced | ContractWhaleActiveFlowDirection::Unknown => {
-            None
-        }
-    };
+    // Outcomes must use the side that the strategy would actually trade.  For
+    // absorption/suppression the aggressive flow side is intentionally the
+    // opposite of the trade side, so flow_direction is not sufficient.
+    let direction = strategy_direction(signal);
     let prices = weighted_prices_by_second(signal, buckets, now_ms);
     let entry_price = signal
         .order_price_usd
@@ -118,6 +120,11 @@ pub fn evaluate_contract_whale_signal_outcome(
     });
     Some(ContractWhaleSignalOutcome {
         signal_id: signal.id.clone(),
+        episode_id: Some(if signal.event_lifecycle.event_id.trim().is_empty() {
+            signal.id.clone()
+        } else {
+            signal.event_lifecycle.event_id.clone()
+        }),
         symbol: signal.symbol.clone(),
         signal_ts: signal.ts,
         signal_type: signal.classification_v2.legacy_signal_type.clone(),
@@ -224,6 +231,31 @@ fn absolute_return_bps(entry_price: f64, mark_price: f64) -> f64 {
 
 fn signed_markout_bps(entry_price: f64, mark_price: f64, direction: f64) -> f64 {
     direction * ((mark_price / entry_price) - 1.0) * 10_000.0
+}
+
+fn strategy_direction(signal: &ContractWhaleSignal) -> Option<f64> {
+    if matches!(
+        signal.classification_v2.flow_direction,
+        ContractWhaleActiveFlowDirection::Balanced | ContractWhaleActiveFlowDirection::Unknown
+    ) {
+        return None;
+    }
+    match signal.classification_v2.structure_interpretation {
+        ContractWhaleStructureInterpretation::MainForcePushUp
+        | ContractWhaleStructureInterpretation::DownsideAbsorption
+        | ContractWhaleStructureInterpretation::ActiveBuyPressure => Some(1.0),
+        ContractWhaleStructureInterpretation::MainForceDumpDown
+        | ContractWhaleStructureInterpretation::UpsideSuppression
+        | ContractWhaleStructureInterpretation::ActiveSellPressure => Some(-1.0),
+        ContractWhaleStructureInterpretation::UnclearDirectionalFlow => {
+            match signal.classification_v2.flow_direction {
+                ContractWhaleActiveFlowDirection::BuyDominant => Some(1.0),
+                ContractWhaleActiveFlowDirection::SellDominant => Some(-1.0),
+                ContractWhaleActiveFlowDirection::Balanced
+                | ContractWhaleActiveFlowDirection::Unknown => None,
+            }
+        }
+    }
 }
 
 fn realized_volatility_bps(prices: &[(i64, f64)]) -> Option<f64> {

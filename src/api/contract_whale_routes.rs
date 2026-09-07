@@ -30,15 +30,11 @@ use crate::{
             market_context_from_snapshots, percentile_level_for_volume,
             rolling_window_stats_with_config, RollingWindowStatsOptions,
         },
-        behavior::{
-            assess_contract_whale_behavior, behavior_input_from_signal,
-            transition_behavior_assessment,
-        },
         classification::resolve_contract_whale_oi_context_from_window,
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         detector::{inspect_contract_whale_signal_with_config, ContractWhaleDetectorRejectReason},
-        discord::{meets_contract_whale_display_total_volume, sanitize_contract_whale_impact},
+        discord::meets_contract_whale_display_total_volume,
         event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
         event_quality::{
             apply_contract_whale_event_quality_filter, decorate_contract_whale_event_quality,
@@ -644,7 +640,7 @@ pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>)
             "degraded": true,
             "errorCode": "contract_outcome_store_unavailable",
             "servedAt": now_ms(),
-            "shadowOnly": true,
+            "shadowOnly": contract_whale_runtime_config().impact_grade_v3.shadow_mode,
         })));
     };
     match store.contract_whale_outcome_summary(CONTRACT_WHALE_OUTCOME_VERSION) {
@@ -669,10 +665,433 @@ pub async fn contract_whale_outcome_summary_route(State(state): State<AppState>)
                 "degraded": true,
                 "errorCode": "contract_outcome_summary_query_failed",
                 "servedAt": now_ms(),
-                "shadowOnly": true,
+                "shadowOnly": contract_whale_runtime_config().impact_grade_v3.shadow_mode,
             })))
         }
     }
+}
+
+/// V3 audit and V4.1 rating health snapshot. This endpoint is intentionally read-only and
+/// cheap enough for a one-minute poll from the dashboard/alert worker.
+pub async fn contract_whale_rating_health_route(State(state): State<AppState>) -> ApiJsonResult {
+    let Some(store) = state.contract_whale_store() else {
+        return Ok(Json(
+            serde_json::json!({"dataState":"degraded","errorCode":"contract_rating_store_unavailable"}),
+        ));
+    };
+    let now = now_ms();
+    let since = now.saturating_sub(5 * 60 * 1_000);
+    let snapshot = store.with_connection(|conn| {
+        let assessment_count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1",
+            [since], |row| row.get(0))?;
+        let confirmed_count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND g.state = 'confirmed'",
+            [since], |row| row.get(0))?;
+        let unavailable: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND g.state <> 'confirmed'",
+            [since], |row| row.get(0))?;
+        let mut latencies = Vec::new();
+        // `created_at_ms` is the durable row age, not compute latency.  The
+        // materializer stamps `updated_at_ms` at commit, so this delta is a
+        // safe lower-bound latency metric until collector start timestamps are
+        // available (and avoids false multi-day alerts after a restart).
+        let mut stmt = conn.prepare(
+            "SELECT MAX(MAX(0, g.assessed_at_ms - h.ts))
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND g.state = 'confirmed'
+              GROUP BY g.episode_id")?;
+        for value in stmt.query_map([since], |row| row.get::<_, i64>(0))? { latencies.push(value?); }
+        latencies.sort_unstable();
+        let percentile = |p: f64| -> i64 {
+            if latencies.is_empty() { return 0; }
+            let idx = ((latencies.len() - 1) as f64 * p).round() as usize;
+            latencies[idx]
+        };
+        let orphan_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_signals_history h
+              WHERE h.ts >= ?1 AND NOT EXISTS (
+                SELECT 1 FROM contract_event_impact_aliases a
+                 WHERE a.alias_id = h.signal_id OR a.source_event_id = h.signal_id)",
+            [since], |row| row.get(0))?;
+        let mut distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT g.grade, COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND g.state = 'confirmed'
+              GROUP BY g.grade")?;
+        for row in stmt.query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+            let (grade, count) = row?;
+            distribution.insert(grade, serde_json::json!(count));
+        }
+        let mut state_distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT state, COUNT(DISTINCT episode_id)
+               FROM contract_event_impact_grades
+              WHERE assessed_at_ms >= ?1
+              GROUP BY state")?;
+        for row in stmt.query_map([since], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+            let (state, count) = row?;
+            state_distribution.insert(state, serde_json::json!(count));
+        }
+        let mut baseline_samples = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT symbol || ':' || window_sec, sample_count FROM contract_event_impact_baselines")?;
+        for row in stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+            let (key, count) = row?;
+            baseline_samples.insert(key, serde_json::json!(count));
+        }
+        let mut baseline_progress = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT symbol || ':' || window_sec, sample_count, required_samples, ready
+               FROM contract_event_impact_baseline_progress")?;
+        for row in stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })? {
+            let (key, count, required, ready) = row?;
+            baseline_progress.insert(key, serde_json::json!({
+                "sampleCount": count,
+                "requiredSamples": required,
+                "progress": if required > 0 { (count as f64 / required as f64).min(1.0) } else { 0.0 },
+                "ready": ready != 0,
+            }));
+        }
+        let recent_signals: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_signals_history WHERE ts >= ?1", [since], |row| row.get(0))?;
+        let liquidation_missing: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND json_extract(g.evidence_json, '$.liveLiquidationBtc') IS NULL",
+            [since], |row| row.get(0))?;
+        let turnover_missing: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT g.episode_id)
+               FROM contract_event_impact_grades g
+               JOIN contract_event_impact_aliases a
+                 ON a.episode_id = g.episode_id AND a.grade_version = g.grade_version
+               JOIN contract_whale_signals_history h ON h.signal_id = a.alias_id
+              WHERE h.ts >= ?1 AND json_extract(g.evidence_json, '$.uniqueTurnoverBtc') IS NULL",
+            [since], |row| row.get(0))?;
+        // V4.1 is the Binance-only empirical multi-horizon layer. Keep its
+        // readiness visible beside the legacy V3 health numbers so operators
+        // can tell "a row exists" from "the selected horizon is mature".
+        let v4_version = crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION;
+        let v4_forecast_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v4_version], |row| row.get(0))?;
+        let v4_outcome_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_behavior_horizon_outcomes WHERE outcome_version = ?1",
+            [v4_version], |row| row.get(0))?;
+        let v4_stable_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_impact_forecasts
+              WHERE forecast_version = ?1 AND maturity_state = 'stable' AND impact_grade <> 'U'",
+            [v4_version], |row| row.get(0))?;
+        let v4_warming_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_impact_forecasts
+              WHERE forecast_version = ?1 AND maturity_state IN ('warming_up', 'provisional')",
+            [v4_version], |row| row.get(0))?;
+        let v4_max_effective_samples: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(effective_sample_count), 0)
+               FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v4_version], |row| row.get(0))?;
+        let v4_latest_computed_at: Option<i64> = conn.query_row(
+            "SELECT MAX(computed_at_ms) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v4_version], |row| row.get(0))?;
+        let v4_source_policy_violations: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_impact_forecasts
+              WHERE forecast_version = ?1
+                AND COALESCE(json_extract(payload_json, '$.sourcePolicy'), '') <> 'binance_only'",
+            [v4_version], |row| row.get(0))?;
+        let mut v4_grade_distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT impact_grade, COUNT(*) FROM contract_whale_impact_forecasts
+              WHERE forecast_version = ?1 GROUP BY impact_grade",
+        )?;
+        for row in stmt.query_map([v4_version], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (grade, count) = row?;
+            v4_grade_distribution.insert(grade, serde_json::json!(count));
+        }
+        let mut v4_maturity_distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare(
+            "SELECT maturity_state, COUNT(*) FROM contract_whale_impact_forecasts
+              WHERE forecast_version = ?1 GROUP BY maturity_state",
+        )?;
+        for row in stmt.query_map([v4_version], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (state, count) = row?;
+            v4_maturity_distribution.insert(state, serde_json::json!(count));
+        }
+        let (v4_reference_complete, v4_reference_total): (i64, i64) = conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN reference_price_available = 1 THEN 1 ELSE 0 END), 0), COUNT(*)
+               FROM (SELECT json_extract(payload_json, '$.referencePriceAvailable') AS reference_price_available
+                       FROM contract_whale_behavior_horizon_outcomes WHERE outcome_version = ?1)",
+            [v4_version],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let v4_checkpoint = conn
+            .query_row(
+                "SELECT job_key, status, last_event_ts, last_event_id, processed_count,
+                         forecast_count, outcome_count, skipped_count, degraded_count,
+                         failed_count, last_error, updated_at_ms
+                    FROM contract_whale_v4_backfill_checkpoint
+                   WHERE job_key = 'cwm_v4_1_walk_forward'",
+                [],
+                |row| {
+                    Ok(serde_json::json!({
+                        "jobKey": row.get::<_, String>(0)?,
+                        "status": row.get::<_, String>(1)?,
+                        "lastEventTs": row.get::<_, Option<i64>>(2)?,
+                        "lastEventId": row.get::<_, Option<String>>(3)?,
+                        "processed": row.get::<_, i64>(4)?,
+                        "forecasts": row.get::<_, i64>(5)?,
+                        "outcomes": row.get::<_, i64>(6)?,
+                        "skipped": row.get::<_, i64>(7)?,
+                        "degraded": row.get::<_, i64>(8)?,
+                        "failed": row.get::<_, i64>(9)?,
+                        "lastError": row.get::<_, Option<String>>(10)?,
+                        "updatedAtMs": row.get::<_, i64>(11)?,
+                    }))
+                },
+            )
+            .ok();
+        let v42_version = crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION;
+        let v42_forecast_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v42_version], |row| row.get(0))?;
+        let v42_outcome_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM contract_whale_behavior_horizon_outcomes WHERE outcome_version = ?1",
+            [v42_version], |row| row.get(0))?;
+        let v42_max_effective_samples: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(effective_sample_count), 0) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v42_version], |row| row.get(0))?;
+        let v42_latest_computed_at: Option<i64> = conn.query_row(
+            "SELECT MAX(computed_at_ms) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+            [v42_version], |row| row.get(0))?;
+        let mut v42_grade_distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare("SELECT impact_grade, COUNT(*) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1 GROUP BY impact_grade")?;
+        for row in stmt.query_map([v42_version], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+            let (grade, count) = row?;
+            v42_grade_distribution.insert(grade, serde_json::json!(count));
+        }
+        let mut v42_maturity_distribution = serde_json::Map::new();
+        let mut stmt = conn.prepare("SELECT maturity_state, COUNT(*) FROM contract_whale_impact_forecasts WHERE forecast_version = ?1 GROUP BY maturity_state")?;
+        for row in stmt.query_map([v42_version], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+            let (level, count) = row?;
+            v42_maturity_distribution.insert(level, serde_json::json!(count));
+        }
+        let gate_health = crate::contract_whale_monitor::impact_v4_2_gate::health(
+            &store,
+            &contract_whale_runtime_config().impact_v4_2,
+        )?;
+        let v42_ready = gate_health.enabled
+            && gate_health.armed
+            && !gate_health.force_closed
+            && gate_health.external_alerts_enabled
+            && gate_health.cohorts.iter().any(|cohort| cohort.state == "OPEN");
+        let v42_gate_reason = if v42_ready {
+            "auto_gate_open".to_string()
+        } else if gate_health.cohorts.is_empty() {
+            "awaiting_calibration_samples".to_string()
+        } else {
+            gate_health
+                .cohorts
+                .iter()
+                .find(|cohort| cohort.state != "OPEN")
+                .map(|cohort| cohort.reason.clone())
+                .unwrap_or_else(|| "awaiting_calibration_samples".to_string())
+        };
+        Ok(serde_json::json!({
+            "windowSec": 300,
+            "gradeCount": confirmed_count,
+            "assessmentCount": assessment_count,
+            "missingCount": unavailable,
+            "missingRate": if assessment_count > 0 { unavailable as f64 / assessment_count as f64 } else { 0.0 },
+            "latencyP50Ms": percentile(0.50),
+            "latencyP95Ms": percentile(0.95),
+            "gradeDistribution": distribution,
+            "stateDistribution": state_distribution,
+            "baselineSamples": baseline_samples,
+            "baselineProgress": baseline_progress,
+            "recentSignalCount": recent_signals,
+            "evidenceCoverage": {
+                "liquidationMissingRate": if assessment_count > 0 { liquidation_missing as f64 / assessment_count as f64 } else { 0.0 },
+                "turnoverMissingRate": if assessment_count > 0 { turnover_missing as f64 / assessment_count as f64 } else { 0.0 }
+            },
+            "v4_1": {
+                "forecastVersion": v4_version,
+                "sourcePolicy": "binance_only",
+                "forecastCount": v4_forecast_count,
+                "outcomeCount": v4_outcome_count,
+                "stableForecastCount": v4_stable_count,
+                "warmingUpForecastCount": v4_warming_count,
+                "maxEffectiveSampleCount": v4_max_effective_samples,
+                "latestComputedAtMs": v4_latest_computed_at,
+                "sourcePolicyViolationCount": v4_source_policy_violations,
+                "gradeDistribution": v4_grade_distribution,
+                "maturityDistribution": v4_maturity_distribution,
+                "referencePriceCoverage": if v4_reference_total > 0 { v4_reference_complete as f64 / v4_reference_total as f64 } else { 0.0 },
+                "backfillCheckpoint": v4_checkpoint,
+                "shadowMode": contract_whale_runtime_config().impact_v4_1.shadow_mode,
+                "directionalAlertsEnabled": contract_whale_runtime_config().impact_v4_1.directional_alerts_enabled,
+                "readyForProduction": false,
+                "gateReason": "walk_forward_validation_pending"
+            },
+            "v4_2": {
+                "forecastVersion": v42_version,
+                "sourcePolicy": "binance_only",
+                "forecastCount": v42_forecast_count,
+                "outcomeCount": v42_outcome_count,
+                "maxEffectiveSampleCount": v42_max_effective_samples,
+                "latestComputedAtMs": v42_latest_computed_at,
+                "gradeDistribution": v42_grade_distribution,
+                "maturityDistribution": v42_maturity_distribution,
+                "maturityThresholds": {"M1": 10, "M2": 30, "M3": 100, "M4": 300},
+                "shadowMode": contract_whale_runtime_config().impact_v4_2.shadow_mode,
+                "dashboardEarlyWarningEnabled": contract_whale_runtime_config().impact_v4_2.dashboard_early_warning_enabled,
+                "externalDirectionalAlertsEnabled": contract_whale_runtime_config().impact_v4_2.external_directional_alerts_enabled,
+                "readyForProduction": v42_ready,
+                "gateReason": v42_gate_reason
+            },
+            "v4_2_auto_gate": gate_health,
+            "projectionOrphanCount": orphan_count,
+            "alerts": {
+                "missingRateExceeded": assessment_count > 0 && unavailable as f64 / assessment_count as f64 > 0.005,
+                "latencyExceeded": percentile(0.95) > 3_000,
+                "projectionOrphans": orphan_count > 0
+                ,"noRecentGrades": recent_signals > 0 && confirmed_count == 0
+            }
+        }))
+    }).map_err(crate::api::contract_event_routes::internal_error)?;
+    // This endpoint is a read-only health snapshot. Repairs belong to the
+    // bounded maintenance worker; mutating grades during a dashboard poll
+    // would refresh assessed_at_ms and make recent-rating metrics lie.
+    Ok(Json(serde_json::json!({
+        "dataState":"fresh", "degraded":false, "servedAt":now,
+        "collectorStatus": crate::contract_whale_monitor::collector_binance::collector_status(),
+        "snapshot":snapshot
+    })))
+}
+
+/// Persisted V4.2 gate state for the operator panel. This is intentionally
+/// read-only; sample promotion is automatic. Arming/force-closing are only
+/// emergency environment/config switches and are not part of normal opening.
+pub async fn contract_whale_v42_gate_route(State(state): State<AppState>) -> ApiJsonResult {
+    let Some(store) = state.contract_whale_store() else {
+        return Ok(Json(serde_json::json!({
+            "dataState": "degraded",
+            "errorCode": "contract_rating_store_unavailable",
+        })));
+    };
+    let config = contract_whale_runtime_config().impact_v4_2;
+    match crate::contract_whale_monitor::impact_v4_2_gate::health(&store, &config) {
+        Ok(value) => Ok(Json(serde_json::json!({
+            "dataState": "fresh",
+            "degraded": false,
+            "servedAt": now_ms(),
+            "gate": value,
+        }))),
+        Err(error) => Ok(Json(serde_json::json!({
+            "dataState": "degraded",
+            "degraded": true,
+            "errorCode": "v42_gate_health_query_failed",
+            "message": error.to_string(),
+        }))),
+    }
+}
+
+/// Episode-level calibration report used during the seven-day shadow period.
+/// The query deduplicates by episode_id (falling back to signal_id for legacy
+/// rows) and returns monotonicity-ready aggregates with Wilson intervals.
+pub async fn contract_whale_v3_calibration_route(State(state): State<AppState>) -> ApiJsonResult {
+    let Some(store) = state.contract_whale_store() else {
+        return Ok(Json(
+            serde_json::json!({"dataState":"degraded","errorCode":"contract_rating_store_unavailable"}),
+        ));
+    };
+    let rows = store.with_connection(|conn| {
+        let mut stmt = conn.prepare(
+            "WITH episode_rows AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(episode_id, signal_id)
+                        ORDER BY evaluated_at DESC, signal_ts DESC, signal_id DESC
+                    ) AS episode_rank
+               FROM contract_whale_signal_outcomes
+              WHERE outcome_version = ?1
+            )
+            SELECT COALESCE(impact_level, 'UNRATED'),
+                   COUNT(*),
+                   AVG(follow_through_30s), AVG(follow_through_2m), AVG(follow_through_5m),
+                   AVG(markout_5m_bps), AVG(mfe_5m_bps), AVG(mae_5m_bps)
+              FROM episode_rows
+             WHERE episode_rank = 1
+             GROUP BY COALESCE(impact_level, 'UNRATED')
+             ORDER BY CASE impact_level WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 WHEN 'C' THEN 1 ELSE 0 END DESC")?;
+        let mut out = Vec::new();
+        for row in stmt.query_map([CONTRACT_WHALE_OUTCOME_VERSION], |row| {
+            let level: String = row.get(0)?;
+            let n: i64 = row.get(1)?;
+            let rate: Option<f64> = row.get(3)?;
+            let rate = rate.unwrap_or(0.0).clamp(0.0, 1.0);
+            let n_f = n.max(0) as f64;
+            let z = 1.96;
+            let denom = 1.0 + z * z / n_f.max(1.0);
+            let centre = (rate + z * z / (2.0 * n_f.max(1.0))) / denom;
+            let half = if n_f > 0.0 { z * ((rate * (1.0 - rate) / n_f + z * z / (4.0 * n_f * n_f)).sqrt()) / denom } else { 1.0 };
+            Ok(serde_json::json!({
+                "grade": level,
+                "episodeCount": n,
+                "followThrough30s": row.get::<_, Option<f64>>(2)?,
+                "followThrough2m": rate,
+                "followThrough5m": row.get::<_, Option<f64>>(4)?,
+                "avgMarkout5mBps": row.get::<_, Option<f64>>(5)?,
+                "avgMfe5mBps": row.get::<_, Option<f64>>(6)?,
+                "avgMae5mBps": row.get::<_, Option<f64>>(7)?,
+                "followThrough2mCi95": [ (centre - half).max(0.0), (centre + half).min(1.0) ]
+            }))
+        })? { out.push(row?); }
+        Ok(out)
+    }).map_err(crate::api::contract_event_routes::internal_error)?;
+    Ok(Json(serde_json::json!({
+        "dataState":"fresh", "degraded":false,
+        "shadowOnly": contract_whale_runtime_config().impact_grade_v3.shadow_mode,
+        "calibrationMode":"observational",
+        "walkForward":false,
+        "walkForwardValidated":false,
+        "minimumEpisodes":{"C":200,"B":200,"A":50,"S":20},
+        "shadowStartedAt": serde_json::Value::Null,
+        "items": rows
+    })))
 }
 
 pub async fn contract_whale_trading_decisions_route(
@@ -976,6 +1395,7 @@ pub async fn contract_whale_intelligence_terminal_route(
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_contract_whale_terminal_live_or_persisted_response(
     state: &AppState,
     flow_state: &FlowState,
@@ -1134,10 +1554,16 @@ pub async fn contract_whale_history_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
 ) -> ApiJsonResult {
-    let history_query = parse_history_query(&query)?;
+    let mut history_query = parse_history_query(&query)?;
+    let runtime_config = contract_whale_runtime_config();
+    let v3_impact_filter =
+        runtime_config.impact_grade_v3.enabled && history_query.impact_level.is_some();
+    if v3_impact_filter {
+        history_query.impact_grade_version =
+            Some(runtime_config.impact_grade_v3.grade_version.clone());
+    }
     let symbol_for_filter = history_query.symbol.as_deref().unwrap_or("all").to_string();
     let config = state.config().contract_whale_monitor;
-    let runtime_config = contract_whale_runtime_config();
     if let Some(meta) =
         contract_market_mismatch_meta(&runtime_config, history_query.exchange.as_deref())
     {
@@ -1179,6 +1605,10 @@ pub async fn contract_whale_history_route(
                     None,
                     ContractWhaleLifecycleClock::Live { now_ms: now_ms() },
                 );
+                crate::api::contract_event_routes::decorate_v3_signal_grades(
+                    Some(&store),
+                    &mut response.items,
+                );
                 enrich_contract_whale_response_with_state(
                     &mut response,
                     &state,
@@ -1208,6 +1638,10 @@ fn enrich_contract_whale_response_with_state(
     symbol: &str,
 ) {
     if let Some(store) = state.contract_whale_store() {
+        crate::api::contract_event_routes::decorate_v3_signal_grades(
+            Some(&store),
+            &mut response.items,
+        );
         let diagnostics = decorate_contract_whale_oi_contexts(&store, &mut response.items);
         state.record_contract_whale_oi_resolver_diagnostics(diagnostics);
     }
@@ -1381,11 +1815,6 @@ fn apply_resolved_oi_context(
     signal.classification_v2.oi_delta_pct = resolved.oi_delta_pct;
     signal.classification_v2.oi_available = resolved.oi_available;
     signal.classification_v2.oi_reason = resolved.oi_reason;
-    let previous = signal.behavior_assessment.clone();
-    signal.behavior_assessment = transition_behavior_assessment(
-        &previous,
-        assess_contract_whale_behavior(&behavior_input_from_signal(signal)),
-    );
 }
 
 fn apply_oi_window_evidence(
@@ -1433,11 +1862,6 @@ fn apply_oi_window_evidence(
                 .cloned();
         }
     }
-    let previous = signal.behavior_assessment.clone();
-    signal.behavior_assessment = transition_behavior_assessment(
-        &previous,
-        assess_contract_whale_behavior(&behavior_input_from_signal(signal)),
-    );
 }
 
 fn unavailable_oi_context(reason: &str) -> ContractWhaleResolvedOiContext {
@@ -1456,7 +1880,6 @@ fn enrich_contract_whale_response(
     spot_context: &ContractWhaleSpotConfirmationContext,
 ) {
     for signal in &mut response.items {
-        sanitize_contract_whale_impact(signal);
         signal.spot_confirmation = spot_confirmation_for_signal(signal, spot_context);
         decorate_market_structure_scores(signal, response.summary.overall_data_quality);
     }
@@ -5105,6 +5528,8 @@ pub fn parse_history_query(
         exchange: parse_exchange_filter(query.exchange.as_deref())?,
         min_abs_net_volume_btc: parse_net_direction_filter(query.net_direction.as_deref())?,
         impact_level: parse_impact_level_filter(query.impact_level.as_deref())?,
+        impact_grade_version: None,
+        threshold_profile: None,
         min_notional_usd: parse_optional_nonnegative_f64(
             query.min_notional_usd.as_deref(),
             "min_notional_usd",
@@ -5145,6 +5570,9 @@ fn parse_severity_filter(
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match filter.to_ascii_lowercase().as_str() {
         "s" => Ok(Some(ContractWhaleSeverity::S)),
         "critical" => Ok(Some(ContractWhaleSeverity::Critical)),
@@ -5165,7 +5593,7 @@ fn parse_impact_level_filter(
         return Ok(None);
     }
     match filter.to_ascii_uppercase().as_str() {
-        "A" | "B" | "S" => Ok(Some(filter.to_ascii_uppercase())),
+        "C" | "B" | "A" | "S" => Ok(Some(filter.to_ascii_uppercase())),
         _ => Err(bad_request("impact_level_invalid")),
     }
 }
@@ -5176,6 +5604,9 @@ fn parse_signal_type_filter(
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match normalize_token(filter).as_str() {
         "aggressivebuy" | "aggressive_buy" => Ok(Some(ContractWhaleSignalType::AggressiveBuy)),
         "aggressivesell" | "aggressive_sell" => Ok(Some(ContractWhaleSignalType::AggressiveSell)),
@@ -5195,6 +5626,9 @@ fn parse_direction_filter(
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match normalize_token(filter).as_str() {
         "buy" | "long" | "activebuy" | "active_buy" | "aggressivebuy" | "aggressive_buy"
         | "主动买入" => Ok(Some(ContractWhaleDirection::Buy)),
@@ -5216,6 +5650,9 @@ fn parse_exchange_filter(
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match filter.to_ascii_lowercase().as_str() {
         "binance" | "okx" | "bitfinex" | "coinbase" => Ok(Some(filter.to_ascii_lowercase())),
         _ => Err(bad_request("exchange_invalid")),
@@ -5228,6 +5665,9 @@ fn parse_window_sec_filter(
     let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if filter.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match filter.parse::<u64>() {
         Ok(window_sec @ (5 | 15 | 60)) => Ok(Some(window_sec)),
         _ => Err(bad_request("window_sec_invalid")),
@@ -5370,6 +5810,9 @@ fn parse_optional_bool(
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(Some(true)),
         "false" | "0" | "no" => Ok(Some(false)),

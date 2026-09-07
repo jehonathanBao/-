@@ -80,6 +80,7 @@ fn human_reason(reason: &str) -> &'static str {
         "high_volume_low_follow_through" => "成交放大但价格没有跟上，先按噪声放量处理。",
         "fake_breakout_risk_high" => "假突破风险偏高，当前不进入交易观察清单。",
         "price_response_missing" => "价格响应不足，当前更像低分震荡 chop。",
+        "impact_grade_not_confirmed" => "V3 影响评级尚未确认，当前只保留为观察事件。",
         "single_window_spike_only" => "只有单窗口脉冲，没有形成跨窗口确认。",
         "dominance_below_threshold" => "净方向占比不足，暂时不具备交易优势。",
         "quality_below_threshold" => "事件质量分偏低，先保持观察。",

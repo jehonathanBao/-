@@ -1,0 +1,13 @@
+[Unit]
+Description=Online SQLite backup for Toxic Order Monitor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/toxic-order-monitor-rs
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=30min
+ExecStart=/opt/toxic-order-monitor-rs/scripts/backup_sqlite_online.sh

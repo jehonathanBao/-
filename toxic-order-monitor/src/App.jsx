@@ -1,18 +1,23 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
-import Dashboard from "./pages/Dashboard.jsx";
+
+const Dashboard = lazy(() => import("./pages/Dashboard.jsx"));
+const BinanceOrderflowRoute = lazy(() => import("./pages/BinanceOrderflowRoute.jsx"));
 
 const MAINSTREAM_ASSETS = new Set(["btc", "eth"]);
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Dashboard />} />
+    <Suspense fallback={<RouteLoading />}>
+      <Routes>
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/contract-whale" element={<Navigate to="/contract-whale/btc" replace />} />
       <Route path="/contract-whale/:symbol" element={<MainstreamAssetRoute basePath="/contract-whale" />} />
       <Route path="/liquidation-cascade" element={<Dashboard />} />
       <Route path="/alt-contract-monitor" element={<Dashboard />} />
       <Route path="/new-token-watch" element={<Dashboard />} />
+      <Route path="/binance-orderflow" element={<BinanceOrderflowRoute />} />
       <Route path="/spot-monitor" element={<Navigate to="/spot-monitor/btc" replace />} />
       <Route path="/spot-monitor/:symbol" element={<MainstreamAssetRoute basePath="/spot-monitor" />} />
       <Route path="/spot-whale" element={<Navigate to="/spot-monitor/btc" replace />} />
@@ -23,7 +28,16 @@ export default function App() {
       <Route path="/discord" element={<Dashboard />} />
       <Route path="/settings" element={<Dashboard />} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </Suspense>
+  );
+}
+
+function RouteLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
+      正在加载工作区…
+    </div>
   );
 }
 

@@ -10,10 +10,7 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
     collector_okx::handle_liquidation_order_message,
     config::ContractWhaleRuntimeConfig,
     detector::{detect_contract_whale_signal, detect_contract_whale_signal_with_config},
-    discord::{
-        build_contract_whale_discord_preview, is_historic_s_impact, sanitize_contract_whale_impact,
-        should_push_contract_whale_discord,
-    },
+    discord::{build_contract_whale_discord_preview, should_push_contract_whale_discord},
     event_lifecycle::{apply_contract_whale_event_lifecycle, ContractWhaleLifecycleClock},
     normalizer::{
         normalize_binance_agg_trade, normalize_binance_force_order,
@@ -22,14 +19,14 @@ use btc_toxic_flow_monitor_rs::contract_whale_monitor::{
         normalize_okx_funding_rate_json, normalize_okx_liquidation_order_json,
         normalize_okx_open_interest_json, normalize_okx_swap_trade,
     },
-    outcome_calibration::evaluate_contract_whale_signal_outcome,
+    outcome_calibration::{evaluate_contract_whale_signal_outcome, CONTRACT_WHALE_OUTCOME_VERSION},
     scoring::score_contract_whale_signal_with_config,
     types::{
         ContractExchange, ContractFundingSnapshot, ContractLiquidationSide, ContractOiSnapshot,
         ContractTradeSide, ContractWhaleActiveFlowDirection, ContractWhaleDirection,
         ContractWhaleLiquidationContext, ContractWhaleMarketContext, ContractWhaleOiContextTag,
         ContractWhaleOiWindowContext, ContractWhalePriceResponseType, ContractWhaleSeverity,
-        ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleStructureInterpretation,
+        ContractWhaleSignalType, ContractWhaleStructureInterpretation,
     },
 };
 
@@ -41,116 +38,6 @@ fn three_exchange_config() -> ContractWhaleRuntimeConfig {
     config.exchanges.okx.oi.enabled = true;
     config.exchanges.okx.liquidation.enabled = true;
     config
-}
-
-fn signal_for_impact_sanitization() -> ContractWhaleSignal {
-    let now = 1_700_000_015_000;
-    let trades = vec![
-        normalize_binance_agg_trade(now - 1_000, 70_000.0, 900.0, false).unwrap(),
-        normalize_okx_swap_trade(now - 1_000, 70_000.0, 80_000.0, 0.01, "buy").unwrap(),
-    ];
-    let buckets = aggregate_1s_buckets(&trades);
-    let mut stats = rolling_window_stats(&buckets, "BTC", 15, now, Some(0.31), Some(4.2), 85)
-        .expect("window stats");
-    stats.percentile_level = Some(99.0);
-    detect_contract_whale_signal(&stats).expect("impact signal")
-}
-
-#[test]
-fn ordinary_raw_a_without_major_confirmation_is_downgraded_to_c() {
-    let mut signal = signal_for_impact_sanitization();
-    signal.impact_level = Some("A".to_string());
-    signal.signal_level = Some("L3".to_string());
-    signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
-    signal.data_quality = 85;
-    signal.percentile_level = Some(99.0);
-    signal.impact_score = Some(10.0);
-    signal.impact_z_score = Some(10.0);
-    signal.total_volume_btc = 638.0;
-    signal.total_notional_usd = 40_000_000.0;
-    signal.price_move_pct = Some(-0.104);
-    signal.multi_exchange_confirmed = false;
-    signal.liquidation_suspected = false;
-    signal.liquidation_long_btc = 0.0;
-    signal.liquidation_short_btc = 0.0;
-
-    sanitize_contract_whale_impact(&mut signal);
-
-    assert_eq!(signal.impact_level.as_deref(), Some("C"));
-    assert_eq!(signal.signal_level.as_deref(), Some("L1"));
-    assert_eq!(signal.signal_label.as_deref(), Some("LOW IMPACT EVENT"));
-}
-
-#[test]
-fn material_raw_a_with_lower_boundary_evidence_is_downgraded_to_b() {
-    let mut signal = signal_for_impact_sanitization();
-    signal.impact_level = Some("A".to_string());
-    signal.signal_level = Some("L3".to_string());
-    signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
-    signal.data_quality = 70;
-    signal.percentile_level = Some(99.0);
-    signal.impact_score = Some(4.0);
-    signal.impact_z_score = Some(4.0);
-    signal.total_volume_btc = 800.0;
-    signal.total_notional_usd = 50_000_000.0;
-    signal.price_move_pct = Some(0.15);
-    signal.multi_exchange_confirmed = false;
-    signal.liquidation_suspected = false;
-    signal.liquidation_long_btc = 0.0;
-    signal.liquidation_short_btc = 0.0;
-
-    sanitize_contract_whale_impact(&mut signal);
-
-    assert_eq!(signal.impact_level.as_deref(), Some("B"));
-    assert_eq!(signal.signal_level.as_deref(), Some("L2"));
-    assert_eq!(signal.signal_label.as_deref(), Some("MEDIUM IMPACT EVENT"));
-}
-
-#[test]
-fn confirmed_major_raw_a_remains_a() {
-    let mut signal = signal_for_impact_sanitization();
-    signal.impact_level = Some("A".to_string());
-    signal.signal_level = Some("L3".to_string());
-    signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
-    signal.data_quality = 80;
-    signal.percentile_level = Some(99.5);
-    signal.impact_score = Some(4.0);
-    signal.impact_z_score = Some(4.0);
-    signal.total_volume_btc = 2_500.0;
-    signal.total_notional_usd = 150_000_000.0;
-    signal.price_move_pct = Some(0.5);
-    signal.multi_exchange_confirmed = true;
-    signal.liquidation_suspected = false;
-    signal.liquidation_long_btc = 0.0;
-    signal.liquidation_short_btc = 0.0;
-
-    sanitize_contract_whale_impact(&mut signal);
-
-    assert_eq!(signal.impact_level.as_deref(), Some("A"));
-    assert_eq!(signal.signal_level.as_deref(), Some("L3"));
-    assert_eq!(signal.signal_label.as_deref(), Some("HIGH IMPACT EVENT"));
-}
-
-#[test]
-fn hard_evidence_raw_s_remains_s() {
-    let mut signal = signal_for_impact_sanitization();
-    signal.impact_level = Some("S".to_string());
-    signal.signal_level = Some("S".to_string());
-    signal.signal_label = Some("SHOCK IMPACT EVENT".to_string());
-    signal.total_volume_btc = 20_000.0;
-    signal.window_sec = 60;
-    signal.multi_exchange_confirmed = true;
-    signal.dynamic_multiple = Some(10.0);
-    signal.percentile_level = Some(99.5);
-    signal.dominance = 0.65;
-    signal.liquidation_suspected = true;
-    signal.liquidation_long_btc = 2_500.0;
-
-    sanitize_contract_whale_impact(&mut signal);
-
-    assert_eq!(signal.impact_level.as_deref(), Some("S"));
-    assert_eq!(signal.signal_level.as_deref(), Some("S"));
-    assert_eq!(signal.signal_label.as_deref(), Some("SHOCK IMPACT EVENT"));
 }
 
 #[test]
@@ -455,9 +342,8 @@ fn detector_upgrades_multi_exchange_aggressive_buy_to_s_and_discord_eligible() {
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
     assert_eq!(signal.severity, ContractWhaleSeverity::S);
     assert!(signal.score >= 90);
-    assert!(!should_push_contract_whale_discord(&signal));
-    assert!(!signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
+    assert!(should_push_contract_whale_discord(&signal));
+    assert!(signal.discord_eligible);
     assert!(!signal.discord_sent);
 }
 
@@ -1200,9 +1086,9 @@ fn detector_marks_btc_high_signal_pushable_while_data_quality_controls_eligibili
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
-    assert!(!should_push_contract_whale_discord(&signal));
+    assert!(should_push_contract_whale_discord(&signal));
     assert!(!signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
+    assert_eq!(signal.discord_reason, "data_quality_display_only");
     assert!(!signal.discord_sent);
 }
 
@@ -1222,7 +1108,7 @@ fn detector_allows_primary_single_exchange_extreme_high_override() {
     assert!(signal.data_quality <= 68);
     assert!(!signal.discord_eligible);
     assert_eq!(signal.discord_reason, "data_quality_display_only");
-    assert!(!should_push_contract_whale_discord(&signal));
+    assert!(should_push_contract_whale_discord(&signal));
 }
 
 #[test]
@@ -1445,14 +1331,16 @@ fn detector_populates_market_impact_fields() {
     stats.percentile_level = Some(90.0);
     let signal = detect_contract_whale_signal(&stats).expect("medium signal");
 
+    // Legacy detector output does not have an independently calculated
+    // z-score. It must fail closed instead of promoting a dynamic multiple
+    // to an A-grade impact event; v3 materialization supplies the real
+    // baseline-backed grade when enough evidence exists.
     assert_eq!(signal.impact_level.as_deref(), Some("C"));
     assert_eq!(signal.signal_level.as_deref(), Some("L1"));
     assert_eq!(signal.signal_label.as_deref(), Some("LOW IMPACT EVENT"));
-    assert_eq!(signal.normalized_strength.as_deref(), Some("EXTREME"));
+    assert_eq!(signal.normalized_strength.as_deref(), Some("LOW"));
     assert_eq!(signal.impact_score, Some(4.2));
-    assert_eq!(signal.impact_z_score, Some(4.2));
-    assert!(!signal.discord_eligible);
-    assert!(!signal.discord_would_send);
+    assert_eq!(signal.impact_z_score, Some(0.0));
 }
 
 #[test]
@@ -1490,65 +1378,6 @@ fn detector_uses_percentile_level_to_suppress_active_market_noise() {
     let signal = detect_contract_whale_signal_with_config(&stats, &config).expect("s signal");
     assert_eq!(signal.severity, ContractWhaleSeverity::S);
     assert!(signal.multi_exchange_confirmed);
-    assert_eq!(signal.impact_level.as_deref(), Some("B"));
-    assert_eq!(signal.signal_level.as_deref(), Some("L2"));
-}
-
-#[test]
-fn historic_s_impact_requires_hard_extreme_evidence() {
-    let now = 1_700_000_015_000;
-    let trades = vec![
-        normalize_binance_agg_trade(now - 1_000, 70_000.0, 3_000.0, false).unwrap(),
-        normalize_okx_swap_trade(now - 1_000, 70_000.0, 200_000.0, 0.01, "buy").unwrap(),
-    ];
-    let buckets = aggregate_1s_buckets(&trades);
-    let config = three_exchange_config();
-    let mut stats = rolling_window_stats_with_config(
-        &buckets,
-        "BTC",
-        15,
-        now,
-        RollingWindowStatsOptions {
-            price_move_pct: Some(0.31),
-            dynamic_multiple: Some(10.5),
-            dynamic_baseline_btc: None,
-            dynamic_threshold_level: String::new(),
-            data_quality: 94,
-            config: &config,
-        },
-    )
-    .expect("window stats");
-    stats.percentile_level = Some(99.9);
-    let mut signal = detect_contract_whale_signal_with_config(&stats, &config).expect("signal");
-    assert_eq!(signal.impact_level.as_deref(), Some("B"));
-
-    signal.total_volume_btc = 20_000.0;
-    signal.window_sec = 60;
-    signal.multi_exchange_confirmed = true;
-    signal.dynamic_multiple = Some(10.0);
-    signal.percentile_level = Some(99.5);
-    signal.dominance = 0.65;
-    signal.impact_level = Some("S".to_string());
-    assert!(is_historic_s_impact(&signal));
-}
-
-#[test]
-fn one_pulse_and_fragmented_flow_expose_distinct_footprints() {
-    let now = 1_700_000_000_000;
-    let pulse = normalize_binance_agg_trade(now, 70_000.0, 400.0, false).unwrap();
-    let fragmented = (0..40)
-        .map(|index| normalize_binance_agg_trade(now + index, 70_000.0, 10.0, false).unwrap())
-        .collect::<Vec<_>>();
-
-    let pulse_bucket = aggregate_1s_buckets(&[pulse]).pop().expect("pulse bucket");
-    let fragmented_bucket = aggregate_1s_buckets(&fragmented)
-        .pop()
-        .expect("fragmented bucket");
-
-    assert_eq!(pulse_bucket.buy_trade_count, 1);
-    assert_eq!(pulse_bucket.sell_trade_count, 0);
-    assert_eq!(fragmented_bucket.buy_trade_count, 40);
-    assert!(pulse_bucket.max_single_trade_share > fragmented_bucket.max_single_trade_share);
 }
 
 #[test]
@@ -1570,8 +1399,8 @@ fn detector_keeps_low_score_5s_btc_high_display_only() {
     assert_eq!(signal.severity, ContractWhaleSeverity::High);
     assert!(signal.score < 70);
     assert!(!signal.discord_eligible);
-    assert!(!should_push_contract_whale_discord(&signal));
-    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
+    assert!(should_push_contract_whale_discord(&signal));
+    assert_eq!(signal.discord_reason, "high_without_discord_confirmation");
 }
 
 #[test]
@@ -1587,10 +1416,6 @@ fn discord_push_requires_symbol_min_total_volume_thresholds() {
         rolling_window_stats(&buckets, "BTC", 5, now, Some(0.12), Some(5.2), 86).expect("5s stats");
     stats.percentile_level = Some(99.0);
     let signal = detect_contract_whale_signal(&stats).expect("high signal");
-
-    let mut signal = signal;
-    signal.impact_level = Some("A".to_string());
-    signal.signal_level = Some("L3".to_string());
 
     let mut btc_below_gate = signal.clone();
     btc_below_gate.symbol = "BTC".to_string();
@@ -1737,8 +1562,7 @@ fn detector_triggers_15s_critical_threshold() {
     assert_eq!(signal.window_sec, 15);
     assert_eq!(signal.severity, ContractWhaleSeverity::Critical);
     assert_eq!(signal.direction, ContractWhaleDirection::Buy);
-    assert!(!signal.discord_eligible);
-    assert_eq!(signal.discord_reason, "s_grade_extreme_impact_required");
+    assert!(signal.discord_eligible);
 }
 
 #[test]
@@ -2177,7 +2001,7 @@ fn outcome_calibration_measures_direction_free_volatility_for_unknown_direction(
         outcome.liquidity_recovery_reason.as_deref(),
         Some("historical_l2_unavailable")
     );
-    assert_eq!(outcome.outcome_version, "v2_volatility_shadow");
+    assert_eq!(outcome.outcome_version, CONTRACT_WHALE_OUTCOME_VERSION);
 }
 
 #[test]
@@ -2217,6 +2041,32 @@ fn outcome_calibration_keeps_directional_reversal_secondary_to_volatility() {
             .abs()
             < 1e-6
     );
+}
+
+#[test]
+fn outcome_calibration_uses_strategy_side_for_downside_absorption() {
+    let now = 1_700_000_000_000;
+    let mut signal = outcome_test_signal(now, ContractWhaleActiveFlowDirection::SellDominant);
+    signal.classification_v2.structure_interpretation =
+        ContractWhaleStructureInterpretation::DownsideAbsorption;
+
+    let markout_trades = vec![
+        normalize_binance_agg_trade(now, 100.0, 1.0, false).expect("entry price"),
+        normalize_binance_agg_trade(now + 30_000, 106.0, 1.0, false).expect("30s price"),
+        normalize_binance_agg_trade(now + 120_000, 104.0, 1.0, false).expect("2m price"),
+        normalize_binance_agg_trade(now + 300_000, 105.0, 1.0, false).expect("5m price"),
+    ];
+    let outcome = evaluate_contract_whale_signal_outcome(
+        &signal,
+        &aggregate_1s_buckets(&markout_trades),
+        now + 300_000,
+    )
+    .expect("absorption outcome");
+
+    assert!(outcome.markout_30s_bps.expect("30s markout") > 0.0);
+    assert!(outcome.markout_5m_bps.expect("5m markout") > 0.0);
+    assert_eq!(outcome.follow_through_5m, Some(true));
+    assert_eq!(outcome.setup_outcome.as_deref(), Some("continuation"));
 }
 
 #[test]

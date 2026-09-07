@@ -165,11 +165,11 @@ else
     echo "前端容器未运行"
 fi
 
-echo "检查宿主机 5173 和容器上游 5174 是否监听..."
-if (command -v netstat &> /dev/null && netstat -tlnp 2>/dev/null | grep -Eq "5173|5174") || (command -v ss &> /dev/null && ss -tlnp 2>/dev/null | grep -Eq "5173|5174"); then
-    echo "5173/5174端口正在监听"
+echo "检查宿主机 5173 是否监听..."
+if (command -v netstat &> /dev/null && netstat -tlnp 2>/dev/null | grep -Eq "5173") || (command -v ss &> /dev/null && ss -tlnp 2>/dev/null | grep -Eq "5173"); then
+    echo "5173端口正在监听"
 else
-    echo "5173/5174端口未监听"
+    echo "5173端口未监听"
 fi
 
 echo "检查前端页面是否可访问..."

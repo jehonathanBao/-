@@ -37,6 +37,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    setupFiles: ["src/tests/networkBoundarySetup.js"],
   },
   server: {
     host: "0.0.0.0",

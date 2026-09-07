@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+mod support;
+
+use std::time::{Duration, Instant};
+
+use support::temp_store;
 
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::{
@@ -6,7 +10,7 @@ use btc_toxic_flow_monitor_rs::{
         detector::detect_contract_whale_signal,
         types::{ContractExchange, ContractTrade, ContractTradeSide},
     },
-    storage::{contract_whale_repo::ContractWhaleRepo, SqliteStore},
+    storage::contract_whale_repo::ContractWhaleRepo,
 };
 
 #[test]
@@ -78,18 +82,4 @@ fn synthetic_second_trades(ts: i64, count: usize) -> Vec<ContractTrade> {
             }
         })
         .collect()
-}
-
-fn temp_store(name: &str) -> SqliteStore {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "btc-toxic-flow-{name}-{unique}-{}.sqlite",
-        std::process::id()
-    ));
-    let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
-    store.migrate().unwrap();
-    store
 }

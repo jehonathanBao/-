@@ -9,6 +9,8 @@
 - `troubleshoot.sh` - Linux系统上的问题排查脚本
 - `troubleshoot.ps1` - Windows系统上的问题排查脚本
 - `quick-fix.sh` - 快速修复脚本（自动尝试最常见的解决方案）
+- `systemd/toxic-order-monitor-backup.*` - 每日 SQLite 在线备份定时任务
+- `systemd/toxic-order-monitor-release-gates.*` - 每分钟发布门禁健康采样任务
 - `TROUBLESHOOTING.md` - 详细的问题排查和修复指南
 - `README.md` - 本文档
 
@@ -50,6 +52,26 @@ chmod +x deploy/troubleshoot.sh
 
 如果仍然有问题，请查看 `TROUBLESHOOTING.md` 获取完整的问题排查指南。
 
+### 启用每日 SQLite 在线备份
+
+在服务器项目目录执行：
+
+```bash
+apt-get install -y sqlite3
+cp deploy/systemd/toxic-order-monitor-backup.service /etc/systemd/system/
+cp deploy/systemd/toxic-order-monitor-backup.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now toxic-order-monitor-backup.timer
+systemctl start toxic-order-monitor-backup.service
+systemctl status toxic-order-monitor-backup.timer --no-pager
+```
+
+备份默认保存到 `backups/sqlite/`，脚本会执行 SQLite 在线备份、完整性检查、SHA-256 校验和及 14 天本地留存。生产环境还应将备份复制到服务器外部，并定期执行恢复演练。
+
+### 启用发布门禁健康采样
+
+采样任务每分钟记录事件总线丢弃数、各消费者 lag、存储写入状态、数据库大小及评级健康统计，按 UTC 日期写入 `.runtime/reports/release-gates/`，保留 14 天。它不包含密钥，也不会修改业务数据库；可用于完成 24 小时 `lagged=0` 观察，但不能替代外部备份和写入量基线。
+
 ## 使用指南
 
 ### Linux/Mac系统
@@ -87,7 +109,7 @@ cd C:\path\to\有毒订单监控-rs
 
 2. **检查端口监听**
    ```bash
-   netstat -tlnp | grep -E "5173|5174"
+   netstat -tlnp | grep -E "5173"
    ```
 
 3. **本地访问测试**
@@ -105,7 +127,7 @@ cd C:\path\to\有毒订单监控-rs
 A: 先运行 `quick-fix.sh` 重新构建和部署，再执行 `scripts/check_frontend_prod.sh` 检查 `/contract-whale`、`/dashboard` 和 `/api/*`。
 
 ### Q: 容器启动了但无法访问？
-A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。现在公网入口由宿主 nginx 统一接入，但前端页面本身会反代到 `127.0.0.1:5174` 的 `toxic-frontend` 容器，所以要同时确认 nginx 和前端容器都健康。
+A: 先检查宿主机 nginx 是否已加载 `deploy/nginx-site.toxic-order-monitor.conf`，再确认 5173 端口已开放。现在公网入口由宿主 nginx 统一接入，前端容器也由 Compose 的 `DASHBOARD_PORT` 统一绑定到 5173，所以要同时确认 nginx 和前端容器都健康。
 
 ### Q: 提示 OPERATOR_TOKEN 未设置？
 A: 编辑 `.env` 文件，设置一个安全的令牌值。

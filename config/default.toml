@@ -66,7 +66,8 @@ enabled = true
 role = "primary"
 
 [contract_whale_monitor.exchanges.bitfinex]
-enabled = true
+# Kept for legacy replay/audit only. V4.1 production ratings are Binance-only.
+enabled = false
 
 [contract_whale_monitor.exchanges.bitfinex.spot]
 enabled = true
@@ -93,7 +94,8 @@ enabled = false
 role = "disabled"
 
 [contract_whale_monitor.exchanges.coinbase]
-enabled = true
+# Coinbase is not part of the contract-whale rating source set.
+enabled = false
 
 [contract_whale_monitor.exchanges.coinbase.spot]
 enabled = true
@@ -178,14 +180,118 @@ min_dynamic_samples = 20
 single_exchange_penalty = 15
 ct_val_missing_penalty = 20
 
+[contract_whale_monitor.impact_grade_v3]
+enabled = true
+# V3 remains queryable as an audit reference but no longer owns directional
+# production decisions.
+shadow_mode = false
+grade_version = "cwm_impact_v3_2"
+baseline_lookback_days = 90
+# Baseline samples come from aligned raw market windows. The effective range is
+# capped by flow_1s_days at runtime so this remains storage-bounded.
+baseline_min_samples = 10000
+episode_gap_seconds = 120
+min_confirmed_sources = 2
+
+[contract_whale_monitor.impact_v4_1]
+shadow_mode = true
+directional_alerts_enabled = false
+fee_bps = 6.0
+slippage_bps = 4.0
+safety_margin_bps = 5.0
+min_follow_through_rate = 0.55
+min_structure_break_rate = 0.55
+
+[contract_whale_monitor.impact_v4_2]
+enabled = true
+# V4.2 is sample-gated by default. Set this only as an emergency global
+# close; normal promotion is automatic once cohort evidence passes.
+shadow_mode = false
+dashboard_early_warning_enabled = true
+external_directional_alerts_enabled = true
+prior_strength = 30.0
+m1_samples = 10
+m2_samples = 30
+m3_samples = 100
+m4_samples = 300
+s_score = 85
+a_score = 70
+b_score = 55
+s_min_data_quality = 75
+a_min_data_quality = 70
+b_min_data_quality = 60
+auto_gate_enabled = true
+auto_gate_armed = true
+auto_gate_force_closed = false
+auto_gate_canary_enabled = true
+auto_gate_min_canary_samples = 100
+auto_gate_min_canary_effective_samples = 60.0
+auto_gate_min_open_samples = 200
+auto_gate_min_open_effective_samples = 120.0
+auto_gate_min_accuracy = 0.60
+auto_gate_min_coverage = 0.90
+auto_gate_eval_interval_sec = 900
+auto_gate_max_alerts_per_day = 3
+
+[contract_whale_monitor.impact_grade_v3.s]
+min_data_quality = 85
+min_robust_percentile = 99.95
+min_abs_price_move_pct = 2.0
+min_live_liquidation_btc = 2500.0
+min_live_liquidation_notional_usd = 250000000.0
+min_unique_turnover_btc = 20000.0
+min_unique_turnover_notional_usd = 1000000000.0
+
+[contract_whale_monitor.impact_grade_v3.a]
+min_data_quality = 80
+min_robust_percentile = 99.5
+min_robust_z = 4.0
+min_abs_price_move_pct = 0.5
+min_event_volume_btc = 2500.0
+min_event_notional_usd = 150000000.0
+
+[contract_whale_monitor.impact_grade_v3.b]
+min_data_quality = 70
+min_robust_percentile = 99.0
+min_robust_z = 2.5
+min_abs_price_move_pct = 0.15
+min_event_volume_btc = 800.0
+min_event_notional_usd = 50000000.0
+
 [contract_whale_monitor.retention]
-flow_1s_days = 7
-# Contract market events (contract_whale_signals): keep at least 7 full days.
-# Values below 7 are clamped up to 7 at runtime. Impact B uses impact_b_days.
-# Impact A/S (and severity S / |net|>=500) stay permanent.
-signals_days = 7
-impact_b_days = 30
-critical_days = 365
+flow_1s_days = 14
+oi_raw_days = 14
+funding_raw_days = 14
+liquidation_days = 180
+reference_price_days = 400
+aggregate_context_days = 400
+# Event features and V4.1 training rows are retained independently of the
+# short raw tape so walk-forward samples can mature to the stable tier.
+signals_days = 400
+impact_b_days = 400
+
+[contract_whale_monitor.threshold_profiles.binance_only]
+active_contract_sources = ["binance"]
+
+[contract_whale_monitor.threshold_profiles.binance_only.high]
+window_5s = 650
+window_15s = 1200
+window_60s = 2800
+
+[contract_whale_monitor.threshold_profiles.binance_only.critical]
+window_5s = 1200
+window_15s = 2200
+window_60s = 5200
+
+[contract_whale_monitor.threshold_profiles.binance_only.s]
+window_5s = 2000
+window_15s = 3600
+window_60s = 8000
+
+[contract_whale_monitor.threshold_profiles.binance_only.notional_usd]
+high = 30000000
+critical = 75000000
+s = 150000000
 
 [contract_whale_monitor.lifecycle]
 update_window_seconds = 30
@@ -407,8 +513,6 @@ duplicate_window_ms = 60000
 # Non-permanent spot rows expire after this many days.
 # Permanent keepers: BTC |net| >= 100, ETH |net| >= 1000.
 signals_days = 7
-important_days = 30
-critical_days = 365
 interval_seconds = 3600
 initial_delay_seconds = 30
 

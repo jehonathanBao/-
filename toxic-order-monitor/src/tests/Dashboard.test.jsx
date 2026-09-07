@@ -42,12 +42,16 @@ vi.mock("../api/scanLogs.js", async () => {
 
 vi.mock("../api/contractWhale.js", async () => import("./__mocks__/contractWhale.js"));
 
+vi.mock("../components/MonitorFlowDashboard.jsx", () => ({
+  default: () => <div data-testid="monitor-flow-probe">全市场实时监控流</div>,
+}));
+
 vi.mock("../api/liquidationCascade.js", () => ({
   fetchLiquidationCascade: vi.fn(() =>
     Promise.resolve({
       data: {
         symbol: "BTCUSDT",
-        cascadeProbability: 0.82,
+        cascadePressureScore: 0.82,
         status: "IMMINENT",
         direction: "DOWN",
         estimatedMove: "2.5% - 5%",
@@ -311,7 +315,8 @@ describe("Dashboard interactions", () => {
   it("keeps dashboard and BTC spot monitor route working", async () => {
     renderDashboard("/dashboard");
 
-    expect(await screen.findByText("High / Critical Risk Candidates")).toBeInTheDocument();
+    expect(await screen.findByTestId("monitor-flow-probe")).toHaveTextContent("全市场实时监控流");
+    expect(screen.queryByText("High / Critical Risk Candidates")).not.toBeInTheDocument();
     cleanup();
     resetSignalsStore();
 

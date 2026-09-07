@@ -108,6 +108,23 @@ fn env_example_documents_contract_whale_enabled_by_default() {
 }
 
 #[test]
+fn default_runtime_uses_v3_as_the_active_impact_rating_source() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    clear_config_env();
+    reset_contract_whale_runtime_config();
+
+    let _config = AppConfig::from_env_with_config_file("config/default").expect("default config");
+    let cwm = contract_whale_runtime_config();
+
+    assert!(cwm.impact_grade_v3.enabled);
+    assert!(!cwm.impact_grade_v3.shadow_mode);
+    assert_eq!(cwm.impact_grade_v3.grade_version, "cwm_impact_v3_2");
+
+    reset_contract_whale_runtime_config();
+    clear_config_env();
+}
+
+#[test]
 fn env_contract_whale_monitor_flags_override_toml() {
     let _guard = ENV_LOCK.lock().expect("env lock poisoned");
     clear_config_env();
@@ -213,6 +230,7 @@ fn toml_contract_whale_scoring_and_symbol_thresholds_are_loaded() {
 [contract_whale_monitor.scoring]
 volume_strength_weight = 40
 dynamic_multiple_weight = 10
+data_quality_weight = 10
 
 [contract_whale_monitor.scoring.penalties]
 warmup_period = 12
@@ -237,11 +255,14 @@ enabled = false
 
     assert_eq!(cwm.scoring.volume_strength_weight, 40.0);
     assert_eq!(cwm.scoring.dynamic_multiple_weight, 10.0);
+    assert_eq!(cwm.scoring.data_quality_weight, 10.0);
     assert_eq!(cwm.scoring.penalties.warmup_period, 12.0);
     assert_eq!(cwm.data_quality.min_dynamic_samples, 7);
     assert_eq!(cwm.retention.flow_1s_days, 10);
     assert_eq!(cwm.retention.signals_days, 180);
-    assert_eq!(cwm.retention.impact_b_days, 30);
+    // Impact-B retention is never allowed to be shorter than the general
+    // signal retention window.
+    assert_eq!(cwm.retention.impact_b_days, 180);
     assert_eq!(cwm.thresholds_for_symbol_window("BTC", 15).high_btc, 2222.0);
     assert!(cwm.symbol_enabled("BTC"));
     assert!(!cwm.symbol_enabled("ETH"));

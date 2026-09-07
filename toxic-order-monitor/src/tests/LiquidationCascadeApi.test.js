@@ -38,7 +38,7 @@ describe("liquidation cascade api availability", () => {
     axios.get.mockResolvedValueOnce({
       data: {
         symbol: "BTCUSDT",
-        cascadeProbability: 0.42,
+        cascadePressureScore: 0.42,
         status: "WARNING",
         direction: "DOWN",
         components: {},
@@ -59,7 +59,7 @@ describe("liquidation cascade api availability", () => {
     axios.get.mockResolvedValueOnce({
       data: {
         symbol: "BTCUSDT",
-        cascadeProbability: 0.95,
+        cascadePressureScore: 0.95,
         status: "IMMINENT",
         direction: "DOWN",
         components: {},

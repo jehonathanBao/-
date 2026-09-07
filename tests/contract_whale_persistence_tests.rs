@@ -1,4 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+mod support;
+
+use support::temp_store;
 
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::{
@@ -10,6 +12,7 @@ use btc_toxic_flow_monitor_rs::{
         },
         config::reset_contract_whale_runtime_config,
         detector::detect_contract_whale_signal,
+        impact_forecast::{build_forecast, CONTRACT_WHALE_IMPACT_FORECAST_VERSION},
         normalizer::{
             normalize_binance_agg_trade, normalize_binance_force_order,
             normalize_binance_funding_rate_json, normalize_binance_open_interest_json,
@@ -36,6 +39,27 @@ use btc_toxic_flow_monitor_rs::{
 };
 
 #[test]
+fn sqlite_connections_use_the_production_wal_profile() {
+    let store = temp_store("sqlite-wal-profile");
+    let profile = store
+        .with_connection(|conn| {
+            Ok((
+                conn.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?,
+                conn.query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))?,
+                conn.query_row("PRAGMA wal_autocheckpoint", [], |row| row.get::<_, i64>(0))?,
+                conn.query_row("PRAGMA cache_size", [], |row| row.get::<_, i64>(0))?,
+                conn.query_row("PRAGMA temp_store", [], |row| row.get::<_, i64>(0))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(profile.0.to_ascii_lowercase(), "wal");
+    assert_eq!(profile.1, 1); // NORMAL
+    assert_eq!(profile.2, 4_096);
+    assert_eq!(profile.3, -32 * 1_024);
+    assert_eq!(profile.4, 2); // MEMORY
+}
+
+#[test]
 fn contract_flow_1s_upsert_is_idempotent() {
     let store = temp_store("contract-flow-1s");
     let mut bucket = ContractFlowBucket {
@@ -50,10 +74,7 @@ fn contract_flow_1s_upsert_is_idempotent() {
         buy_notional_usd: 700_000.0,
         sell_notional_usd: 140_000.0,
         trade_count: 3,
-        buy_trade_count: 2,
-        sell_trade_count: 1,
         max_single_trade_btc: 8.0,
-        max_single_trade_share: 8.0 / 12.0,
         vwap: Some(70_000.0),
     };
 
@@ -82,10 +103,100 @@ fn contract_flow_1s_upsert_is_idempotent() {
 }
 
 #[test]
+fn v4_forecast_snapshot_is_immutable_for_same_event_and_version() {
+    let store = temp_store("contract-whale-v4-immutable-forecast");
+    let signal = sample_s_signal();
+    let forecast = build_forecast(&signal, &[], &[], signal.ts);
+    let mut changed = forecast.clone();
+    changed.impact_grade = "S".to_string();
+    changed.impact_score = 99.0;
+
+    assert_eq!(
+        store
+            .upsert_contract_whale_impact_forecasts(&[forecast.clone()])
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .upsert_contract_whale_impact_forecasts(&[changed])
+            .unwrap(),
+        0
+    );
+
+    let rows = store
+        .load_contract_whale_impact_forecasts(
+            &[forecast.event_id.as_str()],
+            CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+        )
+        .unwrap();
+    let loaded = rows.get(&forecast.event_id).expect("forecast snapshot");
+    assert_eq!(loaded.impact_grade, forecast.impact_grade);
+    assert_eq!(loaded.impact_score, forecast.impact_score);
+}
+
+#[test]
+fn canonical_impact_filter_uses_versioned_event_grade_and_fails_missing_to_c() {
+    let store = temp_store("contract-whale-canonical-impact-filter");
+    let mut legacy_s_without_assessment = sample_s_signal();
+    legacy_s_without_assessment.id = "contract-whale:BTC:15:1700000015002:legacy-s".to_string();
+    legacy_s_without_assessment.ts = 1_700_000_015_002;
+    legacy_s_without_assessment.event_lifecycle.event_id.clear();
+    legacy_s_without_assessment.impact_level = Some("S".to_string());
+
+    let mut canonical_s = sample_s_signal();
+    canonical_s.id = "contract-whale:BTC:15:1700000015001:canonical-s".to_string();
+    canonical_s.ts = 1_700_000_015_001;
+    canonical_s.event_lifecycle.event_id.clear();
+    canonical_s.impact_level = Some("C".to_string());
+
+    store
+        .upsert_contract_whale_signals(&[legacy_s_without_assessment.clone(), canonical_s.clone()])
+        .unwrap();
+    store
+        .with_write_connection(|conn| {
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_1', ?1, 'BTC', 'S', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![canonical_s.id, canonical_s.ts],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let canonical_s_rows = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            impact_level: Some("S".to_string()),
+            impact_grade_version: Some("cwm_impact_v3_1".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(canonical_s_rows.len(), 1);
+    assert_eq!(canonical_s_rows[0].id, canonical_s.id);
+
+    let fail_closed_c_rows = store
+        .query_contract_whale_signals(&ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            impact_level: Some("C".to_string()),
+            impact_grade_version: Some("cwm_impact_v3_1".to_string()),
+            limit: 10,
+            ..ContractWhaleSignalQuery::default()
+        })
+        .unwrap();
+    assert_eq!(fail_closed_c_rows.len(), 1);
+    assert_eq!(fail_closed_c_rows[0].id, legacy_s_without_assessment.id);
+}
+
+#[test]
 fn contract_whale_outcome_summary_persists_shadow_markouts() {
     let store = temp_store("contract-whale-outcome-summary");
     let outcome = ContractWhaleSignalOutcome {
         signal_id: "contract-whale:BTC:15:1700000000000:buy".to_string(),
+        episode_id: Some("episode-1".to_string()),
         symbol: "BTC".to_string(),
         signal_ts: 1_700_000_000_000,
         signal_type: "aggressive_buy".to_string(),
@@ -117,19 +228,23 @@ fn contract_whale_outcome_summary_persists_shadow_markouts() {
         evaluated_at: 1_700_000_300_000,
         outcome_version: "v1_shadow".to_string(),
     };
+    let mut later_outcome = outcome.clone();
+    later_outcome.signal_id = "contract-whale:BTC:15:1700000001000:buy-update".to_string();
+    later_outcome.evaluated_at = 1_700_000_301_000;
+    later_outcome.markout_5m_bps = Some(48.0);
 
     assert_eq!(
         store
-            .upsert_contract_whale_signal_outcomes(&[outcome])
+            .upsert_contract_whale_signal_outcomes(&[outcome, later_outcome])
             .unwrap(),
-        1
+        2
     );
     let summary = store.contract_whale_outcome_summary("v1_shadow").unwrap();
 
     assert_eq!(summary.len(), 1);
     assert_eq!(summary[0].symbol, "BTC");
     assert_eq!(summary[0].sample_count, 1);
-    assert_eq!(summary[0].avg_markout_5m_bps, Some(24.0));
+    assert_eq!(summary[0].avg_markout_5m_bps, Some(48.0));
     assert_eq!(summary[0].follow_through_5m_rate, Some(1.0));
 }
 
@@ -138,6 +253,7 @@ fn contract_whale_outcome_summary_isolates_v2_metrics_by_version() {
     let store = temp_store("contract-whale-outcome-v2-version-isolation");
     let legacy = ContractWhaleSignalOutcome {
         signal_id: "contract-whale:BTC:15:1700000000000:legacy".to_string(),
+        episode_id: Some("episode-legacy".to_string()),
         symbol: "BTC".to_string(),
         signal_ts: 1_700_000_000_000,
         signal_type: "aggressive_buy".to_string(),
@@ -171,6 +287,7 @@ fn contract_whale_outcome_summary_isolates_v2_metrics_by_version() {
     };
     let v2 = ContractWhaleSignalOutcome {
         signal_id: "contract-whale:BTC:15:1700000300000:v2".to_string(),
+        episode_id: Some("episode-v2".to_string()),
         signal_ts: 1_700_000_300_000,
         markout_30s_bps: None,
         markout_2m_bps: None,
@@ -302,10 +419,7 @@ fn contract_flow_1s_keeps_spot_rows_out_of_perp_queries() {
         buy_notional_usd: 700_000.0,
         sell_notional_usd: 140_000.0,
         trade_count: 3,
-        buy_trade_count: 2,
-        sell_trade_count: 1,
         max_single_trade_btc: 8.0,
-        max_single_trade_share: 8.0 / 12.0,
         vwap: Some(70_000.0),
     };
     let spot_bucket = ContractFlowBucket {
@@ -359,10 +473,7 @@ async fn contract_flow_nonblocking_flush_writes_buckets() {
         buy_notional_usd: 350_000.0,
         sell_notional_usd: 70_000.0,
         trade_count: 2,
-        buy_trade_count: 1,
-        sell_trade_count: 1,
         max_single_trade_btc: 5.0,
-        max_single_trade_share: 5.0 / 6.0,
         vwap: Some(70_000.0),
     };
 
@@ -458,7 +569,7 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
         .list_contract_whale_signals("BTC", Some(signal.severity), 10)
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(!rows[0].discord_eligible);
+    assert!(rows[0].discord_eligible);
     assert!(!rows[0].discord_sent);
 
     let changed = store
@@ -908,10 +1019,7 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             buy_notional_usd: 70_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
-            buy_trade_count: 1,
-            sell_trade_count: 0,
             max_single_trade_btc: 1.0,
-            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         },
         ContractFlowBucket {
@@ -926,10 +1034,7 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
             buy_notional_usd: 140_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
-            buy_trade_count: 1,
-            sell_trade_count: 0,
             max_single_trade_btc: 2.0,
-            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         },
     ];
@@ -1041,6 +1146,12 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
     old_impact_a_signal.net_volume_btc = 120.0;
     old_impact_a_signal.severity = ContractWhaleSeverity::Medium;
     old_impact_a_signal.impact_level = Some("A".to_string());
+    let mut old_legacy_a_signal = sample_s_signal();
+    old_legacy_a_signal.id = "contract-whale:BTC:15:old:legacy-impact-a".to_string();
+    old_legacy_a_signal.ts = now - 400 * 24 * 60 * 60 * 1000;
+    old_legacy_a_signal.net_volume_btc = 120.0;
+    old_legacy_a_signal.severity = ContractWhaleSeverity::Medium;
+    old_legacy_a_signal.impact_level = Some("A".to_string());
     let mut old_impact_b_keep = sample_s_signal();
     old_impact_b_keep.id = "contract-whale:BTC:15:old:impact-b-keep".to_string();
     old_impact_b_keep.ts = now - 30 * 24 * 60 * 60 * 1000;
@@ -1072,6 +1183,9 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .upsert_contract_whale_signal(&old_impact_a_signal)
         .unwrap();
     store
+        .upsert_contract_whale_signal(&old_legacy_a_signal)
+        .unwrap();
+    store
         .upsert_contract_whale_signal(&old_impact_b_keep)
         .unwrap();
     store
@@ -1081,9 +1195,87 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .upsert_contract_whale_signal(&old_weak_signal)
         .unwrap();
     store.upsert_contract_whale_signal(&fresh_signal).unwrap();
+    let old_s_event_id: String = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(NULLIF(json_extract(payload_json, '$.eventLifecycle.eventId'), ''), signal_id)
+                   FROM contract_whale_signals WHERE signal_id = ?1",
+                [&old_s_signal.id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    let old_impact_b_keep_event_id: String = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(NULLIF(json_extract(payload_json, '$.eventLifecycle.eventId'), ''), signal_id)
+                   FROM contract_whale_signals WHERE signal_id = ?1",
+                [&old_impact_b_keep.id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    let old_impact_b_drop_event_id: String = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(NULLIF(json_extract(payload_json, '$.eventLifecycle.eventId'), ''), signal_id)
+                   FROM contract_whale_signals WHERE signal_id = ?1",
+                [&old_impact_b_drop.id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    let old_impact_a_event_id: String = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(NULLIF(json_extract(payload_json, '$.eventLifecycle.eventId'), ''), signal_id)
+                   FROM contract_whale_signals WHERE signal_id = ?1",
+                [&old_impact_a_signal.id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    store
+        .with_write_connection(|conn| {
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'A', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![old_impact_a_event_id, now],
+            )?;
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'S', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![old_s_event_id, now],
+            )?;
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![old_impact_b_keep_event_id, now],
+            )?;
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'B', 'confirmed', '[]', '{}', ?2, ?2, ?2)",
+                rusqlite::params![old_impact_b_drop_event_id, now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
 
     let result = store
         .prune_contract_whale_retention(
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
             now - 14 * 24 * 60 * 60 * 1000,
             now - 7 * 24 * 60 * 60 * 1000,
             now - 90 * 24 * 60 * 60 * 1000,
@@ -1091,13 +1283,39 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .unwrap();
 
     assert_eq!(result.flow_1s_deleted, 1);
-    // New tiered policy expires old ordinary and important evidence after
-    // their 7d/30d deadlines; only the recent signal and the 30d boundary row remain.
-    assert_eq!(result.signal_deleted, 5);
+    // Legacy severity/impact and large-net rows are no longer permanent;
+    // only confirmed V3 A/S materializations receive permanent retention.
+    assert_eq!(result.signal_deleted, 6);
+    assert_eq!(result.permanent_signals_archived, 2);
+    assert_eq!(result.ordinary_signals_archived, 4);
+    let archive_tiers: (i64, i64) = store
+        .with_connection(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM contract_whale_signal_permanent
+                      WHERE storage_tier = 'permanent' AND impact_grade IN ('A', 'S')",
+                    [],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM contract_whale_signal_archive
+                      WHERE storage_tier = 'cold'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    // The ordinary archive is a bounded cold tier; rows older than its
+    // additional retention window are removed in the same maintenance pass.
+    assert_eq!(archive_tiers, (2, 1));
     assert_eq!(result.liquidation_deleted, 1);
     assert_eq!(result.oi_deleted, 1);
     assert_eq!(result.funding_deleted, 1);
     assert_eq!(result.percentile_deleted, 1);
+    // Archived rows keep their V3 grade evidence available for audit and
+    // historical reads, so their grade rows are not orphaned or deleted.
+    assert_eq!(result.impact_grade_deleted, 0);
     assert_eq!(
         store
             .list_recent_contract_flow_buckets("BTC", 10)
@@ -1137,6 +1355,16 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         })
         .unwrap();
     assert_eq!(percentile_count, 1);
+    let hot_count: i64 = store
+        .with_connection(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM contract_whale_signals", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(hot_count, 2);
     let remaining = store
         .query_contract_whale_signals(&ContractWhaleSignalQuery {
             symbol: Some("BTC".to_string()),
@@ -1148,13 +1376,16 @@ fn contract_whale_retention_prunes_old_flow_buckets_and_old_signals() {
         .iter()
         .map(|signal| signal.id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(remaining.len(), 2);
+    // The history view includes hot rows, permanent A/S rows, and only the
+    // still-live portion of the bounded cold archive.
+    assert_eq!(remaining.len(), 5);
+    assert!(remaining_ids.contains(&old_s_signal.id.as_str()));
+    assert!(remaining_ids.contains(&old_impact_a_signal.id.as_str()));
     assert!(remaining_ids.contains(&old_impact_b_keep.id.as_str()));
     assert!(remaining_ids.contains(&fresh_signal.id.as_str()));
-    assert!(!remaining_ids.contains(&old_s_signal.id.as_str()));
+    assert!(remaining_ids.contains(&old_weak_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_large_net_signal.id.as_str()));
-    assert!(!remaining_ids.contains(&old_impact_a_signal.id.as_str()));
-    assert!(!remaining_ids.contains(&old_weak_signal.id.as_str()));
+    assert!(!remaining_ids.contains(&old_legacy_a_signal.id.as_str()));
     assert!(!remaining_ids.contains(&old_impact_b_drop.id.as_str()));
 }
 
@@ -1175,10 +1406,7 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
             buy_notional_usd: 70_000.0,
             sell_notional_usd: 0.0,
             trade_count: 1,
-            buy_trade_count: 1,
-            sell_trade_count: 0,
             max_single_trade_btc: 1.0,
-            max_single_trade_share: 1.0,
             vwap: Some(70_000.0),
         }])
         .unwrap();
@@ -1213,6 +1441,11 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
     let result = store
         .prune_contract_whale_retention(
             now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 14 * 24 * 60 * 60 * 1000,
+            now - 90 * 24 * 60 * 60 * 1000,
+            now - 90 * 24 * 60 * 60 * 1000,
             now - 7 * 24 * 60 * 60 * 1000,
             now - 90 * 24 * 60 * 60 * 1000,
         )
@@ -1234,7 +1467,17 @@ fn contract_whale_retention_skips_missing_time_column_without_aborting_other_tab
             ..ContractWhaleSignalQuery::default()
         })
         .unwrap();
-    assert!(remaining.is_empty());
+    assert_eq!(remaining.len(), 0);
+    let cold_count: i64 = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM contract_whale_signal_archive",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(cold_count, 0);
 }
 
 #[test]
@@ -1258,10 +1501,7 @@ fn contract_flow_history_builds_dynamic_average_and_percentile_thresholds() {
             buy_notional_usd: (100.0 + index as f64) * 70_000.0,
             sell_notional_usd: 20.0 * 70_000.0,
             trade_count: 10,
-            buy_trade_count: 8,
-            sell_trade_count: 2,
             max_single_trade_btc: 100.0 + index as f64,
-            max_single_trade_share: (100.0 + index as f64) / (120.0 + index as f64),
             vwap: Some(70_000.0),
         })
         .collect::<Vec<_>>();
@@ -1528,37 +1768,6 @@ fn main_force_events_open_update_and_close_after_quiet_period() {
     assert_eq!(events[0].peak_main_force_score, 88.0);
 }
 
-#[test]
-fn discord_outbox_dedupes_overlapping_windows_by_episode_key() {
-    let store = temp_store("cwm-episode-outbox");
-    let mut first = sample_s_signal();
-    first.event_lifecycle.start_time = first.ts;
-    let mut second = first.clone();
-    second.id.push_str("-60s");
-    second.ts += 15_000;
-    second.window_sec = 60;
-
-    assert_eq!(
-        store
-            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&first), first.ts)
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        store
-            .enqueue_contract_whale_discord_outbox(std::slice::from_ref(&second), second.ts)
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        store
-            .claim_contract_whale_discord_outbox(10, second.ts)
-            .unwrap()
-            .len(),
-        1
-    );
-}
-
 fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal
 {
     reset_contract_whale_runtime_config();
@@ -1574,18 +1783,4 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
     stats.percentile_level = Some(99.9);
     stats.multi_exchange_confirmed = true;
     detect_contract_whale_signal(&stats).expect("signal")
-}
-
-fn temp_store(name: &str) -> SqliteStore {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "btc-toxic-flow-{name}-{unique}-{}.sqlite",
-        std::process::id()
-    ));
-    let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
-    store.migrate().unwrap();
-    store
 }

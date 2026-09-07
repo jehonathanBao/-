@@ -1,0 +1,13 @@
+[Unit]
+Description=Release gate health sample for Toxic Order Monitor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/toxic-order-monitor-rs
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=45s
+ExecStart=/usr/local/bin/toxic-order-monitor-release-gates

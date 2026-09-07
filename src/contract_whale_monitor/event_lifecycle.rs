@@ -318,6 +318,18 @@ fn replace_snapshot_fields(existing: &mut ContractWhaleSignal, next: &ContractWh
     existing.dynamic_baseline_btc = next.dynamic_baseline_btc;
     existing.dynamic_threshold_level = next.dynamic_threshold_level.clone();
     existing.percentile_level = next.percentile_level;
+    // Impact-grade fields are event-owned evidence, not presentation-only
+    // fields. Keep them aligned with the snapshot that won the lifecycle
+    // replacement so a newer severity cannot carry an older grade.
+    existing.impact_level = next.impact_level.clone();
+    existing.signal_level = next.signal_level.clone();
+    existing.signal_label = next.signal_label.clone();
+    existing.normalized_strength = next.normalized_strength.clone();
+    existing.impact_score = next.impact_score;
+    existing.impact_z_score = next.impact_z_score;
+    existing.impact_grade_state = next.impact_grade_state.clone();
+    existing.impact_grade_version = next.impact_grade_version.clone();
+    existing.impact_reason_codes = next.impact_reason_codes.clone();
     existing.multi_exchange_confirmed = next.multi_exchange_confirmed;
     existing.liquidation_suspected = next.liquidation_suspected;
     existing.liquidation_long_btc = next.liquidation_long_btc;

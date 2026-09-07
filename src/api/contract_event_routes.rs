@@ -22,17 +22,20 @@ use crate::{
     },
     app::AppState,
     contract_whale_monitor::{
+        behavior_assessment::{
+            apply_post_event_validation, build_detection_behavior, CONTRACT_WHALE_BEHAVIOR_VERSION,
+        },
         cluster::apply_contract_whale_signal_clusters,
         config::contract_whale_runtime_config,
         discord::{
             contract_whale_min_display_total_volume_btc, meets_contract_whale_display_total_volume,
-            sanitize_contract_whale_impact,
         },
         event_lifecycle::{
             apply_contract_whale_event_lifecycle, enrich_lifecycle_unique_turnover,
             lifecycle_raw_start_ts, ContractWhaleLifecycleClock,
         },
         event_quality::decorate_contract_whale_event_quality,
+        impact_forecast::ContractWhaleMultiHorizonImpactForecast,
         merge::merge_contract_whale_signals,
         trajectory::apply_contract_whale_trajectories,
         types::{
@@ -45,10 +48,8 @@ use crate::{
     },
     normalizers::trade::now_ms,
     storage::{
-        contract_whale_repo::{
-            ContractWhaleRepo, ContractWhaleSignalQuery,
-            CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-        },
+        contract_event_grade_repo::ContractEventGradeRepo,
+        contract_whale_repo::{ContractWhaleRepo, ContractWhaleSignalQuery},
         SqliteStore,
     },
 };
@@ -74,13 +75,6 @@ pub struct ContractEventItem {
     pub direction: String,
     pub net_direction: String,
     pub main_force_score: Option<u8>,
-    pub behavior_type: String,
-    pub behavior_state: String,
-    pub behavior_confidence: u8,
-    pub behavior_main_force_confirmed: bool,
-    pub behavior_supporting_evidence: Vec<String>,
-    pub behavior_counter_evidence: Vec<String>,
-    pub behavior_rationale: String,
     pub exchange_spot_count: usize,
     pub exchange_contract_count: usize,
     pub source: String,
@@ -146,8 +140,7 @@ pub struct RetentionTableStats {
     pub newest_ts: Option<i64>,
     pub row_count: Option<i64>,
     pub rows_older_than_retention: Option<i64>,
-    pub protected_s_count: Option<i64>,
-    pub protected_net_volume_count: Option<i64>,
+    pub protected_impact_a_s_count: Option<i64>,
     pub has_retention_cleanup: Option<bool>,
     pub reason: Option<String>,
 }
@@ -158,10 +151,7 @@ pub struct ContractRetentionStatusResponse {
     pub flow_retention_days: i64,
     pub signal_retention_days: i64,
     pub impact_b_retention_days: i64,
-    pub critical_retention_days: i64,
-    pub signal_protect_severity_s: bool,
     pub signal_protect_impact_a_s: bool,
-    pub signal_protect_net_volume_btc: f64,
     pub cleanup_interval_hours: i64,
     pub tables: ContractRetentionTables,
     pub data_state: String,
@@ -282,6 +272,7 @@ struct ContractEventCandidate {
     hidden_detail: Option<String>,
 }
 
+#[allow(clippy::result_large_err)]
 pub async fn contract_events_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
@@ -328,6 +319,7 @@ pub async fn contract_events_debug_counts_route(
     Ok(Json(response))
 }
 
+#[allow(clippy::result_large_err)]
 pub async fn final_events_v2_route(
     State(state): State<AppState>,
     Query(query): Query<ContractWhaleQuery>,
@@ -826,10 +818,7 @@ pub async fn contract_retention_status_route(
         flow_retention_days: retention.flow_1s_days,
         signal_retention_days: retention.signals_days,
         impact_b_retention_days: retention.impact_b_days,
-        critical_retention_days: retention.critical_days,
-        signal_protect_severity_s: true,
         signal_protect_impact_a_s: true,
-        signal_protect_net_volume_btc: CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
         cleanup_interval_hours: 1,
         tables,
         data_state: data_state.to_string(),
@@ -849,38 +838,44 @@ pub(crate) fn contract_event_page_for_query(
     let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
     let include_hidden = parse_include_hidden(query.include_hidden.as_deref())?;
     let range = query.range.clone().unwrap_or_else(|| "7d".to_string());
+    let v3_impact_filter =
+        contract_whale_runtime_config().impact_grade_v3.enabled && query.impact_level.is_some();
     query.limit = Some((requested_limit + 1).to_string());
-    let history_query = parse_history_query(&query)?;
+    let mut history_query = parse_history_query(&query)?;
+    if v3_impact_filter {
+        history_query.impact_grade_version = Some(
+            contract_whale_runtime_config()
+                .impact_grade_v3
+                .grade_version,
+        );
+    }
     let store = state
         .contract_whale_store()
         .ok_or_else(|| internal_error(anyhow::anyhow!("contract whale store unavailable")))?;
-    let raw_items = store
+    let mut raw_items = store
         .query_contract_whale_signals(&history_query)
         .map_err(internal_error)?;
+    decorate_v3_signal_grades(Some(&store), &mut raw_items);
     let raw_count = raw_items.len();
-    let has_more = raw_items.len() > requested_limit;
-    let sliced_items = raw_items
-        .into_iter()
-        .take(requested_limit)
-        .collect::<Vec<_>>();
-    let next_cursor = has_more
-        .then(|| {
-            sliced_items
-                .last()
-                .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
-        })
-        .flatten();
+    let raw_has_more = raw_items.len() > requested_limit;
     let now = now_ms();
-    let last_event_ts = sliced_items.last().map(|signal| signal.ts);
-    let max_event_ts = sliced_items.first().map(|signal| signal.ts);
+    let last_event_ts = raw_items
+        .iter()
+        .take(requested_limit)
+        .next_back()
+        .map(|signal| signal.ts);
+    let max_event_ts = raw_items.first().map(|signal| signal.ts);
+    let fallback_cursor = raw_items
+        .iter()
+        .take(requested_limit)
+        .next_back()
+        .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id));
     let max_persisted_at = state.contract_whale_store().and_then(|store| {
-        let Some(symbol) = history_query.symbol.clone() else {
-            return None;
-        };
+        let symbol = history_query.symbol.clone()?;
         store
             .with_connection(|conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT MAX(created_at) FROM contract_whale_signals WHERE symbol = ?1",
+                    "SELECT MAX(created_at) FROM contract_whale_signals_history WHERE symbol = ?1",
                 )?;
                 let value =
                     stmt.query_row([symbol.as_str()], |row| row.get::<_, Option<i64>>(0))?;
@@ -898,9 +893,7 @@ pub(crate) fn contract_event_page_for_query(
     let latest_lag_sec = state
         .contract_whale_store()
         .and_then(|store| {
-            let Some(symbol) = history_query.symbol.clone() else {
-                return None;
-            };
+            let symbol = history_query.symbol.clone()?;
             store
                 .query_contract_whale_signals(&ContractWhaleSignalQuery {
                     symbol: Some(symbol),
@@ -919,8 +912,8 @@ pub(crate) fn contract_event_page_for_query(
         .unwrap_or(0);
     let requested_status = normalize_status_filter(query.status.as_deref());
     let store = state.contract_whale_store();
-    let items = project_contract_event_candidates(
-        sliced_items,
+    let mut items = project_contract_event_candidates(
+        raw_items,
         VolumeDisplayContext::ContractEventStream,
         store.as_ref(),
     )
@@ -929,6 +922,24 @@ pub(crate) fn contract_event_page_for_query(
     .filter(|candidate| include_hidden || candidate.is_visible)
     .map(contract_event_from_candidate)
     .collect::<Vec<_>>();
+    decorate_v3_impact_grades(store.as_ref(), &mut items);
+    let has_more = raw_has_more || items.len() > requested_limit;
+    items.truncate(requested_limit);
+    let next_cursor = has_more
+        .then(|| {
+            items
+                .last()
+                .map(|item| {
+                    encode_contract_history_cursor(
+                        item.ts,
+                        item.source_signal_id
+                            .as_deref()
+                            .unwrap_or(item.event_id.as_str()),
+                    )
+                })
+                .or(fallback_cursor)
+        })
+        .flatten();
 
     Ok(ContractEventPage {
         items,
@@ -969,34 +980,42 @@ pub(crate) fn final_events_v2_for_query(
     let requested_limit = parse_requested_limit(query.limit.as_deref(), 100, 500)?;
     let range = query.range.clone().unwrap_or_else(|| "24h".to_string());
     let requested_status = normalize_status_filter(query.status.as_deref());
+    let v3_impact_filter =
+        contract_whale_runtime_config().impact_grade_v3.enabled && query.impact_level.is_some();
     query.limit = Some((requested_limit + 1).to_string());
-    let history_query = parse_history_query(&query)?;
+    let mut history_query = parse_history_query(&query)?;
+    if v3_impact_filter {
+        history_query.impact_grade_version = Some(
+            contract_whale_runtime_config()
+                .impact_grade_v3
+                .grade_version,
+        );
+    }
     let now = now_ms();
     let store = state
         .contract_whale_store()
         .ok_or_else(|| internal_error(anyhow::anyhow!("contract whale store unavailable")))?;
-    let raw_items = store
+    let mut raw_items = store
         .query_contract_whale_signals(&history_query)
         .map_err(internal_error)?;
-    let has_more = raw_items.len() > requested_limit;
-    let sliced_items = raw_items
-        .into_iter()
+    decorate_v3_signal_grades(Some(&store), &mut raw_items);
+    let raw_has_more = raw_items.len() > requested_limit;
+    let last_event_ts = raw_items
+        .iter()
         .take(requested_limit)
-        .collect::<Vec<_>>();
-    let next_cursor = has_more
-        .then(|| {
-            sliced_items
-                .last()
-                .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id))
-        })
-        .flatten();
-    let last_event_ts = sliced_items.last().map(|signal| signal.ts);
-    let max_event_ts = sliced_items.first().map(|signal| signal.ts);
+        .next_back()
+        .map(|signal| signal.ts);
+    let max_event_ts = raw_items.first().map(|signal| signal.ts);
+    let fallback_cursor = raw_items
+        .iter()
+        .take(requested_limit)
+        .next_back()
+        .map(|signal| encode_contract_history_cursor(signal.ts, &signal.id));
     let mut active = Vec::new();
     let mut closed = Vec::new();
     let store = state.contract_whale_store();
     for candidate in project_contract_event_candidates(
-        sliced_items,
+        raw_items,
         VolumeDisplayContext::FinalLifecycleEvent,
         store.as_ref(),
     ) {
@@ -1011,6 +1030,24 @@ pub(crate) fn final_events_v2_for_query(
             active.push(candidate.event);
         }
     }
+    decorate_v3_final_events(store.as_ref(), &mut active);
+    decorate_v3_final_events(store.as_ref(), &mut closed);
+    let has_more = raw_has_more || active.len().saturating_add(closed.len()) > requested_limit;
+    if active.len().saturating_add(closed.len()) > requested_limit {
+        let mut remaining = requested_limit;
+        active.truncate(remaining.min(active.len()));
+        remaining = remaining.saturating_sub(active.len());
+        closed.truncate(remaining.min(closed.len()));
+    }
+    let next_cursor = has_more
+        .then(|| {
+            closed
+                .last()
+                .or_else(|| active.last())
+                .map(|event| encode_contract_history_cursor(event.end_time, &event.event_id))
+                .or(fallback_cursor)
+        })
+        .flatten();
 
     Ok(FinalEventsV2Response {
         active,
@@ -1254,9 +1291,6 @@ fn project_contract_event_candidates(
     }
     apply_contract_whale_signal_clusters(&mut items);
     apply_contract_whale_trajectories(&mut items);
-    for signal in &mut items {
-        sanitize_contract_whale_impact(signal);
-    }
     items.sort_by(|left, right| {
         right
             .ts
@@ -1409,9 +1443,9 @@ fn latest_vs_history(
                 };
             }
 
-            let not_in_history_reason = if from_ts.is_some_and(|from_ts| item.ts < from_ts) {
-                Some("outside_requested_range".to_string())
-            } else if to_ts.is_some_and(|to_ts| item.ts > to_ts) {
+            let not_in_history_reason = if from_ts.is_some_and(|from_ts| item.ts < from_ts)
+                || to_ts.is_some_and(|to_ts| item.ts > to_ts)
+            {
                 Some("outside_requested_range".to_string())
             } else {
                 Some("latest_snapshot_not_persisted_yet".to_string())
@@ -1438,22 +1472,22 @@ fn db_debug_counts(
     let end_ts = to_ts.unwrap_or_else(now_ms);
     store.with_connection(|conn| {
         let total_24h = conn.query_row(
-            "SELECT COUNT(*) FROM contract_whale_signals WHERE market_type = 'perp' AND ts >= ?1 AND ts <= ?2",
+            "SELECT COUNT(*) FROM contract_whale_signals_history WHERE market_type = 'perp' AND ts >= ?1 AND ts <= ?2",
             [start_ts, end_ts],
             |row| row.get(0),
         )?;
         let symbol_24h = conn.query_row(
-            "SELECT COUNT(*) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            "SELECT COUNT(*) FROM contract_whale_signals_history WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
             rusqlite::params![symbol, start_ts, end_ts],
             |row| row.get(0),
         )?;
         let oldest_ts = conn.query_row(
-            "SELECT MIN(ts) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            "SELECT MIN(ts) FROM contract_whale_signals_history WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
             rusqlite::params![symbol, start_ts, end_ts],
             |row| row.get(0),
         )?;
         let newest_ts = conn.query_row(
-            "SELECT MAX(ts) FROM contract_whale_signals WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
+            "SELECT MAX(ts) FROM contract_whale_signals_history WHERE market_type = 'perp' AND symbol = ?1 AND ts >= ?2 AND ts <= ?3",
             rusqlite::params![symbol, start_ts, end_ts],
             |row| row.get(0),
         )?;
@@ -1467,9 +1501,7 @@ fn db_debug_counts(
 }
 
 fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractEventItem {
-    let mut event = candidate.event;
-    sanitize_contract_whale_impact(&mut event.source_signal);
-    synchronize_final_event_impact(&mut event);
+    let event = candidate.event;
     let source_signal = &event.source_signal;
     let exchange_spot_count = source_signal.active_sources.spot.len();
     let exchange_contract_count = source_signal.active_sources.contract.len();
@@ -1481,21 +1513,16 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_ascii_uppercase());
-    let impact_permanent = matches!(impact_level.as_deref(), Some("A") | Some("S"));
-    let is_retention_protected = severity_key == "s"
-        || impact_permanent
-        || source_signal.net_volume_btc.abs()
-            >= CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC;
-    let retention_reason = if severity_key == "s" {
-        Some("severity_s".to_string())
-    } else if impact_level.as_deref() == Some("S") {
-        Some("impact_s".to_string())
-    } else if impact_level.as_deref() == Some("A") {
-        Some("impact_a".to_string())
-    } else if source_signal.net_volume_btc.abs()
-        >= CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
-    {
-        Some("net_volume_ge_500_btc".to_string())
+    let impact_permanent = source_signal
+        .impact_grade_state
+        .as_deref()
+        .is_some_and(|state| state.eq_ignore_ascii_case("confirmed"))
+        && matches!(impact_level.as_deref(), Some("A") | Some("S"));
+    let is_retention_protected = impact_permanent;
+    let retention_reason = if impact_permanent && impact_level.as_deref() == Some("S") {
+        Some("confirmed_v3_impact_s".to_string())
+    } else if impact_permanent && impact_level.as_deref() == Some("A") {
+        Some("confirmed_v3_impact_a".to_string())
     } else {
         None
     };
@@ -1515,22 +1542,6 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
         direction: direction_key.to_string(),
         net_direction: event.direction_bias.clone(),
         main_force_score: source_signal.main_force_score,
-        behavior_type: serde_json::to_value(source_signal.behavior_assessment.behavior_type)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_else(|| "insufficient_evidence".to_string()),
-        behavior_state: serde_json::to_value(source_signal.behavior_assessment.state)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_else(|| "insufficient".to_string()),
-        behavior_confidence: source_signal.behavior_assessment.confidence,
-        behavior_main_force_confirmed: source_signal.behavior_assessment.main_force_confirmed,
-        behavior_supporting_evidence: source_signal
-            .behavior_assessment
-            .supporting_evidence
-            .clone(),
-        behavior_counter_evidence: source_signal.behavior_assessment.counter_evidence.clone(),
-        behavior_rationale: source_signal.behavior_assessment.rationale.clone(),
         exchange_spot_count,
         exchange_contract_count,
         source: "contract_whale_signals".to_string(),
@@ -1543,16 +1554,413 @@ fn contract_event_from_candidate(candidate: ContractEventCandidate) -> ContractE
     }
 }
 
-fn synchronize_final_event_impact(event: &mut FinalEvent) {
-    if let Some(impact_level) = event.source_signal.impact_level.as_deref() {
-        event.impact_level = impact_level.to_string();
+fn decorate_v3_impact_grades(store: Option<&SqliteStore>, items: &mut [ContractEventItem]) {
+    let Some(store) = store else { return };
+    let runtime_config = contract_whale_runtime_config();
+    if runtime_config.impact_grade_v3.enabled {
+        let repo = ContractEventGradeRepo::new(store.clone());
+        let version = runtime_config.impact_grade_v3.grade_version;
+        for item in items.iter_mut() {
+            match load_v3_assessment_for_final_event(&repo, &item.final_event, &version) {
+                Some(assessment) => {
+                    apply_v3_grade_to_final_event(&mut item.final_event, &assessment);
+                    apply_behavior_assessment(
+                        &mut item.final_event,
+                        Some(&assessment),
+                        Some(store),
+                    );
+                }
+                None => {
+                    apply_v3_unavailable_grade(&mut item.final_event, &version);
+                    apply_behavior_assessment(&mut item.final_event, None, Some(store));
+                }
+            }
+        }
     }
-    if let Some(signal_level) = event.source_signal.signal_level.as_deref() {
-        event.signal_level = signal_level.to_string();
+    let ids = items
+        .iter()
+        .flat_map(|item| {
+            std::iter::once(item.final_event.event_id.as_str())
+                .chain(std::iter::once(item.final_event.episode_id.as_str()))
+                .chain(std::iter::once(item.final_event.source_signal.id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    let v42_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+    ).unwrap_or_default();
+    let v41_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+    ).unwrap_or_default();
+    let v42_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        )
+        .unwrap_or_default();
+    let v41_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+        )
+        .unwrap_or_default();
+    for item in items {
+            let event = &mut item.final_event;
+            let mut forecast = [
+                event.event_id.as_str(),
+                event.episode_id.as_str(),
+                event.source_signal.id.as_str(),
+            ]
+            .iter()
+            .find_map(|alias| v42_forecasts.get(*alias))
+            .or_else(|| [
+                event.event_id.as_str(),
+                event.episode_id.as_str(),
+                event.source_signal.id.as_str(),
+            ].iter().find_map(|alias| v41_forecasts.get(*alias)))
+            .cloned();
+            if let Some(forecast) = forecast.as_mut() {
+                if forecast.forecast_version == crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION {
+                    apply_v4_decision_state(forecast, &v42_states);
+                } else {
+                    apply_v4_decision_state(forecast, &v41_states);
+                }
+            }
+            event.multi_horizon_impact = forecast;
+        }
+}
+
+pub(crate) fn decorate_v3_final_events(store: Option<&SqliteStore>, items: &mut [FinalEvent]) {
+    let Some(store) = store else { return };
+    let runtime_config = contract_whale_runtime_config();
+    if runtime_config.impact_grade_v3.enabled {
+        let repo = ContractEventGradeRepo::new(store.clone());
+        let version = runtime_config.impact_grade_v3.grade_version;
+        for item in items.iter_mut() {
+            match load_v3_assessment_for_final_event(&repo, item, &version) {
+                Some(assessment) => {
+                    apply_v3_grade_to_final_event(item, &assessment);
+                    apply_behavior_assessment(item, Some(&assessment), Some(store));
+                }
+                None => {
+                    apply_v3_unavailable_grade(item, &version);
+                    apply_behavior_assessment(item, None, Some(store));
+                }
+            }
+        }
     }
-    if let Some(signal_label) = event.source_signal.signal_label.as_deref() {
-        event.signal_label = signal_label.to_string();
+    decorate_v4_impact_forecasts(store, items);
+}
+
+/// Batch-decorate the event projection. Forecasts are persisted event-owned
+/// snapshots; the API prefers the V4.2 hybrid payload and falls back to V4.1
+/// for legacy rows. It never computes a page-relative rating or performs one
+/// page-relative rating or performs one query per event.
+pub(crate) fn decorate_v4_impact_forecasts(store: &SqliteStore, items: &mut [FinalEvent]) {
+    let ids = items
+        .iter()
+        .flat_map(|item| {
+            std::iter::once(item.event_id.as_str())
+                .chain(std::iter::once(item.episode_id.as_str()))
+                .chain(std::iter::once(
+                    item.source_signal.event_lifecycle.event_id.as_str(),
+                ))
+                .chain(std::iter::once(item.source_signal.id.as_str()))
+                .chain(item.source_signal.merged_from.iter().map(String::as_str))
+        })
+        .collect::<Vec<_>>();
+    let v42_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+    ).unwrap_or_default();
+    let v41_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+    ).unwrap_or_default();
+    let v42_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        )
+        .unwrap_or_default();
+    let v41_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+        )
+        .unwrap_or_default();
+    for item in items {
+        let aliases = [
+            item.event_id.as_str(),
+            item.episode_id.as_str(),
+            item.source_signal.event_lifecycle.event_id.as_str(),
+            item.source_signal.id.as_str(),
+        ];
+        let mut forecast = aliases.iter()
+            .find_map(|alias| v42_forecasts.get(*alias))
+            .or_else(|| aliases.iter().find_map(|alias| v41_forecasts.get(*alias)))
+            .cloned();
+        if let Some(forecast) = forecast.as_mut() {
+            if forecast.forecast_version == crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION {
+                apply_v4_decision_state(forecast, &v42_states);
+            } else {
+                apply_v4_decision_state(forecast, &v41_states);
+            }
+        }
+        item.multi_horizon_impact = forecast;
     }
+}
+
+/// Apply the persisted v3 assessment to legacy signal responses. This keeps
+/// `/contract-whale/history` and the event projection on the same event-owned
+/// grade instead of allowing either route to derive a page-relative badge.
+pub(crate) fn decorate_v3_signal_grades(
+    store: Option<&SqliteStore>,
+    items: &mut [ContractWhaleSignal],
+) {
+    let Some(store) = store else { return };
+    let runtime_config = contract_whale_runtime_config();
+    if runtime_config.impact_grade_v3.enabled {
+        let repo = ContractEventGradeRepo::new(store.clone());
+        let version = runtime_config.impact_grade_v3.grade_version;
+        for signal in items.iter_mut() {
+            let assessment = repo
+                .get_assessment_for_signal(signal, &version)
+                .ok()
+                .flatten();
+            match assessment {
+                Some(assessment) => apply_v3_grade_to_signal(signal, &assessment),
+                None => {
+                    crate::contract_whale_monitor::impact_grade::apply_unavailable_impact_assessment_to_signal(
+                        signal,
+                        &version,
+                        "v3_assessment_unavailable",
+                    );
+                }
+            }
+        }
+    }
+    decorate_v4_signal_impact_forecasts(&store, items);
+}
+
+/// Attach the persisted V4.2 snapshot (falling back to V4.1) to raw signal responses as well as the
+/// final-event projection. This keeps `/contract-whale/history`, latest, and
+/// the event tape on one visible rating source.
+pub(crate) fn decorate_v4_signal_impact_forecasts(
+    store: &SqliteStore,
+    items: &mut [ContractWhaleSignal],
+) {
+    let ids = items
+        .iter()
+        .flat_map(|signal| {
+            std::iter::once(signal.event_lifecycle.event_id.as_str())
+                .chain(std::iter::once(signal.id.as_str()))
+                .chain(signal.merged_from.iter().map(String::as_str))
+        })
+        .filter(|id| !id.trim().is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let v42_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+    ).unwrap_or_default();
+    let v41_forecasts = store.load_contract_whale_impact_forecasts(
+        &ids,
+        crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+    ).unwrap_or_default();
+    let v42_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        )
+        .unwrap_or_default();
+    let v41_states = store
+        .load_contract_whale_v4_decision_states(
+            &ids,
+            crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+        )
+        .unwrap_or_default();
+    for signal in items {
+        let mut forecast = std::iter::once(signal.event_lifecycle.event_id.as_str())
+            .chain(std::iter::once(signal.id.as_str()))
+            .chain(signal.merged_from.iter().map(String::as_str))
+            .find_map(|alias| v42_forecasts.get(alias))
+            .or_else(|| std::iter::once(signal.event_lifecycle.event_id.as_str())
+                .chain(std::iter::once(signal.id.as_str()))
+                .chain(signal.merged_from.iter().map(String::as_str))
+                .find_map(|alias| v41_forecasts.get(alias)))
+            .cloned();
+        if let Some(forecast) = forecast.as_mut() {
+            if forecast.forecast_version == crate::contract_whale_monitor::impact_v4_2::CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION {
+                apply_v4_decision_state(forecast, &v42_states);
+            } else {
+                apply_v4_decision_state(forecast, &v41_states);
+            }
+        }
+        signal.multi_horizon_impact = forecast;
+    }
+}
+
+fn apply_v4_decision_state(
+    forecast: &mut ContractWhaleMultiHorizonImpactForecast,
+    states: &BTreeMap<String, crate::contract_whale_monitor::impact_forecast::ContractWhaleV4DecisionState>,
+) {
+    if let Some(state) = [forecast.event_id.as_str(), forecast.episode_id.as_str()]
+        .iter()
+        .find_map(|alias| states.get(*alias))
+    {
+        forecast.decision_state = state.state.clone();
+        forecast.trade_plan.state = state.state.clone();
+    }
+}
+
+fn load_v3_assessment_for_final_event(
+    repo: &ContractEventGradeRepo,
+    event: &FinalEvent,
+    version: &str,
+) -> Option<crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment> {
+    let mut aliases = vec![
+        event.event_id.trim(),
+        event.source_signal.event_lifecycle.event_id.trim(),
+        event.source_signal.id.trim(),
+    ];
+    aliases.extend(event.source_signal.merged_from.iter().map(String::as_str));
+    repo.get_assessment_for_aliases(&aliases, version)
+        .ok()
+        .flatten()
+}
+
+fn apply_v3_grade_to_signal(
+    signal: &mut ContractWhaleSignal,
+    assessment: &crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment,
+) {
+    crate::contract_whale_monitor::impact_grade::apply_impact_assessment_to_signal(
+        signal, assessment,
+    );
+}
+
+fn apply_v3_unavailable_grade(event: &mut FinalEvent, version: &str) {
+    event.impact_level = "UNRATED".to_string();
+    event.impact_grade = "UNRATED".to_string();
+    event.impact_grade_state = "evidence_insufficient".to_string();
+    event.assessment_status = "assessment_pending".to_string();
+    event.impact_grade_version = Some(version.to_string());
+    event.impact_reason_codes = vec![
+        "v3_assessment_unavailable".to_string(),
+        "legacy_grade_not_authoritative".to_string(),
+    ];
+    event.signal_level = "N/A".to_string();
+    event.signal_label = "RATING PENDING".to_string();
+    event.normalized_strength = "PENDING".to_string();
+    event.z_score = 0.0;
+    event.percentile = 0.0;
+}
+
+fn apply_behavior_assessment(
+    event: &mut FinalEvent,
+    impact: Option<&crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment>,
+    store: Option<&SqliteStore>,
+) {
+    let mut behavior = build_detection_behavior(&event.source_signal, impact, now_ms());
+    let aliases = [
+        event.event_id.as_str(),
+        event.episode_id.as_str(),
+        event.source_signal.id.as_str(),
+    ];
+    if let Some(outcome) = store
+        .and_then(|store| {
+            store
+                .latest_contract_whale_outcome_markouts(
+                    crate::contract_whale_monitor::outcome_calibration::CONTRACT_WHALE_OUTCOME_VERSION,
+                    &aliases,
+                )
+                .ok()
+        })
+        .flatten()
+    {
+        behavior = apply_post_event_validation(
+            behavior,
+            &[
+                ("30s".to_string(), outcome.markout_30s_bps),
+                ("2m".to_string(), outcome.markout_2m_bps),
+                ("5m".to_string(), outcome.markout_5m_bps),
+            ],
+            outcome.evaluated_at,
+        );
+    }
+    debug_assert_eq!(behavior.behavior_version, CONTRACT_WHALE_BEHAVIOR_VERSION);
+    event.behavior_assessment = Some(behavior);
+}
+
+fn apply_v3_unavailable_status(event: &mut FinalEvent, status: &str, reason: &str) {
+    event.assessment_status = status.to_string();
+    event.signal_label = match status {
+        "baseline_warming_up" => "BASELINE WARMING UP",
+        "historical_baseline_unavailable" => "HISTORICAL BASELINE UNAVAILABLE",
+        "evidence_missing" => "EVIDENCE MISSING",
+        "assessment_failed" => "RATING ERROR",
+        _ if reason == "v3_assessment_unavailable" => "RATING PENDING",
+        _ => "RATING UNAVAILABLE",
+    }
+    .to_string();
+}
+
+fn apply_v3_grade_to_final_event(
+    event: &mut FinalEvent,
+    assessment: &crate::contract_whale_monitor::impact_grade::ContractEventImpactAssessment,
+) {
+    if matches!(
+        assessment.state,
+        crate::contract_whale_monitor::impact_grade::ImpactGradeState::EvidenceInsufficient
+    ) {
+        apply_v3_unavailable_grade(event, &assessment.grade_version);
+        event.impact_reason_codes = assessment.reason_codes.clone();
+        event.assessment_status = assessment.status.as_str().to_string();
+        if let Some(reason) = assessment.reason_codes.first() {
+            apply_v3_unavailable_status(event, assessment.status.as_str(), reason);
+        }
+        event.impact_evidence = serde_json::to_value(&assessment.evidence).ok();
+        return;
+    }
+    let grade = serde_json::to_string(&assessment.grade)
+        .unwrap_or_else(|_| "\"C\"".to_string())
+        .trim_matches('"')
+        .to_string();
+    event.impact_level = grade.clone();
+    event.impact_grade = grade.clone();
+    event.impact_grade_state = serde_json::to_string(&assessment.state)
+        .unwrap_or_else(|_| "\"evidence_insufficient\"".to_string())
+        .trim_matches('"')
+        .to_string();
+    event.impact_grade_version = Some(assessment.grade_version.clone());
+    event.impact_reason_codes = assessment.reason_codes.clone();
+    event.assessment_status = assessment.status.as_str().to_string();
+    event.impact_evidence = serde_json::to_value(&assessment.evidence).ok();
+    event.signal_level = match grade.as_str() {
+        "S" => "S",
+        "A" => "L3",
+        "B" => "L2",
+        _ => "L1",
+    }
+    .to_string();
+    event.signal_label = match grade.as_str() {
+        "S" => "SHOCK IMPACT EVENT",
+        "A" => "HIGH IMPACT EVENT",
+        "B" => "MEDIUM IMPACT EVENT",
+        _ => "LOW IMPACT EVENT",
+    }
+    .to_string();
+    event.normalized_strength = match grade.as_str() {
+        "S" => "EXTREME",
+        "A" => "HIGH",
+        "B" => "MEDIUM",
+        _ => "LOW",
+    }
+    .to_string();
+    event.z_score = assessment.evidence.robust_z.unwrap_or(0.0);
+    event.percentile = assessment.evidence.robust_percentile.unwrap_or(0.0);
 }
 
 fn severity_key(severity: ContractWhaleSeverity) -> &'static str {
@@ -1628,10 +2036,11 @@ fn status_matches(filter: Option<&str>, actual: &str) -> bool {
 fn retention_tables(
     store: SqliteStore,
     flow_days: i64,
-    _signal_days: i64,
+    signal_days: i64,
 ) -> anyhow::Result<ContractRetentionTables> {
     let now_ms = now_ms();
     let flow_cutoff = now_ms.saturating_sub(flow_days.max(1) * 24 * 60 * 60 * 1000);
+    let signal_cutoff = now_ms.saturating_sub(signal_days.max(1) * 24 * 60 * 60 * 1000);
     store.with_connection(|conn| {
         let contract_flow_1s = RetentionTableStats {
             oldest_ts: query_min_ts(conn, "contract_flow_1s", "ts_bucket")?,
@@ -1643,40 +2052,43 @@ fn retention_tables(
                 "ts_bucket",
                 flow_cutoff,
             )?),
-            protected_s_count: None,
-            protected_net_volume_count: None,
+            protected_impact_a_s_count: None,
             has_retention_cleanup: None,
             reason: None,
         };
         let contract_whale_signals = RetentionTableStats {
-            oldest_ts: query_min_ts(conn, "contract_whale_signals", "ts")?,
-            newest_ts: query_max_ts(conn, "contract_whale_signals", "ts")?,
-            row_count: Some(query_count(conn, "contract_whale_signals")?),
-            rows_older_than_retention: Some(conn.query_row(
-                "SELECT COUNT(*) FROM contract_whale_signals WHERE retain_until > 0 AND retain_until < ?1",
-                [now_ms],
+            oldest_ts: query_min_ts(conn, "contract_whale_signals_history", "ts")?,
+            newest_ts: query_max_ts(conn, "contract_whale_signals_history", "ts")?,
+            row_count: Some(query_count(conn, "contract_whale_signals_history")?),
+            rows_older_than_retention: Some(query_older_than(
+                conn,
+                "contract_whale_signals_history",
+                "ts",
+                signal_cutoff,
+            )?),
+            protected_impact_a_s_count: Some(conn.query_row(
+                "SELECT COUNT(*) FROM contract_whale_signals_history s
+                  WHERE EXISTS (
+                    SELECT 1 FROM contract_event_impact_grades g
+                     WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                       AND g.grade_version = ?1
+                       AND g.state = 'confirmed'
+                       AND g.grade IN ('A', 'S')
+                  )",
+                [contract_whale_runtime_config()
+                    .impact_grade_v3
+                    .grade_version],
                 |row| row.get(0),
             )?),
-            protected_s_count: Some(conn.query_row(
-                "SELECT COUNT(*) FROM contract_whale_signals WHERE severity = 's'",
-                [],
-                |row| row.get(0),
-            )?),
-            protected_net_volume_count: Some(conn.query_row(
-                "SELECT COUNT(*) FROM contract_whale_signals WHERE ABS(COALESCE(net_volume_btc, 0.0)) >= ?1",
-                [CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC],
-                |row| row.get(0),
-            )?),
-            has_retention_cleanup: Some(true),
-            reason: Some("deadline_tiered_7d_30d_365d".to_string()),
+            has_retention_cleanup: None,
+            reason: None,
         };
         let main_force_events = RetentionTableStats {
             oldest_ts: query_min_ts(conn, "main_force_events", "started_at")?,
             newest_ts: query_max_ts(conn, "main_force_events", "started_at")?,
             row_count: Some(query_count(conn, "main_force_events")?),
             rows_older_than_retention: None,
-            protected_s_count: None,
-            protected_net_volume_count: None,
+            protected_impact_a_s_count: None,
             has_retention_cleanup: Some(false),
             reason: None,
         };
@@ -1694,8 +2106,7 @@ fn unavailable_retention_tables(reason: &str) -> ContractRetentionTables {
         newest_ts: None,
         row_count: None,
         rows_older_than_retention: None,
-        protected_s_count: None,
-        protected_net_volume_count: None,
+        protected_impact_a_s_count: None,
         has_retention_cleanup: None,
         reason: Some(reason.to_string()),
     };

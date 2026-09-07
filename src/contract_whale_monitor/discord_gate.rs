@@ -9,6 +9,20 @@ use super::{
     },
 };
 
+use super::impact_grade::{
+    ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeState,
+};
+
+/// V3 external delivery gate. Relative rank, legacy severity, and provisional
+/// assessments are intentionally excluded from this decision.
+pub fn impact_grade_v3_discord_eligible(assessment: &ContractEventImpactAssessment) -> bool {
+    assessment.state == ImpactGradeState::Confirmed
+        && matches!(
+            assessment.grade,
+            ContractEventImpactGrade::A | ContractEventImpactGrade::S
+        )
+}
+
 pub fn btc_high_fallback_allowed(
     signal_type: ContractWhaleSignalType,
     price_response_type: ContractWhalePriceResponseType,

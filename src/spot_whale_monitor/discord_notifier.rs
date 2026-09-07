@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::normalizers::trade::now_ms;
 
 use super::{
-    detector::discord_gate_with_volume,
+    detector::discord_gate,
     types::{SpotWhaleDirection, SpotWhaleSeverity, SpotWhaleSignal, SpotWhaleSignalType},
     LOG_PREFIX, LOG_TARGET,
 };
@@ -18,6 +18,7 @@ use super::{
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MAX_ATTEMPTS: usize = 2;
 const DEFAULT_COOLDOWN_SEC: i64 = 180;
+const DEFAULT_BTC_NET_DIRECTION_THRESHOLD_BASE: f64 = 200.0;
 
 static GLOBAL_COOLDOWN_STORE: OnceLock<SpotWhaleDiscordCooldownStore> = OnceLock::new();
 
@@ -29,6 +30,10 @@ pub struct SpotWhaleDiscordSettings {
     pub timeout_ms: u64,
     pub max_attempts: usize,
     pub cooldown_sec: i64,
+    /// Restrict this notifier to BTC spot signals when enabled.
+    pub btc_only: bool,
+    /// Strict threshold for BTC absolute net direction, in BTC.
+    pub btc_net_direction_threshold_base: f64,
 }
 
 impl SpotWhaleDiscordSettings {
@@ -49,6 +54,11 @@ impl SpotWhaleDiscordSettings {
                 .clamp(1, 3),
             cooldown_sec: env_i64("SPOT_WHALE_DISCORD_COOLDOWN_SEC", DEFAULT_COOLDOWN_SEC)
                 .clamp(30, 3600),
+            btc_only: env_bool("SPOT_WHALE_DISCORD_BTC_ONLY", false),
+            btc_net_direction_threshold_base: env_positive_f64(
+                "SPOT_WHALE_DISCORD_BTC_MIN_ABS_NET_DIRECTION_BASE",
+                DEFAULT_BTC_NET_DIRECTION_THRESHOLD_BASE,
+            ),
         }
     }
 }
@@ -138,9 +148,7 @@ pub async fn notify_spot_whale_discord(
 ) -> SpotWhaleDiscordOutcome {
     let now = now_ms();
     let cooldown_store = global_spot_whale_discord_cooldown_store();
-    let (eligible_by_signal, gate_reason) = discord_gate_with_volume(
-        &signal.symbol,
-        signal.total_volume_base,
+    let (eligible_by_signal, gate_reason) = discord_gate(
         signal.severity,
         signal.score,
         signal.multi_exchange_confirmed,
@@ -149,7 +157,29 @@ pub async fn notify_spot_whale_discord(
     if !settings.enabled {
         return outcome(false, false, settings.dry_run, "disabled", None, None);
     }
-    if !eligible_by_signal || !signal.discord_eligible {
+    if settings.btc_only && !signal.symbol.eq_ignore_ascii_case("BTC") {
+        return outcome(false, false, settings.dry_run, "symbol_filtered", None, None);
+    }
+    let btc_threshold_match = btc_net_direction_threshold_match(
+        &signal.symbol,
+        signal.net_volume_base,
+        settings.btc_net_direction_threshold_base,
+    );
+    if signal.symbol.eq_ignore_ascii_case("BTC") && !btc_threshold_match {
+        return outcome(
+            false,
+            false,
+            settings.dry_run,
+            "btc_net_direction_below_threshold",
+            None,
+            None,
+        );
+    }
+    // BTC threshold alerts intentionally bypass the score/severity Discord gate. The
+    // detector still supplies the signal and the data-quality check remains mandatory.
+    if signal.data_quality < 70
+        || (!btc_threshold_match && (!eligible_by_signal || !signal.discord_eligible))
+    {
         return outcome(
             false,
             false,
@@ -219,6 +249,14 @@ pub async fn notify_spot_whale_discord(
         }
     }
     outcome(true, false, false, &last_error, None, Some(payload))
+}
+
+fn btc_net_direction_threshold_match(symbol: &str, net_volume_base: f64, threshold: f64) -> bool {
+    symbol.eq_ignore_ascii_case("BTC")
+        && net_volume_base.is_finite()
+        && threshold.is_finite()
+        && threshold > 0.0
+        && net_volume_base.abs() > threshold
 }
 
 fn classify_request_error(error: &reqwest::Error) -> String {
@@ -398,4 +436,25 @@ fn env_i64(key: &str, default: i64) -> i64 {
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(default)
+}
+
+fn env_positive_f64(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::btc_net_direction_threshold_match;
+
+    #[test]
+    fn btc_threshold_is_strict_and_absolute() {
+        assert!(!btc_net_direction_threshold_match("BTC", 200.0, 200.0));
+        assert!(btc_net_direction_threshold_match("BTC", 200.01, 200.0));
+        assert!(btc_net_direction_threshold_match("btc", -200.01, 200.0));
+        assert!(!btc_net_direction_threshold_match("ETH", 1_000.0, 200.0));
+    }
 }

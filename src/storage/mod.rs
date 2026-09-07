@@ -1,10 +1,11 @@
+pub mod binance_orderflow_repo;
 pub mod binance_alt_contract_repo;
+pub mod contract_event_grade_repo;
 pub mod contract_whale_repo;
 pub mod hourly_delta_repo;
 pub mod main_force_events_repo;
 pub mod migrations;
 pub mod new_token_l2_repo;
-pub mod retention_policy;
 pub mod runtime_retention_repo;
 pub mod snapshot_service;
 pub mod snapshots_repo;
@@ -15,6 +16,7 @@ pub mod toxic_events_repo;
 pub mod venue_health_repo;
 pub mod vpin_repo;
 
+pub use contract_event_grade_repo::ContractEventGradeRepo;
 pub use runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionPruneResult};
 pub use snapshot_service::{SnapshotService, StorageState};
 pub use sqlite::SqliteStore;

@@ -594,7 +594,11 @@ pub fn enhance_signal_with_observed(
     TofSignalEnhancement {
         candidate_type: candidate_type(input.signal_kind, &metrics),
         tof_score: metrics.tof_score,
-        final_risk_score: input.existing_risk_score,
+        final_risk_score: if metrics.lineage.alert_eligible {
+            final_risk_score(input.existing_risk_score as f64, metrics.tof_score)
+        } else {
+            input.existing_risk_score
+        },
         tof_metrics: metrics,
         explain_tags: tags,
         direction: detector_direction,
@@ -693,7 +697,7 @@ fn candidate_type(signal_kind: &str, metrics: &TofMetrics) -> String {
     } else if metrics.liquidity_vacuum_score >= 65.0 {
         "liquidity_vacuum_candidate".to_string()
     } else if relative_vpin_score(metrics.vpin_zscore, metrics.vpin_percentile)
-        >= env_f64("TOF_RELATIVE_VPIN_HIGH_THRESHOLD", 70.0)
+        >= env_f64("TOF_RELATIVE_VPIN_HIGH_THRESHOLD", 90.0)
     {
         "vpin_toxicity_candidate".to_string()
     } else if metrics.spread_widening_score >= 70.0 {
@@ -708,7 +712,7 @@ fn candidate_type(signal_kind: &str, metrics: &TofMetrics) -> String {
 fn explain_tags(signal_kind: &str, metrics: &TofMetrics, direction: TofDirection) -> Vec<String> {
     let mut tags = Vec::new();
     if relative_vpin_score(metrics.vpin_zscore, metrics.vpin_percentile)
-        >= env_f64("TOF_RELATIVE_VPIN_HIGH_THRESHOLD", 70.0)
+        >= env_f64("TOF_RELATIVE_VPIN_HIGH_THRESHOLD", 90.0)
     {
         tags.push("relative_vpin_spike".to_string());
     }

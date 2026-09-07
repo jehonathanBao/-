@@ -121,7 +121,9 @@ pub fn normalize_market_impact_from_metrics(
     let score = impact_score
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(0.0);
-    let z = z_score.filter(|value| value.is_finite()).unwrap_or(score);
+    // A dynamic multiple is a relative volume ratio, not a z-score. Missing
+    // robust z evidence must fail closed instead of aliasing the ratio.
+    let z = z_score.filter(|value| value.is_finite()).unwrap_or(0.0);
     let percentile = percentile
         .filter(|value| value.is_finite())
         .unwrap_or(0.0)
@@ -139,7 +141,10 @@ pub fn normalize_market_impact_from_metrics(
         z_score: z,
         percentile,
         normalized_score,
-        normalized_strength: classify_normalized_strength(normalized_score).to_string(),
+        // Strength is a presentation of the authoritative grade. Keeping it
+        // derived from the grade prevents a high raw score with missing
+        // evidence from displaying as EXTREME while the event is C.
+        normalized_strength: classify_normalized_strength_for_impact(impact_level).to_string(),
         impact_level: impact_level.to_string(),
         signal_level: signal_level.to_string(),
         signal_label: impact_signal_label(impact_level).to_string(),
@@ -155,6 +160,15 @@ fn classify_impact_level(percentile: f64, z_score: f64, impact_score: f64) -> &'
         "B"
     } else {
         "C"
+    }
+}
+
+fn classify_normalized_strength_for_impact(impact_level: &str) -> &'static str {
+    match impact_level {
+        "S" => "EXTREME",
+        "A" => "HIGH",
+        "B" => "MEDIUM",
+        _ => "LOW",
     }
 }
 

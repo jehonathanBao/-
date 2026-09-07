@@ -9,6 +9,7 @@ import {
   fetchContractWhaleLatest,
   fetchContractWhaleRawFlowDebug,
   fetchContractWhaleSummary,
+  fetchContractWhaleV42Gate,
   fetchFinalEventsV2,
 } from "../api/contractWhale.js";
 
@@ -31,7 +32,6 @@ const OPERATOR_DIAGNOSTICS_ENABLED =
   import.meta.env.MODE === "test" || import.meta.env.VITE_ENABLE_OPERATOR_DIAGNOSTICS === "true";
 const DEFAULT_FILTERS = {
   symbol: "BTC",
-  severity: "all",
   signal_type: "all",
   direction: "all",
   net_direction: "all",
@@ -72,7 +72,6 @@ function createDataSlices() {
 function eventFeedSessionCacheKey(filters) {
   const identity = [
     filters.symbol || "BTC",
-    filters.severity || "all",
     filters.signal_type || "all",
     filters.direction || "all",
     filters.net_direction || "all",
@@ -305,6 +304,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       latestStaleCount: cachedStatus?.staleCount ?? null,
       latestTimeline: cachedStatus?.timeline ?? null,
       meta: cachedStatus?.meta || null,
+      v42Gate: null,
     };
   });
   const [selectedSignalId, setSelectedSignalId] = useState(null);
@@ -511,6 +511,11 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           return payload;
         });
         const latestRequest = refreshLatest();
+        const gateRequest = fetchContractWhaleV42Gate();
+        gateRequest.then((gate) => {
+          if (gate) updateState((previous) => ({ ...previous, v42Gate: gate }));
+          return gate;
+        });
         latestRequest.then((payload) => {
           if (isUsableDataPayload(payload)) {
             writeStatusSessionCache(filters.symbol, {
@@ -822,11 +827,14 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
   const hiddenDisplayFilteredCount = Math.max(0, contractEvents.length - visibleContractEvents.length);
   const shouldApplyNotionalDisplayFilter = contractEvents.length > 0;
   const visibleSignalIds = buildVisibleSignalIdSet(visibleContractEvents);
-  const currentDisplayIntelligence = state.dataSlices.intelligence.state === "fresh"
-    ? (shouldApplyNotionalDisplayFilter
-      ? filterIntelligenceByVisibleSignals(state.intelligenceTerminal, visibleSignalIds)
-      : state.intelligenceTerminal)
-    : null;
+  const displayIntelligence = shouldApplyNotionalDisplayFilter
+    ? filterIntelligenceByVisibleSignals(state.intelligenceTerminal, visibleSignalIds)
+    : state.intelligenceTerminal;
+  const intelligenceSlice = state.dataSlices.intelligence;
+  const currentDisplayIntelligence = intelligenceSlice.state === "fresh" ? displayIntelligence : null;
+  const displaySummary = shouldApplyNotionalDisplayFilter
+    ? filterSummaryTradeOpportunitiesByVisibleSignals(summary, visibleSignalIds)
+    : summary;
   const latestSignalTs = Math.max(
     0,
     ...latestItems.map((item) => Number(item?.ts) || 0),
@@ -967,6 +975,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         intelligence={currentDisplayIntelligence}
         summary={summary}
       />
+      <V42GateStatusPanel gate={state.v42Gate} />
 
       <div className="contract-filter-dock">
         <ContractWhaleFilters
@@ -1015,6 +1024,14 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
             symbol={filters.symbol}
           />
 
+          <ProDeskOverviewBar
+            contractEventsLastEventTs={state.contractEventsLastEventTs}
+            intelligence={currentDisplayIntelligence}
+            intelligenceSlice={intelligenceSlice}
+            latestSignalTs={latestSignalTs}
+            previousIntelligence={displayIntelligence}
+            summary={summary}
+          />
         </div>
 
         <ContractDeskInsightRail
@@ -1024,9 +1041,28 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
         />
       </section>
 
+      <EventFirstJumpNavigation />
+
       <section
-        className="mt-4"
-        data-testid="lifecycle-analysis"
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(280px,0.75fr)_minmax(280px,0.75fr)_minmax(0,1.15fr)] 2xl:items-start"
+        data-testid="secondary-analysis-grid"
+      >
+        <MarketStructureDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
+        <LiquidityMapDeskPanel intelligence={currentDisplayIntelligence} />
+        <TradeSetupsDeskPanel
+          intelligence={currentDisplayIntelligence}
+          onSelectSignal={(signalId) => {
+            setSelectedSignalId(signalId);
+            document.getElementById("contract-whale-events")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+          selectedSignalId={selectedSignalId}
+          summary={displaySummary}
+        />
+      </section>
+
+      <section
+        className="mt-4 grid gap-4 2xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)] 2xl:items-start"
+        data-testid="lifecycle-risk-grid"
       >
         <LifecycleEventSections
           finalEvents={finalEvents}
@@ -1035,6 +1071,7 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
           onOpenSignal={setSelectedSignalId}
           symbol={filters.symbol}
         />
+        <RiskContextDeskPanel intelligence={currentDisplayIntelligence} summary={summary} />
       </section>
 
       <ContractWhaleSystemStatusPanel
@@ -1168,6 +1205,36 @@ function ContractWorkspaceMetric({ label, value, tone = null }) {
   );
 }
 
+function V42GateStatusPanel({ gate }) {
+  if (!gate) return null;
+  const stateLabel = {
+    OPEN: "自动方向性告警已开放",
+    CANARY: "试运行抽样中",
+    SHADOW_COLLECTING: "样本收集中",
+    ELIGIBLE: "满足候选条件，等待门控",
+    FORCED_CLOSED: "安全关闭",
+    COOLDOWN: "冷却中",
+  }[String(gate.cohorts?.find((item) => item.state === "OPEN")?.state || gate.cohorts?.[0]?.state || "FORCED_CLOSED")] || "安全关闭";
+  const openCount = (gate.cohorts || []).filter((item) => item.state === "OPEN").length;
+  const canaryCount = (gate.cohorts || []).filter((item) => item.state === "CANARY").length;
+  return (
+    <section className="mb-3 rounded-lg border border-cyan-500/20 bg-slate-950/55 px-3 py-2 text-xs text-slate-300" data-testid="v42-gate-status">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="font-bold text-cyan-200">V4.2 自动门控</span>
+        <span className={openCount > 0 && gate.armed && !gate.forceClosed ? "text-emerald-300" : "text-amber-300"}>{stateLabel}</span>
+        <span>OPEN {openCount} · CANARY {canaryCount}</span>
+        <span>武装：{gate.armed ? "是" : "否"} · 强制关闭：{gate.forceClosed ? "是" : "否"}</span>
+        <span className="text-slate-500">样本达标自动开放；门控只决定是否发方向性告警，评级与样本继续正常显示</span>
+      </div>
+      {gate.cohorts?.length ? (
+        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+          {gate.cohorts.slice(0, 8).map((item) => <span key={item.cohortKey}>{item.cohortKey} · {item.state} · N={item.rawSampleCount} · 准确率 {(Number(item.accuracy || 0) * 100).toFixed(0)}%</span>)}
+        </div>
+      ) : <div className="mt-1 text-[11px] text-slate-500">尚无完成结算的 V4.2 门控样本</div>}
+    </section>
+  );
+}
+
 function ContractWorkspaceStatusRibbon({ displayFilterLabel, intelligence, summary }) {
   const regime = intelligence?.marketRegime?.regime || summary?.marketStructureLite?.regimeType || "UNKNOWN";
   const regimeConfidence = numberOrNull(intelligence?.marketRegime?.confidence ?? summary?.marketStructureLite?.confidence);
@@ -1175,7 +1242,7 @@ function ContractWorkspaceStatusRibbon({ displayFilterLabel, intelligence, summa
     <section className="contract-status-ribbon" data-testid="contract-workspace-status-ribbon">
       <WorkspaceStatusItem label="REGIME" value={String(regime).toUpperCase()} detail={regimeConfidence === null ? "未确认" : `${Math.round(regimeConfidence)}% confidence`} tone="amber" />
       <WorkspaceStatusItem label="DIRECTION" value={directionLabel(summary.latestDirection || summary.direction)} detail={biasText(summary?.marketStructureLite?.structureBias)} tone="emerald" />
-      <WorkspaceStatusItem label="SIGNAL" value={severityLabel(summary.latestSeverity)} detail={statusLabel(summary.status)} tone="cyan" />
+      <WorkspaceStatusItem label="DETECTOR" value={severityLabel(summary.latestSeverity)} detail={statusLabel(summary.status)} tone="cyan" />
       <WorkspaceStatusItem label="HEALTH" value={healthStatusLabel(summary.healthStatus)} detail={modeLabel(summary)} tone="emerald" />
       <WorkspaceStatusItem label="THRESHOLD" value={thresholdProfileLabel(summary.thresholdProfile)} detail={displayFilterLabel} tone="slate" wide />
       <WorkspaceStatusItem label="LAST PUSH" value={summary.lastDiscordSentAt ? relativeAge(summary.lastDiscordSentAt) : "暂无"} detail="Discord gate 独立" tone="slate" />
@@ -1562,6 +1629,34 @@ function mergeUniqueById(previousItems, nextItems) {
     map.set(key, item);
   });
   return Array.from(map.values());
+}
+
+function EventFirstJumpNavigation() {
+  const items = [
+    { href: "#contract-whale-events", label: "Events" },
+    { href: "#contract-whale-structure", label: "Structure" },
+    { href: "#contract-whale-liquidity", label: "Liquidity" },
+    { href: "#contract-whale-setups", label: "Setups" },
+    { href: "#contract-whale-risk", label: "Risk" },
+    { href: "#contract-whale-status", label: "Status" },
+  ];
+
+  return (
+    <nav
+      aria-label="Contract whale section navigation"
+      className="contract-workspace-tabs"
+    >
+      {items.map((item) => (
+        <a
+          className="contract-workspace-tab"
+          href={item.href}
+          key={item.href}
+        >
+          {item.label}
+        </a>
+      ))}
+    </nav>
+  );
 }
 
 function deriveEventFeedDiagnostics({
@@ -2031,7 +2126,7 @@ function ContractWhaleSystemStatusPanel({
             ) : null}
             {retentionStatus ? (
               <p className="mt-2 text-cyan-100">
-                retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 默认 {retentionStatus.signalRetentionDays} 天 · B 级 {retentionStatus.impactBRetentionDays ?? 90} 天 · A·S 永久{retentionStatus.signalProtectImpactAS === false ? "（未启用）" : ""} · |净量| &gt;= {retentionStatus.signalProtectNetVolumeBtc} BTC 永久保留
+                retention: flow 保留 {retentionStatus.flowRetentionDays} 天 · signal 默认 {retentionStatus.signalRetentionDays} 天 · V4 outcome {retentionStatus.impactBRetentionDays ?? 400} 天 · V3 仅审计{retentionStatus.signalProtectImpactAS === false ? "" : "，A/S 保留策略已停用"}
               </p>
             ) : (
               <p className="mt-2 text-slate-500">retention: 后台维护中；详细统计不在页面加载链路执行。</p>
@@ -2046,6 +2141,413 @@ function ContractWhaleSystemStatusPanel({
           ) : null}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function ProDeskOverviewBar({
+  contractEventsLastEventTs,
+  intelligence,
+  intelligenceSlice,
+  latestSignalTs,
+  previousIntelligence,
+  summary,
+}) {
+  const regime = intelligence?.marketRegime || {};
+  const riskContext = intelligence?.riskContext || {};
+  const intelligenceState = intelligenceSlice?.state || "loading";
+  const intelligenceFresh = intelligenceState === "fresh";
+  const previousRegime = previousIntelligence?.marketRegime?.regime;
+  const previousRisk = previousIntelligence?.riskContext?.fakeBreakoutRisk;
+  const freshTs = Number(contractEventsLastEventTs ?? latestSignalTs) || null;
+  const freshness = freshTs ? relativeAge(freshTs) : "暂无";
+  const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones.length : 0;
+  const intelligenceFreshnessLabel = intelligenceState === "stale"
+    ? "STALE"
+    : intelligenceState === "unavailable"
+      ? "UNAVAILABLE"
+      : intelligenceState === "fresh"
+        ? "FRESH"
+        : "LOADING";
+
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Pro Trading Desk Layout v2</p>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${intelligenceFresh ? "border-emerald-500/30 text-emerald-200" : "border-amber-500/30 text-amber-200"}`}
+              data-testid="intelligence-freshness"
+            >
+              {intelligenceFreshnessLabel}
+            </span>
+          </div>
+          <h4 className="mt-1 text-base font-bold text-white">事件驱动交易台总览</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            首屏先看市场发生了什么，再看结构、流动性、机会和风险，不让分析层抢走事件流的主视角。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
+          <TradeSummaryPill
+            label="Regime"
+            testId="current-market-regime"
+            tone={intelligenceFresh ? "cyan" : "slate"}
+            value={intelligenceFresh ? regime.regime || "UNKNOWN" : "UNKNOWN"}
+          />
+          <TradeSummaryPill
+            label="当前风险"
+            testId="current-risk-state"
+            tone={intelligenceFresh ? riskPillTone(riskContext.fakeBreakoutRisk) : "slate"}
+            value={intelligenceFresh ? riskLabel(riskContext.fakeBreakoutRisk) : "UNKNOWN"}
+          />
+          <TradeSummaryPill label="历史新鲜度" tone="slate" value={freshness} />
+          <TradeSummaryPill label="No-trade Zones" tone="yellow" value={`${noTradeZones}`} />
+          <TradeSummaryPill label="Run Mode" tone={summary.enabled ? (summary.dryRun ? "yellow" : "cyan") : "slate"} value={modeLabel(summary)} />
+        </div>
+      </div>
+      {!intelligenceFresh && previousRegime ? (
+        <p
+          className="mt-3 rounded-lg border border-slate-800 bg-slate-950/45 px-3 py-2 text-xs text-slate-400"
+          data-testid="previous-intelligence-context"
+        >
+          上一版分析（仅供对照）：{previousRegime} / {previousRisk ? riskLabel(previousRisk) : "UNKNOWN"}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function MarketStructureDeskPanel({ intelligence, summary }) {
+  const regime = intelligence?.marketRegime || {
+    regime: "UNKNOWN",
+    confidence: 0,
+    reason: "当前分析数据不可用或仍在刷新，不沿用上一版结论作为当前判断。",
+  };
+  const rankedEvents = Array.isArray(intelligence?.rankedEvents) ? intelligence.rankedEvents : [];
+  const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
+  const compression = intelligence?.signalCompression || {};
+
+  return (
+    <section className="rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4" id="contract-whale-structure">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Market Structure</p>
+          <h4 className="mt-1 text-base font-bold text-white">结构分析</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            用来解释事件流背后的主导市场状态、方向偏置和当前最重要的结构机会。
+          </p>
+        </div>
+        <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100">
+          Regime {regime.confidence || 0}%
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <article className="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Market Regime</p>
+              <h5 className="mt-1 text-lg font-bold text-white">{regime.regime}</h5>
+            </div>
+            <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+              Bias {biasText(summary?.marketStructureLite?.structureBias)}
+            </span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-300">{regime.reason}</p>
+        </article>
+
+        <article className="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Strength Ranking</p>
+              <h5 className="mt-1 text-base font-bold text-white">强度排序</h5>
+            </div>
+            <span className="text-xs text-slate-500">{rankedEvents.length} ranked</span>
+          </div>
+          {rankedEvents.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有通过结构排序门槛的主导事件。
+            </p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {rankedEvents.slice(0, 3).map((event) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={event.signalId}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{event.rank}</p>
+                      <p className="mt-1 text-sm font-semibold text-white">{event.eventType}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-300">
+                      <p>{event.strengthLabel}</p>
+                      <p className="mt-1 text-cyan-200">{event.strengthScore}/100</p>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{event.rationale}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Opportunity Map</p>
+              <h5 className="mt-1 text-base font-bold text-white">机会分布</h5>
+            </div>
+            <span className="text-xs text-slate-500">{compression.qualityScore || 0}% quality</span>
+          </div>
+          {opportunityMap.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有明确的结构机会区域。
+            </p>
+          ) : (
+            <div className="mt-3 grid gap-3">
+              {opportunityMap.slice(0, 3).map((zone) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{zone.label}</p>
+                      <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
+                    </div>
+                    <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+                      {zone.strengthScore}/100
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function LiquidityMapDeskPanel({ intelligence }) {
+  const liquidityBehaviors = Array.isArray(intelligence?.liquidityBehaviors) ? intelligence.liquidityBehaviors : [];
+  const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
+
+  return (
+    <section className="rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4" id="contract-whale-liquidity">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Liquidity Map</p>
+          <h4 className="mt-1 text-base font-bold text-white">流动性地图</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            把吸收、扫流动性、假突破和失衡簇从事件流里抽出来，单独作为交易员的结构观察区。
+          </p>
+        </div>
+        <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+          {liquidityBehaviors.length} patterns
+        </span>
+      </div>
+
+      <article className="mt-4 rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Liquidity Behavior</p>
+            <h5 className="mt-1 text-base font-bold text-white">Liquidity Behavior</h5>
+          </div>
+          <span className="text-xs text-slate-500">heatmap style</span>
+        </div>
+        {liquidityBehaviors.length === 0 ? (
+          <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+            当前没有明确主导的流动性行为。
+          </p>
+        ) : (
+          <div className="mt-3 grid gap-3">
+            {liquidityBehaviors.map((behavior) => (
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${behavior.behavior}-${behavior.rangeLabel}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-white">{behavior.label}</p>
+                    <p className="mt-1 text-xs text-cyan-200">{behavior.rangeLabel}</p>
+                  </div>
+                  <div className="text-right text-xs text-slate-300">
+                    <p>{behavior.strengthScore}/100</p>
+                    <p className="mt-1 text-slate-500">Conf {behavior.confidence}%</p>
+                  </div>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">{behavior.reason}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </article>
+
+      <article className="mt-4 rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Zone Overlay</p>
+            <h5 className="mt-1 text-base font-bold text-white">关键区间覆盖</h5>
+          </div>
+          <span className="text-xs text-slate-500">{opportunityMap.length} zones</span>
+        </div>
+        <div className="mt-3 space-y-3">
+          {opportunityMap.slice(0, 3).map((zone) => (
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-white">{zone.label}</p>
+                  <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
+                </div>
+                <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+                  {zone.strengthScore}/100
+                </span>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+    </section>
+  );
+}
+
+function TradeSetupsDeskPanel({ intelligence, onSelectSignal, selectedSignalId, summary }) {
+  const ideas = deriveDeskTradeIdeas(intelligence, summary);
+  const regime = intelligence?.marketRegime?.regime || "RANGING";
+  const dimForRegime = ["RANGING", "CHOP", "HIGH_VOLATILITY"].includes(regime);
+
+  return (
+    <section className="rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4" id="contract-whale-setups">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Structure Setups</p>
+          <h4 className="mt-1 text-base font-bold text-white">结构机会</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            只展示 Top 3 结构机会，和事件流分区显示；点击卡片会回到对应事件来源。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-3">
+          <TradeSummaryPill label="Top Structures" tone="emerald" value={`${ideas.length}`} />
+          <TradeSummaryPill label="当前 Regime" tone="cyan" value={regime} />
+          <TradeSummaryPill label="Desk Mode" tone={dimForRegime ? "yellow" : "cyan"} value={dimForRegime ? "Dimmed" : "Active"} />
+        </div>
+      </div>
+
+      {dimForRegime ? (
+        <p className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          当前处于 {regime}，结构机会已自动降亮处理，优先把它当结构参考。
+        </p>
+      ) : null}
+
+      {ideas.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+          当前没有通过 desk 压缩门槛的 setup。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {ideas.map((idea) => {
+            const selected = selectedSignalId === idea.signalId;
+            return (
+              <button
+                className={`rounded-xl border p-4 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-500/35 ${
+                  selected
+                    ? "border-cyan-400/70 bg-cyan-500/10 shadow-glow"
+                    : `border-slate-800 bg-slate-950/50 hover:border-cyan-500/40 ${dimForRegime ? "opacity-70" : ""}`
+                }`}
+                key={idea.signalId}
+                onClick={() => onSelectSignal(idea.signalId)}
+                type="button"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{idea.rank}</p>
+                    <h5 className="mt-1 text-base font-bold text-white">{idea.setupType}</h5>
+                  </div>
+                  <div className="text-right">
+                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${tradeActionClass(idea.actionTone)}`}>
+                      {idea.directionLabel}
+                    </span>
+                    <p className="mt-2 text-[11px] font-semibold text-cyan-100">{idea.confidenceText}</p>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                  <TradeMetric label="Score" value={`${idea.score}/100`} />
+                  <TradeMetric label="Confidence" value={`${idea.confidence}%`} />
+                  <TradeMetric label="Reason" value={idea.reasonTag} />
+                  <TradeMetric label="Window" value={`${idea.windowSec}s`} />
+                </div>
+                {idea.pressureZoneLabel ? (
+                  <p className="mt-3 text-xs text-cyan-200">压力区 {idea.pressureZoneLabel}</p>
+                ) : null}
+                <p className="mt-3 text-sm leading-6 text-slate-300">{idea.reason}</p>
+                {idea.riskBoundaryReason ? (
+                  <p className="mt-2 text-xs leading-5 text-slate-400">风险边界：{idea.riskBoundaryReason}</p>
+                ) : null}
+                <p className="mt-2 text-xs text-slate-500">点击后将回溯到来源 event，并高亮对应信号。</p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RiskContextDeskPanel({ intelligence, summary }) {
+  const riskContext = intelligence?.riskContext || {};
+  const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones : [];
+
+  return (
+    <section className="rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4" id="contract-whale-risk">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Risk Context</p>
+          <h4 className="mt-1 text-base font-bold text-white">风险语境</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            风险常驻可见，避免因为首屏事件太强把 no-trade 区和假突破风险忽略掉。
+          </p>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-xs font-bold ${riskBadgeClass(riskContext.fakeBreakoutRisk)}`}>
+          {riskLabel(riskContext.fakeBreakoutRisk)}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <article className="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">当前风险</p>
+              <h5 className="mt-1 text-base font-bold text-white">{riskLabel(riskContext.fakeBreakoutRisk)}</h5>
+            </div>
+            <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+              {noTradeZones.length} no-trade
+            </span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            {riskContext.summary || "当前没有显著 no-trade 风险。"}
+          </p>
+        </article>
+
+        <article className="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">No-Trade Zones</p>
+              <h5 className="mt-1 text-base font-bold text-white">风险区间</h5>
+            </div>
+            <span className="text-xs text-slate-500">{summary?.healthStatus || "healthy"}</span>
+          </div>
+          {noTradeZones.length === 0 ? (
+            <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+              当前没有明确的禁做区间。
+            </p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {noTradeZones.map((zone, index) => (
+                <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.rangeLabel}-${index}`}>
+                  <p className="text-sm font-semibold text-white">{zone.rangeLabel || "N/A"}</p>
+                  <p className="mt-2 text-xs leading-5 text-slate-400">{zone.reason || "暂无说明"}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+      </div>
     </section>
   );
 }
@@ -2134,7 +2636,7 @@ function HiddenContractEventsPanel({ items, loading }) {
                 <HeaderCell>价格</HeaderCell>
                 <HeaderCell>偏离比例</HeaderCell>
                 <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
-                <HeaderCell>等级</HeaderCell>
+                <HeaderCell>V4.2 影响评级</HeaderCell>
                 <HeaderCell>说明</HeaderCell>
               </tr>
             </thead>
@@ -2151,7 +2653,7 @@ function HiddenContractEventsPanel({ items, loading }) {
                   <Cell>
                     <SignalTypeSummary item={item} />
                   </Cell>
-                  <Cell>{severityLabel(item.severity)}</Cell>
+                  <Cell>{impactNormalizationBadge(item)}</Cell>
                   <Cell>{item.hiddenDetail || "后端标记为隐藏事件"}</Cell>
                 </tr>
               ))}
@@ -2219,7 +2721,7 @@ const ContractEventTapeTable = memo(function ContractEventTapeTable({
           <TapeHeaderCell>时间</TapeHeaderCell>
           <TapeHeaderCell>市场 / 事件</TapeHeaderCell>
           <TapeHeaderCell>方向</TapeHeaderCell>
-          <TapeHeaderCell>等级</TapeHeaderCell>
+          <TapeHeaderCell>V4.2 影响评级</TapeHeaderCell>
           <TapeHeaderCell title={volumeTooltip}>{volumeLabel}</TapeHeaderCell>
           <TapeHeaderCell>净流量</TapeHeaderCell>
           <TapeHeaderCell>名义价值</TapeHeaderCell>
@@ -2352,14 +2854,14 @@ const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSig
           <HeaderCell>时间</HeaderCell>
           <HeaderCell>币种 / 名义金额 / 价格</HeaderCell>
           <HeaderCell title={CONTRACT_CLASSIFICATION_TOOLTIP}>类型</HeaderCell>
-          <HeaderCell>等级</HeaderCell>
+          <HeaderCell>检测强度（内部）</HeaderCell>
           <HeaderCell>事件窗口</HeaderCell>
           <HeaderCell>质量</HeaderCell>
-          <HeaderCell>市场冲击等级</HeaderCell>
+          <HeaderCell>V4.2 影响评级</HeaderCell>
           <HeaderCell title={volumeTooltip}>{volumeLabel}</HeaderCell>
           <HeaderCell>价格</HeaderCell>
           <HeaderCell>价格偏离</HeaderCell>
-          <HeaderCell title="主力行为判断与市场冲击等级分离">主力行为</HeaderCell>
+          <HeaderCell>主力评分</HeaderCell>
           <HeaderCell>轨迹</HeaderCell>
           <HeaderCell>现货 / 合约</HeaderCell>
           <HeaderCell>净方向</HeaderCell>
@@ -2430,7 +2932,7 @@ const RawSignalDebugTable = memo(function RawSignalDebugTable({ items, onOpenSig
             </Cell>
             <Cell>{formatPrice(signalTriggerPrice(item))}</Cell>
             <Cell>{formatDeviation(item.priceDeviationPct)}</Cell>
-            <Cell><BehaviorAssessmentCell item={item} /></Cell>
+            <Cell>{formatScore(item.mainForceScore ?? item.score)}</Cell>
             <Cell>{clusterTableLabel(item)}</Cell>
             <Cell>{formatScorePair(item.spotScore, item.contractScore)}</Cell>
             <Cell>{netDirection(item.netVolumeBtc, item.symbol)}</Cell>
@@ -2610,6 +3112,412 @@ function MainForceEventsSection({ events, symbol }) {
   );
 }
 
+function TradeOpportunitiesPanel({ summary }) {
+  const opportunities = Array.isArray(summary?.tradeOpportunities) ? summary.tradeOpportunities : [];
+  const suppression = summary?.noiseSuppression || {};
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Structure Opportunities</p>
+          <h4 className="mt-1 text-sm font-bold text-white">结构机会排序</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            先把重复窗口与生命周期噪声压平，再给出当前最值得盯的主力合约结构。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
+          <TradeSummaryPill label="原始候选" value={`${suppression.rawCandidates || 0}`} />
+          <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
+          <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} />
+          <TradeSummaryPill label="结构候选" value={`${suppression.tradeableSetups || 0}`} tone="emerald" />
+          <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="cyan" />
+        </div>
+      </div>
+
+      {opportunities.length === 0 ? (
+        <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+          当前没有通过排序门槛的结构机会，系统保留结构观察。
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {opportunities.map((opportunity) => (
+            <article
+              className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"
+              data-testid={`trade-opportunity-${opportunity.signalId}`}
+              key={opportunity.signalId}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Rank #{opportunity.rank}</p>
+                  <h5 className="mt-1 text-base font-bold text-white">{opportunity.setupType}</h5>
+                </div>
+                <span className={`rounded-full px-2 py-1 text-xs font-bold ${tradeActionClass(opportunity.action)}`}>
+                  {opportunity.action}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                <TradeMetric label="结构评分" value={`${opportunity.tradeScore}/100`} />
+                <TradeMetric label="置信度" value={`${opportunity.confidence}%`} />
+                <TradeMetric label="方向偏置" value={directionLabel(opportunity.directionBias)} />
+                <TradeMetric label="事件窗口" value={`${opportunity.windowSec}s`} />
+                <TradeMetric label="结构上下文" value={regimeTypeLabel(opportunity.regimeContext)} />
+                <TradeMetric label="事件等级" value={severityLabel(opportunity.severity)} />
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">{opportunity.rationale}</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function InstitutionalAnalysisTerminalPanel({ intelligence }) {
+  const [activeTab, setActiveTab] = useState("market-intelligence");
+  const regime = intelligence?.marketRegime || {
+    regime: "RANGING",
+    confidence: 0,
+    reason: "当前缺少足够的主力历史信号。",
+  };
+  const liquidityBehaviors = Array.isArray(intelligence?.liquidityBehaviors)
+    ? intelligence.liquidityBehaviors
+    : [];
+  const rankedEvents = Array.isArray(intelligence?.rankedEvents) ? intelligence.rankedEvents : [];
+  const opportunityMap = Array.isArray(intelligence?.opportunityMap) ? intelligence.opportunityMap : [];
+  const suppression = intelligence?.noiseSuppression || {};
+  const signalCompression = intelligence?.signalCompression || {};
+  const tradeIdeas = Array.isArray(intelligence?.tradeIdeas) ? intelligence.tradeIdeas : [];
+  const riskContext = intelligence?.riskContext || {};
+  const noTradeZones = Array.isArray(riskContext?.noTradeZones) ? riskContext.noTradeZones : [];
+  const tabs = [
+    { id: "market-intelligence", label: "Market Intelligence" },
+    { id: "trade-ideas", label: "Structure Ideas" },
+    { id: "risk-no-trade", label: "Risk / No-Trade" },
+  ];
+
+  return (
+    <section className="mt-4 rounded-2xl border border-cyan-500/20 bg-slate-950/35 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-300">Institutional Analysis Terminal</p>
+          <h4 className="mt-1 text-sm font-bold text-white">半机构级分析终端</h4>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            只展示市场状态、流动性行为、强度排序和结构机会，决策层保持只读语义。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-5">
+          <TradeSummaryPill label="原始候选" value={`${suppression.rawCandidates || 0}`} />
+          <TradeSummaryPill label="合并后" value={`${suppression.mergedEvents || 0}`} />
+          <TradeSummaryPill label="降噪后事件" value={`${suppression.filteredEvents || 0}`} tone="cyan" />
+          <TradeSummaryPill label="结构机会" value={`${opportunityMap.length}`} tone="emerald" />
+          <TradeSummaryPill label="压缩质量" value={`${signalCompression.qualityScore || 0}%`} tone="cyan" />
+          <TradeSummaryPill label="保留信号" value={`${signalCompression.topSignalCount || 0}`} tone="emerald" />
+          <TradeSummaryPill label="丢弃信号" value={`${signalCompression.discardedCount || 0}`} tone="red" />
+          <TradeSummaryPill label="降噪比例" value={`${suppression.noiseReductionPct || 0}%`} tone="yellow" />
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2 border-b border-slate-800 pb-3" role="tablist" aria-label="Institutional terminal views">
+        {tabs.map((tab) => {
+          const selected = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              id={`institutional-terminal-tab-${tab.id}`}
+              role="tab"
+              type="button"
+              aria-selected={selected}
+              aria-controls={`institutional-terminal-panel-${tab.id}`}
+              className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${
+                selected
+                  ? "border-cyan-400/70 bg-cyan-500/10 text-cyan-100"
+                  : "border-slate-700 bg-slate-950/50 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-100"
+              }`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "market-intelligence" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-market-intelligence"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-market-intelligence"
+        >
+          <div className="grid gap-3 xl:grid-cols-[1.05fr_1fr]">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Market Regime</p>
+                  <h5 className="mt-1 text-lg font-bold text-white">{regime.regime}</h5>
+                </div>
+                <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100">
+                  Regime {regime.confidence}%
+                </span>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">{regime.reason}</p>
+              <p className="mt-3 text-[11px] text-slate-500">
+                {signalCompression.compressionReason || "cross-window dedup + quality gating"}
+              </p>
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Opportunity Map</p>
+                  <h5 className="mt-1 text-base font-bold text-white">结构机会分布</h5>
+                </div>
+                <span className="text-xs text-slate-500">{opportunityMap.length} zones</span>
+              </div>
+              {opportunityMap.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有明确的结构机会区域，保留观察。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {opportunityMap.map((zone) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.zoneType}-${zone.rangeLabel}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{zone.label}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{zone.rangeLabel}</p>
+                        </div>
+                        <span className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200">
+                          {zone.strengthScore}/100
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{zone.description}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+
+          <div className="mt-4 grid gap-3 xl:grid-cols-2">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Liquidity Behavior</p>
+                  <h5 className="mt-1 text-base font-bold text-white">流动性行为</h5>
+                </div>
+                <span className="text-xs text-slate-500">{liquidityBehaviors.length} patterns</span>
+              </div>
+              {liquidityBehaviors.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有可解释的主导流动性行为。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3">
+                  {liquidityBehaviors.map((behavior) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${behavior.behavior}-${behavior.rangeLabel}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{behavior.label}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{behavior.rangeLabel}</p>
+                        </div>
+                        <div className="text-right text-xs text-slate-300">
+                          <p>{behavior.strengthScore}/100</p>
+                          <p className="mt-1 text-slate-500">Conf {behavior.confidence}%</p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{behavior.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Strength Ranking</p>
+                  <h5 className="mt-1 text-base font-bold text-white">强度排序</h5>
+                </div>
+                <span className="text-xs text-slate-500">{rankedEvents.length} ranked</span>
+              </div>
+              {rankedEvents.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                  当前没有通过排序门槛的结构事件。
+                </p>
+              ) : (
+                <div className="mt-3 grid gap-3">
+                  {rankedEvents.map((event) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={event.signalId}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{event.rank}</p>
+                          <p className="mt-1 text-sm font-semibold text-white">{event.eventType}</p>
+                        </div>
+                        <div className="text-right text-xs text-slate-300">
+                          <p>{event.strengthLabel}</p>
+                          <p className="mt-1 text-cyan-200">{event.strengthScore}/100</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                        <TradeMetric label="方向" value={event.directionBias} />
+                        <TradeMetric label="窗口" value={`${event.windowSec}s`} />
+                        <TradeMetric label="Regime" value={event.regimeAlignment} />
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-400">{event.rationale}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "trade-ideas" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-trade-ideas"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-trade-ideas"
+        >
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Signal Compression View</p>
+                <h5 className="mt-1 text-base font-bold text-white">结构机会压缩视图</h5>
+                <p className="mt-2 text-xs leading-5 text-slate-400">
+                  这里只提供结构化参考，不生成自动执行指令；所有区间都属于分析终端的只读投影。
+                </p>
+              </div>
+              <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-3">
+                <TradeSummaryPill label="压缩质量" value={`${signalCompression.qualityScore || 0}%`} tone="cyan" />
+                <TradeSummaryPill label="Top Ideas" value={`${tradeIdeas.length}`} tone="emerald" />
+                <TradeSummaryPill label="Discarded" value={`${signalCompression.discardedCount || 0}`} tone="yellow" />
+              </div>
+            </div>
+
+            {tradeIdeas.length === 0 ? (
+              <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                当前没有通过压缩门槛的结构机会，系统只保留市场解释层。
+              </p>
+            ) : (
+              <div className="mt-4 grid gap-3 xl:grid-cols-3">
+                {tradeIdeas.map((idea) => (
+                  <article className="rounded-xl border border-slate-800 bg-slate-950/50 p-4" key={idea.signalId}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Rank #{idea.rank}</p>
+                        <h6 className="mt-1 text-sm font-semibold text-white">{idea.setupType}</h6>
+                      </div>
+                      <span className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100">
+                        {idea.confidenceLabel}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                      <TradeMetric label="方向偏置" value={idea.directionBias} />
+                      <TradeMetric label="强度评分" value={`${idea.score}/100`} />
+                      <TradeMetric label="压力区" value={idea.pressureZone?.label || "N/A"} />
+                      <TradeMetric label="风险边界" value={formatPrice(idea.riskBoundary?.priceLevel)} />
+                      <TradeMetric label="Regime" value={idea.regimeContext || "N/A"} />
+                      <TradeMetric label="事件窗口" value={`${idea.windowSec || 0}s`} />
+                    </div>
+                    <p className="mt-3 text-xs leading-5 text-slate-400">{idea.structureContext || "暂无结构备注"}</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{idea.riskBoundary?.reason || "暂无风险边界说明"}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "risk-no-trade" ? (
+        <div
+          className="mt-4"
+          id="institutional-terminal-panel-risk-no-trade"
+          role="tabpanel"
+          aria-labelledby="institutional-terminal-tab-risk-no-trade"
+        >
+          <div className="grid gap-3 xl:grid-cols-[0.95fr_1.05fr]">
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Risk / No-Trade</p>
+                  <h5 className="mt-1 text-base font-bold text-white">No-trade Zones</h5>
+                </div>
+                <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs font-semibold text-amber-100">
+                  {riskContext.fakeBreakoutRisk || "LOW"}
+                </span>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-300">
+                {riskContext.summary || "当前没有显著 no-trade 风险。"}
+              </p>
+              {noTradeZones.length === 0 ? (
+                <p className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                  当前没有明确的禁做区间，保留常规结构观察即可。
+                </p>
+              ) : (
+                <div className="mt-4 grid gap-3">
+                  {noTradeZones.map((zone, index) => (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3" key={`${zone.rangeLabel}-${index}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{zone.rangeLabel || "N/A"}</p>
+                          <p className="mt-1 text-xs text-cyan-200">{zone.reason || "暂无说明"}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Risk Summary</p>
+                  <h5 className="mt-1 text-base font-bold text-white">风险抑制视图</h5>
+                </div>
+                <span className="text-xs text-slate-500">{noTradeZones.length} zones</span>
+              </div>
+              <div className="mt-4 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+                <TradeMetric label="假突破风险" value={riskContext.fakeBreakoutRisk ? `${riskContext.fakeBreakoutRisk} RISK` : "LOW RISK"} />
+                <TradeMetric label="No-trade 区数量" value={`${noTradeZones.length}`} />
+                <TradeMetric label="保留信号" value={`${signalCompression.topSignalCount || 0}`} />
+                <TradeMetric label="被压缩候选" value={`${signalCompression.discardedCount || 0}`} />
+              </div>
+              <p className="mt-4 text-xs leading-6 text-slate-400">
+                这一页只负责告诉你哪里不该着急下判断。系统将高噪声、低响应和假突破风险明确隔离，避免污染主事件流。
+              </p>
+            </article>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TradeSummaryPill({ label, value, tone = "slate", testId }) {
+  return (
+    <div
+      className={`rounded-xl border px-3 py-2 ${tradeSummaryPillClass(tone)}`}
+      data-testid={testId}
+    >
+      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-bold text-white">{value}</p>
+    </div>
+  );
+}
+
+function TradeMetric({ label, value }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-slate-100">{value}</p>
+    </div>
+  );
+}
+
 function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) {
   const quantityUnit = baseAssetSymbol(signal.symbol);
   const signalExchanges = Array.isArray(signal.exchanges) ? signal.exchanges : [];
@@ -2661,7 +3569,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
         </div>
 
         <div className="contract-detail-summary" data-testid="contract-detail-summary">
-          <ContractDetailMetric label="SEVERITY" value={severityLabel(signal.severity)} />
+          <ContractDetailMetric label="V3 RATING" value={`${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`} />
           <ContractDetailMetric label="事件状态" value={eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"} />
           <ContractDetailMetric
             label={signal.displayVolumeLabel || signal.finalEvent?.displayVolumeLabel || `总流量 ${quantityUnit}`}
@@ -2677,6 +3585,9 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
 
         <div className="contract-detail-layout">
           <main className="contract-detail-body" data-testid="contract-detail-body">
+        <BehaviorEvidenceCard item={signal} />
+        <ImpactV4Card item={signal} />
+
         <DetailSection title="基础信息">
           <DetailGrid
             rows={[
@@ -2690,7 +3601,7 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["强主力意图", yesNoLabel(signal.isStrongMainForceIntent)],
               ["分类版本", signal.classificationVersion || "legacy"],
               ["分类原因", signal.classificationReasons?.length ? signal.classificationReasons.join(" · ") : "N/A"],
-              ["等级", severityLabel(signal.severity)],
+              ["检测强度（内部兼容字段）", severityLabel(signal.severity)],
               ["事件窗口", signal.mergedFrom?.length ? `${signal.windowSec}s · ${mergedWindowLabel(signal)}` : `${signal.windowSec}s`],
               ["事件状态", eventLifecycleStatus(signal) === "closed" ? "CLOSED" : "ACTIVE"],
               ["事件开始", formatTime(signal.eventLifecycle?.startTime)],
@@ -2715,11 +3626,12 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
               ["Z-score", impactZScoreLabel(signal)],
               ["Percentile", impactPercentileLabel(signal)],
               ["Impact Level", resolveImpactDisplay(signal).impactLevel],
+                ["Impact Grade State", resolveImpactDisplay(signal).impactGradeState],
+                ["Impact Grade Version", resolveImpactDisplay(signal).impactGradeVersion || "unavailable"],
+                ["Relative Rank", resolveImpactDisplay(signal).relativeRank ?? "—"],
                 ["Signal Level", resolveImpactDisplay(signal).signalLevel],
                 ["Signal Label", resolveImpactDisplay(signal).signalLabel],
                 ["Normalized Strength", resolveImpactDisplay(signal).normalizedStrength],
-                ["页面相对等级", `${resolveImpactDisplay(signal).cohortSignalLevel} / ${resolveImpactDisplay(signal).cohortImpactLevel}`],
-                ["页面相对指标", cohortImpactMetricSummary(resolveImpactDisplay(signal))],
                 ["事件质量", eventQualityLabel(signal)],
                 ["合并相似度", formatPct(Number(signal.eventQuality?.mergeSimilarityScore || 0) * 100)],
                 ["假事件标记", eventQualityFlagsLabel(signal)],
@@ -2936,8 +3848,8 @@ function ContractWhaleDetailModal({ signal, relatedSignals, summary, onClose }) 
             <DetailSection title="Discord Gate">
               <DetailGrid
                 rows={[
-                  ["信号等级", severityLabel(signal.severity)],
-                  ["市场冲击", discordImpactLabel(signal)],
+                  ["V3 评级", `${resolveImpactDisplay(signal).impactGrade} · ${resolveImpactDisplay(signal).impactGradeState}`],
+                  ["评级证据", discordImpactLabel(signal)],
                   ["推送原因", discordReasonLabel(signal)],
                   ["Gate Result", signal.discordEligible ? "可进入推送判断" : "仅展示"],
                   ["Would Send", signal.discordWouldSend ? "dry-run 会推送" : "不会推送"],
@@ -3204,13 +4116,6 @@ function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
   return (
     <div className="contract-filter-grid">
       <LockedAssetField symbol={lockedSymbol || filters.symbol} />
-      <FilterSelect label="等级" value={filters.severity} onChange={(value) => update("severity", value)}>
-        <option value="all">全部</option>
-        <option value="s">S</option>
-        <option value="critical">Critical</option>
-        <option value="high">High</option>
-        <option value="medium">Medium</option>
-      </FilterSelect>
       <FilterSelect label="类型" value={filters.signal_type} onChange={(value) => update("signal_type", value)}>
         <option value="all">全部</option>
         <option value="aggressive_buy">主力拉盘</option>
@@ -3230,11 +4135,12 @@ function ContractWhaleFilters({ filters, lockedSymbol, onChange }) {
         <option value="abs500">大于 500（正负）</option>
         <option value="abs1000">大于 1000（正负）</option>
       </FilterSelect>
-      <FilterSelect label="冲击等级" value={filters.impact_level || "all"} onChange={(value) => update("impact_level", value)}>
+      <FilterSelect label="V3 评级" value={filters.impact_level || "all"} onChange={(value) => update("impact_level", value)}>
         <option value="all">全部</option>
+        <option value="S">S</option>
         <option value="A">A</option>
         <option value="B">B</option>
-        <option value="S">S</option>
+        <option value="C">C</option>
       </FilterSelect>
       <FilterSelect label="Discord" value={filters.discord_sent} onChange={(value) => update("discord_sent", value)}>
         <option value="all">全部</option>
@@ -3429,35 +4335,6 @@ function SignalTypeSummary({ item }) {
   );
 }
 
-function BehaviorAssessmentCell({ item }) {
-  const state = String(item?.behaviorState || "insufficient").toLowerCase();
-  const type = String(item?.behaviorType || "insufficient_evidence").toLowerCase();
-  const stateLabel = {
-    confirmed: "已确认",
-    provisional: "候选",
-    insufficient: "证据不足",
-    invalidated: "已失效",
-  }[state] || "证据不足";
-  const typeLabel = {
-    new_long_build: "新多建仓",
-    new_short_build: "新空建仓",
-    short_covering: "空头回补",
-    long_unwind: "多头平仓",
-    downside_absorption: "下方吸收",
-    upside_suppression: "上方压制",
-    liquidation_sweep: "清算驱动",
-    insufficient_evidence: "普通成交流",
-  }[type] || "普通成交流";
-  const confidence = Math.round(Number(item?.behaviorConfidence || 0));
-  const tone = state === "confirmed" ? "text-emerald-300" : state === "provisional" ? "text-amber-300" : "text-slate-500";
-  return (
-    <span className="flex min-w-[112px] flex-col leading-tight" title={`${item?.behaviorRationale || ""}\n支持：${(item?.behaviorSupportingEvidence || []).join(" · ")}\n反证：${(item?.behaviorCounterEvidence || []).join(" · ")}`}>
-      <span className={`font-semibold ${tone}`}>{typeLabel}</span>
-      <span className="mt-1 text-[10px] text-slate-500">{stateLabel} · {confidence}/100</span>
-    </span>
-  );
-}
-
 function signalTypeLabel(type) {
   const labels = {
     aggressive_buy: "主力拉盘",
@@ -3468,18 +4345,8 @@ function signalTypeLabel(type) {
   return labels[type] || type || "未知";
 }
 
-export function signalDisplayType(signal) {
+function signalDisplayType(signal) {
   if (signal && typeof signal === "object") {
-    const hasBehaviorState = signal.behaviorState != null || signal.behaviorType != null;
-    const behaviorState = String(signal.behaviorState || "insufficient").toLowerCase();
-    if (hasBehaviorState && behaviorState !== "confirmed") {
-      if (signal.signalType === "aggressive_buy") return "主动买压";
-      if (signal.signalType === "aggressive_sell") return "主动卖压";
-    }
-    if (hasBehaviorState && behaviorState === "confirmed") {
-      if (signal.behaviorType === "new_long_build") return "主力建多";
-      if (signal.behaviorType === "new_short_build") return "主力建空";
-    }
     const display = String(signal.displaySignalType || "").trim();
     if (display) return display;
     return signalTypeLabel(signal.signalType);
@@ -3746,7 +4613,7 @@ function directionLabel(direction) {
 }
 
 function shouldUseHistory(filters) {
-  return ["severity", "signal_type", "direction", "net_direction", "impact_level", "discord_sent", "window_sec", "exchange"].some(
+  return ["signal_type", "direction", "net_direction", "impact_level", "discord_sent", "window_sec", "exchange"].some(
     (key) => filters[key] && filters[key] !== "all",
   );
 }
@@ -3861,6 +4728,21 @@ function compactPlatformDotClass(tone) {
   return "bg-slate-500";
 }
 
+function tradeSummaryPillClass(tone) {
+  if (tone === "emerald") return "border-emerald-500/30 bg-emerald-500/10";
+  if (tone === "cyan") return "border-cyan-500/30 bg-cyan-500/10";
+  if (tone === "yellow") return "border-yellow-500/30 bg-yellow-500/10";
+  if (tone === "red") return "border-red-500/30 bg-red-500/10";
+  return "border-slate-800 bg-slate-950/50";
+}
+
+function tradeActionClass(action) {
+  const value = String(action || "").toUpperCase();
+  if (value.includes("BULL") || value === "LONG") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (value.includes("BEAR") || value === "SHORT") return "border border-red-500/40 bg-red-500/15 text-red-200";
+  return "border border-slate-700/80 bg-slate-900/70 text-slate-300";
+}
+
 function deriveDeskTradeIdeas(intelligence, summary) {
   const structuredIdeas = Array.isArray(intelligence?.tradeIdeas) ? intelligence.tradeIdeas : [];
   if (structuredIdeas.length > 0) {
@@ -3941,6 +4823,14 @@ function filterIntelligenceByVisibleSignals(intelligence, visibleSignalIds) {
     ...intelligence,
     rankedEvents: filterItemsByVisibleSignalId(intelligence.rankedEvents, visibleSignalIds),
     tradeIdeas: filterItemsByVisibleSignalId(intelligence.tradeIdeas, visibleSignalIds),
+  };
+}
+
+function filterSummaryTradeOpportunitiesByVisibleSignals(summary, visibleSignalIds) {
+  if (!summary || typeof summary !== "object") return summary;
+  return {
+    ...summary,
+    tradeOpportunities: filterItemsByVisibleSignalId(summary.tradeOpportunities, visibleSignalIds),
   };
 }
 
@@ -4284,6 +5174,13 @@ function normalizeMainstreamSymbol(symbol = "BTC") {
   return baseAssetSymbol(symbol) === "ETH" ? "ETH" : "BTC";
 }
 
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+}
+
 function filterContractItemsBySymbol(items, symbol = "BTC") {
   const expected = normalizeMainstreamSymbol(symbol);
   return (Array.isArray(items) ? items : []).filter((item) => {
@@ -4377,17 +5274,332 @@ function eventQualityBadge(item) {
 
 function impactNormalizationBadge(item) {
   const impact = resolveImpactDisplay(item);
+  const forecast = multiHorizonImpactForItem(item);
+  if (forecast) {
+    const forecastVersionLabel = String(forecast.forecastVersion || "").includes("v4_2") ? "V4.2" : "V4.1";
+    const v4SignalLevel = ["S", "A", "B", "C"].includes(forecast.impactGrade)
+      ? forecast.impactGrade
+      : "U";
+    const v4State = V4_STATE_LABELS[forecast.maturityState] || forecast.maturityState || "评级快照";
+    const v4Scenario = V4_SCENARIO_LABELS[forecast.scenarioType] || forecast.scenarioType || "暂无明确优势";
+    return (
+      <span className="contract-impact-badge block">
+        <span className={`block text-xs font-bold ${signalLevelClass(v4SignalLevel)}`}>
+          {`${forecastVersionLabel} ${forecast.signalSeverity || forecast.impactGrade}级`}
+        </span>
+        <span className="block text-[10px] font-semibold uppercase tracking-wide text-violet-200">
+          {v4State} · {v4Scenario} · {forecast.predictionSource || "model_estimate"}
+        </span>
+        <span className="block text-[10px] text-slate-400">
+          {forecast.dominantHorizon} · N={forecast.rawSampleCount ?? forecast.effectiveSampleCount} · 有效N={Number(forecast.effectiveSampleCount || 0).toFixed(1)}
+        </span>
+        <span className="block text-[10px] text-slate-600">
+          V3参考 {impact.impactGrade}
+        </span>
+        <BehaviorCompactBadge item={item} />
+      </span>
+    );
+  }
+  const gradeState = String(impact.assessmentStatus || impact.impactGradeState || "pending").replaceAll("_", " ");
 
   return (
-    <span className="block whitespace-nowrap">
-      <span className={`block text-xs font-bold ${signalLevelClass(impact.signalLevel)}`}>
-        {impact.signalLevel} / {impact.impactLevel}
+    <span className="contract-impact-badge block">
+      <span className="block text-xs font-bold text-slate-400">
+          V4.2 模型估算
       </span>
-      <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span>
-      <span className="block text-[10px] text-slate-500">
-        {impactMetricSummary(impact)}
+      <span className="block text-[10px] font-semibold uppercase tracking-wide text-cyan-300">
+        {gradeState}
       </span>
+        {impact.signalLabel ? <span className="block text-[10px] uppercase tracking-wide text-slate-400">{impact.signalLabel}</span> : null}
+        <span className="block text-[10px] text-slate-500">
+          {impactMetricSummary(impact)}
+        </span>
+        <span className="block text-[10px] text-slate-600">V3参考 {impact.impactGrade}</span>
+        <BehaviorCompactBadge item={item} />
     </span>
+    );
+}
+
+const BEHAVIOR_LABELS = {
+  initiative_long_build: "主动建多",
+  initiative_short_build: "主动建空",
+  short_covering: "空头回补",
+  long_unwind: "多头平仓",
+  downside_absorption: "下方吸收",
+  upside_suppression: "上方压制",
+  long_liquidation_cascade: "多头踩踏",
+  short_squeeze: "空头挤压",
+  active_buy_pressure: "主动买压",
+  active_sell_pressure: "主动卖压",
+  unclear: "行为不清楚",
+};
+
+const BEHAVIOR_DIRECTION_LABELS = {
+  bullish: "偏多",
+  bearish: "偏空",
+  neutral: "中性",
+  unknown: "未知",
+};
+
+const BEHAVIOR_ATTRIBUTION_LABELS = {
+  voluntary_position_build: "主动建仓",
+  position_close: "平仓/回补",
+  passive_absorption: "被动吸收",
+  forced_flow: "强制流",
+  active_flow_unattributed: "主动流·未归因",
+  unclear: "未归因",
+};
+
+const BEHAVIOR_STATE_LABELS = {
+  observe: "观察",
+  awaiting_confirmation: "等待确认",
+  confirmed: "已确认",
+  invalidated: "已失效",
+  expired_unconfirmed: "未确认结束",
+  no_trade: "不交易",
+};
+
+const V4_STATE_LABELS = {
+  insufficient_data: "样本不足",
+  warming_up: "样本升温",
+  provisional: "临时基线",
+  stable: "稳定基线",
+};
+
+const V4_SCENARIO_LABELS = {
+  local_pullback: "局部回调",
+  trend_continuation: "趋势延续",
+  trend_exhaustion: "趋势衰竭",
+  absorption_reversal: "吸收反转",
+  structural_reversal_candidate: "结构反转候选",
+  liquidation_cascade: "清算级联",
+  short_squeeze: "空头挤压",
+  no_clear_edge: "暂无明确优势",
+};
+
+function multiHorizonImpactForItem(item) {
+  return item?.multiHorizonImpact || item?.finalEvent?.multiHorizonImpact || null;
+}
+
+const BEHAVIOR_EVIDENCE_LABELS = {
+  binance_perp_flow: "Binance 永续主动流",
+  binance_perp_flow_unavailable: "Binance 永续流不可用",
+  binance_spot_flow: "Binance 现货主动流",
+  binance_spot_flow_unavailable: "Binance 现货流不可用",
+  oi_available: "OI可用",
+  oi_unavailable: "OI不可用",
+  oi_evidence_degraded: "OI证据降级",
+  price_response_classified: "价格响应明确",
+  price_response_unclear: "价格响应不明确",
+  spot_confirmation: "现货确认",
+  sell_flow_absorbed: "卖流被吸收",
+  buy_flow_suppressed: "买流被压制",
+  low_price_efficiency: "价格冲击效率低",
+  direct_liquidation_volume: "存在直接强平量",
+  v3_grade_not_confirmed: "V3评级未确认",
+  evidence_degraded: "数据证据降级",
+  liquidation_inferred_only: "仅为推断强平",
+};
+
+function behaviorAssessmentForItem(item) {
+  return item?.behaviorAssessment || item?.finalEvent?.behaviorAssessment || null;
+}
+
+function behaviorEvidenceLabel(item) {
+  const code = String(item?.code || "unknown");
+  const label = BEHAVIOR_EVIDENCE_LABELS[code] || code.replaceAll("_", " ");
+  if (item?.value === null || item?.value === undefined || !Number.isFinite(Number(item.value))) return label;
+  return `${label} · ${Number(item.value).toFixed(2)}`;
+}
+
+function BehaviorCompactBadge({ item }) {
+  const behavior = behaviorAssessmentForItem(item);
+  if (!behavior) return null;
+  const hypothesis = BEHAVIOR_LABELS[behavior.hypothesis] || behavior.hypothesis;
+  const direction = BEHAVIOR_DIRECTION_LABELS[behavior.directionBias] || behavior.directionBias;
+  const state = BEHAVIOR_STATE_LABELS[behavior.decisionState] || behavior.decisionState;
+  return (
+    <span className="mt-1 block text-[10px] leading-4 text-slate-400" data-testid="behavior-compact-badge">
+      <span className="block text-cyan-200">{hypothesis} · {direction}</span>
+      <span className="block">证据{behavior.confidenceLevel} · {state}</span>
+    </span>
+  );
+}
+
+function BehaviorEvidenceCard({ item }) {
+  const behavior = behaviorAssessmentForItem(item);
+  if (!behavior) {
+    return (
+      <DetailSection title="主力行为证据卡" className="mt-4">
+        <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-500" data-testid="behavior-card-missing">
+          行为证据未生成
+        </p>
+      </DetailSection>
+    );
+  }
+  const evidenceGroups = [
+    ["支持证据", behavior.supportingEvidence, "text-emerald-200"],
+    ["反面证据", behavior.contradictingEvidence, "text-rose-200"],
+    ["缺失证据", behavior.missingEvidence, "text-amber-200"],
+  ];
+  return (
+    <DetailSection title="主力行为证据卡" className="mt-4">
+      <div className="rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4" data-testid="behavior-evidence-card">
+        <div className="grid gap-3 md:grid-cols-4">
+          <ContractDetailMetric label="行为假设" value={BEHAVIOR_LABELS[behavior.hypothesis] || behavior.hypothesis} />
+          <ContractDetailMetric label="方向倾向" value={BEHAVIOR_DIRECTION_LABELS[behavior.directionBias] || behavior.directionBias} />
+          <ContractDetailMetric label="流量归因" value={BEHAVIOR_ATTRIBUTION_LABELS[behavior.attribution] || behavior.attribution} />
+          <ContractDetailMetric label="证据强度" value={`${behavior.confidenceScore}/100 · ${behavior.confidenceLevel}`} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="rounded-full border border-cyan-400/30 px-2 py-1 text-cyan-100">
+            {BEHAVIOR_STATE_LABELS[behavior.decisionState] || behavior.decisionState}
+          </span>
+          <span className="text-slate-500">{behavior.confidenceSemantics || "启发式证据强度，不是胜率"}</span>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          {evidenceGroups.map(([title, entries, color]) => (
+            <div key={title}>
+              <p className={`text-xs font-semibold ${color}`}>{title}</p>
+              {entries?.length ? (
+                <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                  {entries.map((entry, index) => <li key={`${entry.code}-${index}`}>· {behaviorEvidenceLabel(entry)}</li>)}
+                </ul>
+              ) : <p className="mt-1 text-xs text-slate-600">无</p>}
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+          <p>确认条件：正向签名markout ≥ {Number(behavior.confirmationRule?.thresholdBps || 0).toFixed(1)} bps</p>
+          <p>失效条件：反向签名markout ≤ {Number(behavior.invalidationRule?.thresholdBps || 0).toFixed(1)} bps</p>
+        </div>
+        {behavior.postEventValidation ? (
+          <p className="mt-2 text-xs text-cyan-100">
+            后验验证：{behavior.postEventValidation.horizon} · {Number(behavior.postEventValidation.markoutBps).toFixed(2)} bps · {BEHAVIOR_STATE_LABELS[behavior.postEventValidation.state] || behavior.postEventValidation.state}
+          </p>
+        ) : null}
+      </div>
+    </DetailSection>
+  );
+}
+
+function ImpactV4Card({ item }) {
+  const impact = multiHorizonImpactForItem(item);
+  if (!impact) {
+    return (
+      <DetailSection title="V4.2 多周期影响评级" className="mt-4">
+        <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-500" data-testid="impact-v4-card-missing">
+          V4.2 预测快照尚未生成
+        </p>
+      </DetailSection>
+    );
+  }
+  const formatBps = (value) => value === null || value === undefined ? "—" : `${Number(value).toFixed(1)} bps`;
+  const formatRate = (value) => value === null || value === undefined ? "—" : `${(Number(value) * 100).toFixed(0)}%`;
+  const plan = impact.tradePlan || {};
+  const anomaly = impact.anomalyIntensity || {};
+  const evidenceItems = [
+    ["永续主动流", impact.perpFlowConfirmed],
+    ["现货主动流", impact.spotFlowConfirmed],
+    ["OI", impact.oiConfirmed],
+    ["价格响应", impact.priceResponseConfirmed],
+    ["真实强平流", impact.liquidationStreamAvailable ? impact.liquidationObserved : null],
+    ["Mark / Index", impact.referencePriceAvailable],
+  ];
+  const timeline = [
+    ["发现", impact.eventTs],
+    ["行为归因", impact.eventTs],
+    ["不可变预测", impact.computedAtMs],
+    ...impact.horizons.map((horizon) => [`${horizon.horizon}结果`, impact.eventTs && horizon.horizonSec ? impact.eventTs + horizon.horizonSec * 1000 : null]),
+  ];
+  const gradeLabel = impact.impactGrade === "U" ? "U · 不可评级" : `${impact.impactGrade} · ${impact.impactScore.toFixed(0)}`;
+  const versionLabel = String(impact.forecastVersion || "").includes("v4_2") ? "V4.2" : "V4.1";
+  return (
+    <DetailSection title={`${versionLabel} 多周期影响评级`} className="mt-4">
+      <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-4" data-testid="impact-v4-card">
+        <div className="grid gap-3 md:grid-cols-5">
+          <ContractDetailMetric label="信号评级" value={`${impact.signalSeverity || impact.impactGrade} · ${gradeLabel.split(" · ").slice(1).join(" · ")}`} />
+          <ContractDetailMetric label="主导周期" value={impact.dominantHorizon} />
+          <ContractDetailMetric label="情景" value={V4_SCENARIO_LABELS[impact.scenarioType] || impact.scenarioType} />
+          <ContractDetailMetric label="样本成熟度" value={`${impact.maturityLevel || impact.maturityState} · 原始N=${impact.rawSampleCount ?? 0} · 有效N=${Number(impact.effectiveSampleCount || 0).toFixed(1)}`} />
+          <ContractDetailMetric label="预测来源" value={`${impact.predictionSource || "model_estimate"} · 模型 ${(Number(impact.modelWeight || 0) * 100).toFixed(0)}% / 样本 ${(Number(impact.sampleWeight || 0) * 100).toFixed(0)}%`} />
+          <ContractDetailMetric label="基线层级" value={impact.baselineLevel} />
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-950/45 p-3">
+            <p className="text-xs font-bold text-violet-200">① 异常强度</p>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-300 md:grid-cols-4">
+              <span>规模 {formatBtc(anomaly.volumeBtc)}</span>
+              <span>名义 {formatUsd(anomaly.notionalUsd)}</span>
+              <span>分位 {anomaly.percentile == null ? "—" : `${Number(anomaly.percentile).toFixed(2)}%`}</span>
+              <span>Robust Z {anomaly.robustZ == null ? "—" : Number(anomaly.robustZ).toFixed(2)}</span>
+              <span>主动占比 {formatPct(Number(anomaly.activeDirectionShare || 0) * 100)}</span>
+              <span>持续 {Number(anomaly.durationSec || 0)}s</span>
+              <span>峰值 {formatBtc(anomaly.peakVolumeBtc)}</span>
+              <span>累计 {formatBtc(anomaly.cumulativeVolumeBtc)}</span>
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-950/45 p-3">
+            <p className="text-xs font-bold text-violet-200">② 行为可信度 · 证据强度 {impact.evidenceStrength}/100</p>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              {evidenceItems.map(([label, state]) => (
+                <span key={label} className={`rounded border px-2 py-1 ${state === true ? "border-emerald-500/40 text-emerald-200" : state === false ? "border-rose-500/40 text-rose-200" : "border-slate-700 text-slate-500"}`}>
+                  {label} · {state === true ? "确认" : state === false ? "未确认" : "不可用"}
+                </span>
+              ))}
+            </div>
+            {impact.missingEvidence.length ? <p className="mt-2 text-xs text-amber-300">缺失：{impact.missingEvidence.join("、")}</p> : null}
+            {impact.degradedReasons.length ? <p className="mt-1 text-xs text-rose-300">降级：{impact.degradedReasons.join("、")}</p> : null}
+          </div>
+        </div>
+        <div className="mt-3 overflow-x-auto">
+          <p className="mb-2 text-xs font-bold text-violet-200">③ 多周期影响</p>
+          <div className="grid min-w-[980px] grid-cols-10 gap-2 text-xs text-slate-300">
+            {["周期评级 / N", "净中位", "P25", "P75", "MFE", "MAE", "延续率", "结构突破", "预期价格", "回退层级"].map((header) => <span key={header} className="font-semibold text-violet-200">{header}</span>)}
+            {impact.horizons.map((horizon) => (
+              <div className="contents" key={horizon.horizon}>
+                <span>{horizon.horizon} · {horizon.rating || impact.signalSeverity || "C"} · N={horizon.rawSampleCount ?? horizon.sampleCount}<small className="block text-slate-500">有效N={Number(horizon.effectiveSampleCount || 0).toFixed(1)} · 模型 {(Number(horizon.modelWeight || 0) * 100).toFixed(0)}%</small></span>
+                <span>{formatBps(horizon.netMedianBps)}</span>
+                <span>{formatBps(horizon.p25Bps)}</span>
+                <span>{formatBps(horizon.p75Bps)}</span>
+                <span>{formatBps(horizon.mfeBps)}</span>
+                <span>{formatBps(horizon.maeBps)}</span>
+                <span>{formatRate(horizon.followThroughRate)}</span>
+                <span>{formatRate(horizon.structureBreakRate)}</span>
+                <span>{horizon.expectedLowPrice == null || horizon.expectedHighPrice == null ? "—" : `${formatPrice(horizon.expectedLowPrice)} – ${formatPrice(horizon.expectedHighPrice)}`}</span>
+                <span>{horizon.baselineLevel}<small className="block text-slate-500">回退N={horizon.fallbackSampleCount}</small></span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/45 p-3">
+          <p className="text-xs font-bold text-violet-200">④ 可交易状态 · {BEHAVIOR_STATE_LABELS[plan.state] || plan.state || "观察"}</p>
+          <div className="mt-2 grid gap-2 text-xs text-slate-300 md:grid-cols-3">
+            <span>参考价 {formatPrice(plan.referencePrice)}</span>
+            <span>确认价 {formatPrice(plan.confirmationPrice)}</span>
+            <span>失效价 {formatPrice(plan.invalidationPrice)}</span>
+            <span>事件区 {formatPrice(plan.eventLow)} – {formatPrice(plan.eventHigh)}</span>
+            <span>OI条件 {plan.confirmationOiCondition || "—"}</span>
+            <span>流条件 {plan.confirmationFlowCondition || "—"}</span>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+          <p>确认条件：{impact.confirmation || "—"}</p>
+          <p>失效条件：{impact.invalidation || "—"}</p>
+        </div>
+        <div className="mt-3">
+          <p className="text-xs font-bold text-violet-200">Binance 数据流健康</p>
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
+            {(impact.dataStreamHealth.length ? impact.dataStreamHealth : impact.dataStreams.map((stream) => ({ stream, status: "available" }))).map((stream) => <span className={`rounded border px-2 py-1 ${stream.status === "available" ? "border-emerald-500/35 text-emerald-200" : "border-rose-500/35 text-rose-200"}`} key={stream.stream}>{stream.stream} · {stream.status === "available" ? "可用" : "不可用"}{stream.degradedReason ? ` · ${stream.degradedReason}` : ""}</span>)}
+            {!impact.dataStreamHealth.length && !impact.dataStreams.length ? <span className="text-amber-300">没有可确认的数据流</span> : null}
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-slate-400">
+          {timeline.map(([label, ts]) => <span key={label}>{label} · {ts ? (Date.now() >= ts ? new Date(ts).toLocaleString() : "待到期") : "不可用"}</span>)}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-500">数据源：Binance 单源 · 成本 {formatBps(impact.transactionCostBps)} · 训练截止 {impact.trainingCutoffTs ? new Date(impact.trainingCutoffTs).toLocaleString() : "—"} · {impact.strategyMode} · 方向性告警由样本门控自动决定 · 经验统计不是概率承诺</p>
+      </div>
+    </DetailSection>
   );
 }
 
@@ -4411,72 +5623,96 @@ function resolveImpactDisplay(item) {
       item?.finalEvent?.dynamicThresholdLevel ??
       "normal",
   ).toLowerCase();
+  const impactGradeState = String(
+    item?.impactGradeState ?? item?.finalEvent?.impactGradeState ?? "evidence_insufficient",
+  ).toLowerCase();
+  const impactReasonCodes = normalizeStringArray(
+    item?.impactReasonCodes ?? item?.finalEvent?.impactReasonCodes,
+  );
+  const assessmentStatus = String(
+    item?.assessmentStatus ?? item?.finalEvent?.assessmentStatus ??
+      (impactReasonCodes.includes("v3_assessment_failed")
+        ? "assessment_failed"
+        : impactReasonCodes.includes("evidence_missing")
+          ? "evidence_missing"
+          : impactReasonCodes.includes("historical_baseline_unavailable")
+            ? "historical_baseline_unavailable"
+            : impactReasonCodes.includes("baseline_warming_up")
+              ? "baseline_warming_up"
+          : impactGradeState === "confirmed"
+            ? "graded"
+            : impactGradeState === "provisional" || impactReasonCodes.includes("v3_assessment_unavailable")
+              ? "assessment_pending"
+              : "baseline_insufficient")
+  ).toLowerCase();
+  const gradeUnavailable = assessmentStatus !== "graded" && impactGradeState !== "provisional";
+  const rawGrade = String(
+    item?.impactGrade ?? item?.finalEvent?.impactGrade ?? item?.impactLevel ?? item?.finalEvent?.impactLevel ?? "",
+  ).toUpperCase();
   const impactLevel = String(
-    item?.impactLevel ??
-      item?.finalEvent?.impactLevel ??
-      deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore),
+    gradeUnavailable
+      ? "PENDING"
+      : rawGrade || deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore, zScore),
   ).toUpperCase();
   const signalLevel = String(
-    item?.signalLevel ??
-      item?.finalEvent?.signalLevel ??
-      deriveSignalLevelFromImpact(impactLevel),
+    gradeUnavailable
+      ? ""
+      : item?.signalLevel ??
+          item?.finalEvent?.signalLevel ??
+          deriveSignalLevelFromImpact(impactLevel),
   ).toUpperCase();
   const signalLabel = String(
-    item?.signalLabel ??
-      item?.finalEvent?.signalLabel ??
-      deriveSignalLabelFromImpact(impactLevel),
+    gradeUnavailable
+      ? unavailableImpactLabel(impactReasonCodes[0])
+      : item?.signalLabel ??
+          item?.finalEvent?.signalLabel ??
+          deriveSignalLabelFromImpact(impactLevel),
   ).toUpperCase();
   const normalizedStrength = String(
-    item?.normalizedStrength ??
-      item?.finalEvent?.normalizedStrength ??
-      deriveNormalizedStrengthFromImpact(impactLevel),
-  ).toUpperCase();
-  const cohortImpactLevel = String(
-    item?.cohortImpactLevel ??
-      item?.finalEvent?.cohortImpactLevel ??
-      impactLevel,
-  ).toUpperCase();
-  const cohortSignalLevel = String(
-    item?.cohortSignalLevel ??
-      item?.finalEvent?.cohortSignalLevel ??
-      deriveSignalLevelFromImpact(cohortImpactLevel),
-  ).toUpperCase();
-  const cohortSignalLabel = String(
-    item?.cohortSignalLabel ??
-      item?.finalEvent?.cohortSignalLabel ??
-      deriveSignalLabelFromImpact(cohortImpactLevel),
+    gradeUnavailable
+      ? "PENDING"
+      : item?.normalizedStrength ??
+          item?.finalEvent?.normalizedStrength ??
+          deriveNormalizedStrengthFromImpact(impactLevel),
   ).toUpperCase();
   return {
     impactScore,
     zScore,
     percentile,
     impactLevel,
+    impactGrade: impactLevel,
+    impactGradeState,
+    assessmentStatus,
+    impactGradeVersion: item?.impactGradeVersion ?? item?.finalEvent?.impactGradeVersion ?? null,
+    impactReasonCodes,
+    impactEvidence: item?.impactEvidence ?? item?.finalEvent?.impactEvidence ?? null,
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.finalEvent?.relativeRank),
     signalLevel,
     signalLabel,
     normalizedStrength,
-    cohortImpactScore: numberOrNull(item?.cohortImpactScore ?? item?.finalEvent?.cohortImpactScore),
-    cohortZScore: numberOrNull(item?.cohortZScore ?? item?.finalEvent?.cohortZScore),
-    cohortPercentile: numberOrNull(item?.cohortPercentile ?? item?.finalEvent?.cohortPercentile),
-    cohortNormalizedStrength: String(
-      item?.cohortNormalizedStrength ??
-        item?.finalEvent?.cohortNormalizedStrength ??
-        deriveNormalizedStrengthFromImpact(cohortImpactLevel),
-    ).toUpperCase(),
-    cohortImpactLevel,
-    cohortSignalLevel,
-    cohortSignalLabel,
   };
 }
 
-function cohortImpactMetricSummary(impact) {
-  const parts = [];
-  if (impact.cohortImpactScore !== null) parts.push(`${impact.cohortImpactScore.toFixed(2)}x`);
-  if (impact.cohortZScore !== null) parts.push(`z ${impact.cohortZScore.toFixed(2)}`);
-  if (impact.cohortPercentile !== null) parts.push(formatPercentile(impact.cohortPercentile));
-  return parts.join(" · ") || "cohort impact pending";
+function unavailableImpactLabel(reason) {
+  if (reason === "v3_assessment_unavailable") return "RATING PENDING";
+  if (reason === "v3_assessment_failed") return "RATING ERROR";
+  if (reason === "baseline_warming_up") return "BASELINE WARMING UP";
+  if (reason === "historical_baseline_unavailable") return "HISTORICAL BASELINE UNAVAILABLE";
+  if (reason === "evidence_missing") return "EVIDENCE MISSING";
+  if (reason === "baseline_insufficient") return "BASELINE INSUFFICIENT";
+  return "RATING UNAVAILABLE";
 }
 
 function impactMetricSummary(impact) {
+  if (impact.assessmentStatus !== "graded") {
+    if (impact.impactReasonCodes?.[0] === "v3_assessment_unavailable") return "assessment pending";
+    if (impact.impactReasonCodes?.[0] === "v3_assessment_failed") return "assessment error";
+    if (impact.impactReasonCodes?.[0] === "evidence_missing") return "evidence missing";
+    if (impact.impactReasonCodes?.[0] === "baseline_warming_up") return "baseline warming up";
+    if (impact.impactReasonCodes?.[0] === "historical_baseline_unavailable") return "historical baseline unavailable";
+    if (impact.assessmentStatus === "baseline_insufficient") return "baseline insufficient";
+    return impact.assessmentStatus.replaceAll("_", " ");
+  }
   const parts = [];
   if (impact.impactScore !== null) {
     parts.push(`${impact.impactScore.toFixed(2)}x`);
@@ -4486,6 +5722,12 @@ function impactMetricSummary(impact) {
   }
   if (impact.percentile !== null) {
     parts.push(formatPercentile(impact.percentile));
+  }
+  if (impact.impactEvidence?.flowAnomalyScore != null) {
+    parts.push(`flow ${Number(impact.impactEvidence.flowAnomalyScore).toFixed(0)}`);
+  }
+  if (impact.impactEvidence?.marketImpactScore != null) {
+    parts.push(`impact ${Number(impact.impactEvidence.marketImpactScore).toFixed(0)}`);
   }
   return parts.join(" · ") || "impact pending";
 }
@@ -4505,24 +5747,14 @@ function impactPercentileLabel(signal) {
   return impact.percentile === null ? "—" : formatPercentile(impact.percentile);
 }
 
-function deriveImpactLevelFromFallback(dynamicThresholdLevel, percentile, impactScore) {
-  if (percentile !== null) {
-    if (percentile > 97) return "S";
-    if (percentile >= 90) return "A";
-    if (percentile >= 80) return "B";
-  }
-  if (impactScore !== null) {
-    if (impactScore > 5) return "S";
-    if (impactScore >= 3) return "A";
-    if (impactScore >= 1.8) return "B";
-  }
-  if (dynamicThresholdLevel === "s") return "S";
-  if (dynamicThresholdLevel === "critical") return "A";
-  if (dynamicThresholdLevel === "high") return "B";
+function deriveImpactLevelFromFallback(_dynamicThresholdLevel, percentile, impactScore, zScore) {
+  // The UI never derives a grade from legacy metrics. It only renders the
+  // persisted event-owned V3 grade when the API supplies one.
   return "C";
 }
 
 function deriveSignalLevelFromImpact(impactLevel) {
+  if (impactLevel === "UNRATED") return "N/A";
   if (impactLevel === "S") return "S";
   if (impactLevel === "A") return "L3";
   if (impactLevel === "B") return "L2";
@@ -4530,6 +5762,7 @@ function deriveSignalLevelFromImpact(impactLevel) {
 }
 
 function deriveSignalLabelFromImpact(impactLevel) {
+  if (impactLevel === "UNRATED") return "RATING PENDING";
   if (impactLevel === "S") return "SHOCK IMPACT EVENT";
   if (impactLevel === "A") return "HIGH IMPACT EVENT";
   if (impactLevel === "B") return "MEDIUM IMPACT EVENT";
@@ -4537,6 +5770,7 @@ function deriveSignalLabelFromImpact(impactLevel) {
 }
 
 function deriveNormalizedStrengthFromImpact(impactLevel) {
+  if (impactLevel === "UNRATED") return "PENDING";
   if (impactLevel === "S") return "EXTREME";
   if (impactLevel === "A") return "HIGH";
   if (impactLevel === "B") return "MEDIUM";
@@ -4551,6 +5785,7 @@ function signalLevelClass(signalLevel) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -4722,6 +5957,11 @@ function discordImpactLabel(item) {
 
 function discordReasonLabel(item) {
   const reason = item?.discordSent ? "sent" : item?.discordReason;
+  if (reason === "v3_confirmed_grade") return "V3 已确认 A/S";
+  if (reason === "v3_grade_not_confirmed" || reason === "v3_not_confirmed") {
+    return "V3 仅确认 A/S 推送";
+  }
+  if (reason === "v3_assessment_unavailable") return "V3 评级证据不可用";
   if (reason === "impact_level_gate") {
     return `市场冲击 ${resolveImpactDisplay(item).impactLevel}`;
   }

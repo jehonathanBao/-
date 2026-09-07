@@ -22,6 +22,10 @@ use self::{
 use crate::semantic::{
     enforcement::risk_state_from_context, risk_override::suppress_decision_support_when_risk_high,
 };
+use crate::contract_whale_monitor::trading::{
+    CONTRACT_WHALE_STRATEGY_GATE_REASON, CONTRACT_WHALE_STRATEGY_PRODUCTION_READY,
+    CONTRACT_WHALE_STRATEGY_STATUS,
+};
 
 pub fn build_intelligence_response(
     symbol: &str,
@@ -55,5 +59,8 @@ pub fn build_intelligence_response(
         signal_compression,
         trade_ideas,
         risk_context,
+        strategy_status: CONTRACT_WHALE_STRATEGY_STATUS.to_string(),
+        strategy_production_ready: CONTRACT_WHALE_STRATEGY_PRODUCTION_READY,
+        strategy_gate_reason: CONTRACT_WHALE_STRATEGY_GATE_REASON.to_string(),
     }
 }

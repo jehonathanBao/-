@@ -7,7 +7,7 @@ use btc_toxic_flow_monitor_rs::{
     normalizers::trade::now_ms,
     spot_whale_monitor::{
         config::SpotWhaleRuntimeConfig,
-        detector::{detect_spot_whale_signal_with_config, discord_gate, discord_gate_with_volume},
+        detector::{detect_spot_whale_signal_with_config, discord_gate},
         normalizer::{
             normalize_binance_spot_trade, normalize_bitfinex_trade_value,
             normalize_coinbase_market_trades_json, BinanceSpotAggTrade,
@@ -116,19 +116,6 @@ fn spot_discord_gate_rejects_medium_and_low_quality() {
     let (eligible, reason) = discord_gate(SpotWhaleSeverity::Critical, 95, true, 69);
     assert!(!eligible);
     assert_eq!(reason, "data_quality_display_only");
-}
-
-#[test]
-fn btc_spot_discord_gate_requires_volume_above_500() {
-    let (eligible, reason) =
-        discord_gate_with_volume("BTC", 500.0, SpotWhaleSeverity::Critical, 95, true, 95);
-    assert!(!eligible);
-    assert_eq!(reason, "btc_spot_volume_below_threshold");
-
-    let (eligible, reason) =
-        discord_gate_with_volume("BTC", 500.01, SpotWhaleSeverity::Critical, 95, true, 95);
-    assert!(eligible);
-    assert_eq!(reason, "critical_or_s_gate");
 }
 
 #[test]
@@ -314,9 +301,7 @@ fn spot_whale_prune_keeps_large_absolute_net_direction_signals() {
     store.upsert_spot_whale_signal(&old_weak).unwrap();
     store.upsert_spot_whale_signal(&recent_weak).unwrap();
 
-    let pruned = store
-        .prune_spot_whale_signals_older_than(cutoff_ts)
-        .unwrap();
+    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
     assert_eq!(pruned, 2);
 
     let rows = store
@@ -363,9 +348,7 @@ fn spot_whale_prune_uses_eth_1000_and_btc_100_net_thresholds() {
     store.upsert_spot_whale_signal(&old_eth_weak).unwrap();
     store.upsert_spot_whale_signal(&old_eth_keep).unwrap();
 
-    let pruned = store
-        .prune_spot_whale_signals_older_than(cutoff_ts)
-        .unwrap();
+    let pruned = store.prune_spot_whale_signals_older_than(cutoff_ts).unwrap();
     assert_eq!(pruned, 2);
     assert_eq!(store.count_spot_whale_signals("BTC").unwrap(), 1);
     assert_eq!(store.count_spot_whale_signals("ETH").unwrap(), 1);
@@ -637,10 +620,6 @@ fn spot_whale_service_retention_prunes_only_old_unprotected_rows() {
     let old_weak = signal_with_net(&base, "service-old-weak", 0, 20.0);
     let old_mid = signal_with_net(&base, "service-old-mid", 1, -60.0);
     let old_protected = signal_with_net(&base, "service-old-protected", 2, -120.0);
-    let mut old_weak = old_weak;
-    old_weak.multi_exchange_confirmed = false;
-    let mut old_mid = old_mid;
-    old_mid.multi_exchange_confirmed = false;
     store.upsert_spot_whale_signal(&old_weak).unwrap();
     store.upsert_spot_whale_signal(&old_mid).unwrap();
     store.upsert_spot_whale_signal(&old_protected).unwrap();

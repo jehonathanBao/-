@@ -362,13 +362,14 @@ fn direction_bias(direction: ToxicSignalDirection) -> String {
 }
 
 fn severity_for(score: u8) -> String {
-    if score >= 85 {
-        "high".to_string()
-    } else if score >= 70 {
-        "medium".to_string()
-    } else {
-        "low".to_string()
+    match score {
+        90..=100 => "s",
+        75..=89 => "critical",
+        60..=74 => "high",
+        40..=59 => "watch",
+        _ => "calm",
     }
+    .to_string()
 }
 
 pub fn toxic_confidence_score(confidence: ToxicConfidence) -> f64 {

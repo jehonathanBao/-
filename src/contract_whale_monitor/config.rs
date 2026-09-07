@@ -28,10 +28,17 @@ const DEFAULT_WARMUP_MS: i64 = 60_000;
 const DEFAULT_MIN_DYNAMIC_SAMPLES: usize = 20;
 const DEFAULT_SINGLE_EXCHANGE_DQ_PENALTY: u8 = 15;
 const DEFAULT_CT_VAL_MISSING_DQ_PENALTY: u8 = 20;
-const DEFAULT_FLOW_1S_RETENTION_DAYS: i64 = 7;
-const DEFAULT_SIGNAL_RETENTION_DAYS: i64 = 7;
-const DEFAULT_IMPACT_B_RETENTION_DAYS: i64 = 30;
-const DEFAULT_CRITICAL_RETENTION_DAYS: i64 = 365;
+const DEFAULT_FLOW_1S_RETENTION_DAYS: i64 = 14;
+const DEFAULT_OI_RAW_RETENTION_DAYS: i64 = 14;
+const DEFAULT_FUNDING_RAW_RETENTION_DAYS: i64 = 14;
+const DEFAULT_LIQUIDATION_RETENTION_DAYS: i64 = 180;
+const DEFAULT_REFERENCE_PRICE_RETENTION_DAYS: i64 = 400;
+const DEFAULT_AGGREGATE_CONTEXT_RETENTION_DAYS: i64 = 400;
+const DEFAULT_SIGNAL_RETENTION_DAYS: i64 = 400;
+// V4.1 outcomes are training data, not just a display cache.  Keeping only
+// the seven-day signal window makes the 300-sample stable tier unreachable at
+// the current event rate.
+const DEFAULT_IMPACT_B_RETENTION_DAYS: i64 = 400;
 
 static GLOBAL_CONFIG: OnceLock<RwLock<ContractWhaleRuntimeConfig>> = OnceLock::new();
 
@@ -52,6 +59,307 @@ pub struct ContractWhaleRuntimeConfig {
     pub data_quality: ContractWhaleDataQualityConfig,
     pub retention: ContractWhaleRetentionConfig,
     pub hourly_delta_alert: HourlyDeltaAlertConfig,
+    pub impact_grade_v3: ContractWhaleImpactGradeConfig,
+    pub impact_v4_1: ContractWhaleImpactV4Config,
+    pub impact_v4_2: ContractWhaleImpactV4HybridConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactV4Config {
+    pub shadow_mode: bool,
+    pub directional_alerts_enabled: bool,
+    pub fee_bps: f64,
+    pub slippage_bps: f64,
+    pub safety_margin_bps: f64,
+    pub min_follow_through_rate: f64,
+    pub min_structure_break_rate: f64,
+}
+
+impl Default for ContractWhaleImpactV4Config {
+    fn default() -> Self {
+        Self {
+            shadow_mode: true,
+            directional_alerts_enabled: false,
+            fee_bps: 6.0,
+            slippage_bps: 4.0,
+            safety_margin_bps: 5.0,
+            min_follow_through_rate: 0.55,
+            min_structure_break_rate: 0.55,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactV4HybridConfig {
+    pub enabled: bool,
+    pub shadow_mode: bool,
+    pub dashboard_early_warning_enabled: bool,
+    pub external_directional_alerts_enabled: bool,
+    pub prior_strength: f64,
+    pub m1_samples: usize,
+    pub m2_samples: usize,
+    pub m3_samples: usize,
+    pub m4_samples: usize,
+    pub s_score: u8,
+    pub a_score: u8,
+    pub b_score: u8,
+    pub s_min_data_quality: u8,
+    pub a_min_data_quality: u8,
+    pub b_min_data_quality: u8,
+    pub auto_gate_enabled: bool,
+    pub auto_gate_armed: bool,
+    pub auto_gate_force_closed: bool,
+    pub auto_gate_canary_enabled: bool,
+    pub auto_gate_min_canary_samples: usize,
+    pub auto_gate_min_canary_effective_samples: f64,
+    pub auto_gate_min_open_samples: usize,
+    pub auto_gate_min_open_effective_samples: f64,
+    pub auto_gate_min_accuracy: f64,
+    pub auto_gate_min_coverage: f64,
+    pub auto_gate_eval_interval_sec: u64,
+    pub auto_gate_max_alerts_per_day: usize,
+}
+
+impl Default for ContractWhaleImpactV4HybridConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // V4.2 starts in the sample-driven gate.  The emergency
+            // force-close and disarm switches remain available, but are not
+            // required for normal promotion.
+            shadow_mode: false,
+            dashboard_early_warning_enabled: true,
+            external_directional_alerts_enabled: true,
+            prior_strength: 30.0,
+            m1_samples: 10,
+            m2_samples: 30,
+            m3_samples: 100,
+            m4_samples: 300,
+            s_score: 85,
+            a_score: 70,
+            b_score: 55,
+            s_min_data_quality: 75,
+            a_min_data_quality: 70,
+            b_min_data_quality: 60,
+            auto_gate_enabled: true,
+            auto_gate_armed: true,
+            auto_gate_force_closed: false,
+            auto_gate_canary_enabled: true,
+            auto_gate_min_canary_samples: 100,
+            auto_gate_min_canary_effective_samples: 60.0,
+            auto_gate_min_open_samples: 200,
+            auto_gate_min_open_effective_samples: 120.0,
+            auto_gate_min_accuracy: 0.60,
+            auto_gate_min_coverage: 0.90,
+            auto_gate_eval_interval_sec: 900,
+            auto_gate_max_alerts_per_day: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactGradeTierConfig {
+    pub min_data_quality: u8,
+    pub min_robust_percentile: f64,
+    pub min_robust_z: Option<f64>,
+    pub min_abs_price_move_pct: f64,
+    pub min_event_volume_btc: Option<f64>,
+    pub min_event_notional_usd: Option<f64>,
+    pub min_live_liquidation_btc: Option<f64>,
+    pub min_live_liquidation_notional_usd: Option<f64>,
+    pub min_unique_turnover_btc: Option<f64>,
+    pub min_unique_turnover_notional_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContractWhaleImpactGradeConfig {
+    pub enabled: bool,
+    pub shadow_mode: bool,
+    pub grade_version: String,
+    pub baseline_lookback_days: i64,
+    pub baseline_min_samples: usize,
+    pub episode_gap_seconds: i64,
+    pub min_confirmed_sources: usize,
+    pub s: ContractWhaleImpactGradeTierConfig,
+    pub a: ContractWhaleImpactGradeTierConfig,
+    pub b: ContractWhaleImpactGradeTierConfig,
+}
+
+impl ContractWhaleImpactGradeConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.grade_version.trim().is_empty() {
+            return Err("impact grade version must not be empty".to_string());
+        }
+        if self.baseline_lookback_days <= 0
+            || self.baseline_min_samples < 2
+            || self.episode_gap_seconds <= 0
+            || self.min_confirmed_sources == 0
+        {
+            return Err(
+                "impact grade window, sample, gap, and source values must be positive".to_string(),
+            );
+        }
+        for (name, tier) in [("b", &self.b), ("a", &self.a), ("s", &self.s)] {
+            let values = [
+                tier.min_robust_percentile,
+                tier.min_abs_price_move_pct,
+                tier.min_robust_z.unwrap_or(0.0),
+                tier.min_event_volume_btc.unwrap_or(0.0),
+                tier.min_event_notional_usd.unwrap_or(0.0),
+                tier.min_live_liquidation_btc.unwrap_or(0.0),
+                tier.min_live_liquidation_notional_usd.unwrap_or(0.0),
+                tier.min_unique_turnover_btc.unwrap_or(0.0),
+                tier.min_unique_turnover_notional_usd.unwrap_or(0.0),
+            ];
+            if values
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                return Err(format!(
+                    "impact grade {name} thresholds must be finite and non-negative"
+                ));
+            }
+            if tier.min_data_quality > 100
+                || !(0.0..=100.0).contains(&tier.min_robust_percentile)
+                || tier.min_robust_percentile <= 0.0
+                || tier.min_abs_price_move_pct <= 0.0
+                || tier.min_robust_z.is_some_and(|value| value <= 0.0)
+                || [
+                    tier.min_event_volume_btc,
+                    tier.min_event_notional_usd,
+                    tier.min_live_liquidation_btc,
+                    tier.min_live_liquidation_notional_usd,
+                    tier.min_unique_turnover_btc,
+                    tier.min_unique_turnover_notional_usd,
+                ]
+                .into_iter()
+                .flatten()
+                .any(|value| value <= 0.0)
+            {
+                return Err(format!(
+                    "impact grade {name} thresholds must be positive and bounded"
+                ));
+            }
+        }
+        if !(self.b.min_robust_percentile < self.a.min_robust_percentile
+            && self.a.min_robust_percentile < self.s.min_robust_percentile)
+        {
+            return Err("impact grade percentiles must satisfy B < A < S".to_string());
+        }
+        if !(self.b.min_data_quality <= self.a.min_data_quality
+            && self.a.min_data_quality <= self.s.min_data_quality)
+        {
+            return Err("impact grade data quality must satisfy B <= A <= S".to_string());
+        }
+        if !(self.b.min_abs_price_move_pct < self.a.min_abs_price_move_pct
+            && self.a.min_abs_price_move_pct < self.s.min_abs_price_move_pct)
+        {
+            return Err("impact grade price moves must satisfy B < A < S".to_string());
+        }
+        if !strict_optional_order(self.b.min_robust_z, self.a.min_robust_z)
+            || self.s.min_robust_z.is_some()
+                && !strict_optional_order(self.a.min_robust_z, self.s.min_robust_z)
+        {
+            return Err("impact grade robust z thresholds must increase by tier".to_string());
+        }
+        if !strict_optional_order(self.b.min_event_volume_btc, self.a.min_event_volume_btc)
+            || !strict_optional_order(self.b.min_event_notional_usd, self.a.min_event_notional_usd)
+        {
+            return Err("impact grade materiality thresholds must satisfy B < A".to_string());
+        }
+        if (self.b.min_event_volume_btc.is_none() && self.b.min_event_notional_usd.is_none())
+            || (self.a.min_event_volume_btc.is_none() && self.a.min_event_notional_usd.is_none())
+        {
+            return Err("impact grades B and A require an absolute materiality floor".to_string());
+        }
+        if [
+            self.s.min_live_liquidation_btc,
+            self.s.min_live_liquidation_notional_usd,
+            self.s.min_unique_turnover_btc,
+            self.s.min_unique_turnover_notional_usd,
+        ]
+        .into_iter()
+        .all(|value| value.is_none())
+        {
+            return Err("impact grade S requires live hard-evidence thresholds".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn strict_optional_order(lower: Option<f64>, upper: Option<f64>) -> bool {
+    match (lower, upper) {
+        (Some(lower), Some(upper)) => lower < upper,
+        _ => true,
+    }
+}
+
+fn default_impact_grade_tier_configs() -> (
+    ContractWhaleImpactGradeTierConfig,
+    ContractWhaleImpactGradeTierConfig,
+    ContractWhaleImpactGradeTierConfig,
+) {
+    (
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 70,
+            min_robust_percentile: 99.0,
+            min_robust_z: Some(2.5),
+            min_abs_price_move_pct: 0.15,
+            min_event_volume_btc: Some(800.0),
+            min_event_notional_usd: Some(50_000_000.0),
+            min_live_liquidation_btc: None,
+            min_live_liquidation_notional_usd: None,
+            min_unique_turnover_btc: None,
+            min_unique_turnover_notional_usd: None,
+        },
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 80,
+            min_robust_percentile: 99.5,
+            min_robust_z: Some(4.0),
+            min_abs_price_move_pct: 0.5,
+            min_event_volume_btc: Some(2_500.0),
+            min_event_notional_usd: Some(150_000_000.0),
+            min_live_liquidation_btc: None,
+            min_live_liquidation_notional_usd: None,
+            min_unique_turnover_btc: None,
+            min_unique_turnover_notional_usd: None,
+        },
+        ContractWhaleImpactGradeTierConfig {
+            min_data_quality: 85,
+            min_robust_percentile: 99.95,
+            min_robust_z: None,
+            min_abs_price_move_pct: 2.0,
+            min_event_volume_btc: None,
+            min_event_notional_usd: None,
+            min_live_liquidation_btc: Some(2_500.0),
+            min_live_liquidation_notional_usd: Some(250_000_000.0),
+            min_unique_turnover_btc: Some(20_000.0),
+            min_unique_turnover_notional_usd: Some(1_000_000_000.0),
+        },
+    )
+}
+
+impl Default for ContractWhaleImpactGradeConfig {
+    fn default() -> Self {
+        let (b, a, s) = default_impact_grade_tier_configs();
+        Self {
+            enabled: true,
+            // V3 is the sole production rating source. Shadow mode remains
+            // opt-in through configuration for controlled rollback/replay.
+            shadow_mode: false,
+            grade_version: "cwm_impact_v3_2".to_string(),
+            baseline_lookback_days: 90,
+            baseline_min_samples: 10_000,
+            // A shock episode closes after a short inactivity gap. Longer
+            // streams are handled as separate episodes and never chained
+            // into an unbounded backfill query.
+            episode_gap_seconds: 120,
+            min_confirmed_sources: 2,
+            s,
+            a,
+            b,
+        }
+    }
 }
 
 const CONTRACT_SOURCE_ORDER: [ContractExchange; 4] = [
@@ -449,6 +757,8 @@ fn threshold_profile_for_active_sources(
     let keys = active_sources.keys();
     if keys.is_empty() {
         ContractWhaleThresholdProfile::NoContractSources
+    } else if keys.len() == 1 && keys[0] == "binance" {
+        ContractWhaleThresholdProfile::BinanceOnly
     } else if keys.iter().any(|key| key == "okx") {
         ContractWhaleThresholdProfile::ThreeExchange
     } else if keys.iter().any(|key| key == "coinbase") {
@@ -510,6 +820,9 @@ impl Default for ContractWhaleRuntimeConfig {
             data_quality: ContractWhaleDataQualityConfig::default(),
             retention: ContractWhaleRetentionConfig::default(),
             hourly_delta_alert: HourlyDeltaAlertConfig::default(),
+            impact_grade_v3: ContractWhaleImpactGradeConfig::default(),
+            impact_v4_1: ContractWhaleImpactV4Config::default(),
+            impact_v4_2: ContractWhaleImpactV4HybridConfig::default(),
         }
     }
 }
@@ -609,9 +922,67 @@ fn threshold_differs(left: ContractWhaleThresholds, right: ContractWhaleThreshol
         || (left.s_btc - right.s_btc).abs() > f64::EPSILON
 }
 
+fn thresholds_are_ordered(thresholds: ContractWhaleThresholds) -> bool {
+    thresholds.high_btc.is_finite()
+        && thresholds.critical_btc.is_finite()
+        && thresholds.s_btc.is_finite()
+        && thresholds.high_btc > 0.0
+        && thresholds.high_btc < thresholds.critical_btc
+        && thresholds.critical_btc < thresholds.s_btc
+}
+
+fn validate_threshold_profiles(
+    profiles: &BTreeMap<String, ContractWhaleThresholdProfileConfig>,
+) -> Result<(), String> {
+    for (profile_name, profile) in profiles {
+        if !profile
+            .thresholds_btc
+            .values()
+            .copied()
+            .all(thresholds_are_ordered)
+        {
+            return Err(format!(
+                "threshold profile {profile_name} must satisfy high < critical < s"
+            ));
+        }
+        let notional = profile.notional_usd;
+        if !notional.high.is_finite()
+            || !notional.critical.is_finite()
+            || !notional.s.is_finite()
+            || notional.high <= 0.0
+            || notional.high >= notional.critical
+            || notional.critical >= notional.s
+        {
+            return Err(format!(
+                "threshold profile {profile_name} notional thresholds must satisfy high < critical < s"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_symbol_thresholds(
+    symbols: &BTreeMap<String, ContractWhaleSymbolConfig>,
+) -> Result<(), String> {
+    for (symbol, config) in symbols {
+        if !config
+            .thresholds_btc
+            .values()
+            .copied()
+            .all(thresholds_are_ordered)
+        {
+            return Err(format!(
+                "symbol {symbol} thresholds must satisfy high < critical < s"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractWhaleThresholdProfile {
     NoContractSources,
+    BinanceOnly,
     ThreeExchange,
     BinanceBitfinex,
     BinanceBitfinexCoinbase,
@@ -621,6 +992,7 @@ impl ContractWhaleThresholdProfile {
     pub fn as_key(self) -> &'static str {
         match self {
             Self::NoContractSources => "no_contract_sources",
+            Self::BinanceOnly => "binance_only",
             Self::ThreeExchange => "three_exchange",
             Self::BinanceBitfinex => "binance_bitfinex",
             Self::BinanceBitfinexCoinbase => "binance_bitfinex_coinbase",
@@ -633,6 +1005,11 @@ impl ContractWhaleThresholdProfile {
                 high: f64::INFINITY,
                 critical: f64::INFINITY,
                 s: f64::INFINITY,
+            },
+            Self::BinanceOnly => ContractWhaleNotionalThresholds {
+                high: 30_000_000.0,
+                critical: 75_000_000.0,
+                s: 150_000_000.0,
             },
             Self::ThreeExchange => ContractWhaleNotionalThresholds {
                 high: 50_000_000.0,
@@ -936,6 +1313,32 @@ impl Default for ContractWhaleScoringConfig {
     }
 }
 
+impl ContractWhaleScoringConfig {
+    fn validate(&self) -> Result<(), String> {
+        let weights = [
+            self.volume_strength_weight,
+            self.dynamic_multiple_weight,
+            self.dominance_weight,
+            self.price_impact_weight,
+            self.multi_exchange_weight,
+            self.data_quality_weight,
+        ];
+        if weights
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err("contract whale score weights must be finite and positive".to_string());
+        }
+        let total: f64 = weights.into_iter().sum();
+        if (total - 100.0).abs() > 1e-6 {
+            return Err(format!(
+                "contract whale score weights must sum to 100, got {total:.6}"
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContractWhaleClassificationConfig {
     pub enabled: bool,
@@ -1198,18 +1601,26 @@ impl ContractWhaleSymbolConfig {
 #[derive(Debug, Clone)]
 pub struct ContractWhaleRetentionConfig {
     pub flow_1s_days: i64,
+    pub oi_raw_days: i64,
+    pub funding_raw_days: i64,
+    pub liquidation_days: i64,
+    pub reference_price_days: i64,
+    pub aggregate_context_days: i64,
     pub signals_days: i64,
     pub impact_b_days: i64,
-    pub critical_days: i64,
 }
 
 impl Default for ContractWhaleRetentionConfig {
     fn default() -> Self {
         Self {
             flow_1s_days: DEFAULT_FLOW_1S_RETENTION_DAYS,
+            oi_raw_days: DEFAULT_OI_RAW_RETENTION_DAYS,
+            funding_raw_days: DEFAULT_FUNDING_RAW_RETENTION_DAYS,
+            liquidation_days: DEFAULT_LIQUIDATION_RETENTION_DAYS,
+            reference_price_days: DEFAULT_REFERENCE_PRICE_RETENTION_DAYS,
+            aggregate_context_days: DEFAULT_AGGREGATE_CONTEXT_RETENTION_DAYS,
             signals_days: DEFAULT_SIGNAL_RETENTION_DAYS,
             impact_b_days: DEFAULT_IMPACT_B_RETENTION_DAYS,
-            critical_days: DEFAULT_CRITICAL_RETENTION_DAYS,
         }
     }
 }
@@ -1250,7 +1661,8 @@ impl Default for ContractWhaleDiscordGateConfig {
     fn default() -> Self {
         Self {
             impact_level_push_enabled: true,
-            push_impact_levels: vec!["B".to_string(), "A".to_string(), "S".to_string()],
+            // B remains inbox-only; external delivery requires a major grade.
+            push_impact_levels: vec!["A".to_string(), "S".to_string()],
             impact_level_min_data_quality: 70,
         }
     }
@@ -1288,9 +1700,18 @@ pub fn reset_contract_whale_runtime_config() {
 pub fn load_contract_whale_runtime_config_from_settings(
     settings: &::config::Config,
 ) -> ContractWhaleRuntimeConfig {
+    let scoring = load_scoring_config(settings);
+    scoring
+        .validate()
+        .expect("invalid contract whale scoring weights");
+    let symbols = load_symbol_configs(settings);
+    validate_symbol_thresholds(&symbols).expect("invalid contract whale symbol thresholds");
+    let threshold_profiles = load_threshold_profiles(settings);
+    validate_threshold_profiles(&threshold_profiles)
+        .expect("invalid contract whale threshold profile");
     ContractWhaleRuntimeConfig {
         exchanges: load_exchange_config(settings),
-        scoring: load_scoring_config(settings),
+        scoring,
         classification: load_classification_config(settings),
         toxic_order: load_toxic_order_config(settings),
         discord: load_discord_gate_config(settings),
@@ -1300,10 +1721,190 @@ pub fn load_contract_whale_runtime_config_from_settings(
         lifecycle: load_lifecycle_config(settings),
         okx_instruments: load_okx_instrument_config(settings),
         data_quality: load_data_quality_config(settings),
-        symbols: load_symbol_configs(settings),
-        threshold_profiles: load_threshold_profiles(settings),
+        symbols,
+        threshold_profiles,
         retention: load_retention_config(settings),
         hourly_delta_alert: load_hourly_delta_alert_config_from_settings(settings),
+        impact_grade_v3: load_impact_grade_config(settings),
+        impact_v4_1: load_impact_v4_config(settings),
+        impact_v4_2: load_impact_v4_hybrid_config(settings),
+    }
+}
+
+fn load_impact_v4_config(settings: &::config::Config) -> ContractWhaleImpactV4Config {
+    let defaults = ContractWhaleImpactV4Config::default();
+    ContractWhaleImpactV4Config {
+        shadow_mode: bool_setting(
+            settings,
+            "V4_1_SHADOW_MODE",
+            "contract_whale_monitor.impact_v4_1.shadow_mode",
+            defaults.shadow_mode,
+        ),
+        directional_alerts_enabled: bool_setting(
+            settings,
+            "V4_1_DIRECTIONAL_ALERTS_ENABLED",
+            "contract_whale_monitor.impact_v4_1.directional_alerts_enabled",
+            defaults.directional_alerts_enabled,
+        ),
+        fee_bps: positive_float_setting(
+            settings,
+            "contract_whale_monitor.impact_v4_1.fee_bps",
+            defaults.fee_bps,
+        ),
+        slippage_bps: positive_float_setting(
+            settings,
+            "contract_whale_monitor.impact_v4_1.slippage_bps",
+            defaults.slippage_bps,
+        ),
+        safety_margin_bps: positive_float_setting(
+            settings,
+            "contract_whale_monitor.impact_v4_1.safety_margin_bps",
+            defaults.safety_margin_bps,
+        ),
+        min_follow_through_rate: positive_float_setting(
+            settings,
+            "contract_whale_monitor.impact_v4_1.min_follow_through_rate",
+            defaults.min_follow_through_rate,
+        )
+        .clamp(0.0, 1.0),
+        min_structure_break_rate: positive_float_setting(
+            settings,
+            "contract_whale_monitor.impact_v4_1.min_structure_break_rate",
+            defaults.min_structure_break_rate,
+        )
+        .clamp(0.0, 1.0),
+    }
+}
+
+fn load_impact_v4_hybrid_config(settings: &::config::Config) -> ContractWhaleImpactV4HybridConfig {
+    let defaults = ContractWhaleImpactV4HybridConfig::default();
+    let positive_usize = |path: &str, default: usize| {
+        settings.get_int(path).ok().filter(|value| *value > 0).map(|value| value as usize).unwrap_or(default)
+    };
+    let bounded_u8 = |path: &str, default: u8| {
+        settings.get_int(path).ok().map(|value| value.clamp(0, 100) as u8).unwrap_or(default)
+    };
+    ContractWhaleImpactV4HybridConfig {
+        enabled: bool_setting(settings, "V4_2_ENABLED", "contract_whale_monitor.impact_v4_2.enabled", defaults.enabled),
+        shadow_mode: bool_setting(settings, "V4_2_SHADOW_MODE", "contract_whale_monitor.impact_v4_2.shadow_mode", defaults.shadow_mode),
+        dashboard_early_warning_enabled: bool_setting(settings, "V4_2_DASHBOARD_EARLY_WARNING_ENABLED", "contract_whale_monitor.impact_v4_2.dashboard_early_warning_enabled", defaults.dashboard_early_warning_enabled),
+        external_directional_alerts_enabled: bool_setting(settings, "V4_2_EXTERNAL_DIRECTIONAL_ALERTS_ENABLED", "contract_whale_monitor.impact_v4_2.external_directional_alerts_enabled", defaults.external_directional_alerts_enabled),
+        prior_strength: positive_float_setting(settings, "contract_whale_monitor.impact_v4_2.prior_strength", defaults.prior_strength).max(1.0),
+        m1_samples: positive_usize("contract_whale_monitor.impact_v4_2.m1_samples", defaults.m1_samples),
+        m2_samples: positive_usize("contract_whale_monitor.impact_v4_2.m2_samples", defaults.m2_samples),
+        m3_samples: positive_usize("contract_whale_monitor.impact_v4_2.m3_samples", defaults.m3_samples),
+        m4_samples: positive_usize("contract_whale_monitor.impact_v4_2.m4_samples", defaults.m4_samples),
+        s_score: bounded_u8("contract_whale_monitor.impact_v4_2.s_score", defaults.s_score),
+        a_score: bounded_u8("contract_whale_monitor.impact_v4_2.a_score", defaults.a_score),
+        b_score: bounded_u8("contract_whale_monitor.impact_v4_2.b_score", defaults.b_score),
+        s_min_data_quality: bounded_u8("contract_whale_monitor.impact_v4_2.s_min_data_quality", defaults.s_min_data_quality),
+        a_min_data_quality: bounded_u8("contract_whale_monitor.impact_v4_2.a_min_data_quality", defaults.a_min_data_quality),
+        b_min_data_quality: bounded_u8("contract_whale_monitor.impact_v4_2.b_min_data_quality", defaults.b_min_data_quality),
+        auto_gate_enabled: bool_setting(settings, "V4_2_AUTO_GATE_ENABLED", "contract_whale_monitor.impact_v4_2.auto_gate_enabled", defaults.auto_gate_enabled),
+        auto_gate_armed: bool_setting(settings, "V4_2_AUTO_GATE_ARMED", "contract_whale_monitor.impact_v4_2.auto_gate_armed", defaults.auto_gate_armed),
+        auto_gate_force_closed: bool_setting(settings, "V4_2_AUTO_GATE_FORCE_CLOSED", "contract_whale_monitor.impact_v4_2.auto_gate_force_closed", defaults.auto_gate_force_closed),
+        auto_gate_canary_enabled: bool_setting(settings, "V4_2_AUTO_GATE_CANARY_ENABLED", "contract_whale_monitor.impact_v4_2.auto_gate_canary_enabled", defaults.auto_gate_canary_enabled),
+        auto_gate_min_canary_samples: positive_usize("contract_whale_monitor.impact_v4_2.auto_gate_min_canary_samples", defaults.auto_gate_min_canary_samples),
+        auto_gate_min_canary_effective_samples: positive_float_setting(settings, "contract_whale_monitor.impact_v4_2.auto_gate_min_canary_effective_samples", defaults.auto_gate_min_canary_effective_samples),
+        auto_gate_min_open_samples: positive_usize("contract_whale_monitor.impact_v4_2.auto_gate_min_open_samples", defaults.auto_gate_min_open_samples),
+        auto_gate_min_open_effective_samples: positive_float_setting(settings, "contract_whale_monitor.impact_v4_2.auto_gate_min_open_effective_samples", defaults.auto_gate_min_open_effective_samples),
+        auto_gate_min_accuracy: positive_float_setting(settings, "contract_whale_monitor.impact_v4_2.auto_gate_min_accuracy", defaults.auto_gate_min_accuracy).clamp(0.5, 1.0),
+        auto_gate_min_coverage: positive_float_setting(settings, "contract_whale_monitor.impact_v4_2.auto_gate_min_coverage", defaults.auto_gate_min_coverage).clamp(0.0, 1.0),
+        auto_gate_eval_interval_sec: settings.get_int("contract_whale_monitor.impact_v4_2.auto_gate_eval_interval_sec").ok().filter(|v| *v > 0).map(|v| v as u64).unwrap_or(defaults.auto_gate_eval_interval_sec),
+        auto_gate_max_alerts_per_day: positive_usize("contract_whale_monitor.impact_v4_2.auto_gate_max_alerts_per_day", defaults.auto_gate_max_alerts_per_day),
+    }
+}
+
+fn load_impact_grade_config(settings: &::config::Config) -> ContractWhaleImpactGradeConfig {
+    let defaults = ContractWhaleImpactGradeConfig::default();
+    let mut config = defaults.clone();
+    config.enabled = settings
+        .get_bool("contract_whale_monitor.impact_grade_v3.enabled")
+        .unwrap_or(defaults.enabled);
+    config.shadow_mode = settings
+        .get_bool("contract_whale_monitor.impact_grade_v3.shadow_mode")
+        .unwrap_or(defaults.shadow_mode);
+    config.grade_version = settings
+        .get_string("contract_whale_monitor.impact_grade_v3.grade_version")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(defaults.grade_version);
+    config.baseline_lookback_days = i64_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.baseline_lookback_days",
+        defaults.baseline_lookback_days,
+    );
+    config.baseline_min_samples = usize_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.baseline_min_samples",
+        defaults.baseline_min_samples,
+    );
+    config.episode_gap_seconds = i64_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.episode_gap_seconds",
+        defaults.episode_gap_seconds,
+    );
+    config.min_confirmed_sources = usize_setting(
+        settings,
+        "contract_whale_monitor.impact_grade_v3.min_confirmed_sources",
+        defaults.min_confirmed_sources,
+    );
+    config.b = load_impact_grade_tier(settings, "b", &defaults.b);
+    config.a = load_impact_grade_tier(settings, "a", &defaults.a);
+    config.s = load_impact_grade_tier(settings, "s", &defaults.s);
+    config
+        .validate()
+        .expect("invalid contract impact grade configuration");
+    config
+}
+
+fn load_impact_grade_tier(
+    settings: &::config::Config,
+    tier: &str,
+    defaults: &ContractWhaleImpactGradeTierConfig,
+) -> ContractWhaleImpactGradeTierConfig {
+    let path = |field: &str| format!("contract_whale_monitor.impact_grade_v3.{tier}.{field}");
+    let optional_float =
+        |field: &str, default: Option<f64>| settings.get_float(&path(field)).ok().or(default);
+    ContractWhaleImpactGradeTierConfig {
+        min_data_quality: u8_setting(
+            settings,
+            &path("min_data_quality"),
+            defaults.min_data_quality,
+        ),
+        min_robust_percentile: positive_float_setting(
+            settings,
+            &path("min_robust_percentile"),
+            defaults.min_robust_percentile,
+        ),
+        min_robust_z: optional_float("min_robust_z", defaults.min_robust_z),
+        min_abs_price_move_pct: positive_float_setting(
+            settings,
+            &path("min_abs_price_move_pct"),
+            defaults.min_abs_price_move_pct,
+        ),
+        min_event_volume_btc: optional_float("min_event_volume_btc", defaults.min_event_volume_btc),
+        min_event_notional_usd: optional_float(
+            "min_event_notional_usd",
+            defaults.min_event_notional_usd,
+        ),
+        min_live_liquidation_btc: optional_float(
+            "min_live_liquidation_btc",
+            defaults.min_live_liquidation_btc,
+        ),
+        min_live_liquidation_notional_usd: optional_float(
+            "min_live_liquidation_notional_usd",
+            defaults.min_live_liquidation_notional_usd,
+        ),
+        min_unique_turnover_btc: optional_float(
+            "min_unique_turnover_btc",
+            defaults.min_unique_turnover_btc,
+        ),
+        min_unique_turnover_notional_usd: optional_float(
+            "min_unique_turnover_notional_usd",
+            defaults.min_unique_turnover_notional_usd,
+        ),
     }
 }
 
@@ -2071,37 +2672,65 @@ fn load_threshold_profile_windows(
 
 fn load_retention_config(settings: &::config::Config) -> ContractWhaleRetentionConfig {
     let defaults = ContractWhaleRetentionConfig::default();
-    // Floor signal retention at 7 days so the contract event tape always keeps a
-    // full week of history (impact A/S and large |net| remain permanent).
+    // V4.1 is a walk-forward empirical model. Event features and derived
+    // outcomes therefore outlive the short-lived one-second raw tape.
     let signals_days = i64_setting(
         settings,
         "contract_whale_monitor.retention.signals_days",
         defaults.signals_days,
     )
-    .max(DEFAULT_SIGNAL_RETENTION_DAYS);
+    .max(7);
     let flow_1s_days = i64_setting(
         settings,
         "contract_whale_monitor.retention.flow_1s_days",
         defaults.flow_1s_days,
     )
-    .max(DEFAULT_SIGNAL_RETENTION_DAYS);
+    .max(1);
+    let oi_raw_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.oi_raw_days",
+        defaults.oi_raw_days,
+    )
+    .max(1);
+    let funding_raw_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.funding_raw_days",
+        defaults.funding_raw_days,
+    )
+    .max(1);
+    let liquidation_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.liquidation_days",
+        defaults.liquidation_days,
+    )
+    .max(1);
+    let reference_price_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.reference_price_days",
+        defaults.reference_price_days,
+    )
+    .max(1);
+    let aggregate_context_days = i64_setting(
+        settings,
+        "contract_whale_monitor.retention.aggregate_context_days",
+        defaults.aggregate_context_days,
+    )
+    .max(1);
     let impact_b_days = i64_setting(
         settings,
         "contract_whale_monitor.retention.impact_b_days",
         defaults.impact_b_days,
     )
-    .max(DEFAULT_IMPACT_B_RETENTION_DAYS);
-    let critical_days = i64_setting(
-        settings,
-        "contract_whale_monitor.retention.critical_days",
-        defaults.critical_days,
-    )
-    .max(impact_b_days);
+    .max(signals_days);
     ContractWhaleRetentionConfig {
         flow_1s_days,
+        oi_raw_days,
+        funding_raw_days,
+        liquidation_days,
+        reference_price_days,
+        aggregate_context_days,
         signals_days,
         impact_b_days,
-        critical_days,
     }
 }
 

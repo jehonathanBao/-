@@ -7,6 +7,14 @@ edition = "2021"
 name = "btc_toxic_flow_monitor_rs"
 path = "src/lib.rs"
 
+[[bin]]
+name = "cwm_v4_backfill"
+path = "src/bin/cwm_v4_backfill.rs"
+
+[[bin]]
+name = "cwm_v42_backfill"
+path = "src/bin/cwm_v42_backfill.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

@@ -18,6 +18,7 @@ const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"], icon: HomeIcon },
   { label: "BTC 合约监控", path: "/contract-whale/btc", aliases: ["/contract-whale"], icon: PresentationChartLineIcon },
   { label: "ETH 合约监控", path: "/contract-whale/eth", icon: PresentationChartLineIcon },
+  { label: "Binance Delta K线", path: "/binance-orderflow", icon: PresentationChartLineIcon },
   { label: "BTC 现货监控", path: "/spot-monitor/btc", aliases: ["/spot-monitor", "/spot-whale"], icon: ChartBarIcon },
   { label: "ETH 现货监控", path: "/spot-monitor/eth", icon: ChartBarIcon },
   { label: "新币合约监控", path: "/new-token-watch", icon: CpuChipIcon },

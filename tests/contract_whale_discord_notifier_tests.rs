@@ -1,23 +1,25 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+mod support;
+
+use support::temp_store;
 
 use btc_toxic_flow_monitor_rs::{
     contract_whale_monitor::{
         aggregator::{aggregate_1s_buckets, rolling_window_stats},
-        behavior::{BehaviorState, BehaviorType},
         detector::detect_contract_whale_signal,
         discord_notifier::{
             build_contract_whale_discord_log_preview, build_contract_whale_discord_payload,
-            evaluate_contract_whale_discord_gate, notify_contract_whale_discord_with_cooldown,
-            validate_discord_webhook_url, ContractWhaleDiscordCooldownStore,
-            ContractWhaleDiscordSettings,
+            evaluate_contract_whale_discord_gate, evaluate_contract_whale_discord_v3_gate,
+            notify_contract_whale_discord_with_cooldown, validate_discord_webhook_url,
+            ContractWhaleDiscordCooldownStore, ContractWhaleDiscordSettings,
+        },
+        impact_grade::{
+            ContractEventImpactAssessment, ContractEventImpactGrade, ImpactGradeEvidence,
+            ImpactGradeState,
         },
         normalizer::{normalize_binance_agg_trade, normalize_bitfinex_trade},
         types::{ContractWhaleDirection, ContractWhaleSeverity, ContractWhaleSignalType},
     },
-    storage::{
-        contract_whale_repo::{ContractWhaleDiscordOutboxStatus, ContractWhaleRepo},
-        SqliteStore,
-    },
+    storage::contract_whale_repo::{ContractWhaleDiscordOutboxStatus, ContractWhaleRepo},
 };
 
 #[test]
@@ -207,6 +209,84 @@ fn cwm_discord_gate_reports_duplicate_low_score_and_data_quality_reasons() {
 }
 
 #[test]
+fn cwm_v3_discord_gate_uses_confirmed_grade_not_legacy_rank() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_s_signal();
+    signal.severity = ContractWhaleSeverity::Calm;
+    signal.score = 1;
+    signal.data_quality = 1;
+    signal.discord_eligible = false;
+    signal.discord_reason = "medium_or_low_display_only".to_string();
+    let mut assessment = sample_v3_assessment(ContractEventImpactGrade::A);
+
+    let allowed = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &signal,
+        &assessment,
+        &cooldown,
+        signal.ts,
+    );
+    assert!(allowed.allowed);
+    assert_eq!(allowed.reason, "v3_confirmed_grade");
+
+    assessment.grade = ContractEventImpactGrade::B;
+    let rejected = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &signal,
+        &assessment,
+        &cooldown,
+        signal.ts,
+    );
+    assert!(!rejected.allowed);
+    assert_eq!(rejected.reason, "v3_grade_not_confirmed");
+
+    assessment.grade = ContractEventImpactGrade::S;
+    assessment.state = ImpactGradeState::Provisional;
+    let provisional = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &signal,
+        &assessment,
+        &cooldown,
+        signal.ts,
+    );
+    assert!(!provisional.allowed);
+    assert_eq!(provisional.reason, "v3_grade_not_confirmed");
+}
+
+#[test]
+fn cwm_v3_discord_gate_keeps_operational_warmup_and_cooldown_safeguards() {
+    let settings = live_settings_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let assessment = sample_v3_assessment(ContractEventImpactGrade::S);
+    let mut warmup = sample_s_signal();
+    warmup.discord_reason = "warmup_collect_only".to_string();
+    let warmup_decision = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &warmup,
+        &assessment,
+        &cooldown,
+        warmup.ts,
+    );
+    assert!(!warmup_decision.allowed);
+    assert_eq!(warmup_decision.reason, "warmup_collect_only");
+
+    let sent = sample_s_signal();
+    cooldown.record_sent(&sent, sent.ts);
+    let mut repeated = sent.clone();
+    repeated.id = "contract-whale-v3-repeat".to_string();
+    let cooldown_decision = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &repeated,
+        &assessment,
+        &cooldown,
+        sent.ts + 1_000,
+    );
+    assert!(!cooldown_decision.allowed);
+    assert_eq!(cooldown_decision.reason, "cooldown");
+}
+
+#[test]
 fn cwm_discord_gate_allows_primary_source_high_override() {
     let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
@@ -264,42 +344,26 @@ fn cwm_discord_gate_keeps_btc_medium_contract_signals_observe_only() {
 }
 
 #[test]
-fn cwm_discord_gate_allows_medium_b_a_s_impact_levels() {
+fn cwm_discord_gate_only_allows_major_legacy_impact_levels() {
     let settings = live_settings_for_tests();
 
-    for level in ["B", "A", "S"] {
+    for level in ["A", "S"] {
         let cooldown = ContractWhaleDiscordCooldownStore::new();
-        let mut signal = sample_medium_impact_signal(level, 80);
-        if level == "S" {
-            signal.window_sec = 60;
-            signal.total_volume_btc = 25_000.0;
-            signal.total_volume = 25_000.0;
-            signal.multi_exchange_confirmed = true;
-            signal.dynamic_multiple = Some(12.0);
-            signal.percentile_level = Some(99.9);
-            signal.dominance = 0.78;
-        }
+        let signal = sample_medium_impact_signal(level, 80);
         let decision =
             evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
 
         assert!(decision.allowed, "impact level {level} should be allowed");
         assert_eq!(decision.reason, "eligible");
     }
-}
 
-#[test]
-fn cwm_discord_gate_rejects_ordinary_s_grade_without_extreme_impact() {
-    let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
-    let mut signal = sample_medium_impact_signal("S", 80);
-    signal.behavior_assessment.state = BehaviorState::Insufficient;
-    signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
-    signal.behavior_assessment.main_force_confirmed = false;
-    signal.behavior_assessment.confidence = 0;
-
+    let signal = sample_medium_impact_signal("B", 80);
     let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
-
-    assert!(!decision.allowed);
+    assert!(
+        !decision.allowed,
+        "B is inbox-only and must not be delivered"
+    );
     assert_eq!(decision.reason, "observe_only");
 }
 
@@ -366,7 +430,7 @@ fn cwm_discord_gate_blocks_medium_impact_when_quality_or_warmup_blocks() {
 fn cwm_discord_gate_dedupes_medium_impact_level_signals() {
     let settings = live_settings_for_tests();
     let cooldown = ContractWhaleDiscordCooldownStore::new();
-    let signal = sample_medium_impact_signal("B", 80);
+    let signal = sample_medium_impact_signal("A", 80);
 
     let first = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
     assert!(first.allowed);
@@ -435,43 +499,14 @@ fn cwm_discord_payload_uses_safe_final_fields_only() {
     eth_signal.total_notional_usd = 12_000_000.0;
     eth_signal.order_price_usd = Some(1_750.0);
     eth_signal.current_market_price_usd = Some(1_750.0);
-    eth_signal.behavior_assessment.state = BehaviorState::Insufficient;
-    eth_signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
-    eth_signal.behavior_assessment.main_force_confirmed = false;
-    eth_signal.behavior_assessment.confidence = 0;
     let eth_payload = build_contract_whale_discord_payload(&eth_signal).to_string();
     let eth_preview = build_contract_whale_discord_log_preview(&eth_signal);
-    assert!(eth_payload.contains("ETH 合约流候选"));
-    assert!(!eth_payload.contains("ETH 主力合约异动"));
+    assert!(eth_payload.contains("ETH 主力合约异动"));
+    assert!(!eth_payload.contains("BTC 主力合约异动"));
     assert!(eth_payload.contains("6855 ETH"));
     assert!(eth_payload.contains("-3979 ETH"));
     assert!(!eth_payload.contains("6855 BTC"));
     assert!(eth_preview.contains("ETH CWM S级"));
-}
-
-#[test]
-fn cwm_direct_gate_rejects_unconfirmed_nonimpact_behavior() {
-    let settings = live_settings_for_tests();
-    let cooldown = ContractWhaleDiscordCooldownStore::new();
-    let mut signal = sample_signal_variant(
-        ContractWhaleSeverity::S,
-        ContractWhaleSignalType::AggressiveBuy,
-        ContractWhaleDirection::Buy,
-        "普通高成交量候选",
-        0.31,
-    );
-    signal.impact_level = None;
-    signal.signal_level = None;
-    signal.behavior_assessment.state = BehaviorState::Insufficient;
-    signal.behavior_assessment.behavior_type = BehaviorType::InsufficientEvidence;
-    signal.behavior_assessment.main_force_confirmed = false;
-    signal.behavior_assessment.confidence = 0;
-    signal.discord_eligible = true;
-    signal.discord_reason = "critical_or_s_gate".to_string();
-
-    let decision = evaluate_contract_whale_discord_gate(&settings, &signal, &cooldown, signal.ts);
-    assert!(!decision.allowed);
-    assert_eq!(decision.reason, "behavior_not_confirmed");
 }
 
 #[test]
@@ -645,11 +680,38 @@ fn sample_s_signal() -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types
     signal.impact_z_score = None;
     signal.discord_eligible = true;
     signal.discord_reason = "critical_or_s_gate".to_string();
-    signal.behavior_assessment.state = BehaviorState::Confirmed;
-    signal.behavior_assessment.behavior_type = BehaviorType::NewLongBuild;
-    signal.behavior_assessment.main_force_confirmed = true;
-    signal.behavior_assessment.confidence = 86;
     signal
+}
+
+fn sample_v3_assessment(grade: ContractEventImpactGrade) -> ContractEventImpactAssessment {
+    ContractEventImpactAssessment {
+        event_id: "contract-whale-v3-event".to_string(),
+        episode_id: "contract-whale-v3-episode".to_string(),
+        symbol: "BTC".to_string(),
+        grade_version: "v3".to_string(),
+        grade,
+        state: ImpactGradeState::Confirmed,
+        status: btc_toxic_flow_monitor_rs::contract_whale_monitor::impact_grade::AssessmentStatus::Graded,
+        reason_codes: vec!["test".to_string()],
+        assessed_at_ms: 1_700_000_015_000,
+        evidence: ImpactGradeEvidence {
+            data_quality: 95,
+            peak_window_volume_btc: Some(3_000.0),
+            robust_percentile: Some(99.9),
+            robust_z: Some(4.2),
+            abs_price_move_pct: Some(1.2),
+            oi_change_pct: Some(0.8),
+            live_liquidation_btc: Some(2_000.0),
+            live_liquidation_notional_usd: Some(140_000_000.0),
+            unique_turnover_btc: Some(3_000.0),
+            unique_turnover_notional_usd: Some(210_000_000.0),
+            confirmed_source_count: 2,
+            baseline_sample_count: 100,
+            flow_anomaly_score: Some(95.0),
+            market_impact_score: Some(90.0),
+            confidence_score: Some(98.0),
+        },
+    }
 }
 
 fn sample_single_exchange_high_signal(
@@ -771,18 +833,4 @@ fn live_settings_for_tests() -> ContractWhaleDiscordSettings {
     settings.dry_run = false;
     settings.webhook_url = Some("https://discord.com/api/webhooks/1234567890/abcdef".to_string());
     settings
-}
-
-fn temp_store(name: &str) -> SqliteStore {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "btc-toxic-flow-{name}-{unique}-{}.sqlite",
-        std::process::id()
-    ));
-    let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
-    store.migrate().unwrap();
-    store
 }

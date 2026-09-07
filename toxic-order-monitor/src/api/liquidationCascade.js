@@ -97,7 +97,7 @@ export function normalizeCascade(payload = {}, requestedSymbol = DEFAULT_SYMBOL)
   const symbol = normalizeSymbol(payload.symbol || requestedSymbol);
   return {
     symbol,
-    cascadeProbability: clamp01(payload.cascadeProbability),
+    cascadePressureScore: clamp01(payload.cascadePressureScore ?? payload.cascadeProbability),
     status: stringOrNull(payload.status)?.toUpperCase() ?? null,
     direction: stringOrNull(payload.direction)?.toUpperCase() ?? null,
     estimatedMove: stringOrNull(payload.estimatedMove),
@@ -154,7 +154,7 @@ export function normalizeBtcStructure(payload = {}, requestedSymbol = DEFAULT_SY
     bias: stringOrNull(payload.bias)?.toUpperCase() ?? null,
     confidence: clamp01(payload.confidence),
     structureScore: clamp01(payload.structureScore),
-    liquidationCascadeProbability: clamp01(payload.liquidationCascadeProbability),
+    liquidationCascadePressureScore: clamp01(payload.liquidationCascadePressureScore ?? payload.liquidationCascadeProbability),
     gammaPressure: clamp01(payload.gammaPressure),
     signals: normalizeStringArray(payload.signals),
     metrics: normalizeMetricMap(payload.metrics),
@@ -245,7 +245,7 @@ function stringOrNull(value) {
 }
 
 function isValidCascade(payload) {
-  return isRecord(payload) && numberOrNull(payload.cascadeProbability) !== null && stringOrNull(payload.status) !== null && stringOrNull(payload.direction) !== null;
+  return isRecord(payload) && numberOrNull(payload.cascadePressureScore ?? payload.cascadeProbability) !== null && stringOrNull(payload.status) !== null && stringOrNull(payload.direction) !== null;
 }
 
 function isValidLeverageMap(payload) {

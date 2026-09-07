@@ -685,6 +685,35 @@ fn trading_decision_response_ranks_tradeable_setup_and_emits_no_trade_zone_for_c
 }
 
 #[test]
+fn trading_decision_response_fails_closed_without_confirmed_v3_grade() {
+    let _guard = contract_whale_test_guard();
+    let mut signal = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Critical);
+    signal.impact_grade_state = None;
+    signal.impact_grade_version = None;
+
+    let decision = build_trading_decision_response(
+        "BTC",
+        &[signal],
+        &ContractWhaleMarketStructureLite::default(),
+        ContractWhaleNoiseSuppressionSummary {
+            raw_candidates: 1,
+            ..Default::default()
+        },
+        1_700_000_090_000,
+    );
+
+    assert!(decision.top_setups.is_empty());
+    assert_eq!(decision.noise_suppression.tradeable_setups, 0);
+    assert_eq!(decision.strategy_status, "experimental");
+    assert!(!decision.strategy_production_ready);
+    assert_eq!(decision.strategy_gate_reason, "walk_forward_validation_pending");
+    assert!(decision
+        .no_trade_zones
+        .iter()
+        .any(|zone| zone.reason.contains("V3")));
+}
+
+#[test]
 fn institutional_analysis_response_surfaces_regime_strength_and_opportunities() {
     let _guard = contract_whale_test_guard();
     let mut trend_buy = persisted_signal(1_700_000_030_000, ContractWhaleSeverity::Critical);
@@ -2030,6 +2059,8 @@ fn persisted_signal(
     signal.ts = ts;
     signal.id = format!("contract-whale:BTC:15:{ts}:buy");
     signal.severity = severity;
+    signal.impact_grade_state = Some("confirmed".to_string());
+    signal.impact_grade_version = Some("cwm_impact_v3_2".to_string());
     signal
 }
 

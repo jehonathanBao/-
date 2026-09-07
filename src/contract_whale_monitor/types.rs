@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::semantic::contract::{SemanticRiskState, SemanticType};
+use crate::{
+    contract_whale_monitor::impact_forecast::ContractWhaleMultiHorizonImpactForecast,
+    semantic::contract::{SemanticRiskState, SemanticType},
+};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -180,6 +183,20 @@ pub struct ContractFundingSnapshot {
     pub funding_rate: f64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractReferencePriceSnapshot {
+    pub ts_bucket: i64,
+    pub exchange: ContractExchange,
+    pub symbol: String,
+    pub price_source: String,
+    pub price: f64,
+    #[serde(default)]
+    pub premium_bps: Option<f64>,
+    pub event_time_ms: i64,
+    pub received_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractWhaleLiquidationContext {
@@ -261,13 +278,7 @@ pub struct ContractFlowBucket {
     pub buy_notional_usd: f64,
     pub sell_notional_usd: f64,
     pub trade_count: u64,
-    #[serde(default)]
-    pub buy_trade_count: u64,
-    #[serde(default)]
-    pub sell_trade_count: u64,
     pub max_single_trade_btc: f64,
-    #[serde(default)]
-    pub max_single_trade_share: f64,
     pub vwap: Option<f64>,
 }
 
@@ -1326,8 +1337,6 @@ pub struct ContractWhaleSignal {
     pub price_response_type: ContractWhalePriceResponseType,
     #[serde(default, flatten)]
     pub classification_v2: ContractWhaleClassificationV2,
-    #[serde(default)]
-    pub behavior_assessment: super::behavior::BehaviorAssessment,
     pub main_exchange: Option<String>,
     #[serde(default)]
     pub market_type: ContractWhaleMarketType,
@@ -1355,6 +1364,18 @@ pub struct ContractWhaleSignal {
     pub impact_score: Option<f64>,
     #[serde(default)]
     pub impact_z_score: Option<f64>,
+    /// Persisted V3 lifecycle metadata, populated by API decoration after
+    /// the event-owned assessment is loaded from SQLite.
+    #[serde(default)]
+    pub impact_grade_state: Option<String>,
+    #[serde(default)]
+    pub impact_grade_version: Option<String>,
+    #[serde(default)]
+    pub impact_reason_codes: Vec<String>,
+    /// Immutable V4.1 T0 forecast snapshot, populated by API decoration as
+    /// soon as the event row is durable. It is separate from later outcomes.
+    #[serde(default)]
+    pub multi_horizon_impact: Option<ContractWhaleMultiHorizonImpactForecast>,
     #[serde(default)]
     pub multi_exchange_confirmed: bool,
     #[serde(default)]
@@ -1677,6 +1698,12 @@ pub struct ContractWhaleTradingDecisionResponse {
     #[serde(default)]
     pub noise_suppression: ContractWhaleNoiseSuppressionSummary,
     #[serde(default)]
+    pub strategy_status: String,
+    #[serde(default)]
+    pub strategy_production_ready: bool,
+    #[serde(default)]
+    pub strategy_gate_reason: String,
+    #[serde(default)]
     pub top_setups: Vec<ContractWhaleTradingSetup>,
     #[serde(default)]
     pub no_trade_zones: Vec<ContractWhaleNoTradeZone>,
@@ -1848,6 +1875,12 @@ pub struct ContractWhaleIntelligenceResponse {
     pub trade_ideas: Vec<ContractWhaleTradeIdea>,
     #[serde(default)]
     pub risk_context: ContractWhaleRiskContext,
+    #[serde(default)]
+    pub strategy_status: String,
+    #[serde(default)]
+    pub strategy_production_ready: bool,
+    #[serde(default)]
+    pub strategy_gate_reason: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

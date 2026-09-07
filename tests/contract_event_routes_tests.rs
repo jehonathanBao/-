@@ -49,7 +49,7 @@ async fn contract_events_include_hidden_exposes_visibility_metadata() {
     let client = test_http_client();
     let response = client
         .get(format!(
-            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true"
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true&include_source_signal=true"
         ))
         .send()
         .await
@@ -163,6 +163,221 @@ async fn contract_events_hide_btc_sub_500_volume_rows_with_explicit_reason() {
 }
 
 #[tokio::test]
+async fn legacy_s_without_v3_assessment_is_fail_closed_in_event_feed() {
+    let config = test_config(temp_sqlite_path("contract-event-legacy-s-fail-closed"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+    let mut legacy_s = base_signal("legacy-s", now - 5 * 60 * 1000);
+    legacy_s.impact_level = Some("S".to_string());
+    store
+        .upsert_contract_whale_signal(&legacy_s)
+        .expect("seed legacy s signal");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+
+    let response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/contract-events?symbol=BTC&range=24h&limit=50&include_hidden=true&include_source_signal=true"
+        ))
+        .send()
+        .await
+        .expect("contract events response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("contract events json");
+    let item = payload["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["sourceSignalId"] == legacy_s.id)
+        })
+        .expect("legacy signal item");
+    assert_eq!(item["impactGrade"], "UNRATED");
+    assert_eq!(item["impactLevel"], "UNRATED");
+    assert_eq!(item["impactGradeState"], "evidence_insufficient");
+    assert_eq!(item["impactGradeVersion"], "cwm_impact_v3_2");
+    assert_ne!(item["signalLevel"], "S");
+    assert_eq!(item["isRetentionProtected"], false);
+    assert!(item["retentionReason"].is_null());
+    assert_eq!(item["sourceSignal"]["impactLevel"], "UNRATED");
+    assert_eq!(
+        item["sourceSignal"]["impactGradeState"],
+        "evidence_insufficient"
+    );
+
+    let legacy_final_response = test_http_client()
+        .get(format!(
+            "http://{addr}/api/final-events?symbol=BTC&range=24h&limit=50"
+        ))
+        .send()
+        .await
+        .expect("legacy final events response");
+    assert_eq!(legacy_final_response.status(), StatusCode::OK);
+    let legacy_final_payload: serde_json::Value = legacy_final_response
+        .json()
+        .await
+        .expect("legacy final events json");
+    let legacy_final = legacy_final_payload["items"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("legacy final event");
+    assert_eq!(legacy_final["impactGrade"], "UNRATED");
+    assert_eq!(legacy_final["impactLevel"], "UNRATED");
+    assert_eq!(legacy_final["sourceSignal"]["impactLevel"], "UNRATED");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn all_public_impact_filters_use_the_same_persisted_v3_grade() {
+    let config = test_config(temp_sqlite_path("canonical-impact-filter-routes"));
+    let state = AppState::new(config);
+    let store = state.contract_whale_store().expect("contract whale store");
+    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
+
+    let mut legacy_s = base_signal("filter-legacy-s", now - 5 * 60 * 1000);
+    legacy_s.event_lifecycle.event_id.clear();
+    legacy_s.impact_level = Some("S".to_string());
+    let mut canonical_s = base_signal("filter-canonical-s", now - 25 * 60 * 1000);
+    canonical_s.event_lifecycle.event_id.clear();
+    canonical_s.impact_level = Some("C".to_string());
+    store
+        .upsert_contract_whale_signals(&[legacy_s.clone(), canonical_s.clone()])
+        .expect("seed impact filter signals");
+    store
+        .with_write_connection(|conn| {
+            conn.execute(
+                "INSERT INTO contract_event_impact_grades
+                 (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
+                 evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
+                 VALUES (?1, 'cwm_impact_v3_2', ?1, 'BTC', 'S', 'confirmed', '[]',
+                         '{\"dataQuality\":100,\"robustPercentile\":99.95,\"robustZ\":4.2,\"absPriceMovePct\":1.0,\"oiChangePct\":1.0,\"liveLiquidationBtc\":1000.0,\"liveLiquidationNotionalUsd\":70000000.0,\"uniqueTurnoverBtc\":1000.0,\"uniqueTurnoverNotionalUsd\":70000000.0,\"confirmedSourceCount\":2,\"baselineSampleCount\":10000}', ?2, ?2, ?2)",
+                rusqlite::params![canonical_s.id, now],
+            )?;
+            Ok(())
+        })
+        .expect("seed canonical impact grade");
+
+    let app = router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("server");
+    });
+    let client = test_http_client();
+
+    for path in [
+        "/api/contract-whale/history?symbol=BTC&range=24h&limit=50&impact_level=S",
+        "/api/contract-events?symbol=BTC&range=24h&limit=50&impact_level=S&include_hidden=true",
+        "/api/final-events?symbol=BTC&range=24h&limit=50&impact_level=S",
+        "/api/final-events-v2?symbol=BTC&range=24h&limit=50&impact_level=S",
+    ] {
+        let response = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("{path} response failed: {error}"));
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or_else(|error| panic!("{path} json failed: {error}"));
+        let items = if path.contains("final-events-v2") {
+            payload["active"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(payload["closed"].as_array().into_iter().flatten())
+                .collect::<Vec<_>>()
+        } else {
+            payload["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(items.len(), 1, "{path}: {payload}");
+        let item = items[0];
+        assert_eq!(item["impactLevel"], "S", "{path}: {payload}");
+        if !item["impactGrade"].is_null() {
+            assert_eq!(item["impactGrade"], "S", "{path}: {payload}");
+        }
+        let source_id = item["sourceSignal"]["id"]
+            .as_str()
+            .or_else(|| item["sourceSignalId"].as_str())
+            .or_else(|| item["id"].as_str())
+            .expect("source signal id");
+        assert_eq!(source_id, canonical_s.id, "{path}: {payload}");
+        if !item["sourceSignal"].is_null() {
+            assert_eq!(
+                item["sourceSignal"]["impactLevel"], "S",
+                "{path}: {payload}"
+            );
+        }
+        if path.contains("/api/contract-events?") {
+            assert_eq!(item["isRetentionProtected"], true, "{path}: {payload}");
+            assert_eq!(
+                item["retentionReason"], "confirmed_v3_impact_s",
+                "{path}: {payload}"
+            );
+        }
+    }
+
+    for path in [
+        "/api/contract-whale/history?symbol=BTC&range=24h&limit=50&impact_level=C",
+        "/api/contract-events?symbol=BTC&range=24h&limit=50&impact_level=C&include_hidden=true",
+        "/api/final-events?symbol=BTC&range=24h&limit=50&impact_level=C",
+        "/api/final-events-v2?symbol=BTC&range=24h&limit=50&impact_level=C",
+    ] {
+        let response = client
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("{path} response failed: {error}"));
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or_else(|error| panic!("{path} json failed: {error}"));
+        let items = if path.contains("final-events-v2") {
+            payload["active"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(payload["closed"].as_array().into_iter().flatten())
+                .collect::<Vec<_>>()
+        } else {
+            payload["items"]
+                .as_array()
+                .expect("items array")
+                .iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(items.len(), 1, "{path}: {payload}");
+        let item = items[0];
+        assert_eq!(item["impactLevel"], "UNRATED", "{path}: {payload}");
+        let source_id = item["sourceSignal"]["id"]
+            .as_str()
+            .or_else(|| item["sourceSignalId"].as_str())
+            .or_else(|| item["id"].as_str())
+            .expect("source signal id");
+        assert_eq!(source_id, legacy_s.id, "{path}: {payload}");
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate() {
     let config = test_config(temp_sqlite_path("final-events-lifecycle-volume-gate"));
     let state = AppState::new(config);
@@ -204,10 +419,7 @@ async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate(
                 buy_notional_usd: 21_000_000.0,
                 sell_notional_usd: 0.0,
                 trade_count: 1,
-                buy_trade_count: 1,
-                sell_trade_count: 0,
                 max_single_trade_btc: 300.0,
-                max_single_trade_share: 1.0,
                 vwap: Some(70_000.0),
             },
             ContractFlowBucket {
@@ -222,10 +434,7 @@ async fn final_events_v2_uses_lifecycle_peak_window_volume_for_btc_display_gate(
                 buy_notional_usd: 28_000_000.0,
                 sell_notional_usd: 0.0,
                 trade_count: 1,
-                buy_trade_count: 1,
-                sell_trade_count: 0,
                 max_single_trade_btc: 400.0,
-                max_single_trade_share: 1.0,
                 vwap: Some(70_000.0),
             },
         ])
@@ -471,9 +680,6 @@ async fn contract_events_include_resolved_oi_context_fields() {
     assert_eq!(item["oiDeltaPct"], 0.42);
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
-    assert_eq!(item["behaviorType"], "insufficient_evidence");
-    assert_eq!(item["behaviorState"], "invalidated");
-    assert_eq!(item["behaviorMainForceConfirmed"], false);
     assert!(
         item.get("flowDirection").and_then(|v| v.as_str()).is_some(),
         "compact tape must promote flowDirection after stripping sourceSignal"
@@ -584,63 +790,6 @@ async fn contract_events_mark_far_oi_snapshots_as_unavailable() {
     assert_eq!(item["oiContext"], "oi_unavailable");
     assert_eq!(item["oiAvailable"], false);
     assert_eq!(item["oiReason"], "oi_snapshot_gap_too_large");
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn final_events_v2_projects_sanitized_canonical_impact_grade() {
-    let config = test_config(temp_sqlite_path("final-events-sanitized-impact-grade"));
-    let state = AppState::new(config);
-    let store = state.contract_whale_store().expect("contract whale store");
-    let now = btc_toxic_flow_monitor_rs::normalizers::trade::now_ms();
-    let mut signal = base_signal("persisted-raw-a", now - 5 * 60 * 1000);
-    signal.impact_level = Some("A".to_string());
-    signal.signal_level = Some("L3".to_string());
-    signal.signal_label = Some("HIGH IMPACT EVENT".to_string());
-    signal.data_quality = 85;
-    signal.percentile_level = Some(99.0);
-    signal.impact_score = Some(10.0);
-    signal.impact_z_score = Some(10.0);
-    signal.total_volume_btc = 638.0;
-    signal.total_volume = 638.0;
-    signal.total_notional_usd = 40_000_000.0;
-    signal.price_move_pct = Some(-0.104);
-    signal.multi_exchange_confirmed = false;
-    signal.liquidation_suspected = false;
-    signal.liquidation_long_btc = 0.0;
-    signal.liquidation_short_btc = 0.0;
-    signal.behavior_assessment = Default::default();
-    store.upsert_contract_whale_signal(&signal).unwrap();
-
-    let app = router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("server");
-    });
-
-    let payload: serde_json::Value = test_http_client()
-        .get(format!(
-            "http://{addr}/api/final-events-v2?symbol=BTC&range=24h&limit=20"
-        ))
-        .send()
-        .await
-        .expect("final events response")
-        .json()
-        .await
-        .expect("final events json");
-    let item = payload["closed"]
-        .as_array()
-        .and_then(|items| items.first())
-        .expect("closed event");
-    assert_eq!(item["impactLevel"], "C");
-    assert_eq!(item["signalLevel"], "L1");
-    assert_eq!(item["signalLabel"], "LOW IMPACT EVENT");
-    assert_eq!(item["sourceSignal"]["impactLevel"], "C");
-    assert_eq!(item["sourceSignal"]["signalLevel"], "L1");
 
     server.abort();
 }

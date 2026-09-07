@@ -52,10 +52,17 @@ case "${TIME_MODE}" in
     ;;
 esac
 
-if ! command -v timeout >/dev/null 2>&1; then
-  echo "timeout is required on PATH" >&2
-  exit 1
-fi
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$@"
+  else
+    echo "warning: timeout/gtimeout unavailable; running without a process timeout" >&2
+    shift
+    "$@"
+  fi
+}
 
 PYTHON_CMD=()
 
@@ -78,9 +85,9 @@ fi
 run_sql_ro() {
   local sql="$1"
   if [[ "${SQL_BACKEND}" == "sqlite3" ]]; then
-    timeout "${SQLITE_TIMEOUT}s" sqlite3 -readonly -noheader "${DB_PATH}" "${sql}"
+    run_with_timeout "${SQLITE_TIMEOUT}s" sqlite3 -readonly -noheader "${DB_PATH}" "${sql}"
   else
-    SQL_QUERY="${sql}" timeout "${SQLITE_TIMEOUT}s" "${PYTHON_CMD[@]}" - "${DB_PATH}" <<'PY'
+    SQL_QUERY="${sql}" run_with_timeout "${SQLITE_TIMEOUT}s" "${PYTHON_CMD[@]}" - "${DB_PATH}" <<'PY'
 import os
 import sqlite3
 import sys
@@ -98,9 +105,10 @@ PY
 run_sql_rw() {
   local sql="$1"
   if [[ "${SQL_BACKEND}" == "sqlite3" ]]; then
-    timeout "${SQLITE_TIMEOUT}s" sqlite3 -noheader "${DB_PATH}" "${sql}"
+    run_with_timeout "${SQLITE_TIMEOUT}s" sqlite3 -noheader "${DB_PATH}" "${sql}
+SELECT changes();"
   else
-    SQL_QUERY="${sql}" timeout "${SQLITE_TIMEOUT}s" "${PYTHON_CMD[@]}" - "${DB_PATH}" <<'PY'
+    SQL_QUERY="${sql}" run_with_timeout "${SQLITE_TIMEOUT}s" "${PYTHON_CMD[@]}" - "${DB_PATH}" <<'PY'
 import os
 import sqlite3
 import sys
@@ -108,11 +116,10 @@ import sys
 db_path = sys.argv[1]
 sql = os.environ["SQL_QUERY"]
 conn = sqlite3.connect(db_path, timeout=5)
+before = conn.total_changes
 conn.executescript(sql)
 conn.commit()
-cur = conn.execute("SELECT changes()")
-for row in cur.fetchall():
-    print("|".join("" if value is None else str(value) for value in row))
+print(conn.total_changes - before)
 PY
   fi
 }

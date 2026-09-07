@@ -67,9 +67,9 @@ echo ""
 # 7. 检查端口监听
 echo "7. 检查端口监听..."
 if command -v netstat &> /dev/null; then
-    netstat -tlnp 2>/dev/null | grep -E "5173|5174" || echo "5173/5174端口可能未监听"
+    netstat -tlnp 2>/dev/null | grep -E "5173" || echo "5173端口可能未监听"
 elif command -v ss &> /dev/null; then
-    ss -tlnp 2>/dev/null | grep -E "5173|5174" || echo "5173/5174端口可能未监听"
+    ss -tlnp 2>/dev/null | grep -E "5173" || echo "5173端口可能未监听"
 else
     echo "无法检查端口状态"
 fi

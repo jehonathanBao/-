@@ -285,6 +285,7 @@ fn parse_optional_u64(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_ais_bucket(
     value: Option<&str>,
 ) -> Result<(Option<f64>, Option<f64>), (StatusCode, Json<serde_json::Value>)> {

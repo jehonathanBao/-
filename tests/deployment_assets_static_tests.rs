@@ -35,7 +35,7 @@ fn docker_deployment_assets_keep_runtime_and_token_boundaries() {
     assert!(compose.contains("INTERNAL_API_ORIGIN: ${INTERNAL_API_ORIGIN:-http://127.0.0.1:3000}"));
     assert!(compose.contains("WS_SIGNAL_INTERVAL_MS"));
     assert!(compose.contains("127.0.0.1:8000:3000"));
-    assert!(compose.contains("${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"));
+    assert!(compose.contains("${DASHBOARD_BIND_HOST:-127.0.0.1}:${DASHBOARD_PORT:-5173}:5173"));
     assert!(compose.contains("./data"));
     assert!(compose.contains("/app/data"));
     assert!(compose.contains("./config"));

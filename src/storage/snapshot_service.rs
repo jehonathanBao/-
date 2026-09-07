@@ -12,7 +12,6 @@ use super::{
     snapshots_repo::SnapshotsRepo,
     sqlite::SqliteStore,
     storage_health::{RetentionRunHealth, StorageHealthTracker},
-    venue_health_repo::VenueHealthRepo,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,7 +32,6 @@ pub struct SnapshotService {
     toxic_service: ToxicService,
     connector_manager: ConnectorManager,
     persist_interval_ms: u64,
-    retention_policy: RuntimeRetentionPolicy,
     retention_interval_ms: u64,
     storage_health: StorageHealthTracker,
     latest_state: Arc<RwLock<StorageState>>,
@@ -75,8 +73,9 @@ impl SnapshotService {
             toxic_service,
             connector_manager,
             persist_interval_ms,
-            retention_policy: RuntimeRetentionPolicy::default(),
-            retention_interval_ms: 60 * 60 * 1000,
+            // Run often enough to keep the 24h snapshot windows bounded while
+            // each individual table cleanup remains time-limited.
+            retention_interval_ms: 15 * 60 * 1000,
             storage_health,
             latest_state: Arc::new(RwLock::new(StorageState {
                 enabled,
@@ -107,7 +106,17 @@ impl SnapshotService {
             loop {
                 interval.tick().await;
                 let now_ts = now_ms();
-                service.persist_once(now_ts);
+                // SQLite writes are synchronous. Keep them off the Tokio
+                // runtime thread so a slow checkpoint/lock cannot stall the
+                // market-data consumers and create broadcast lag.
+                let writer = service.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || {
+                    writer.persist_once(now_ts);
+                })
+                .await
+                {
+                    tracing::warn!(?error, "snapshot persistence task failed");
+                }
                 if now_ts.saturating_sub(last_retention_run_ts)
                     >= service.retention_interval_ms.max(60_000) as i64
                 {
@@ -153,11 +162,7 @@ impl SnapshotService {
             return state;
         }
 
-        match store
-            .insert_flow_snapshot(&flow_state)
-            .and_then(|_| store.insert_toxic_snapshot(&toxic_state))
-            .and_then(|_| store.insert_venue_health_snapshot(now_ts, &venue_health))
-        {
+        match store.insert_runtime_snapshots(now_ts, &flow_state, &toxic_state, &venue_health) {
             Ok(()) => {
                 state.status = "ok".to_string();
                 state.last_write_ts = Some(now_ts);
@@ -177,9 +182,18 @@ impl SnapshotService {
         let Some(store) = self.store.clone() else {
             return;
         };
-        let policy = self.retention_policy;
+        let storage_snapshot = self.storage_health.refresh_now();
+        let policy = RuntimeRetentionPolicy::for_storage_health(&storage_snapshot);
         let storage_health = self.storage_health.clone();
         let started_at = std::time::Instant::now();
+        tracing::info!(
+            db_size_gb = storage_snapshot.db_size_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            disk_used_percent = storage_snapshot.disk_used_percent,
+            delete_batch_size = policy.delete_batch_size,
+            max_batches_per_table = policy.max_batches_per_table,
+            max_table_duration_ms = policy.max_table_duration_ms,
+            "runtime retention policy selected"
+        );
         match tokio::task::spawn_blocking(move || store.prune_runtime_retention(now_ts, &policy))
             .await
         {
@@ -228,6 +242,8 @@ impl SnapshotService {
                     deleted_replay_runs = result.replay_runs_deleted,
                     deleted_new_token_l2_metrics = result.new_token_l2_metrics_deleted,
                     deleted_new_token_l2_outcomes = result.new_token_l2_outcomes_deleted,
+                    deleted_binance_orderflow_delta_cache =
+                        result.binance_orderflow_delta_cache_deleted,
                     total_deleted_rows = result.total_deleted(),
                     failed_tables = result
                         .table_results

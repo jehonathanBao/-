@@ -1,7 +1,4 @@
 use super::{
-    behavior::{
-        assess_contract_whale_behavior, is_behavior_alert_eligible, BehaviorAssessmentInput,
-    },
     classification::classify_contract_whale_signal_v2,
     config::{
         contract_whale_runtime_config, ContractWhaleNotionalThresholds, ContractWhaleRuntimeConfig,
@@ -133,7 +130,6 @@ pub fn inspect_contract_whale_signal_with_config(
         primary_source_extreme_discord_candidate(&scoring_stats, signal_type, config, &resolution);
     let warmup_collect_only = runtime_warmup(&scoring_stats, config);
     let impact = market_impact_normalization(&scoring_stats);
-    let raw_s_impact = impact.impact_level == "S" || impact.signal_level == "S";
     let btc_high_fallback_allowed =
         btc_high_fallback_allowed(signal_type, price_response_type, score);
     let (mut discord_eligible, mut discord_reason) = discord_gate(
@@ -214,20 +210,7 @@ pub fn inspect_contract_whale_signal_with_config(
     let total_volume = round(stats.total_volume_btc, 3);
     let net_volume = round(stats.net_volume_btc, 3);
     let final_result = final_result_text(&classification_v2, liquidation_suspected);
-    let behavior_assessment = assess_contract_whale_behavior(&BehaviorAssessmentInput {
-        signal_type,
-        oi_context: classification_v2.oi_context,
-        oi_available: classification_v2.oi_available,
-        oi_evidence_degraded: classification_v2.oi_evidence_degraded,
-        price_move_pct: scoring_stats.price_move_pct,
-        price_response_type,
-        multi_exchange_confirmed,
-        data_quality: scoring_stats.data_quality,
-        dominance: scoring_stats.dominance,
-        liquidation_suspected,
-        liquidation_total_btc: scoring_stats.liquidation_context.total_liq_btc,
-    });
-    let mut signal = ContractWhaleSignal {
+    let signal = ContractWhaleSignal {
         id: format!(
             "contract-whale:{}:{}:{}:{}",
             stats.symbol,
@@ -263,7 +246,6 @@ pub fn inspect_contract_whale_signal_with_config(
         price_move_30s_pct: price_move_for_window(&scoring_stats, 30),
         price_response_type,
         classification_v2,
-        behavior_assessment,
         main_exchange: scoring_stats.main_exchange.clone(),
         market_type: ContractWhaleMarketType::Perp,
         source_role: signal_source_role(&scoring_stats, config),
@@ -283,6 +265,10 @@ pub fn inspect_contract_whale_signal_with_config(
         normalized_strength: Some(impact.normalized_strength),
         impact_score: Some(round(impact.impact_score, 3)),
         impact_z_score: Some(round(impact.z_score, 3)),
+        impact_grade_state: None,
+        impact_grade_version: None,
+        impact_reason_codes: Vec::new(),
+        multi_horizon_impact: None,
         multi_exchange_confirmed,
         liquidation_suspected,
         liquidation_long_btc: round(scoring_stats.liquidation_context.long_liq_btc, 3),
@@ -341,24 +327,6 @@ pub fn inspect_contract_whale_signal_with_config(
         execution_enabled: false,
         merged_from: Vec::new(),
     };
-    super::discord::sanitize_contract_whale_impact(&mut signal);
-    if raw_s_impact
-        && !super::discord::is_historic_s_impact(&signal)
-        && !is_behavior_alert_eligible(&signal.behavior_assessment)
-    {
-        signal.discord_eligible = false;
-        signal.discord_would_send = false;
-        signal.discord_reason = "s_grade_extreme_impact_required".to_string();
-    }
-    if signal.impact_level.as_deref() == Some("C")
-        && signal.discord_eligible
-        && signal.discord_reason == "impact_level_gate"
-        && !is_behavior_alert_eligible(&signal.behavior_assessment)
-    {
-        signal.discord_eligible = false;
-        signal.discord_would_send = false;
-        signal.discord_reason = "impact_grade_c_display_only".to_string();
-    }
     tracing::info!(
         target: LOG_TARGET,
         event = log_events::SIGNAL_GENERATED,
@@ -391,7 +359,7 @@ fn market_impact_normalization(stats: &ContractWhaleWindowStats) -> MarketImpact
     normalize_market_impact_from_metrics(
         stats.total_volume_btc,
         impact_score,
-        impact_score,
+        None,
         stats.percentile_level,
     )
 }

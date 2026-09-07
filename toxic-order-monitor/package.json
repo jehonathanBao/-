@@ -3,11 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node scripts/run-vitest.mjs"
+    "test": "node scripts/run-vitest.mjs",
+    "test:full": "node scripts/run-vitest.mjs --run",
+    "test:fast": "node scripts/run-vitest.mjs --run --exclude src/tests/**/*Api.test.js --exclude src/tests/**/*Api.test.jsx --exclude src/tests/**/*WebSocket.test.jsx",
+    "test:watch": "node scripts/run-vitest.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

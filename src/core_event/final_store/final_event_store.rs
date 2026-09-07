@@ -10,6 +10,15 @@ use crate::normalization::market_impact::{MarketImpactBaseline, MarketImpactNorm
 #[serde(rename_all = "camelCase")]
 pub struct FinalEvent {
     pub event_id: String,
+    /// Stable V3 identity. `event_id` is the page/projection identifier;
+    /// these fields make the episode and all source aliases explicit to API
+    /// consumers so a lifecycle update cannot create a second rating.
+    #[serde(default)]
+    pub episode_id: String,
+    #[serde(default)]
+    pub projection_event_id: Option<String>,
+    #[serde(default)]
+    pub source_event_ids: Vec<String>,
     pub symbol: String,
     pub event_type: String,
     pub start_time: i64,
@@ -23,24 +32,29 @@ pub struct FinalEvent {
     pub normalized_score: f64,
     pub normalized_strength: String,
     pub impact_level: String,
+    #[serde(default)]
+    pub impact_grade: String,
+    #[serde(default)]
+    pub impact_grade_state: String,
+    #[serde(default)]
+    pub impact_grade_version: Option<String>,
+    #[serde(default)]
+    pub impact_reason_codes: Vec<String>,
+    #[serde(default)]
+    pub assessment_status: String,
+    #[serde(default)]
+    pub impact_evidence: Option<serde_json::Value>,
+    #[serde(default)]
+    pub behavior_assessment:
+        Option<crate::contract_whale_monitor::behavior_assessment::ContractWhaleBehaviorAssessment>,
+    #[serde(default)]
+    pub multi_horizon_impact: Option<
+        crate::contract_whale_monitor::impact_forecast::ContractWhaleMultiHorizonImpactForecast,
+    >,
+    #[serde(default)]
+    pub relative_rank: Option<usize>,
     pub signal_level: String,
     pub signal_label: String,
-    #[serde(default)]
-    pub cohort_impact_score: f64,
-    #[serde(default)]
-    pub cohort_z_score: f64,
-    #[serde(default)]
-    pub cohort_percentile: f64,
-    #[serde(default)]
-    pub cohort_normalized_score: f64,
-    #[serde(default)]
-    pub cohort_normalized_strength: String,
-    #[serde(default)]
-    pub cohort_impact_level: String,
-    #[serde(default)]
-    pub cohort_signal_level: String,
-    #[serde(default)]
-    pub cohort_signal_label: String,
     pub total_volume_btc: f64,
     pub volume: f64,
     pub net_volume: f64,
@@ -195,7 +209,6 @@ impl FinalEvent {
         impact: MarketImpactNormalization,
         context: VolumeDisplayContext,
     ) -> Self {
-        let canonical_impact = detector_impact_or_cohort(signal, &impact);
         let mut source_signal_ids = vec![signal.id.clone()];
         for id in &signal.merged_from {
             if !id.is_empty() && !source_signal_ids.iter().any(|existing| existing == id) {
@@ -208,8 +221,25 @@ impl FinalEvent {
         } else {
             signal.event_lifecycle.event_id.clone()
         };
+        // Impact grade is event-owned. Page-cohort normalization is presentation
+        // metadata only and must not rewrite the persisted business grade.
+        let stable_impact_level = signal
+            .impact_level
+            .clone()
+            .unwrap_or_else(|| impact.impact_level.clone());
+        let stable_signal_level = signal
+            .signal_level
+            .clone()
+            .unwrap_or_else(|| impact.signal_level.clone());
+        let stable_signal_label = signal
+            .signal_label
+            .clone()
+            .unwrap_or_else(|| impact.signal_label.clone());
         Self {
-            event_id,
+            event_id: event_id.clone(),
+            episode_id: event_id.clone(),
+            projection_event_id: Some(event_id),
+            source_event_ids: source_signal_ids.clone(),
             symbol: signal.symbol.clone(),
             event_type: signal_type_key(signal.signal_type).to_string(),
             start_time: signal.event_lifecycle.start_time,
@@ -217,24 +247,33 @@ impl FinalEvent {
             status: event_status_key(signal.event_lifecycle.status).to_string(),
             window_sec: signal.window_sec,
             raw_volume: impact.raw_volume,
-            // The operator-facing grade follows the detector/Discord decision;
-            // page-cohort normalization is exposed separately below.
-            impact_score: canonical_impact.impact_score,
-            z_score: canonical_impact.z_score,
-            percentile: canonical_impact.percentile,
-            normalized_score: canonical_impact.normalized_score,
-            normalized_strength: canonical_impact.normalized_strength,
-            impact_level: canonical_impact.impact_level,
-            signal_level: canonical_impact.signal_level,
-            signal_label: canonical_impact.signal_label,
-            cohort_impact_score: impact.impact_score,
-            cohort_z_score: impact.z_score,
-            cohort_percentile: impact.percentile,
-            cohort_normalized_score: impact.normalized_score,
-            cohort_normalized_strength: impact.normalized_strength,
-            cohort_impact_level: impact.impact_level,
-            cohort_signal_level: impact.signal_level,
-            cohort_signal_label: impact.signal_label,
+            impact_score: impact.impact_score,
+            z_score: impact.z_score,
+            percentile: impact.percentile,
+            normalized_score: impact.normalized_score,
+            normalized_strength: impact.normalized_strength,
+            impact_level: stable_impact_level,
+            impact_grade: signal
+                .impact_level
+                .clone()
+                .unwrap_or_else(|| impact.impact_level.clone()),
+            impact_grade_state: signal
+                .impact_grade_state
+                .clone()
+                .unwrap_or_else(|| "evidence_insufficient".to_string()),
+            impact_grade_version: signal.impact_grade_version.clone(),
+            impact_reason_codes: if signal.impact_reason_codes.is_empty() {
+                vec!["v3_assessment_unavailable".to_string()]
+            } else {
+                signal.impact_reason_codes.clone()
+            },
+            assessment_status: assessment_status_from_signal(signal),
+            impact_evidence: None,
+            behavior_assessment: None,
+            multi_horizon_impact: None,
+            relative_rank: None,
+            signal_level: stable_signal_level,
+            signal_label: stable_signal_label,
             total_volume_btc: signal.total_volume_btc,
             volume: signal.total_volume_btc,
             net_volume: signal.net_volume_btc,
@@ -280,37 +319,29 @@ impl FinalEvent {
     }
 }
 
-fn detector_impact_or_cohort(
-    signal: &ContractWhaleSignal,
-    cohort: &MarketImpactNormalization,
-) -> MarketImpactNormalization {
-    MarketImpactNormalization {
-        raw_volume: cohort.raw_volume,
-        impact_score: signal.impact_score.unwrap_or(cohort.impact_score),
-        z_score: signal.impact_z_score.unwrap_or(cohort.z_score),
-        percentile: signal.percentile_level.unwrap_or(cohort.percentile),
-        normalized_score: cohort.normalized_score,
-        normalized_strength: signal
-            .normalized_strength
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| cohort.normalized_strength.clone()),
-        impact_level: signal
-            .impact_level
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| cohort.impact_level.clone()),
-        signal_level: signal
-            .signal_level
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| cohort.signal_level.clone()),
-        signal_label: signal
-            .signal_label
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| cohort.signal_label.clone()),
+fn assessment_status_from_signal(signal: &ContractWhaleSignal) -> String {
+    let reason = signal.impact_reason_codes.first().map(String::as_str);
+    if reason == Some("v3_assessment_failed") {
+        return "assessment_failed".to_string();
     }
+    if reason == Some("evidence_missing") {
+        return "evidence_missing".to_string();
+    }
+    if reason == Some("historical_baseline_unavailable") {
+        return "historical_baseline_unavailable".to_string();
+    }
+    if reason == Some("baseline_warming_up") {
+        return "baseline_warming_up".to_string();
+    }
+    if signal.impact_grade_state.as_deref() == Some("confirmed") {
+        return "graded".to_string();
+    }
+    if signal.impact_grade_state.as_deref() == Some("provisional")
+        || reason == Some("v3_assessment_unavailable")
+    {
+        return "assessment_pending".to_string();
+    }
+    "baseline_insufficient".to_string()
 }
 
 pub fn build_volume_display_meta(
@@ -559,14 +590,10 @@ mod tests {
         assert_eq!(final_event.merged_windows_sec, vec![5, 15]);
         assert_eq!(final_event.buy_volume_btc, Some(1_830.0));
         assert_eq!(final_event.sell_volume_btc, Some(2_450.0));
-        // The canonical event grade must remain the detector-persisted S.
+        // Tape keeps the event-owned detector grade, not page-cohort normalization.
         assert_eq!(final_event.impact_level, "S");
         assert_eq!(final_event.signal_level, "S");
         assert_eq!(final_event.signal_label, "SHOCK IMPACT EVENT");
-        // The page-cohort normalization remains available as secondary context.
-        assert_eq!(final_event.cohort_impact_level, "A");
-        assert_eq!(final_event.cohort_signal_level, "L3");
-        assert_eq!(final_event.cohort_percentile, 93.0);
     }
 
     fn sample_signal() -> ContractWhaleSignal {
@@ -601,7 +628,6 @@ mod tests {
             price_move_30s_pct: None,
             price_response_type: ContractWhalePriceResponseType::TrendFollowUp,
             classification_v2: Default::default(),
-            behavior_assessment: Default::default(),
             main_exchange: Some("binance".to_string()),
             market_type: ContractWhaleMarketType::Perp,
             source_role: ContractWhaleSourceRole::Primary,
@@ -663,6 +689,10 @@ mod tests {
             normalized_strength: Some("EXTREME".to_string()),
             impact_score: Some(9.4),
             impact_z_score: Some(9.4),
+            impact_grade_state: None,
+            impact_grade_version: None,
+            impact_reason_codes: Vec::new(),
+            multi_horizon_impact: None,
             multi_exchange_confirmed: true,
             liquidation_suspected: true,
             liquidation_long_btc: 420.0,

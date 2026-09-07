@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import ContractWhaleMonitor, { signalDisplayType } from "../components/ContractWhaleMonitor.jsx";
+import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import {
   fetchContractEventDebugCounts,
   fetchContractEvents,
@@ -23,26 +23,6 @@ import {
 function hasPriceText(text) {
   return typeof text === "string" && text.includes("69,917");
 }
-
-describe("contract whale behavior labels", () => {
-  it("does not call unconfirmed aggressive flow main force", () => {
-    expect(
-      signalDisplayType({
-        signalType: "aggressive_buy",
-        displaySignalType: "主力拉盘",
-        behaviorState: "insufficient",
-        behaviorType: "insufficient_evidence",
-      }),
-    ).toBe("主动买压");
-    expect(
-      signalDisplayType({
-        signalType: "aggressive_sell",
-        behaviorState: "confirmed",
-        behaviorType: "new_short_build",
-      }),
-    ).toBe("主力建空");
-  });
-});
 
 vi.mock("../api/contractWhale.js", () => ({
   CWM_MAX_PRICE_DEVIATION_PCT: 5,
@@ -1189,17 +1169,16 @@ vi.mock("../api/contractWhale.js", () => ({
   fetchContractRetentionStatus: vi.fn(() =>
     Promise.resolve({
       flowRetentionDays: 14,
-      signalRetentionDays: 365,
-      signalProtectSeverityS: true,
-      signalProtectNetVolumeBtc: 500,
+      signalRetentionDays: 7,
+      impactBRetentionDays: 90,
+      signalProtectImpactAS: true,
       cleanupIntervalHours: 1,
       tables: {
         contractFlow1s: { rowCount: 10, rowsOlderThanRetention: 0 },
         contractWhaleSignals: {
           rowCount: 5,
           rowsOlderThanRetention: 0,
-          protectedSCount: 1,
-          protectedNetVolumeCount: 1,
+          protectedImpactASCount: 2,
         },
         mainForceEvents: { rowCount: 3, hasRetentionCleanup: false },
       },
@@ -1504,7 +1483,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByTestId("data-health-banner")).not.toBeInTheDocument();
   });
 
-  it("keeps the compact workspace usable when intelligence is stale", async () => {
+  it("masks stale intelligence as UNKNOWN while keeping the previous context secondary", async () => {
     fetchContractWhaleIntelligenceTerminal.mockResolvedValueOnce({
       symbol: "ETH",
       marketRegime: { regime: "TRENDING_UP", confidence: 82, reason: "prior structure" },
@@ -1525,11 +1504,11 @@ describe("ContractWhaleMonitor", () => {
 
     render(<ContractWhaleMonitor lockedSymbol="ETH" />);
 
-    expect(await screen.findByTestId("contract-workspace-status-ribbon")).toBeInTheDocument();
-    expect(screen.getByTestId("contract-insight-rail")).toBeInTheDocument();
-    expect(screen.queryByTestId("intelligence-freshness")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("secondary-analysis-grid")).not.toBeInTheDocument();
-    expect(screen.queryByText("事件驱动交易台总览")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("intelligence-freshness")).toHaveTextContent("STALE");
+    expect(screen.getByTestId("current-market-regime")).toHaveTextContent("UNKNOWN");
+    expect(screen.getByTestId("current-risk-state")).toHaveTextContent("UNKNOWN");
+    expect(screen.getByTestId("previous-intelligence-context")).toHaveTextContent("TRENDING_UP");
+    expect(screen.getByTestId("previous-intelligence-context")).toHaveTextContent("HIGH RISK");
   });
 
   it("renders one consolidated recovery banner without an action button", async () => {
@@ -1604,10 +1583,13 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText(/详细统计不在页面加载链路执行/)).toBeInTheDocument();
   });
 
-  it("keeps historical events and compact summaries without the secondary desk canvas", async () => {
+  it("promotes historical events into the pro desk primary view", async () => {
     render(<ContractWhaleMonitor />);
 
     const historical = await screen.findByText("HISTORICAL EVENTS (7d stream)");
+    const proDesk = screen.getByText("事件驱动交易台总览");
+    const structure = screen.getByText("Market Structure");
+    const setups = screen.getByText("Structure Setups");
     const systemStatus = screen.getByText("System Status / Latency / Retention");
     const historicalPanel = screen.getByTestId("historical-events-primary");
     const monitorPanel = screen.getByText("主力合约监控").closest("section");
@@ -1623,16 +1605,16 @@ describe("ContractWhaleMonitor", () => {
     expect(insightRail).toHaveTextContent("市场结构");
     expect(insightRail).toHaveTextContent("流动性与 OI");
     expect(insightRail).toHaveTextContent("交易机会 / 风险");
-    expect(screen.queryByText("事件驱动交易台总览")).not.toBeInTheDocument();
-    expect(screen.queryByText("Market Structure", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Structure Setups", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Risk Context", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("secondary-analysis-grid")).not.toBeInTheDocument();
-    expect(historical.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(historical.compareDocumentPosition(proDesk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(proDesk.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(historical.compareDocumentPosition(structure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(structure.compareDocumentPosition(setups) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(setups.compareDocumentPosition(systemStatus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(monitorPanel).toHaveClass("overflow-x-hidden");
     expect(historicalPanel).toHaveClass("min-h-[50vh]");
     expect(screen.getByTestId("primary-analysis-grid")).toHaveClass("contract-primary-grid");
-    expect(screen.getByTestId("lifecycle-analysis")).toHaveClass("mt-4");
+    expect(screen.getByTestId("secondary-analysis-grid").className).toContain("2xl:grid-cols-");
+    expect(screen.getByTestId("lifecycle-risk-grid").className).toContain("2xl:grid-cols-");
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
   });
 
@@ -2056,22 +2038,22 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByTestId("contract-whale-row-cwm-event:BTC:aggressive_buy:low-notional")).not.toBeInTheDocument();
     expect(screen.getByTestId("contract-whale-row-cwm-event:BTC:aggressive_sell:high-notional")).toBeInTheDocument();
     expect(screen.queryByText("Low Notional Setup")).not.toBeInTheDocument();
-    expect(screen.queryByText("High Notional Setup")).not.toBeInTheDocument();
+    expect(screen.getByText("High Notional Setup")).toBeInTheDocument();
     expect(screen.queryByText("Low Notional Rank")).not.toBeInTheDocument();
-    expect(screen.queryByText("High Notional Rank")).not.toBeInTheDocument();
+    expect(screen.getByText("High Notional Rank")).toBeInTheDocument();
   });
 
-  it("does not render jump navigation for removed desk sections", async () => {
+  it("renders jump navigation links for the pro desk sections", async () => {
     render(<ContractWhaleMonitor />);
 
     await screen.findByText("HISTORICAL EVENTS (7d stream)");
 
-    expect(screen.queryByRole("link", { name: "Events" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Structure" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Liquidity" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Setups" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Risk" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Status" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Events" })).toHaveAttribute("href", "#contract-whale-events");
+    expect(screen.getByRole("link", { name: "Structure" })).toHaveAttribute("href", "#contract-whale-structure");
+    expect(screen.getByRole("link", { name: "Liquidity" })).toHaveAttribute("href", "#contract-whale-liquidity");
+    expect(screen.getByRole("link", { name: "Setups" })).toHaveAttribute("href", "#contract-whale-setups");
+    expect(screen.getByRole("link", { name: "Risk" })).toHaveAttribute("href", "#contract-whale-risk");
+    expect(screen.getByRole("link", { name: "Status" })).toHaveAttribute("href", "#contract-whale-status");
   });
 
   it("warns when BTC latest only contains stale snapshots and 24h history has no new signals", async () => {
@@ -2256,24 +2238,33 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText("Whale Behavior Timeline")).toBeInTheDocument();
     expect(screen.getByText("主力行为轨迹（辅助）")).toBeInTheDocument();
     expect(screen.queryByText("Institutional Analysis Terminal")).not.toBeInTheDocument();
-    expect(screen.getByTestId("contract-insight-rail")).toBeInTheDocument();
-    expect(screen.queryByText("Market Structure", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Liquidity Map", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Structure Setups", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Risk Context", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Market Regime", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Liquidity Behavior", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Signal Strength Ranking", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Opportunity Map", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText("Market Structure")).toBeInTheDocument();
+    expect(screen.getByText("Liquidity Map")).toBeInTheDocument();
+    expect(screen.getByText("Structure Setups")).toBeInTheDocument();
+    expect(screen.getByText("Risk Context")).toBeInTheDocument();
+    expect(screen.getByText("Market Regime")).toBeInTheDocument();
+    expect(screen.getAllByText("Liquidity Behavior").length).toBeGreaterThan(0);
+    expect(screen.getByText("Signal Strength Ranking")).toBeInTheDocument();
+    expect(screen.getByText("Opportunity Map")).toBeInTheDocument();
     expect(screen.getAllByText("RANGING").length).toBeGreaterThan(0);
-    expect(screen.getByText("交易机会 / 风险")).toBeInTheDocument();
-    expect(screen.queryByText("Fake Breakout", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Absorption Zone", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Fake Breakout Risk", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("69,760 - 69,890", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("69,980 - 70,040", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText("Regime 78%")).toBeInTheDocument();
+    expect(screen.getByText("Absorption")).toBeInTheDocument();
+    expect(screen.getByText("Fake Breakout")).toBeInTheDocument();
+    expect(screen.getAllByText("Absorption Zone").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Fake Breakout Risk").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("69,760 - 69,890").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("69,980 - 70,040").length).toBeGreaterThan(0);
     expect(screen.queryByText("Entry Zone")).not.toBeInTheDocument();
     expect(screen.queryByText("Invalidation")).not.toBeInTheDocument();
+    expect(screen.getByText("Top Structures")).toBeInTheDocument();
+    expect(screen.getByText("当前 Regime")).toBeInTheDocument();
+    expect(screen.getByText("Desk Mode")).toBeInTheDocument();
+    expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("主力拉盘").length).toBeGreaterThan(0);
+    expect(screen.getByText(/多窗口主买一致/)).toBeInTheDocument();
+    expect(screen.getByText("Absorption continuation")).toBeInTheDocument();
+    expect(screen.getByText("HIGH CONF")).toBeInTheDocument();
+    expect(screen.getAllByText("当前风险").length).toBeGreaterThan(0);
     expect(screen.getByText("Whale Entity List")).toBeInTheDocument();
     expect(screen.getByText("Trajectory Timeline")).toBeInTheDocument();
     expect(screen.getByText("Stealth Curve (gamma)")).toBeInTheDocument();
@@ -2283,7 +2274,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("窗口总流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText("峰值窗口流量 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/总流量 = 主动买量 \+ 主动卖量/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("市场冲击等级").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("V3 评级").length).toBeGreaterThan(0);
     expect(screen.getByText("ACTIVE EVENTS (updated)")).toBeInTheDocument();
     expect(screen.getByText("CLOSED EVENTS (finalized)")).toBeInTheDocument();
     expect(screen.getAllByText(/已加载 \d+ 条/).length).toBeGreaterThan(0);
@@ -2301,14 +2292,15 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getAllByText("$337M").length).toBeGreaterThan(0);
     expect(screen.getAllByText((_, element) => hasPriceText(element?.textContent || "")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("0.12%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("87/100").length).toBeGreaterThan(0);
     expect(screen.getAllByText("S 81 / C 94").length).toBeGreaterThan(0);
     expect(screen.getAllByText("净买入 3,260 BTC").length).toBeGreaterThan(0);
     expect(screen.getAllByText("67.6%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("9.4x").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P99.9").length).toBeGreaterThan(0);
-    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("S / S");
-    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("SHOCK IMPACT EVENT");
-    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("9.40x · P99.9");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("V4.2 模型估算");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("RATING UNAVAILABLE");
+    expect(screen.getByTestId("raw-contract-whale-signals")).toHaveTextContent("baseline insufficient");
     expect(screen.getAllByText("+0.31%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("疑似强平 420 BTC / 8.7%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("+900 BTC / +1.20% OI上升").length).toBeGreaterThan(0);
@@ -2655,10 +2647,9 @@ describe("ContractWhaleMonitor", () => {
     render(<ContractWhaleMonitor />);
 
     await screen.findByText("主力合约监控");
-    await user.selectOptions(screen.getByLabelText("等级"), "critical");
     expect(screen.getByRole("option", { name: "大于 500（正负）" })).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("净方向"), "abs500");
-    const impactSelect = screen.getByLabelText("冲击等级");
+    const impactSelect = screen.getByLabelText("V3 评级");
     expect(impactSelect).toHaveDisplayValue("全部");
     await user.selectOptions(impactSelect, "A");
     expect(impactSelect).toHaveDisplayValue("A");
@@ -2667,7 +2658,6 @@ describe("ContractWhaleMonitor", () => {
       expect(fetchContractEvents).toHaveBeenLastCalledWith(
         expect.objectContaining({
           symbol: "BTC",
-          severity: "critical",
           net_direction: "abs500",
           impact_level: "A",
           range: "7d",
@@ -2683,16 +2673,22 @@ describe("ContractWhaleMonitor", () => {
     );
   });
 
-  it("does not render the removed dedicated setup and risk panels", async () => {
+  it("renders dedicated structure setups and risk context panels without execution wording", async () => {
     render(<ContractWhaleMonitor />);
 
-    await screen.findByTestId("contract-insight-rail");
-    expect(screen.queryByText("Structure Setups", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("结构机会", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("Risk Context", { exact: true })).not.toBeInTheDocument();
-    expect(screen.queryByText("No-Trade Zones", { exact: true })).not.toBeInTheDocument();
+    expect(await screen.findByText("Structure Setups")).toBeInTheDocument();
+    expect(screen.getByText("结构机会")).toBeInTheDocument();
+    expect(screen.getByText("Bullish bias")).toBeInTheDocument();
+    expect(screen.getByText("HIGH CONF")).toBeInTheDocument();
+    expect(screen.getByText(/跌破主力吸收参考位/)).toBeInTheDocument();
+    expect(screen.queryByText("立即做多")).not.toBeInTheDocument();
+    expect(screen.queryByText("立即做空")).not.toBeInTheDocument();
+
+    expect(screen.getByText("Risk Context")).toBeInTheDocument();
+    expect(screen.getByText("No-Trade Zones")).toBeInTheDocument();
     expect(screen.getAllByText("HIGH RISK").length).toBeGreaterThan(0);
-    expect(screen.getByText("交易机会 / 风险")).toBeInTheDocument();
+    expect(screen.getByText("当前存在较强假突破风险，交易参考需要让位于风险抑制。")).toBeInTheDocument();
+    expect(screen.getAllByText("69,900 - 70,040").length).toBeGreaterThan(0);
   });
 
   it("renders contract market event rows from the FinalEventStore projection", async () => {
@@ -2745,15 +2741,11 @@ describe("ContractWhaleMonitor", () => {
           normalizedScore: 0.88,
           normalizedStrength: "EXTREME",
           impactLevel: "A",
+          impactGrade: "A",
+          impactGradeState: "confirmed",
+          impactGradeVersion: "cwm_impact_v3_1",
           signalLevel: "L3",
           signalLabel: "HIGH IMPACT EVENT",
-          cohortImpactScore: 1.29,
-          cohortZScore: 1.29,
-          cohortPercentile: 90.5,
-          cohortNormalizedStrength: "LOW",
-          cohortImpactLevel: "C",
-          cohortSignalLevel: "L1",
-          cohortSignalLabel: "LOW IMPACT EVENT",
           signalType: "downside_absorption",
           direction: "sell",
           severity: "medium",
@@ -2813,11 +2805,6 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("L3 / A");
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("HIGH IMPACT EVENT");
     expect(screen.getByTestId("raw-contract-whale-signals-closed")).toHaveTextContent("2.14x · z 2.14 · P93");
-    await userEvent
-      .setup()
-      .click(screen.getByRole("button", { name: /查看主力合约信号详情 .*raw-contract-whale-signals-closed/ }));
-    expect(screen.getByTestId("contract-detail-body")).toHaveTextContent("页面相对等级");
-    expect(screen.getByTestId("contract-detail-body")).toHaveTextContent("L1 / C");
   });
 
   it("shows a sync lag warning when latest is newer than the historical event stream", async () => {
@@ -3231,7 +3218,8 @@ describe("ContractWhaleMonitor", () => {
     render(<ContractWhaleMonitor />);
 
     await screen.findByText("主力合约监控");
-    await user.click(screen.getAllByRole("button", { name: /查看主力合约信号详情 contract-whale-row raw-contract-whale-signals/ })[0]);
+    const detailButtons = await screen.findAllByRole("button", { name: /查看主力合约信号详情 contract-whale-row raw-contract-whale-signals/ });
+    await user.click(detailButtons[0]);
 
     const dialog = screen.getByRole("dialog", { name: "主力合约信号详情" });
     expect(dialog).toBeInTheDocument();
@@ -3315,7 +3303,7 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.queryByRole("dialog", { name: "主力合约信号详情" })).not.toBeInTheDocument();
   });
 
-  it("shows impact-level discord gate semantics for medium B events", async () => {
+  it("keeps confirmed V3 B events display-only in the Discord gate", async () => {
     const mediumBImpactSignal = {
       id: "medium-b-impact-row",
       sourceSignalId: "medium-b-impact-row",
@@ -3346,16 +3334,18 @@ describe("ContractWhaleMonitor", () => {
       dynamicMultiple: 1.87,
       percentileLevel: 86,
       impactLevel: "B",
+      impactGradeState: "confirmed",
+      impactGradeVersion: "cwm_impact_v3_1",
       signalLevel: "L2",
       signalLabel: "MEDIUM IMPACT EVENT",
       normalizedStrength: "MEDIUM",
       impactScore: 1.87,
       impactZScore: 1.98,
       dataQuality: 88,
-      discordEligible: true,
+      discordEligible: false,
       discordSent: false,
-      discordReason: "impact_level_gate",
-      discordWouldSend: true,
+      discordReason: "v3_grade_not_confirmed",
+      discordWouldSend: false,
       exchanges: [
         {
           exchange: "binance",
@@ -3415,13 +3405,13 @@ describe("ContractWhaleMonitor", () => {
 
     expect(screen.getByRole("dialog", { name: "主力合约信号详情" })).toBeInTheDocument();
     expect(screen.getByText("Discord Gate")).toBeInTheDocument();
-    expect(screen.getByText("信号等级")).toBeInTheDocument();
-    expect(screen.getAllByText("Medium").length).toBeGreaterThan(0);
-    expect(screen.getByText("市场冲击")).toBeInTheDocument();
+    expect(screen.getAllByText("V3 评级").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("B · confirmed").length).toBeGreaterThan(0);
+    expect(screen.getByText("评级证据")).toBeInTheDocument();
     expect(screen.getByText("B / L2")).toBeInTheDocument();
     expect(screen.getByText("推送原因")).toBeInTheDocument();
-    expect(screen.getByText("市场冲击 B")).toBeInTheDocument();
-    expect(screen.getByText("dry-run 会推送")).toBeInTheDocument();
+    expect(screen.getByText("V3 仅确认 A/S 推送")).toBeInTheDocument();
+    expect(screen.getByText("不会推送")).toBeInTheDocument();
   });
 
   it("keeps the panel visible and shows a light error when polling fails", async () => {

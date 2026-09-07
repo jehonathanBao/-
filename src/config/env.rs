@@ -175,13 +175,16 @@ impl AppConfig {
             telegram_chat_id: env::var("TELEGRAM_CHAT_ID").unwrap_or_default(),
             alert_dedup_window_ms: parse_i64("ALERT_DEDUP_WINDOW_MS", 30_000)?,
             alert_min_severity: parse_toxic_severity("ALERT_MIN_SEVERITY", ToxicSeverity::Alert),
-            alert_require_cross_venue: parse_bool("ALERT_REQUIRE_CROSS_VENUE", true),
+            // The deployed TOF view is Binance-only. Cross-venue confirmation
+            // remains available as an opt-in override, but must not suppress
+            // Binance-native VPIN/markout alerts by default.
+            alert_require_cross_venue: parse_bool("ALERT_REQUIRE_CROSS_VENUE", false),
             alert_require_markout: parse_bool("ALERT_REQUIRE_MARKOUT", true),
             alert_require_liquidity_drain: parse_bool("ALERT_REQUIRE_LIQUIDITY_DRAIN", false),
             sqlite_enabled: parse_bool("SQLITE_ENABLED", true),
             sqlite_path: env::var("SQLITE_PATH")
                 .unwrap_or_else(|_| ".runtime/btc-toxic-flow.sqlite".to_string()),
-            snapshot_persist_interval_ms: parse_u64("SNAPSHOT_PERSIST_INTERVAL_MS", 1000)?,
+            snapshot_persist_interval_ms: parse_u64("SNAPSHOT_PERSIST_INTERVAL_MS", 5000)?,
             raw_snapshot_enabled: parse_bool("RAW_SNAPSHOT_ENABLED", false),
             raw_snapshot_sample_rate_ms: parse_u64("RAW_SNAPSHOT_SAMPLE_RATE_MS", 1000)?,
             replay_enabled: parse_bool("REPLAY_ENABLED", true),

@@ -183,10 +183,7 @@ pub const MIGRATIONS: &[&str] = &[
       buy_notional_usd REAL NOT NULL,
       sell_notional_usd REAL NOT NULL,
       trade_count INTEGER NOT NULL,
-      buy_trade_count INTEGER NOT NULL DEFAULT 0,
-      sell_trade_count INTEGER NOT NULL DEFAULT 0,
       max_single_trade_btc REAL,
-      max_single_trade_share REAL NOT NULL DEFAULT 0,
       vwap REAL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
       PRIMARY KEY (ts_bucket, exchange, symbol)
@@ -259,10 +256,6 @@ pub const MIGRATIONS: &[&str] = &[
       discord_eligible INTEGER NOT NULL DEFAULT 0,
       discord_sent INTEGER NOT NULL DEFAULT 0,
       discord_sent_at INTEGER,
-      retention_class TEXT NOT NULL DEFAULT 'ordinary',
-      retain_until INTEGER NOT NULL DEFAULT 0,
-      retention_reason TEXT NOT NULL DEFAULT '',
-      retention_version TEXT NOT NULL DEFAULT 'v1',
       payload_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
@@ -345,10 +338,6 @@ pub const MIGRATIONS: &[&str] = &[
       discord_sent_at INTEGER,
       discord_reason TEXT NOT NULL,
       is_permanent INTEGER NOT NULL DEFAULT 0,
-      retention_class TEXT NOT NULL DEFAULT 'ordinary',
-      retain_until INTEGER NOT NULL DEFAULT 0,
-      retention_reason TEXT NOT NULL DEFAULT '',
-      retention_version TEXT NOT NULL DEFAULT 'v1',
       payload_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
@@ -507,5 +496,322 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_hourly_delta_discord_outbox_due
       ON hourly_delta_discord_outbox(status, next_attempt_at, created_at);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_event_impact_baselines (
+      symbol TEXT NOT NULL,
+      window_sec INTEGER NOT NULL,
+      threshold_profile TEXT NOT NULL,
+      computed_at_ms INTEGER NOT NULL,
+      lookback_from_ms INTEGER NOT NULL,
+      lookback_to_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL,
+      median_log_volume REAL NOT NULL,
+      mad_log_volume REAL NOT NULL,
+      sorted_samples_json TEXT NOT NULL,
+      PRIMARY KEY(symbol, window_sec, threshold_profile)
+    );
+    CREATE TABLE IF NOT EXISTS contract_event_impact_baseline_progress (
+      symbol TEXT NOT NULL,
+      window_sec INTEGER NOT NULL,
+      threshold_profile TEXT NOT NULL,
+      sample_count INTEGER NOT NULL,
+      required_samples INTEGER NOT NULL,
+      lookback_from_ms INTEGER NOT NULL,
+      lookback_to_ms INTEGER NOT NULL,
+      ready INTEGER NOT NULL DEFAULT 0,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(symbol, window_sec, threshold_profile)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_baseline_progress_ready
+      ON contract_event_impact_baseline_progress(ready, updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS contract_event_impact_grades (
+      event_id TEXT NOT NULL,
+      grade_version TEXT NOT NULL,
+      episode_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      grade TEXT NOT NULL CHECK(grade IN ('C','B','A','S')),
+      state TEXT NOT NULL CHECK(state IN ('evidence_insufficient','provisional','confirmed')),
+      reason_codes_json TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      assessed_at_ms INTEGER NOT NULL,
+      discord_sent_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(event_id, grade_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_episode_version
+      ON contract_event_impact_grades(episode_id, grade_version);
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_grades_symbol_assessed
+      ON contract_event_impact_grades(symbol, assessed_at_ms DESC);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_event_impact_aliases (
+      alias_id TEXT NOT NULL,
+      grade_version TEXT NOT NULL,
+      episode_id TEXT NOT NULL,
+      projection_event_id TEXT,
+      source_event_id TEXT,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(alias_id, grade_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_aliases_episode
+      ON contract_event_impact_aliases(episode_id, grade_version);
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_aliases_projection
+      ON contract_event_impact_aliases(projection_event_id, grade_version);
+    INSERT OR IGNORE INTO contract_event_impact_aliases
+      (alias_id, grade_version, episode_id, projection_event_id, source_event_id, updated_at_ms)
+    SELECT event_id, grade_version, episode_id, NULL, event_id, updated_at_ms
+      FROM contract_event_impact_grades;
+    "#,
+    // An aggregated shock episode can legitimately own several source
+    // lifecycle event rows. The event/version primary key remains unique;
+    // episode_id is a grouping key, not a uniqueness constraint.
+    r#"
+    DROP INDEX IF EXISTS idx_contract_event_impact_episode_version;
+    CREATE INDEX IF NOT EXISTS idx_contract_event_impact_episode_version
+      ON contract_event_impact_grades(episode_id, grade_version);
+    "#,
+    // Contract whale signals are hot only while they are needed for live
+    // detection and recent dashboard reads. Retention moves old rows into
+    // these same-shape cold stores; the read view is created after legacy
+    // columns are upgraded by SqliteStore::migrate.
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_signal_archive AS
+      SELECT * FROM contract_whale_signals WHERE 0;
+    CREATE TABLE IF NOT EXISTS contract_whale_signal_permanent AS
+      SELECT * FROM contract_whale_signals WHERE 0;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_whale_signal_archive_signal_id
+      ON contract_whale_signal_archive(signal_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_whale_signal_permanent_signal_id
+      ON contract_whale_signal_permanent(signal_id);
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signal_archive_symbol_ts
+      ON contract_whale_signal_archive(symbol, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_contract_whale_signal_permanent_symbol_ts
+      ON contract_whale_signal_permanent(symbol, ts DESC);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS binance_orderflow_delta_cache (
+      symbol TEXT NOT NULL,
+      interval TEXT NOT NULL,
+      candle_time INTEGER NOT NULL,
+      close_time INTEGER NOT NULL,
+      volume_base REAL NOT NULL,
+      volume_quote REAL NOT NULL,
+      buy_base REAL NOT NULL,
+      sell_base REAL NOT NULL,
+      buy_quote REAL NOT NULL,
+      sell_quote REAL NOT NULL,
+      delta_base REAL NOT NULL,
+      delta_quote REAL NOT NULL,
+      delta_pct REAL NOT NULL,
+      trade_count INTEGER NOT NULL,
+      computed_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(symbol, interval, candle_time)
+    );
+    CREATE INDEX IF NOT EXISTS idx_binance_orderflow_delta_cache_computed
+      ON binance_orderflow_delta_cache(computed_at_ms);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_behavior_horizon_outcomes (
+      event_id TEXT NOT NULL,
+      episode_id TEXT NOT NULL,
+      signal_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      event_ts INTEGER NOT NULL,
+      horizon_sec INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      behavior TEXT NOT NULL,
+      market_regime TEXT NOT NULL,
+      intensity_bucket TEXT NOT NULL,
+      entry_price REAL,
+      end_price REAL,
+      signed_markout_bps REAL,
+      mfe_bps REAL,
+      mae_bps REAL,
+      follow_through INTEGER,
+      structure_break INTEGER,
+      state TEXT NOT NULL,
+      data_quality INTEGER NOT NULL,
+      evaluated_at INTEGER NOT NULL,
+      outcome_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY(event_id, outcome_version, horizon_sec)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cwm_v4_outcomes_symbol_ts
+      ON contract_whale_behavior_horizon_outcomes(symbol, event_ts DESC, horizon_sec);
+    CREATE INDEX IF NOT EXISTS idx_cwm_v4_outcomes_version_group
+      ON contract_whale_behavior_horizon_outcomes(outcome_version, symbol, behavior, market_regime, intensity_bucket, event_ts);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_whale_impact_forecasts (
+      event_id TEXT NOT NULL,
+      forecast_version TEXT NOT NULL,
+      episode_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      event_ts INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      impact_grade TEXT NOT NULL,
+      impact_score REAL NOT NULL,
+      dominant_horizon TEXT NOT NULL,
+      exact_sample_count INTEGER NOT NULL,
+      effective_sample_count INTEGER NOT NULL,
+      maturity_state TEXT NOT NULL,
+      training_cutoff_ts INTEGER NOT NULL,
+      computed_at_ms INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY(event_id, forecast_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cwm_v4_forecasts_symbol_ts
+      ON contract_whale_impact_forecasts(symbol, event_ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_cwm_v4_forecasts_event
+      ON contract_whale_impact_forecasts(event_id, forecast_version);
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS contract_reference_prices_1m (
+      ts_bucket INTEGER NOT NULL,
+      exchange TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      price_source TEXT NOT NULL,
+      price REAL NOT NULL,
+      premium_bps REAL,
+      event_time_ms INTEGER NOT NULL,
+      received_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(ts_bucket, exchange, symbol, price_source)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_reference_prices_symbol_source_ts
+      ON contract_reference_prices_1m(symbol, price_source, ts_bucket ASC);
+
+    CREATE TABLE IF NOT EXISTS contract_oi_1m (
+      ts_bucket INTEGER NOT NULL,
+      exchange TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      oi_btc REAL NOT NULL,
+      oi_notional_usd REAL,
+      evidence_degraded_reason TEXT,
+      PRIMARY KEY(ts_bucket, exchange, symbol)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_oi_1m_symbol_ts
+      ON contract_oi_1m(symbol, ts_bucket ASC);
+
+    CREATE TABLE IF NOT EXISTS contract_funding_1m (
+      ts_bucket INTEGER NOT NULL,
+      exchange TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      funding_rate REAL NOT NULL,
+      PRIMARY KEY(ts_bucket, exchange, symbol)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contract_funding_1m_symbol_ts
+      ON contract_funding_1m(symbol, ts_bucket ASC);
+
+    CREATE TABLE IF NOT EXISTS contract_whale_v4_backfill_checkpoint (
+      job_key TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      last_event_ts INTEGER,
+      last_event_id TEXT,
+      processed_count INTEGER NOT NULL DEFAULT 0,
+      forecast_count INTEGER NOT NULL DEFAULT 0,
+      outcome_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      degraded_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      updated_at_ms INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS contract_whale_impact_forecast_audit (
+      event_id TEXT NOT NULL,
+      forecast_version TEXT NOT NULL,
+      archived_at_ms INTEGER NOT NULL,
+      archive_reason TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY(event_id, forecast_version, archived_at_ms)
+    );
+    CREATE TABLE IF NOT EXISTS contract_whale_v4_decision_states (
+      event_id TEXT NOT NULL,
+      forecast_version TEXT NOT NULL,
+      state TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      decided_at_ms INTEGER,
+      PRIMARY KEY(event_id, forecast_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cwm_v4_decision_states_updated
+      ON contract_whale_v4_decision_states(updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS contract_whale_v42_model_priors (
+      model_version TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      horizon_sec INTEGER NOT NULL,
+      market_regime TEXT NOT NULL,
+      prior_strength REAL NOT NULL,
+      payload_json TEXT NOT NULL,
+      training_cutoff_ts INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(model_version, symbol, horizon_sec, market_regime)
+    );
+    CREATE TABLE IF NOT EXISTS contract_whale_v42_cohort_stats (
+      model_version TEXT NOT NULL,
+      cohort_key TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      behavior TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      market_regime TEXT NOT NULL,
+      horizon_sec INTEGER NOT NULL,
+      raw_sample_count INTEGER NOT NULL,
+      effective_sample_count REAL NOT NULL,
+      payload_json TEXT NOT NULL,
+      training_cutoff_ts INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(model_version, cohort_key, horizon_sec)
+    );
+    CREATE TABLE IF NOT EXISTS contract_whale_v42_calibration_metrics (
+      model_version TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      horizon_sec INTEGER NOT NULL,
+      maturity_level TEXT NOT NULL,
+      window_start_ts INTEGER NOT NULL,
+      window_end_ts INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(model_version, symbol, horizon_sec, maturity_level, window_start_ts, window_end_ts)
+    );
+    CREATE TABLE IF NOT EXISTS contract_whale_v42_gate_states (
+      gate_version TEXT NOT NULL,
+      cohort_key TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      horizon TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      state TEXT NOT NULL,
+      raw_sample_count INTEGER NOT NULL DEFAULT 0,
+      effective_sample_count REAL NOT NULL DEFAULT 0,
+      unique_episode_count INTEGER NOT NULL DEFAULT 0,
+      accuracy REAL NOT NULL DEFAULT 0,
+      coverage REAL NOT NULL DEFAULT 0,
+      quality_mean REAL NOT NULL DEFAULT 0,
+      consecutive_passes INTEGER NOT NULL DEFAULT 0,
+      last_evaluated_at_ms INTEGER NOT NULL,
+      opened_at_ms INTEGER,
+      reason TEXT NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY(gate_version, cohort_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cwm_v42_gate_states_symbol
+      ON contract_whale_v42_gate_states(symbol, horizon, direction, updated_at_ms DESC);
+    CREATE TABLE IF NOT EXISTS contract_whale_v42_gate_evaluations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gate_version TEXT NOT NULL,
+      cohort_key TEXT NOT NULL,
+      evaluated_at_ms INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      allowed INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      raw_sample_count INTEGER NOT NULL,
+      effective_sample_count REAL NOT NULL,
+      accuracy REAL NOT NULL,
+      coverage REAL NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cwm_v42_gate_evaluations_cohort
+      ON contract_whale_v42_gate_evaluations(cohort_key, evaluated_at_ms DESC);
     "#,
 ];

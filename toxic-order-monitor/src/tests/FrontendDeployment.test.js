@@ -94,8 +94,7 @@ describe("frontend production deployment", () => {
 
   it("keeps the frontend container on loopback-only upstream ports with health supervision", () => {
     const compose = readFile("docker-compose.yml");
-    expect(compose).toContain('- "${DASHBOARD_BIND_HOST:-127.0.0.1}:5174:5173"');
-    expect(compose).not.toContain(':5173:5173"');
+    expect(compose).toContain('- "${DASHBOARD_BIND_HOST:-127.0.0.1}:${DASHBOARD_PORT:-5173}:5173"');
     expect(compose).toContain("restart: unless-stopped");
     expect(compose).toContain("healthcheck:");
     expect(compose).toContain("http://127.0.0.1:5173/");
@@ -106,7 +105,6 @@ describe("frontend production deployment", () => {
     expect(fs.existsSync(ingressTemplatePath)).toBe(true);
     const ingressTemplate = fs.readFileSync(ingressTemplatePath, "utf8");
     expect(ingressTemplate).toContain("listen 80;");
-    expect(ingressTemplate).toContain("listen 5173;");
     expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:8000");
     expect(ingressTemplate).toContain("location /api/");
     expect(ingressTemplate).toContain("location ^~ /api/system/");
@@ -118,7 +116,7 @@ describe("frontend production deployment", () => {
     expect(ingressTemplate).toContain("if ($request_method = POST)");
     expect(ingressTemplate).toContain("return 403;");
     expect(ingressTemplate).toContain("location /ws/");
-    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5174");
+    expect(ingressTemplate).toContain("proxy_pass http://127.0.0.1:5173");
     expect(ingressTemplate).toContain("proxy_buffering off;");
     expect(ingressTemplate).toContain("proxy_request_buffering off;");
     expect(ingressTemplate).toContain("proxy_max_temp_file_size 0;");

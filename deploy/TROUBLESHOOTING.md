@@ -175,7 +175,7 @@ docker-compose up -d frontend
 
 ### 问题8: 端口绑定问题
 
-**症状**: 5173/5174端口未被监听
+**症状**: 5173端口未被监听
 
 **解决方案**:
 
@@ -186,8 +186,8 @@ netstat -tlnp | grep 5173
 ss -tlnp | grep 5173
 
 # 检查 docker-compose.yml 中的端口映射
-# 容器仍只绑定宿主机本地: "127.0.0.1:5174:5173"
-# 公网5173由宿主机 nginx 统一接入，再反代到 127.0.0.1:5174 的前端容器
+# 容器应绑定宿主机本地: "127.0.0.1:5173:5173"
+# 公网入口由宿主机 nginx 统一接入，再反代到 127.0.0.1:5173 的前端容器
 
 # 重新启动
 docker-compose down
@@ -244,7 +244,7 @@ curl -v http://localhost:5173/dashboard
 curl -o /dev/null -s -w "%{http_code}\n" http://localhost:5173/dashboard
 
 # 直接检查前端上游
-curl -v http://127.0.0.1:5174/dashboard
+curl -v http://127.0.0.1:5173/dashboard
 ```
 
 ### 步骤5: 检查网络和防火墙
@@ -303,9 +303,9 @@ docker-compose logs -f
 
 2. **端口监听检查**:
    ```bash
-   netstat -tlnp | grep -E "5173|5174"
+   netstat -tlnp | grep -E "5173"
    ```
-   应该看到宿主机 5173 和容器上游 5174 在监听。
+   应该看到宿主机 5173 在监听。
 
 3. **本地访问检查**:
    ```bash

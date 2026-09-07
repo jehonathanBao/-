@@ -24,7 +24,8 @@ use crate::{
             load_market_context, load_quality_baselines, ContractWhaleResponseRuntime,
         },
         discord_notification_routes::{
-            maybe_auto_push_discord, preferred_discord_alert_family, DiscordNotificationRequest,
+            build_tof_anomaly_alert_request, maybe_auto_push_discord,
+            preferred_discord_alert_family, DiscordNotificationRequest,
         },
         toxic_signal_inbox_routes::{
             build_recent, latest_cwm_signal_for_state, observed_tof_snapshot_for_state,
@@ -38,26 +39,46 @@ use crate::{
     config::AppConfig,
     connectors::manager::ConnectorManager,
     contract_whale_monitor::{
-        aggregator::aggregate_1s_buckets,
+        aggregator::{aggregate_1s_buckets, aggregate_liquidation_1s_buckets},
         collector_binance, collector_okx,
         config::contract_whale_runtime_config,
+        discord_gate::impact_grade_v3_discord_eligible,
         discord_notifier::{
-            evaluate_contract_whale_discord_gate, global_contract_whale_discord_cooldown_store,
-            notify_contract_whale_discord, ContractWhaleDiscordSettings,
+            evaluate_contract_whale_discord_gate, evaluate_contract_whale_discord_v3_gate,
+            global_contract_whale_discord_cooldown_store, notify_contract_whale_discord,
+            notify_contract_whale_discord_v3, ContractWhaleDiscordGateDecision,
+            ContractWhaleDiscordSettings,
         },
         emission::{emission_key, fingerprint, should_emit},
         hourly_delta_alert::{HourlyDeltaAlertRuntime, HourlyDeltaRuntimeDiagnostics},
+        impact_forecast::{
+            build_forecast, evaluate_horizon_outcomes, evaluate_trade_plan_state,
+            ContractWhaleV4DecisionState, CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+        },
+        impact_v4_2::{
+            build_hybrid_forecast, evaluate_v42_outcomes,
+            CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION,
+        },
+        impact_v4_2_gate::{evaluate_signal_gate, GateDecision},
+        impact_grade::{
+            apply_impact_assessment_to_signal, apply_unavailable_impact_assessment_to_signal,
+        },
         log_events as cwm_log_events,
         outcome_calibration::evaluate_contract_whale_signal_outcome,
         persistence::{
+            backfill_contract_whale_impact_grades_nonblocking,
             flush_contract_flow_buckets_nonblocking,
+            materialize_contract_whale_impact_grades_nonblocking,
             persist_contract_funding_snapshots_nonblocking,
-            persist_contract_oi_snapshots_nonblocking, persist_contract_whale_signals_nonblocking,
+            persist_contract_oi_snapshots_nonblocking,
+            persist_contract_reference_prices_nonblocking,
+            persist_contract_whale_signals_nonblocking,
             spawn_contract_whale_retention_task, ContractWhalePersistenceOutcome,
         },
         types::{
-            ContractExchange, ContractFundingSnapshot, ContractOiSnapshot, ContractTrade,
-            ContractTradeSide, ContractWhaleEmissionFingerprint, ContractWhaleMarketType,
+            ContractExchange, ContractFundingSnapshot, ContractLiquidationOrder,
+            ContractOiSnapshot, ContractReferencePriceSnapshot, ContractTrade, ContractTradeSide,
+            ContractWhaleEmissionFingerprint, ContractWhaleMarketType,
         },
         LOG_PREFIX as CWM_LOG_PREFIX, LOG_TARGET as CWM_LOG_TARGET,
     },
@@ -68,6 +89,7 @@ use crate::{
     runtime::scan_log::{ScanLogItem, ScanLogStore},
     spot_whale_monitor::service::SpotWhaleService,
     storage::{
+        contract_event_grade_repo::ContractEventGradeRepo,
         contract_whale_repo::{
             ContractWhaleDiscordOutboxStatus, ContractWhaleRepo, ContractWhaleSignalQuery,
         },
@@ -166,11 +188,14 @@ struct AppStateInner {
     cwm_hourly_delta_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     cwm_outcome_calibration_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_market_context_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    cwm_liquidation_collector_tasks: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
     cwm_producer_running: AtomicBool,
     cwm_producer_last_started_at: AtomicI64,
     cwm_producer_last_completed_at: AtomicI64,
     cwm_producer_last_duration_ms: AtomicI64,
     cwm_producer_overlap_skipped: AtomicU64,
+    cwm_impact_backfill_started: AtomicBool,
+    cwm_impact_maintenance_task: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     cwm_oi_resolver_diagnostics: Arc<RwLock<ContractWhaleOiResolverDiagnostics>>,
     cwm_emission_watermarks:
         Arc<RwLock<std::collections::BTreeMap<String, ContractWhaleEmissionFingerprint>>>,
@@ -253,7 +278,10 @@ pub struct StopMonitoringOutcome {
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let booted_at_ms = crate::normalizers::trade::now_ms();
-        let bus = MarketDataBus::new(4096);
+        // A larger bounded buffer gives synchronous persistence and short
+        // upstream reconnects enough room without allowing unbounded memory
+        // growth. Consumer lag is exposed by the runtime health endpoints.
+        let bus = MarketDataBus::new(16_384);
         let regime_manager = Arc::new(RegimeThresholdManager::from_runtime_config());
         let market_regime_service = MarketRegimeService::new(
             regime_manager.clone(),
@@ -426,9 +454,7 @@ impl AppState {
         let cwm_retention = contract_whale_runtime_config().retention;
         spawn_contract_whale_retention_task(
             contract_whale_store.clone(),
-            cwm_retention.flow_1s_days,
-            cwm_retention.signals_days,
-            cwm_retention.impact_b_days,
+            cwm_retention,
             storage_health.clone(),
         );
         let cwm_emission_watermarks = contract_whale_store
@@ -469,11 +495,14 @@ impl AppState {
                 cwm_hourly_delta_tasks: Arc::new(RwLock::new(Vec::new())),
                 cwm_outcome_calibration_task: Arc::new(RwLock::new(None)),
                 cwm_market_context_task: Arc::new(RwLock::new(None)),
+                cwm_liquidation_collector_tasks: Arc::new(RwLock::new(Vec::new())),
                 cwm_producer_running: AtomicBool::new(false),
                 cwm_producer_last_started_at: AtomicI64::new(0),
                 cwm_producer_last_completed_at: AtomicI64::new(0),
                 cwm_producer_last_duration_ms: AtomicI64::new(0),
                 cwm_producer_overlap_skipped: AtomicU64::new(0),
+                cwm_impact_backfill_started: AtomicBool::new(false),
+                cwm_impact_maintenance_task: Arc::new(RwLock::new(None)),
                 cwm_oi_resolver_diagnostics: Arc::new(RwLock::new(
                     ContractWhaleOiResolverDiagnostics::default(),
                 )),
@@ -583,6 +612,8 @@ impl AppState {
         self.start_market_regime_loop();
         self.start_discord_auto_push_loop();
         self.start_contract_whale_market_context_loop();
+        self.start_contract_whale_liquidation_collectors();
+        self.start_contract_whale_impact_backfill_once();
         self.start_contract_whale_auto_push_loop();
         self.start_contract_whale_discord_outbox_loop();
         self.start_hourly_delta_alert_runtime();
@@ -611,6 +642,62 @@ impl AppState {
             runtime_modified: true,
             start_state: RuntimeStartState::Started,
             result: RuntimeStartResult::Started,
+        }
+    }
+
+    fn start_contract_whale_impact_backfill_once(&self) {
+        let runtime_config = contract_whale_runtime_config();
+        if !runtime_config.impact_grade_v3.enabled
+            || self
+                .inner
+                .cwm_impact_backfill_started
+                .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(store) = self.contract_whale_store() else {
+            return;
+        };
+        let retention_days = runtime_config.retention.signals_days.max(1);
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let now_ms = crate::normalizers::trade::now_ms();
+                let from_ts = now_ms.saturating_sub(retention_days * 24 * 60 * 60 * 1_000);
+                match backfill_contract_whale_impact_grades_nonblocking(
+                    Some(store.clone()),
+                    from_ts,
+                    now_ms,
+                    now_ms,
+                )
+                .await
+                {
+                    Ok((signal_count, assessment_count)) => tracing::info!(
+                        target: CWM_LOG_TARGET,
+                        event = "cwm.impact_grade.backfill",
+                        signal_count,
+                        assessment_count,
+                        "{} V3.2 historical impact-grade backfill completed",
+                        CWM_LOG_PREFIX
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        event = cwm_log_events::ERROR,
+                        error = %error,
+                        "{} V3.2 historical impact-grade backfill failed",
+                        CWM_LOG_PREFIX
+                    ),
+                }
+            }
+        });
+        *self.inner.cwm_impact_maintenance_task.write() = Some(handle);
+    }
+
+    fn stop_contract_whale_impact_maintenance_loop(&self) {
+        if let Some(handle) = self.inner.cwm_impact_maintenance_task.write().take() {
+            handle.abort();
         }
     }
 
@@ -659,6 +746,7 @@ impl AppState {
 
         self.inner.runtime_started.store(false, Ordering::SeqCst);
         self.inner.connector_manager.stop_all().await;
+        self.stop_contract_whale_liquidation_collectors();
         self.inner.binance_alt_contract_service.stop();
         self.inner.spot_whale_service.stop();
         self.inner.snapshot_service.stop();
@@ -667,6 +755,7 @@ impl AppState {
         self.stop_hourly_delta_alert_runtime();
         self.stop_contract_whale_outcome_calibration_loop();
         self.stop_contract_whale_market_context_loop();
+        self.stop_contract_whale_impact_maintenance_loop();
         self.stop_discord_auto_push_loop();
         self.stop_market_regime_loop();
         self.inner.alert_service.stop();
@@ -864,6 +953,61 @@ impl AppState {
         *self.inner.cwm_auto_push_task.write() = Some(handle);
     }
 
+    /// Start the Binance force-order streams and persist one-second
+    /// liquidation buckets.  This closes the former "defined_not_started"
+    /// gap where liquidation evidence was always empty in V3 assessments.
+    fn start_contract_whale_liquidation_collectors(&self) {
+        if !self.config().contract_whale_monitor.enabled
+            || self.contract_whale_store().is_none()
+            || !contract_whale_runtime_config().impact_grade_v3.enabled
+            || !self.inner.cwm_liquidation_collector_tasks.read().is_empty()
+        {
+            return;
+        }
+        let Some(store) = self.contract_whale_store() else {
+            return;
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ContractLiquidationOrder>(2048);
+        let mut tasks = Vec::new();
+        for symbol in ["BTC", "ETH"] {
+            let sender = tx.clone();
+            tasks.push(tokio::spawn(async move {
+                collector_binance::run_binance_force_order_collector_for_symbol(symbol, sender)
+                    .await;
+            }));
+        }
+        drop(tx);
+        tasks.push(tokio::spawn(async move {
+            let mut pending = Vec::with_capacity(128);
+            while let Some(first) = rx.recv().await {
+                pending.push(first);
+                while let Ok(Some(next)) = tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    rx.recv(),
+                )
+                .await
+                {
+                    pending.push(next);
+                    if pending.len() >= 512 { break; }
+                }
+                let buckets = aggregate_liquidation_1s_buckets(&pending);
+                if let Err(error) = store.upsert_contract_liquidation_buckets(&buckets) {
+                    tracing::warn!(target: CWM_LOG_TARGET, error = %error, "{} liquidation bucket persistence failed", CWM_LOG_PREFIX);
+                }
+                pending.clear();
+            }
+        }));
+        *self.inner.cwm_liquidation_collector_tasks.write() = tasks;
+        tracing::info!(target: CWM_LOG_TARGET, event = cwm_log_events::RUNTIME_STARTED, "{} Binance BTC/ETH forceOrder collectors started", CWM_LOG_PREFIX);
+    }
+
+    fn stop_contract_whale_liquidation_collectors(&self) {
+        let mut tasks = self.inner.cwm_liquidation_collector_tasks.write();
+        for task in tasks.drain(..) {
+            task.abort();
+        }
+    }
+
     fn stop_contract_whale_auto_push_loop(&self) {
         if let Some(handle) = self.inner.cwm_auto_push_task.write().take() {
             handle.abort();
@@ -981,9 +1125,110 @@ impl AppState {
         };
         let settings =
             ContractWhaleDiscordSettings::from_env(self.config().contract_whale_monitor.dry_run);
-        for item in claimed {
-            let outcome =
-                notify_contract_whale_discord(&settings, &item.signal, Some(store.clone())).await;
+        let grade_config = contract_whale_runtime_config().impact_grade_v3;
+        for mut item in claimed {
+            let grade_repo = ContractEventGradeRepo::new(store.clone());
+            let grade_version = grade_config.grade_version.clone();
+            let sent_grade_version = grade_version.clone();
+            let assessment_repo = grade_repo.clone();
+            let signal_for_lookup = item.signal.clone();
+            let assessment = tokio::task::spawn_blocking(move || {
+                assessment_repo.get_assessment_for_signal(&signal_for_lookup, &grade_version)
+            })
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten();
+            let v3_delivery_enabled = grade_config.enabled && !grade_config.shadow_mode;
+            let sent_episode_id = assessment
+                .as_ref()
+                .map(|assessment| assessment.episode_id.clone());
+            let duplicate_grade = assessment.as_ref().is_some_and(|assessment| {
+                impact_grade_v3_discord_eligible(assessment)
+                    && grade_repo
+                        .episode_alert_already_sent(
+                            &assessment.episode_id,
+                            &assessment.grade_version,
+                        )
+                        .unwrap_or(false)
+            });
+            if duplicate_grade {
+                let finish_store = store.clone();
+                let signal_id = item.signal_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    finish_store.finish_contract_whale_discord_outbox(
+                        &signal_id,
+                        ContractWhaleDiscordOutboxStatus::Skipped,
+                        None,
+                        None,
+                        Some("confirmed_impact_episode_already_sent"),
+                    )
+                })
+                .await;
+                continue;
+            }
+            if let Some(assessment) = assessment.as_ref() {
+                apply_impact_assessment_to_signal(&mut item.signal, assessment);
+            }
+            let outcome = if v3_delivery_enabled {
+                if assessment
+                    .as_ref()
+                    .is_some_and(impact_grade_v3_discord_eligible)
+                {
+                    notify_contract_whale_discord_v3(
+                        &settings,
+                        &item.signal,
+                        assessment.as_ref().expect("assessment checked above"),
+                        Some(store.clone()),
+                        global_contract_whale_discord_cooldown_store(),
+                    )
+                    .await
+                } else {
+                    let finish_store = store.clone();
+                    let signal_id = item.signal_id.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        finish_store.finish_contract_whale_discord_outbox(
+                            &signal_id,
+                            ContractWhaleDiscordOutboxStatus::Skipped,
+                            None,
+                            None,
+                            Some("v3_grade_not_confirmed"),
+                        )
+                    })
+                    .await;
+                    continue;
+                }
+            } else {
+                let base = evaluate_contract_whale_discord_gate(
+                    &settings,
+                    &item.signal,
+                    global_contract_whale_discord_cooldown_store(),
+                    now,
+                );
+                let decision = self.merge_v42_gate_decision(
+                    &item.signal,
+                    base,
+                    Some(&store),
+                    now,
+                );
+                if !decision.allowed {
+                    let finish_store = store.clone();
+                    let signal_id = item.signal_id.clone();
+                    let reason = format!("v42_gate_{}", decision.reason);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        finish_store.finish_contract_whale_discord_outbox(
+                            &signal_id,
+                            ContractWhaleDiscordOutboxStatus::Skipped,
+                            None,
+                            None,
+                            Some(&reason),
+                        )
+                    })
+                    .await;
+                    continue;
+                }
+                notify_contract_whale_discord(&settings, &item.signal, Some(store.clone())).await
+            };
             let (status, next_attempt_at, sent_at, last_error) = if outcome.sent {
                 (
                     ContractWhaleDiscordOutboxStatus::Sent,
@@ -1036,6 +1281,20 @@ impl AppState {
                     CWM_LOG_PREFIX
                 );
             }
+            if outcome.sent && sent_episode_id.is_some() {
+                let marker_store = store.clone();
+                let sent_episode_id = sent_episode_id.expect("episode id checked above");
+                let _ = tokio::task::spawn_blocking(move || {
+                    ContractEventGradeRepo::new(marker_store).mark_episode_alert_sent(
+                        &sent_episode_id,
+                        &sent_grade_version,
+                        outcome
+                            .sent_at_ms
+                            .unwrap_or_else(crate::normalizers::trade::now_ms),
+                    )
+                })
+                .await;
+            }
         }
     }
 
@@ -1049,7 +1308,7 @@ impl AppState {
         }
         let state = self.clone();
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
@@ -1073,38 +1332,213 @@ impl AppState {
         };
         let now = crate::normalizers::trade::now_ms();
         let evaluation_store = store.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let signals =
-                evaluation_store.query_contract_whale_signals(&ContractWhaleSignalQuery {
-                    from_ts: Some(now.saturating_sub(24 * 60 * 60 * 1_000)),
-                    to_ts: Some(now.saturating_sub(30_000)),
-                    limit: 500,
-                    ..ContractWhaleSignalQuery::default()
-                })?;
-            let mut outcomes = Vec::new();
-            for signal in signals {
-                let to_ts = now.min(signal.ts.saturating_add(300_000));
-                let buckets = evaluation_store.list_contract_flow_buckets_between(
-                    &signal.symbol,
-                    signal.ts,
-                    to_ts,
-                )?;
-                if let Some(outcome) =
-                    evaluate_contract_whale_signal_outcome(&signal, &buckets, now)
-                {
-                    outcomes.push(outcome);
+        let impact_grade_config = contract_whale_runtime_config().impact_grade_v3;
+        let result =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize, usize, usize, usize)> {
+                let mut signals =
+                    evaluation_store.query_contract_whale_signals(&ContractWhaleSignalQuery {
+                        from_ts: Some(now.saturating_sub(24 * 60 * 60 * 1_000)),
+                        to_ts: Some(now.saturating_sub(30_000)),
+                        limit: 500,
+                        ..ContractWhaleSignalQuery::default()
+                    })?;
+                if impact_grade_config.enabled {
+                    let grade_repo = ContractEventGradeRepo::new(evaluation_store.clone());
+                    for signal in &mut signals {
+                        match grade_repo
+                            .get_assessment_for_signal(signal, &impact_grade_config.grade_version)?
+                        {
+                            Some(assessment) => {
+                                apply_impact_assessment_to_signal(signal, &assessment)
+                            }
+                            None => apply_unavailable_impact_assessment_to_signal(
+                                signal,
+                                &impact_grade_config.grade_version,
+                                "v3_assessment_unavailable",
+                            ),
+                        }
+                    }
                 }
-            }
-            evaluation_store.upsert_contract_whale_signal_outcomes(&outcomes)
-        })
-        .await;
+                let mut outcomes = Vec::new();
+                for signal in signals {
+                    let to_ts = now.min(signal.ts.saturating_add(300_000));
+                    let buckets = evaluation_store.list_contract_flow_buckets_between(
+                        &signal.symbol,
+                        signal.ts,
+                        to_ts,
+                    )?;
+                    if let Some(outcome) =
+                        evaluate_contract_whale_signal_outcome(&signal, &buckets, now)
+                    {
+                        outcomes.push(outcome);
+                    }
+                }
+                let legacy_written =
+                    evaluation_store.upsert_contract_whale_signal_outcomes(&outcomes)?;
+
+                // V4 snapshots are built from event history only.  The historical
+                // set is loaded before evaluating each new event and the pure
+                // builder applies `event_ts < signal.ts` again as a second guard.
+                let mut v4_signals =
+                    evaluation_store.query_contract_whale_signals(&ContractWhaleSignalQuery {
+                        // The live loop owns immediate forecasts and maturing
+                        // outcomes. Long-range replay is handled by the
+                        // resumable chronological backfill command.
+                        from_ts: Some(now.saturating_sub(2 * 24 * 60 * 60 * 1_000)),
+                        to_ts: Some(now),
+                        limit: 5_000,
+                        ..ContractWhaleSignalQuery::default()
+                    })?;
+                // V4.1 is deliberately fail-closed to Binance evidence. This
+                // also prevents legacy non-Binance rows left in the database
+                // from being reclassified as current production forecasts.
+                v4_signals.retain(|signal| {
+                    let perp_binance_only = signal
+                        .active_contract_sources
+                        .iter()
+                        .all(|source| source.eq_ignore_ascii_case("binance"))
+                        && signal
+                            .active_contract_sources
+                            .iter()
+                            .any(|source| source.eq_ignore_ascii_case("binance"));
+                    let contribution_binance_only = signal.exchanges.iter().all(|contribution| {
+                        contribution.exchange.eq_ignore_ascii_case("binance")
+                    }) && signal
+                        .exchanges
+                        .iter()
+                        .any(|contribution| contribution.exchange.eq_ignore_ascii_case("binance"));
+                    perp_binance_only || contribution_binance_only
+                });
+                v4_signals.sort_by(|left, right| {
+                    left.ts.cmp(&right.ts).then_with(|| left.id.cmp(&right.id))
+                });
+                let mut historical_by_symbol = std::collections::BTreeMap::new();
+                for signal in &v4_signals {
+                    if !historical_by_symbol.contains_key(&signal.symbol) {
+                        historical_by_symbol.insert(
+                            signal.symbol.clone(),
+                            evaluation_store.list_contract_whale_horizon_outcomes_before(
+                                &signal.symbol,
+                                now,
+                                20_000,
+                            )?,
+                        );
+                    }
+                }
+                let mut v4_outcomes = Vec::new();
+                let mut v4_forecasts = Vec::new();
+                let mut v42_outcomes = Vec::new();
+                let mut v42_forecasts = Vec::new();
+                let mut v4_decision_states = Vec::new();
+                let mut v42_decision_states = Vec::new();
+                for signal in v4_signals {
+                    let from_ts = signal.ts.saturating_sub(4 * 60 * 60 * 1_000);
+                    let to_ts = now.min(signal.ts.saturating_add(86_400_000));
+                    let buckets = evaluation_store.list_contract_flow_buckets_between(
+                        &signal.symbol,
+                        from_ts,
+                        to_ts,
+                    )?;
+                    let reference_prices = evaluation_store
+                        .list_contract_reference_prices_between(&signal.symbol, from_ts, to_ts)?;
+                    let oi_snapshots = evaluation_store
+                        .list_contract_oi_snapshots_between(&signal.symbol, from_ts, to_ts)?;
+                    let funding_snapshots = evaluation_store
+                        .list_contract_funding_snapshots_between(&signal.symbol, from_ts, to_ts)?;
+                    let liquidation_buckets = evaluation_store
+                        .list_contract_liquidation_buckets_between(&signal.symbol, signal.ts, to_ts)?;
+                    if let Some(history) = historical_by_symbol.get_mut(&signal.symbol) {
+                        let v4_forecast = build_forecast(
+                            &signal,
+                            history,
+                            &reference_prices,
+                            now,
+                        );
+                        v4_forecasts.push(v4_forecast.clone());
+                        v42_forecasts.push(build_hybrid_forecast(
+                            &signal,
+                            history,
+                            &reference_prices,
+                            now,
+                        ));
+                        let outcomes = evaluate_horizon_outcomes(
+                            &signal,
+                            crate::contract_whale_monitor::impact_forecast::ContractWhaleOutcomeInputs {
+                                flow_buckets: &buckets,
+                                reference_prices: &reference_prices,
+                                oi_snapshots: &oi_snapshots,
+                                funding_snapshots: &funding_snapshots,
+                                liquidation_buckets: &liquidation_buckets,
+                            },
+                            now,
+                        );
+                        let (decision_state, decision_reason) = evaluate_trade_plan_state(
+                            &v4_forecast,
+                            &outcomes,
+                            now,
+                        );
+                        v4_decision_states.push(ContractWhaleV4DecisionState {
+                            event_id: v4_forecast.event_id.clone(),
+                            forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_VERSION.to_string(),
+                            state: decision_state,
+                            reason: decision_reason,
+                            updated_at_ms: now,
+                            decided_at_ms: Some(now),
+                        });
+                        let v42_forecast = v42_forecasts.last().expect("v4.2 forecast present");
+                        let v42_values = evaluate_v42_outcomes(
+                            &signal,
+                            crate::contract_whale_monitor::impact_forecast::ContractWhaleOutcomeInputs {
+                                flow_buckets: &buckets,
+                                reference_prices: &reference_prices,
+                                oi_snapshots: &oi_snapshots,
+                                funding_snapshots: &funding_snapshots,
+                                liquidation_buckets: &liquidation_buckets,
+                            },
+                            now,
+                        );
+                        let (v42_state, v42_reason) = evaluate_trade_plan_state(v42_forecast, &v42_values, now);
+                        v42_decision_states.push(ContractWhaleV4DecisionState {
+                            event_id: v42_forecast.event_id.clone(),
+                            forecast_version: CONTRACT_WHALE_IMPACT_FORECAST_V4_2_VERSION.to_string(),
+                            state: v42_state,
+                            reason: v42_reason,
+                            updated_at_ms: now,
+                            decided_at_ms: Some(now),
+                        });
+                        history.extend(outcomes.iter().cloned());
+                        v4_outcomes.extend(outcomes);
+                        v42_outcomes.extend(v42_values);
+                    }
+                }
+                let v4_outcome_written =
+                    evaluation_store.upsert_contract_whale_horizon_outcomes(&v4_outcomes)?;
+                let v4_forecast_written =
+                    evaluation_store.upsert_contract_whale_impact_forecasts(&v4_forecasts)?;
+                evaluation_store.upsert_contract_whale_v4_decision_states(&v4_decision_states)?;
+                let v42_outcome_written =
+                    evaluation_store.upsert_contract_whale_horizon_outcomes(&v42_outcomes)?;
+                let v42_forecast_written =
+                    evaluation_store.upsert_contract_whale_impact_forecasts(&v42_forecasts)?;
+                evaluation_store.upsert_contract_whale_v4_decision_states(&v42_decision_states)?;
+                Ok((legacy_written, v4_outcome_written, v4_forecast_written, v42_outcome_written, v42_forecast_written))
+            })
+            .await;
         match result {
-            Ok(Ok(written)) if written > 0 => tracing::debug!(
-                target: CWM_LOG_TARGET,
-                outcomes = written,
-                "{} contract whale outcomes updated",
-                CWM_LOG_PREFIX
-            ),
+            Ok(Ok((legacy_written, v4_outcome_written, v4_forecast_written, v42_outcome_written, v42_forecast_written)))
+                if legacy_written + v4_outcome_written + v4_forecast_written + v42_outcome_written + v42_forecast_written > 0 =>
+            {
+                tracing::debug!(
+                    target: CWM_LOG_TARGET,
+                    outcomes = legacy_written,
+                    v4_outcomes = v4_outcome_written,
+                    v4_forecasts = v4_forecast_written,
+                    v42_outcomes = v42_outcome_written,
+                    v42_forecasts = v42_forecast_written,
+                    "{} contract whale outcomes and forecasts updated",
+                    CWM_LOG_PREFIX
+                )
+            }
             Ok(Ok(_)) => {}
             Ok(Err(error)) => tracing::warn!(
                 target: CWM_LOG_TARGET,
@@ -1167,6 +1601,7 @@ impl AppState {
 
         let mut oi_snapshots = Vec::<ContractOiSnapshot>::new();
         let mut funding_snapshots = Vec::<ContractFundingSnapshot>::new();
+        let mut reference_prices = Vec::<ContractReferencePriceSnapshot>::new();
         let fallback_ts = crate::normalizers::trade::now_ms();
 
         let symbol_results = futures_util::future::join_all(symbols.into_iter().map(|symbol| {
@@ -1204,6 +1639,14 @@ impl AppState {
                 } else {
                     Ok(None)
                 }
+            };
+            let binance_reference_prices = async {
+                collector_binance::fetch_binance_reference_prices_for_symbol(
+                    client,
+                    &symbol,
+                    fallback_ts,
+                )
+                .await
             };
             let okx_oi = async {
                 if runtime_config
@@ -1266,15 +1709,34 @@ impl AppState {
                     Ok(None)
                 }
             };
-            let (binance_oi, binance_funding, okx_oi, okx_funding) =
-                tokio::join!(binance_oi, binance_funding, okx_oi, okx_funding);
+            let (binance_oi, binance_funding, binance_reference_prices, okx_oi, okx_funding) =
+                tokio::join!(
+                    binance_oi,
+                    binance_funding,
+                    binance_reference_prices,
+                    okx_oi,
+                    okx_funding
+                );
 
-                (symbol, (binance_oi, binance_funding, okx_oi, okx_funding))
+                (
+                    symbol,
+                    (
+                        binance_oi,
+                        binance_funding,
+                        binance_reference_prices,
+                        okx_oi,
+                        okx_funding,
+                    ),
+                )
             }
         }))
         .await;
 
-        for (symbol, (binance_oi, binance_funding, okx_oi, okx_funding)) in symbol_results {
+        for (
+            symbol,
+            (binance_oi, binance_funding, binance_reference, okx_oi, okx_funding),
+        ) in symbol_results
+        {
             if runtime_config
                 .exchanges
                 .binance
@@ -1296,6 +1758,19 @@ impl AppState {
                         );
                     }
                 }
+            }
+            match binance_reference {
+                Ok(mut rows) => reference_prices.append(&mut rows),
+                Err(error) => tracing::warn!(
+                    target: CWM_LOG_TARGET,
+                    event = cwm_log_events::ERROR,
+                    symbol = symbol.as_str(),
+                    exchange = "binance",
+                    context = "reference_price",
+                    error = %error,
+                    "{} Binance reference-price fetch failed",
+                    CWM_LOG_PREFIX
+                ),
             }
             if runtime_config
                 .exchanges
@@ -1368,14 +1843,20 @@ impl AppState {
         let oi_outcome =
             persist_contract_oi_snapshots_nonblocking(store.clone(), oi_snapshots).await;
         let funding_outcome =
-            persist_contract_funding_snapshots_nonblocking(store, funding_snapshots).await;
+            persist_contract_funding_snapshots_nonblocking(store.clone(), funding_snapshots).await;
+        let reference_outcome =
+            persist_contract_reference_prices_nonblocking(store, reference_prices).await;
 
-        if oi_outcome.written > 0 || funding_outcome.written > 0 {
+        if oi_outcome.written > 0
+            || funding_outcome.written > 0
+            || reference_outcome.written > 0
+        {
             tracing::info!(
                 target: CWM_LOG_TARGET,
                 event = "contract_market_context_poll",
                 oi_written = oi_outcome.written,
                 funding_written = funding_outcome.written,
+                reference_price_written = reference_outcome.written,
                 "{} contract market context poll persisted snapshots",
                 CWM_LOG_PREFIX
             );
@@ -1429,19 +1910,119 @@ impl AppState {
                 },
             );
             let settings = ContractWhaleDiscordSettings::from_env(config.dry_run);
-            let signals = self.filter_contract_whale_emissions(response.items);
+            let mut candidates = response.items;
+            let mut impact_grade_materialization_failed = false;
+            if runtime_config.impact_grade_v3.enabled {
+                if let Err(error) = materialize_contract_whale_impact_grades_nonblocking(
+                    store.clone(),
+                    candidates.clone(),
+                    crate::normalizers::trade::now_ms(),
+                )
+                .await
+                {
+                    impact_grade_materialization_failed = true;
+                    tracing::warn!(
+                        target: CWM_LOG_TARGET,
+                        event = cwm_log_events::ERROR,
+                        error = %error,
+                        "{} impact grade materialization failed",
+                        CWM_LOG_PREFIX
+                    );
+                }
+            }
+            let v3_delivery_enabled = runtime_config.impact_grade_v3.enabled
+                && !runtime_config.impact_grade_v3.shadow_mode;
+            let cooldown_store = global_contract_whale_discord_cooldown_store();
+            let now = crate::normalizers::trade::now_ms();
+            let grade_repo = store.clone().map(ContractEventGradeRepo::new);
+            for signal in &mut candidates {
+                let assessment = grade_repo.as_ref().and_then(|repo| {
+                    repo.get_assessment_for_signal(
+                        signal,
+                        &runtime_config.impact_grade_v3.grade_version,
+                    )
+                    .ok()
+                    .flatten()
+                });
+                if let Some(assessment) = assessment.as_ref() {
+                    apply_impact_assessment_to_signal(signal, assessment);
+                } else if runtime_config.impact_grade_v3.enabled {
+                    apply_unavailable_impact_assessment_to_signal(
+                        signal,
+                        &runtime_config.impact_grade_v3.grade_version,
+                        if impact_grade_materialization_failed {
+                            "v3_assessment_failed"
+                        } else {
+                            "v3_assessment_unavailable"
+                        },
+                    );
+                }
+                if v3_delivery_enabled {
+                    let decision = assessment.as_ref().map_or_else(
+                        || ContractWhaleDiscordGateDecision {
+                            allowed: false,
+                            reason: if impact_grade_materialization_failed {
+                                "v3_assessment_failed".to_string()
+                            } else {
+                                "v3_assessment_unavailable".to_string()
+                            },
+                        },
+                        |assessment| {
+                            evaluate_contract_whale_discord_v3_gate(
+                                &settings,
+                                signal,
+                                assessment,
+                                cooldown_store,
+                                now,
+                            )
+                        },
+                    );
+                    signal.discord_eligible = decision.allowed;
+                    signal.discord_would_send = decision.allowed;
+                    signal.discord_reason = decision.reason;
+                }
+            }
+            // Emission watermarks must observe the canonical grade. Filtering
+            // before materialization would allow a legacy detector grade to
+            // suppress an event whose V3 hard evidence just changed.
+            let signals = self.filter_contract_whale_emissions(candidates);
             if contract_whale_discord_outbox_enabled() {
-                let cooldown_store = global_contract_whale_discord_cooldown_store();
-                let now = crate::normalizers::trade::now_ms();
                 let queued = signals
                     .iter()
                     .filter(|signal| {
-                        let decision = evaluate_contract_whale_discord_gate(
-                            &settings,
-                            signal,
-                            cooldown_store,
-                            now,
-                        );
+                        let v3_assessment = grade_repo.as_ref().and_then(|repo| {
+                            repo.get_assessment_for_signal(
+                                signal,
+                                &runtime_config.impact_grade_v3.grade_version,
+                            )
+                            .ok()
+                            .flatten()
+                        });
+                        let decision = if v3_delivery_enabled {
+                            v3_assessment.as_ref().map_or_else(
+                                || ContractWhaleDiscordGateDecision {
+                                    allowed: false,
+                                    reason: "v3_assessment_unavailable".to_string(),
+                                },
+                                |assessment| {
+                                    evaluate_contract_whale_discord_v3_gate(
+                                        &settings,
+                                        signal,
+                                        assessment,
+                                        cooldown_store,
+                                        now,
+                                    )
+                                },
+                            )
+                        } else {
+                            let base = evaluate_contract_whale_discord_gate(
+                                &settings,
+                                signal,
+                                cooldown_store,
+                                now,
+                            );
+                            self.merge_v42_gate_decision(signal, base, store.as_ref(), now)
+                        };
                         self.record_scan_log(
                             if decision.allowed { "info" } else { "debug" },
                             if decision.allowed {
@@ -1507,8 +2088,65 @@ impl AppState {
                 let _ = persist_contract_whale_signals_nonblocking(store.clone(), signals.clone())
                     .await;
                 for signal in signals {
-                    let outcome =
-                        notify_contract_whale_discord(&settings, &signal, store.clone()).await;
+                    let assessment = grade_repo.as_ref().and_then(|repo| {
+                        repo.get_assessment_for_signal(
+                            &signal,
+                            &runtime_config.impact_grade_v3.grade_version,
+                        )
+                        .ok()
+                        .flatten()
+                    });
+                    let outcome = if v3_delivery_enabled {
+                        if assessment
+                            .as_ref()
+                            .is_some_and(impact_grade_v3_discord_eligible)
+                        {
+                            notify_contract_whale_discord_v3(
+                                &settings,
+                                &signal,
+                                assessment.as_ref().expect("assessment checked above"),
+                                store.clone(),
+                                global_contract_whale_discord_cooldown_store(),
+                            )
+                            .await
+                        } else {
+                            self.record_scan_log(
+                                "debug",
+                                cwm_log_events::DISCORD_SKIPPED,
+                                format!(
+                                    "{} discord skipped for {}: v3_grade_not_confirmed",
+                                    CWM_LOG_PREFIX, signal.symbol
+                                ),
+                                Some(signal.symbol.clone()),
+                                Some(signal.id.clone()),
+                            );
+                            continue;
+                        }
+                    } else {
+                        let base = evaluate_contract_whale_discord_gate(
+                            &settings,
+                            &signal,
+                            global_contract_whale_discord_cooldown_store(),
+                            now,
+                        );
+                        let decision = self.merge_v42_gate_decision(
+                            &signal,
+                            base,
+                            store.as_ref(),
+                            now,
+                        );
+                        if !decision.allowed {
+                            self.record_scan_log(
+                                "debug",
+                                cwm_log_events::DISCORD_SKIPPED,
+                                format!("{} discord skipped for {}: {}", CWM_LOG_PREFIX, signal.symbol, decision.reason),
+                                Some(signal.symbol.clone()),
+                                Some(signal.id.clone()),
+                            );
+                            continue;
+                        }
+                        notify_contract_whale_discord(&settings, &signal, store.clone()).await
+                    };
                     self.record_scan_log(
                         if outcome.sent { "info" } else { "debug" },
                         if outcome.sent {
@@ -1584,6 +2222,48 @@ impl AppState {
             });
         }
         emitted
+    }
+
+    fn merge_v42_gate_decision(
+        &self,
+        signal: &crate::contract_whale_monitor::types::ContractWhaleSignal,
+        base: ContractWhaleDiscordGateDecision,
+        store: Option<&SqliteStore>,
+        now: i64,
+    ) -> ContractWhaleDiscordGateDecision {
+        let config = contract_whale_runtime_config();
+        if !config.impact_v4_2.enabled {
+            return base;
+        }
+        let Some(store) = store else {
+            return ContractWhaleDiscordGateDecision {
+                allowed: false,
+                reason: "v42_gate_store_unavailable".to_string(),
+            };
+        };
+        if !base.allowed {
+            return base;
+        }
+        let gate: GateDecision = evaluate_signal_gate(
+            store,
+            signal,
+            &config.impact_v4_2,
+            now,
+        )
+        .unwrap_or_else(|error| GateDecision {
+            allowed: false,
+            state: "FORCED_CLOSED".to_string(),
+            reason: format!("v42_gate_evaluation_failed:{error}"),
+            ..Default::default()
+        });
+        if gate.allowed {
+            base
+        } else {
+            ContractWhaleDiscordGateDecision {
+                allowed: false,
+                reason: format!("v42_gate_{}", gate.reason),
+            }
+        }
     }
 
     async fn flush_live_contract_flow_buckets_for_symbol(
@@ -1723,6 +2403,20 @@ impl AppState {
             );
             self.observe_main_force_events(&symbol, &snapshot.signals)
                 .await;
+
+            if let Some(tof_snapshot) = tof_snapshot.as_ref() {
+                if let Some(request) = build_tof_anomaly_alert_request(
+                    tof_snapshot,
+                    crate::normalizers::trade::now_ms(),
+                ) {
+                    let _ = maybe_auto_push_discord(
+                        self,
+                        request,
+                        tof_snapshot.observed_at_ms.max(0) as u64,
+                    )
+                    .await;
+                }
+            }
 
             if !symbol.eq_ignore_ascii_case(&self.config().symbol) || recent.items.is_empty() {
                 continue;
@@ -2392,10 +3086,6 @@ fn discord_request_from_signal(signal: &ToxicSignalWsItem) -> DiscordNotificatio
         market_structure_confidence: signal.market_structure_confidence,
         market_structure_data_quality: signal.market_structure_data_quality,
         market_structure_severity: signal.market_structure_severity.clone(),
-        behavior_type: signal.behavior_type.clone(),
-        behavior_state: signal.behavior_state.clone(),
-        behavior_confidence: signal.behavior_confidence,
-        behavior_main_force_confirmed: signal.behavior_main_force_confirmed,
         regime_type: signal.regime_type.clone(),
         spot_score: signal.spot_score,
         contract_score: signal.contract_score,

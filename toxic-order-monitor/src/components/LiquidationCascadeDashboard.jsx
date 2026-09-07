@@ -185,7 +185,7 @@ export default function LiquidationCascadeDashboard() {
           </div>
 
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="瀑布概率" value={percent(cascade?.cascadeProbability)} tone="cyan" />
+            <MetricCard label="清算压力指数" value={percent(cascade?.cascadePressureScore)} tone="cyan" />
             <MetricCard label="方向" value={directionLabel[cascade?.direction] || "不可用"} tone="slate" />
             <MetricCard label="预估波动" value={cascade?.estimatedMove || "不可用"} tone="orange" />
             <MetricCard label="时间窗口" value={cascade?.timeWindow || "不可用"} tone="slate" />
@@ -206,7 +206,7 @@ export default function LiquidationCascadeDashboard() {
           </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <InfoCard title="风险区间">
+            <InfoCard title="估算清算压力区">
               {cascade?.riskZone ? (
                 <p className="text-lg font-black text-white">
                   ${formatNumber(cascade.riskZone[0])} – ${formatNumber(cascade.riskZone[1])}
@@ -219,6 +219,7 @@ export default function LiquidationCascadeDashboard() {
               <TagList items={cascade?.signals || []} empty="暂无瀑布触发信号" />
             </InfoCard>
           </div>
+          <p className="mt-3 text-xs text-slate-500">估算结果用于观察流动性与强平压力，不代表交易所真实持仓、杠杆或保证金分布。</p>
         </section>
 
         <section className="space-y-4">

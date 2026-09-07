@@ -1,20 +1,22 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, params_from_iter, OptionalExtension};
 
-use crate::contract_whale_monitor::config::contract_whale_runtime_config;
-use crate::contract_whale_monitor::emission::episode_key;
-use crate::contract_whale_monitor::outcome_calibration::ContractWhaleSignalOutcome;
 use crate::contract_whale_monitor::types::{
     ContractExchange, ContractFlowBucket, ContractFundingSnapshot, ContractLiquidationBucket,
-    ContractOiSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
+    ContractOiSnapshot, ContractReferencePriceSnapshot, ContractWhaleActiveSources, ContractWhaleDirection,
     ContractWhaleEmissionFingerprint, ContractWhaleMarketType, ContractWhaleOiExchangeDelta,
     ContractWhaleOiWindowContext, ContractWhalePercentileThreshold, ContractWhaleSeverity,
     ContractWhaleSignal, ContractWhaleSignalType, ContractWhaleSourceRole,
 };
-use crate::storage::retention_policy::{
-    classify_contract, ContractRetentionFacts, RetentionClass, RetentionPolicy,
+use crate::contract_whale_monitor::{
+    behavior_assessment::BehaviorOutcomeMarkouts,
+    impact_forecast::{
+        ContractWhaleHorizonOutcome, ContractWhaleMultiHorizonImpactForecast,
+        ContractWhaleV4DecisionState,
+    },
+    outcome_calibration::ContractWhaleSignalOutcome,
 };
 
 use super::{
@@ -24,8 +26,8 @@ use super::{
     },
 };
 
-pub const CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC: f64 = 500.0;
 const DISCORD_OUTBOX_LEASE_MS: i64 = 120_000;
+const ORDINARY_ARCHIVE_RETENTION_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Default)]
 pub struct ContractWhaleSignalQuery {
@@ -38,6 +40,15 @@ pub struct ContractWhaleSignalQuery {
     pub exchange: Option<String>,
     pub min_abs_net_volume_btc: Option<f64>,
     pub impact_level: Option<String>,
+    /// When present, `impact_level` is resolved from the persisted event-grade
+    /// table for this version. Missing assessments fail closed to grade C.
+    /// When absent, the legacy payload field remains available only for
+    /// compatibility callers that have not opted into the canonical system.
+    pub impact_grade_version: Option<String>,
+    /// Optional profile discriminator used by versioned impact-grade baselines.
+    /// Keeping it on the storage query prevents a baseline from accidentally
+    /// mixing threshold populations that happen to share a symbol/window.
+    pub threshold_profile: Option<String>,
     pub min_notional_usd: Option<f64>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
@@ -67,7 +78,8 @@ fn contract_whale_signal_query_path(
         || query.window_sec.is_some()
         || query.exchange.is_some()
         || query.min_abs_net_volume_btc.is_some()
-        || query.impact_level.is_some();
+        || query.impact_level.is_some()
+        || query.threshold_profile.is_some();
     let has_positioned_cursor = query.cursor_ts.is_some() || query.cursor_signal_id.is_some();
 
     if query.symbol.is_some()
@@ -96,6 +108,7 @@ pub enum ContractWhaleDiscordOutboxStatus {
     Sending,
     Sent,
     DryRun,
+    Skipped,
     Retry,
     Dead,
 }
@@ -107,6 +120,7 @@ impl ContractWhaleDiscordOutboxStatus {
             Self::Sending => "sending",
             Self::Sent => "sent",
             Self::DryRun => "dry_run",
+            Self::Skipped => "skipped",
             Self::Retry => "retry",
             Self::Dead => "dead",
         }
@@ -155,6 +169,23 @@ pub struct ContractWhaleOutcomeSummaryRow {
     pub follow_through_5m_rate: Option<f64>,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractWhaleV4BackfillCheckpoint {
+    pub job_key: String,
+    pub status: String,
+    pub last_event_ts: Option<i64>,
+    pub last_event_id: Option<String>,
+    pub processed_count: usize,
+    pub forecast_count: usize,
+    pub outcome_count: usize,
+    pub skipped_count: usize,
+    pub degraded_count: usize,
+    pub failed_count: usize,
+    pub last_error: Option<String>,
+    pub updated_at_ms: i64,
+}
+
 pub trait ContractWhaleRepo {
     fn upsert_contract_flow_buckets(&self, buckets: &[ContractFlowBucket])
         -> anyhow::Result<usize>;
@@ -169,6 +200,16 @@ pub trait ContractWhaleRepo {
         from_ts: i64,
         to_ts: i64,
     ) -> anyhow::Result<Vec<ContractFlowBucket>>;
+    /// Return one positive market-volume observation per aligned window. This
+    /// is used for impact baselines so the baseline represents all observed
+    /// market windows, not only windows that already triggered an event.
+    fn list_contract_flow_window_volumes_between(
+        &self,
+        symbol: &str,
+        window_sec: u64,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<f64>>;
     fn upsert_contract_liquidation_buckets(
         &self,
         buckets: &[ContractLiquidationBucket],
@@ -212,6 +253,24 @@ pub trait ContractWhaleRepo {
         from_ts: i64,
         to_ts: i64,
     ) -> anyhow::Result<Vec<ContractFundingSnapshot>>;
+    fn upsert_contract_reference_prices(
+        &self,
+        snapshots: &[ContractReferencePriceSnapshot],
+    ) -> anyhow::Result<usize>;
+    fn list_contract_reference_prices_between(
+        &self,
+        symbol: &str,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<ContractReferencePriceSnapshot>>;
+    fn get_contract_whale_v4_backfill_checkpoint(
+        &self,
+        job_key: &str,
+    ) -> anyhow::Result<Option<ContractWhaleV4BackfillCheckpoint>>;
+    fn upsert_contract_whale_v4_backfill_checkpoint(
+        &self,
+        checkpoint: &ContractWhaleV4BackfillCheckpoint,
+    ) -> anyhow::Result<()>;
     fn upsert_contract_whale_signal(&self, signal: &ContractWhaleSignal) -> anyhow::Result<()>;
     fn upsert_contract_whale_signals(
         &self,
@@ -272,10 +331,45 @@ pub trait ContractWhaleRepo {
         &self,
         outcomes: &[ContractWhaleSignalOutcome],
     ) -> anyhow::Result<usize>;
+    fn latest_contract_whale_outcome_markouts(
+        &self,
+        outcome_version: &str,
+        aliases: &[&str],
+    ) -> anyhow::Result<Option<BehaviorOutcomeMarkouts>>;
     fn contract_whale_outcome_summary(
         &self,
         outcome_version: &str,
     ) -> anyhow::Result<Vec<ContractWhaleOutcomeSummaryRow>>;
+    fn upsert_contract_whale_horizon_outcomes(
+        &self,
+        outcomes: &[ContractWhaleHorizonOutcome],
+    ) -> anyhow::Result<usize>;
+    fn delete_contract_whale_horizon_outcomes_for_version(&self, version: &str) -> anyhow::Result<usize>;
+    fn list_contract_whale_horizon_outcomes_before(
+        &self,
+        symbol: &str,
+        before_ts: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ContractWhaleHorizonOutcome>>;
+    fn load_contract_whale_impact_forecasts(
+        &self,
+        event_ids: &[&str],
+        forecast_version: &str,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleMultiHorizonImpactForecast>>;
+    fn upsert_contract_whale_impact_forecasts(
+        &self,
+        forecasts: &[ContractWhaleMultiHorizonImpactForecast],
+    ) -> anyhow::Result<usize>;
+    fn delete_contract_whale_impact_forecasts_for_version(&self, version: &str) -> anyhow::Result<usize>;
+    fn upsert_contract_whale_v4_decision_states(
+        &self,
+        states: &[ContractWhaleV4DecisionState],
+    ) -> anyhow::Result<usize>;
+    fn load_contract_whale_v4_decision_states(
+        &self,
+        event_ids: &[&str],
+        forecast_version: &str,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleV4DecisionState>>;
     fn upsert_contract_whale_percentiles(
         &self,
         thresholds: &[ContractWhalePercentileThreshold],
@@ -289,13 +383,11 @@ pub trait ContractWhaleRepo {
     fn prune_contract_whale_retention(
         &self,
         flow_cutoff_ts: i64,
-        signal_cutoff_ts: i64,
-        impact_b_cutoff_ts: i64,
-    ) -> anyhow::Result<ContractWhaleRetentionPruneResult>;
-    fn prune_contract_whale_retention_at(
-        &self,
-        now_ms: i64,
-        flow_cutoff_ts: i64,
+        oi_raw_cutoff_ts: i64,
+        funding_raw_cutoff_ts: i64,
+        liquidation_cutoff_ts: i64,
+        reference_price_cutoff_ts: i64,
+        aggregate_context_cutoff_ts: i64,
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult>;
@@ -307,13 +399,26 @@ pub struct ContractWhaleRetentionPruneResult {
     pub liquidation_deleted: usize,
     pub oi_deleted: usize,
     pub funding_deleted: usize,
+    pub reference_price_deleted: usize,
+    pub oi_1m_deleted: usize,
+    pub funding_1m_deleted: usize,
+    pub v4_outcome_deleted: usize,
+    pub v4_forecast_deleted: usize,
     pub percentile_deleted: usize,
     pub signal_deleted: usize,
+    pub impact_grade_deleted: usize,
+    pub ordinary_archive_deleted: usize,
+    pub ordinary_signals_archived: usize,
+    pub permanent_signals_archived: usize,
     pub flow_cutoff_ts: i64,
+    pub oi_raw_cutoff_ts: i64,
+    pub funding_raw_cutoff_ts: i64,
+    pub liquidation_cutoff_ts: i64,
+    pub reference_price_cutoff_ts: i64,
+    pub aggregate_context_cutoff_ts: i64,
     pub signal_cutoff_ts: i64,
     pub impact_b_cutoff_ts: i64,
-    pub protected_s_count: usize,
-    pub protected_net_volume_count: usize,
+    pub protected_impact_a_s_count: usize,
     pub table_results: Vec<RetentionTableResult>,
     pub wal_checkpoint: Option<WalCheckpointResult>,
 }
@@ -336,10 +441,8 @@ impl ContractWhaleRepo for SqliteStore {
                       ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                       market_type, source_role, product_id,
                       buy_notional_usd, sell_notional_usd, trade_count,
-                      buy_trade_count, sell_trade_count, max_single_trade_btc,
-                      max_single_trade_share, vwap, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                              ?13, ?14, ?15, ?16, ?17)
+                      max_single_trade_btc, vwap, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                     ON CONFLICT(ts_bucket, exchange, symbol, market_type) DO UPDATE SET
                       buy_volume_btc = excluded.buy_volume_btc,
                       sell_volume_btc = excluded.sell_volume_btc,
@@ -348,10 +451,7 @@ impl ContractWhaleRepo for SqliteStore {
                       buy_notional_usd = excluded.buy_notional_usd,
                       sell_notional_usd = excluded.sell_notional_usd,
                       trade_count = excluded.trade_count,
-                      buy_trade_count = excluded.buy_trade_count,
-                      sell_trade_count = excluded.sell_trade_count,
                       max_single_trade_btc = excluded.max_single_trade_btc,
-                      max_single_trade_share = excluded.max_single_trade_share,
                       vwap = excluded.vwap,
                       created_at = excluded.created_at
                     "#,
@@ -372,10 +472,7 @@ impl ContractWhaleRepo for SqliteStore {
                         bucket.buy_notional_usd,
                         bucket.sell_notional_usd,
                         bucket.trade_count as i64,
-                        bucket.buy_trade_count as i64,
-                        bucket.sell_trade_count as i64,
                         bucket.max_single_trade_btc,
-                        bucket.max_single_trade_share,
                         bucket.vwap,
                         now,
                     ])
@@ -399,8 +496,7 @@ impl ContractWhaleRepo for SqliteStore {
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                        market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
-                       buy_trade_count, sell_trade_count, max_single_trade_btc,
-                       max_single_trade_share, vwap
+                       max_single_trade_btc, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
                   AND market_type = 'perp'
@@ -421,11 +517,8 @@ impl ContractWhaleRepo for SqliteStore {
                     buy_notional_usd: row.get(8)?,
                     sell_notional_usd: row.get(9)?,
                     trade_count: row.get::<_, i64>(10)?.max(0) as u64,
-                    buy_trade_count: row.get::<_, i64>(11)?.max(0) as u64,
-                    sell_trade_count: row.get::<_, i64>(12)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
-                    max_single_trade_share: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
-                    vwap: row.get(15)?,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
+                    vwap: row.get(12)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -448,8 +541,7 @@ impl ContractWhaleRepo for SqliteStore {
                 SELECT ts_bucket, exchange, symbol, buy_volume_btc, sell_volume_btc,
                        market_type, source_role, product_id,
                        buy_notional_usd, sell_notional_usd, trade_count,
-                       buy_trade_count, sell_trade_count, max_single_trade_btc,
-                       max_single_trade_share, vwap
+                       max_single_trade_btc, vwap
                 FROM contract_flow_1s
                 WHERE symbol = ?1
                   AND market_type = 'perp'
@@ -471,11 +563,8 @@ impl ContractWhaleRepo for SqliteStore {
                     buy_notional_usd: row.get(8)?,
                     sell_notional_usd: row.get(9)?,
                     trade_count: row.get::<_, i64>(10)?.max(0) as u64,
-                    buy_trade_count: row.get::<_, i64>(11)?.max(0) as u64,
-                    sell_trade_count: row.get::<_, i64>(12)?.max(0) as u64,
-                    max_single_trade_btc: row.get::<_, Option<f64>>(13)?.unwrap_or(0.0),
-                    max_single_trade_share: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
-                    vwap: row.get(15)?,
+                    max_single_trade_btc: row.get::<_, Option<f64>>(11)?.unwrap_or(0.0),
+                    vwap: row.get(12)?,
                 })
             })?;
             let mut buckets = Vec::new();
@@ -483,6 +572,46 @@ impl ContractWhaleRepo for SqliteStore {
                 buckets.push(row?);
             }
             Ok(buckets)
+        })
+    }
+
+    fn list_contract_flow_window_volumes_between(
+        &self,
+        symbol: &str,
+        window_sec: u64,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<f64>> {
+        let window_ms = (window_sec as i64).saturating_mul(1_000);
+        if window_ms <= 0 || from_ts > to_ts {
+            return Ok(Vec::new());
+        }
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT (ts_bucket / ?1) * ?1 AS aligned_window,
+                       SUM(MAX(buy_volume_btc, 0.0) + MAX(sell_volume_btc, 0.0)) AS volume_btc
+                  FROM contract_flow_1s
+                 WHERE symbol = ?2
+                   AND market_type = 'perp'
+                   AND ts_bucket >= ?3
+                   AND ts_bucket <= ?4
+                 GROUP BY aligned_window
+                 HAVING volume_btc > 0.0
+                 ORDER BY aligned_window ASC
+                "#,
+            )?;
+            let rows = stmt.query_map(params![window_ms, symbol, from_ts, to_ts], |row| {
+                row.get::<_, f64>(1)
+            })?;
+            let mut volumes = Vec::new();
+            for row in rows {
+                let volume = row?;
+                if volume.is_finite() && volume > 0.0 {
+                    volumes.push(volume);
+                }
+            }
+            Ok(volumes)
         })
     }
 
@@ -616,6 +745,30 @@ impl ContractWhaleRepo for SqliteStore {
                     written += 1;
                 }
             }
+            {
+                let mut stmt = tx.prepare(
+                    r#"
+                    INSERT INTO contract_oi_1m (
+                      ts_bucket, exchange, symbol, oi_btc, oi_notional_usd,
+                      evidence_degraded_reason
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    ON CONFLICT(ts_bucket, exchange, symbol) DO UPDATE SET
+                      oi_btc = excluded.oi_btc,
+                      oi_notional_usd = excluded.oi_notional_usd,
+                      evidence_degraded_reason = excluded.evidence_degraded_reason
+                    "#,
+                )?;
+                for snapshot in snapshots {
+                    stmt.execute(params![
+                        snapshot.ts.div_euclid(60_000).saturating_mul(60_000),
+                        snapshot.exchange.as_key(),
+                        snapshot.symbol,
+                        snapshot.oi_btc,
+                        snapshot.oi_notional_usd,
+                        snapshot.evidence_degraded_reason,
+                    ])?;
+                }
+            }
             tx.commit()?;
             Ok(written)
         })
@@ -631,28 +784,46 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = conn.prepare(
                 r#"
                 SELECT ts, exchange, symbol, oi_btc, oi_notional_usd,
-                       ct_val_available, evidence_degraded_reason
+                       ct_val_available, evidence_degraded_reason, 0 AS source_rank
                 FROM contract_oi_snapshots
-                WHERE symbol = ?1
-                  AND ts >= ?2
-                  AND ts <= ?3
-                ORDER BY ts ASC
+                WHERE symbol = ?1 AND ts >= ?2 AND ts <= ?3
+                UNION ALL
+                SELECT ts_bucket, exchange, symbol, oi_btc, oi_notional_usd,
+                       1, evidence_degraded_reason, 1 AS source_rank
+                FROM contract_oi_1m
+                WHERE symbol = ?1 AND ts_bucket >= ?2 AND ts_bucket <= ?3
+                ORDER BY ts ASC, exchange ASC, symbol ASC, source_rank ASC
                 "#,
             )?;
             let rows = stmt.query_map(params![symbol, from_ts, to_ts], |row| {
-                Ok(ContractOiSnapshot {
+                let exchange_key: String = row.get(1)?;
+                let snapshot = ContractOiSnapshot {
                     ts: row.get(0)?,
-                    exchange: exchange_from_key(row.get::<_, String>(1)?.as_str()),
+                    exchange: exchange_from_key(exchange_key.as_str()),
                     symbol: row.get(2)?,
                     oi_btc: row.get(3)?,
                     oi_notional_usd: row.get(4)?,
                     ct_val_available: row.get::<_, i64>(5)? != 0,
                     evidence_degraded_reason: row.get(6)?,
-                })
+                };
+                Ok((
+                    format!(
+                        "{}:{}:{}",
+                        exchange_key,
+                        snapshot.symbol,
+                        snapshot.ts.div_euclid(60_000)
+                    ),
+                    snapshot,
+                ))
             })?;
             let mut snapshots = Vec::new();
+            let mut last_key = None;
             for row in rows {
-                snapshots.push(row?);
+                let (key, snapshot) = row?;
+                if last_key.as_deref() != Some(key.as_str()) {
+                    snapshots.push(snapshot);
+                    last_key = Some(key);
+                }
             }
             Ok(snapshots)
         })
@@ -751,8 +922,162 @@ impl ContractWhaleRepo for SqliteStore {
                     written += 1;
                 }
             }
+            {
+                let mut stmt = tx.prepare(
+                    r#"
+                    INSERT INTO contract_funding_1m (
+                      ts_bucket, exchange, symbol, funding_rate
+                    ) VALUES (?1, ?2, ?3, ?4)
+                    ON CONFLICT(ts_bucket, exchange, symbol) DO UPDATE SET
+                      funding_rate = excluded.funding_rate
+                    "#,
+                )?;
+                for snapshot in snapshots {
+                    stmt.execute(params![
+                        snapshot.ts.div_euclid(60_000).saturating_mul(60_000),
+                        snapshot.exchange.as_key(),
+                        snapshot.symbol,
+                        snapshot.funding_rate,
+                    ])?;
+                }
+            }
             tx.commit()?;
             Ok(written)
+        })
+    }
+
+    fn upsert_contract_reference_prices(
+        &self,
+        snapshots: &[ContractReferencePriceSnapshot],
+    ) -> anyhow::Result<usize> {
+        if snapshots.is_empty() {
+            return Ok(0);
+        }
+        self.with_write_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_reference_prices_1m (
+                  ts_bucket, exchange, symbol, price_source, price, premium_bps,
+                  event_time_ms, received_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(ts_bucket, exchange, symbol, price_source) DO UPDATE SET
+                  price = excluded.price,
+                  premium_bps = excluded.premium_bps,
+                  event_time_ms = MAX(contract_reference_prices_1m.event_time_ms, excluded.event_time_ms),
+                  received_at_ms = MAX(contract_reference_prices_1m.received_at_ms, excluded.received_at_ms)
+                "#,
+            )?;
+            let mut written = 0;
+            for snapshot in snapshots {
+                if !snapshot.price.is_finite() || snapshot.price <= 0.0 {
+                    continue;
+                }
+                written += stmt.execute(params![
+                    snapshot.ts_bucket,
+                    snapshot.exchange.as_key(),
+                    snapshot.symbol,
+                    snapshot.price_source,
+                    snapshot.price,
+                    snapshot.premium_bps,
+                    snapshot.event_time_ms,
+                    snapshot.received_at_ms,
+                ])?;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn list_contract_reference_prices_between(
+        &self,
+        symbol: &str,
+        from_ts: i64,
+        to_ts: i64,
+    ) -> anyhow::Result<Vec<ContractReferencePriceSnapshot>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT ts_bucket, exchange, symbol, price_source, price, premium_bps,
+                       event_time_ms, received_at_ms
+                FROM contract_reference_prices_1m
+                WHERE symbol = ?1 AND ts_bucket >= ?2 AND ts_bucket <= ?3
+                ORDER BY ts_bucket ASC, price_source ASC
+                "#,
+            )?;
+            let rows = stmt.query_map(params![symbol, from_ts, to_ts], |row| {
+                Ok(ContractReferencePriceSnapshot {
+                    ts_bucket: row.get(0)?,
+                    exchange: exchange_from_key(row.get::<_, String>(1)?.as_str()),
+                    symbol: row.get(2)?,
+                    price_source: row.get(3)?,
+                    price: row.get(4)?,
+                    premium_bps: row.get(5)?,
+                    event_time_ms: row.get(6)?,
+                    received_at_ms: row.get(7)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+    }
+
+    fn get_contract_whale_v4_backfill_checkpoint(
+        &self,
+        job_key: &str,
+    ) -> anyhow::Result<Option<ContractWhaleV4BackfillCheckpoint>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                r#"
+                SELECT job_key, status, last_event_ts, last_event_id, processed_count,
+                       forecast_count, outcome_count, skipped_count, degraded_count,
+                       failed_count, last_error, updated_at_ms
+                FROM contract_whale_v4_backfill_checkpoint WHERE job_key = ?1
+                "#,
+                [job_key],
+                |row| {
+                    Ok(ContractWhaleV4BackfillCheckpoint {
+                        job_key: row.get(0)?, status: row.get(1)?, last_event_ts: row.get(2)?,
+                        last_event_id: row.get(3)?, processed_count: row.get::<_, i64>(4)?.max(0) as usize,
+                        forecast_count: row.get::<_, i64>(5)?.max(0) as usize,
+                        outcome_count: row.get::<_, i64>(6)?.max(0) as usize,
+                        skipped_count: row.get::<_, i64>(7)?.max(0) as usize,
+                        degraded_count: row.get::<_, i64>(8)?.max(0) as usize,
+                        failed_count: row.get::<_, i64>(9)?.max(0) as usize,
+                        last_error: row.get(10)?, updated_at_ms: row.get(11)?,
+                    })
+                },
+            ).optional().map_err(Into::into)
+        })
+    }
+
+    fn upsert_contract_whale_v4_backfill_checkpoint(
+        &self,
+        checkpoint: &ContractWhaleV4BackfillCheckpoint,
+    ) -> anyhow::Result<()> {
+        self.with_write_connection(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO contract_whale_v4_backfill_checkpoint (
+                  job_key, status, last_event_ts, last_event_id, processed_count,
+                  forecast_count, outcome_count, skipped_count, degraded_count,
+                  failed_count, last_error, updated_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                ON CONFLICT(job_key) DO UPDATE SET
+                  status=excluded.status, last_event_ts=excluded.last_event_ts,
+                  last_event_id=excluded.last_event_id, processed_count=excluded.processed_count,
+                  forecast_count=excluded.forecast_count, outcome_count=excluded.outcome_count,
+                  skipped_count=excluded.skipped_count, degraded_count=excluded.degraded_count,
+                  failed_count=excluded.failed_count, last_error=excluded.last_error,
+                  updated_at_ms=excluded.updated_at_ms
+                "#,
+                params![checkpoint.job_key, checkpoint.status, checkpoint.last_event_ts,
+                    checkpoint.last_event_id, checkpoint.processed_count as i64,
+                    checkpoint.forecast_count as i64, checkpoint.outcome_count as i64,
+                    checkpoint.skipped_count as i64, checkpoint.degraded_count as i64,
+                    checkpoint.failed_count as i64, checkpoint.last_error, checkpoint.updated_at_ms],
+            )?;
+            Ok(())
         })
     }
 
@@ -767,23 +1092,39 @@ impl ContractWhaleRepo for SqliteStore {
                 r#"
                 SELECT ts, exchange, symbol, funding_rate
                 FROM contract_funding_snapshots
-                WHERE symbol = ?1
-                  AND ts >= ?2
-                  AND ts <= ?3
-                ORDER BY ts ASC
+                WHERE symbol = ?1 AND ts >= ?2 AND ts <= ?3
+                UNION ALL
+                SELECT ts_bucket, exchange, symbol, funding_rate
+                FROM contract_funding_1m
+                WHERE symbol = ?1 AND ts_bucket >= ?2 AND ts_bucket <= ?3
+                ORDER BY ts ASC, exchange ASC, symbol ASC
                 "#,
             )?;
             let rows = stmt.query_map(params![symbol, from_ts, to_ts], |row| {
-                Ok(ContractFundingSnapshot {
+                let snapshot = ContractFundingSnapshot {
                     ts: row.get(0)?,
                     exchange: exchange_from_key(row.get::<_, String>(1)?.as_str()),
                     symbol: row.get(2)?,
                     funding_rate: row.get(3)?,
-                })
+                };
+                Ok((
+                    format!(
+                        "{}:{}:{}",
+                        row.get::<_, String>(1)?,
+                        snapshot.symbol,
+                        snapshot.ts.div_euclid(60_000)
+                    ),
+                    snapshot,
+                ))
             })?;
             let mut snapshots = Vec::new();
+            let mut last_key = None;
             for row in rows {
-                snapshots.push(row?);
+                let (key, snapshot) = row?;
+                if last_key.as_deref() != Some(key.as_str()) {
+                    snapshots.push(snapshot);
+                    last_key = Some(key);
+                }
             }
             Ok(snapshots)
         })
@@ -828,19 +1169,15 @@ impl ContractWhaleRepo for SqliteStore {
             let mut outbox_stmt = tx.prepare(
                 r#"
                 INSERT INTO contract_whale_discord_outbox (
-                  signal_id, episode_key, symbol, payload_json, status, attempts, next_attempt_at, created_at
-                )
-                SELECT ?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6
-                WHERE NOT EXISTS (
-                  SELECT 1 FROM contract_whale_discord_outbox WHERE episode_key = ?2
-                )
+                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
+                ON CONFLICT(signal_id) DO NOTHING
                 "#,
             )?;
             let mut queued = 0;
             for signal in outbox_signals {
                 queued += outbox_stmt.execute(params![
                     signal.id,
-                    episode_key(signal),
                     signal.symbol,
                     serde_json::to_string(signal)?,
                     now_ms,
@@ -878,7 +1215,7 @@ impl ContractWhaleRepo for SqliteStore {
                     r#"
                     SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
                            active_sources_json, threshold_profile
-                    FROM contract_whale_signals
+                    FROM contract_whale_signals_history AS h
                     WHERE market_type = 'perp'
                       AND symbol = ?1
                     ORDER BY ts DESC, signal_id DESC
@@ -919,7 +1256,7 @@ impl ContractWhaleRepo for SqliteStore {
                     r#"
                     SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
                            active_sources_json, threshold_profile
-                    FROM contract_whale_signals
+                    FROM contract_whale_signals_history AS h
                     WHERE market_type = 'perp'
                       AND symbol = ?1
                       AND ts >= ?2
@@ -962,6 +1299,16 @@ impl ContractWhaleRepo for SqliteStore {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_ascii_uppercase());
+        let impact_grade_version = query
+            .impact_grade_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let threshold_profile = query
+            .threshold_profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let cursor_signal_id = query.cursor_signal_id.as_deref().map(str::to_string);
         let exchange_like = query
             .exchange
@@ -972,7 +1319,7 @@ impl ContractWhaleRepo for SqliteStore {
                 r#"
                 SELECT payload_json, discord_eligible, discord_sent, discord_sent_at,
                        active_sources_json, threshold_profile
-                FROM contract_whale_signals
+                FROM contract_whale_signals_history AS h
                 WHERE market_type = 'perp'
                   AND (?1 IS NULL OR symbol = ?1)
                   AND (?2 IS NULL OR severity = ?2)
@@ -987,19 +1334,55 @@ impl ContractWhaleRepo for SqliteStore {
                   AND (?11 IS NULL OR total_notional_usd >= ?11)
                   AND (
                         ?12 IS NULL
-                        OR UPPER(COALESCE(
-                              json_extract(payload_json, '$.impactLevel'),
-                              json_extract(payload_json, '$.impact_level'),
-                              ''
-                            )) = ?12
+                        OR (
+                          ?13 IS NOT NULL
+                          AND UPPER(COALESCE((
+                              SELECT g.grade
+                                FROM contract_event_impact_grades g
+                               WHERE g.grade_version = ?13
+                                 AND (
+                                       g.event_id = COALESCE(
+                                           NULLIF(json_extract(h.payload_json, '$.eventLifecycle.eventId'), ''),
+                                           h.signal_id
+                                       )
+                                       OR EXISTS (
+                                           SELECT 1
+                                             FROM json_each(COALESCE(
+                                               json_extract(h.payload_json, '$.mergedFrom'), '[]'
+                                             )) merged
+                                             JOIN contract_whale_signals_history source
+                                               ON source.signal_id = merged.value
+                                            WHERE g.event_id = COALESCE(
+                                                NULLIF(json_extract(source.payload_json, '$.eventLifecycle.eventId'), ''),
+                                                source.signal_id
+                                            )
+                                       )
+                                 )
+                               ORDER BY g.assessed_at_ms DESC
+                               LIMIT 1
+                              ), 'C')) = ?12
+                        )
+                        OR (
+                          ?13 IS NULL
+                          AND UPPER(COALESCE(
+                                json_extract(payload_json, '$.impactLevel'),
+                                json_extract(payload_json, '$.impact_level'),
+                                ''
+                              )) = ?12
+                        )
                   )
                   AND (
-                        ?13 IS NULL
-                        OR ts < ?13
-                        OR (ts = ?13 AND signal_id < ?14)
+                        ?14 IS NULL
+                        OR threshold_profile = ?14
+                        OR (?14 = 'default' AND COALESCE(threshold_profile, '') = '')
+                  )
+                  AND (
+                        ?15 IS NULL
+                        OR h.ts < ?15
+                        OR (h.ts = ?15 AND h.signal_id < ?16)
                   )
                 ORDER BY ts DESC, signal_id DESC
-                LIMIT ?15 OFFSET ?16
+                LIMIT ?17 OFFSET ?18
                 "#,
             )?;
             let rows = stmt.query_map(
@@ -1016,6 +1399,8 @@ impl ContractWhaleRepo for SqliteStore {
                     min_abs_net_volume_btc,
                     min_notional_usd,
                     impact_level.as_deref(),
+                    impact_grade_version,
+                    threshold_profile,
                     query.cursor_ts,
                     cursor_signal_id.as_deref(),
                     query.limit as i64,
@@ -1082,19 +1467,15 @@ impl ContractWhaleRepo for SqliteStore {
             let mut stmt = tx.prepare(
                 r#"
                 INSERT INTO contract_whale_discord_outbox (
-                  signal_id, episode_key, symbol, payload_json, status, attempts, next_attempt_at, created_at
-                )
-                SELECT ?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6
-                WHERE NOT EXISTS (
-                  SELECT 1 FROM contract_whale_discord_outbox WHERE episode_key = ?2
-                )
+                  signal_id, symbol, payload_json, status, attempts, next_attempt_at, created_at
+                ) VALUES (?1, ?2, ?3, 'pending', 0, ?4, ?5)
+                ON CONFLICT(signal_id) DO NOTHING
                 "#,
             )?;
             let mut inserted = 0;
             for signal in signals {
                 inserted += stmt.execute(params![
                     signal.id,
-                    episode_key(signal),
                     signal.symbol,
                     serde_json::to_string(signal)?,
                     now_ms,
@@ -1301,11 +1682,11 @@ impl ContractWhaleRepo for SqliteStore {
                   price_sample_count_5m, liquidity_recovered_5m, liquidity_recovery_ms,
                   liquidity_recovery_reason, setup_outcome,
                   follow_through_30s, follow_through_2m, follow_through_5m, evaluated_at,
-                  outcome_version
+                  outcome_version, episode_id
                 ) VALUES (
                   ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
                   ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-                  ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+                  ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
                 )
                 ON CONFLICT(signal_id) DO UPDATE SET
                   classification_v2 = excluded.classification_v2,
@@ -1333,7 +1714,8 @@ impl ContractWhaleRepo for SqliteStore {
                   follow_through_2m = excluded.follow_through_2m,
                   follow_through_5m = excluded.follow_through_5m,
                   evaluated_at = excluded.evaluated_at,
-                  outcome_version = excluded.outcome_version
+                  outcome_version = excluded.outcome_version,
+                  episode_id = COALESCE(excluded.episode_id, contract_whale_signal_outcomes.episode_id)
                 "#,
             )?;
             let mut written = 0;
@@ -1372,12 +1754,53 @@ impl ContractWhaleRepo for SqliteStore {
                     outcome.follow_through_5m.map(bool_to_int),
                     outcome.evaluated_at,
                     outcome.outcome_version,
+                    outcome.episode_id,
                 ])?;
                 written += 1;
             }
             drop(stmt);
             tx.commit()?;
             Ok(written)
+        })
+    }
+
+    fn latest_contract_whale_outcome_markouts(
+        &self,
+        outcome_version: &str,
+        aliases: &[&str],
+    ) -> anyhow::Result<Option<BehaviorOutcomeMarkouts>> {
+        self.with_connection(|conn| {
+            let mut best: Option<BehaviorOutcomeMarkouts> = None;
+            let mut stmt = conn.prepare(
+                "SELECT markout_30s_bps, markout_2m_bps, markout_5m_bps, evaluated_at
+                   FROM contract_whale_signal_outcomes
+                  WHERE outcome_version = ?1
+                    AND (episode_id = ?2 OR signal_id = ?2)
+                  ORDER BY evaluated_at DESC
+                  LIMIT 1",
+            )?;
+            for alias in aliases
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                let row = stmt
+                    .query_row(params![outcome_version, alias], |row| {
+                        Ok(BehaviorOutcomeMarkouts {
+                            markout_30s_bps: row.get(0)?,
+                            markout_2m_bps: row.get(1)?,
+                            markout_5m_bps: row.get(2)?,
+                            evaluated_at: row.get(3)?,
+                        })
+                    })
+                    .optional()?;
+                if row.as_ref().is_some_and(|candidate| {
+                    best.is_none_or(|current| candidate.evaluated_at > current.evaluated_at)
+                }) {
+                    best = row;
+                }
+            }
+            Ok(best)
         })
     }
 
@@ -1388,6 +1811,14 @@ impl ContractWhaleRepo for SqliteStore {
         self.with_connection(|conn| {
             let mut stmt = conn.prepare(
                 r#"
+                WITH episode_rows AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(episode_id, signal_id)
+                        ORDER BY evaluated_at DESC, signal_ts DESC, signal_id DESC
+                    ) AS episode_rank
+                    FROM contract_whale_signal_outcomes
+                    WHERE outcome_version = ?1
+                )
                 SELECT symbol, signal_type, COALESCE(classification_v2, ''), severity,
                        impact_level, window_sec, COALESCE(oi_context, ''), COALESCE(regime, ''),
                        strftime('%H', signal_ts / 1000, 'unixepoch') AS hour_utc,
@@ -1397,8 +1828,8 @@ impl ContractWhaleRepo for SqliteStore {
                        AVG(max_absolute_excursion_5m_bps), AVG(price_sample_count_5m),
                        AVG(markout_30s_bps), AVG(markout_2m_bps), AVG(markout_5m_bps),
                        AVG(follow_through_30s), AVG(follow_through_2m), AVG(follow_through_5m)
-                FROM contract_whale_signal_outcomes
-                WHERE outcome_version = ?1
+                FROM episode_rows
+                WHERE episode_rank = 1
                 GROUP BY symbol, signal_type, classification_v2, severity, impact_level,
                          window_sec, oi_context, regime, hour_utc
                 ORDER BY sample_count DESC, symbol ASC
@@ -1432,6 +1863,298 @@ impl ContractWhaleRepo for SqliteStore {
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+    }
+
+    fn upsert_contract_whale_horizon_outcomes(
+        &self,
+        outcomes: &[ContractWhaleHorizonOutcome],
+    ) -> anyhow::Result<usize> {
+        if outcomes.is_empty() {
+            return Ok(0);
+        }
+        self.with_write_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_behavior_horizon_outcomes (
+                  event_id, episode_id, signal_id, symbol, event_ts, horizon_sec,
+                  direction, behavior, market_regime, intensity_bucket,
+                  entry_price, end_price, signed_markout_bps, mfe_bps, mae_bps,
+                  follow_through, structure_break, state, data_quality, evaluated_at,
+                  outcome_version, payload_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                          ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                ON CONFLICT(event_id, outcome_version, horizon_sec) DO UPDATE SET
+                  episode_id = excluded.episode_id,
+                  signal_id = excluded.signal_id,
+                  entry_price = excluded.entry_price,
+                  end_price = excluded.end_price,
+                  signed_markout_bps = excluded.signed_markout_bps,
+                  mfe_bps = excluded.mfe_bps,
+                  mae_bps = excluded.mae_bps,
+                  follow_through = excluded.follow_through,
+                  structure_break = excluded.structure_break,
+                  state = excluded.state,
+                  data_quality = excluded.data_quality,
+                  evaluated_at = excluded.evaluated_at,
+                  payload_json = excluded.payload_json
+                "#,
+            )?;
+            let mut written = 0;
+            for outcome in outcomes {
+                stmt.execute(params![
+                    outcome.event_id,
+                    outcome.episode_id,
+                    outcome.signal_id,
+                    outcome.symbol,
+                    outcome.event_ts,
+                    outcome.horizon_sec as i64,
+                    outcome.direction,
+                    outcome.behavior,
+                    outcome.market_regime,
+                    outcome.intensity_bucket,
+                    outcome.entry_price,
+                    outcome.end_price,
+                    outcome.signed_markout_bps,
+                    outcome.mfe_bps,
+                    outcome.mae_bps,
+                    outcome.follow_through.map(bool_to_int),
+                    outcome.structure_break.map(bool_to_int),
+                    outcome.state,
+                    outcome.data_quality as i64,
+                    outcome.evaluated_at,
+                    outcome.outcome_version,
+                    serde_json::to_string(outcome)?,
+                ])?;
+                written += 1;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn list_contract_whale_horizon_outcomes_before(
+        &self,
+        symbol: &str,
+        before_ts: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ContractWhaleHorizonOutcome>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT payload_json
+                  FROM contract_whale_behavior_horizon_outcomes
+                 WHERE symbol = ?1
+                   AND event_ts < ?2
+                   AND outcome_version = ?3
+                 ORDER BY event_ts DESC
+                 LIMIT ?4
+                "#,
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    symbol,
+                    before_ts,
+                    crate::contract_whale_monitor::impact_forecast::CONTRACT_WHALE_IMPACT_FORECAST_VERSION,
+                    limit as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).context("failed to decode cwm v4 outcome")
+            })
+            .collect()
+        })
+    }
+
+    fn delete_contract_whale_horizon_outcomes_for_version(&self, version: &str) -> anyhow::Result<usize> {
+        self.with_write_connection(|conn| {
+            Ok(conn.execute(
+                "DELETE FROM contract_whale_behavior_horizon_outcomes WHERE outcome_version = ?1",
+                [version],
+            )?)
+        })
+    }
+
+    fn load_contract_whale_impact_forecasts(
+        &self,
+        event_ids: &[&str],
+        forecast_version: &str,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleMultiHorizonImpactForecast>> {
+        if event_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let ids = event_ids
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .take(500)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        self.with_connection(|conn| {
+            let placeholders = (1..=ids.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let version_index = ids.len() + 1;
+            let sql = format!(
+                "SELECT event_id, payload_json FROM contract_whale_impact_forecasts WHERE event_id IN ({placeholders}) AND forecast_version = ?{version_index}"
+            );
+            let mut args = ids.clone();
+            args.push(forecast_version);
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(args), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut result = BTreeMap::new();
+            for row in rows {
+                let (event_id, payload) = row?;
+                let forecast = serde_json::from_str::<ContractWhaleMultiHorizonImpactForecast>(&payload)
+                    .context("failed to decode cwm v4 forecast")?;
+                result.insert(event_id, forecast);
+            }
+            Ok(result)
+        })
+    }
+
+    fn upsert_contract_whale_impact_forecasts(
+        &self,
+        forecasts: &[ContractWhaleMultiHorizonImpactForecast],
+    ) -> anyhow::Result<usize> {
+        if forecasts.is_empty() {
+            return Ok(0);
+        }
+        self.with_write_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_impact_forecasts (
+                  event_id, forecast_version, episode_id, symbol, event_ts, status,
+                  impact_grade, impact_score, dominant_horizon, exact_sample_count,
+                  effective_sample_count, maturity_state, training_cutoff_ts,
+                  computed_at_ms, payload_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                ON CONFLICT(event_id, forecast_version) DO NOTHING
+                "#,
+            )?;
+            let mut written = 0;
+            for forecast in forecasts {
+                written += stmt.execute(params![
+                    forecast.event_id,
+                    forecast.forecast_version,
+                    forecast.episode_id,
+                    forecast.symbol,
+                    forecast.event_ts,
+                    forecast.status,
+                    forecast.impact_grade,
+                    forecast.impact_score,
+                    forecast.dominant_horizon,
+                    forecast.exact_sample_count as i64,
+                    forecast.effective_sample_count as i64,
+                    forecast.maturity_state,
+                    forecast.training_cutoff_ts,
+                    forecast.computed_at_ms,
+                    serde_json::to_string(forecast)?,
+                ])?;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn delete_contract_whale_impact_forecasts_for_version(&self, version: &str) -> anyhow::Result<usize> {
+        self.with_write_connection(|conn| {
+            Ok(conn.execute(
+                "DELETE FROM contract_whale_impact_forecasts WHERE forecast_version = ?1",
+                [version],
+            )?)
+        })
+    }
+
+    fn upsert_contract_whale_v4_decision_states(
+        &self,
+        states: &[ContractWhaleV4DecisionState],
+    ) -> anyhow::Result<usize> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+        self.with_write_connection(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO contract_whale_v4_decision_states
+                  (event_id, forecast_version, state, reason, updated_at_ms, decided_at_ms)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(event_id, forecast_version) DO UPDATE SET
+                  state=excluded.state, reason=excluded.reason,
+                  updated_at_ms=excluded.updated_at_ms, decided_at_ms=excluded.decided_at_ms
+                "#,
+            )?;
+            let mut written = 0;
+            for state in states {
+                written += stmt.execute(params![
+                    state.event_id,
+                    state.forecast_version,
+                    state.state,
+                    state.reason,
+                    state.updated_at_ms,
+                    state.decided_at_ms,
+                ])?;
+            }
+            drop(stmt);
+            tx.commit()?;
+            Ok(written)
+        })
+    }
+
+    fn load_contract_whale_v4_decision_states(
+        &self,
+        event_ids: &[&str],
+        forecast_version: &str,
+    ) -> anyhow::Result<BTreeMap<String, ContractWhaleV4DecisionState>> {
+        let ids = event_ids
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .take(500)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        self.with_connection(|conn| {
+            let placeholders = (1..=ids.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let version_index = ids.len() + 1;
+            let sql = format!(
+                "SELECT event_id, forecast_version, state, reason, updated_at_ms, decided_at_ms FROM contract_whale_v4_decision_states WHERE event_id IN ({placeholders}) AND forecast_version = ?{version_index}"
+            );
+            let mut args = ids.clone();
+            args.push(forecast_version);
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(args), |row| {
+                Ok(ContractWhaleV4DecisionState {
+                    event_id: row.get(0)?,
+                    forecast_version: row.get(1)?,
+                    state: row.get(2)?,
+                    reason: row.get(3)?,
+                    updated_at_ms: row.get(4)?,
+                    decided_at_ms: row.get(5)?,
+                })
+            })?;
+            let mut result = BTreeMap::new();
+            for row in rows {
+                let state = row?;
+                result.insert(state.event_id.clone(), state);
+            }
+            Ok(result)
         })
     }
 
@@ -1522,57 +2245,56 @@ impl ContractWhaleRepo for SqliteStore {
     fn prune_contract_whale_retention(
         &self,
         flow_cutoff_ts: i64,
+        oi_raw_cutoff_ts: i64,
+        funding_raw_cutoff_ts: i64,
+        liquidation_cutoff_ts: i64,
+        reference_price_cutoff_ts: i64,
+        aggregate_context_cutoff_ts: i64,
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
-        self.prune_contract_whale_retention_at(
-            signal_cutoff_ts.saturating_add(7 * 86_400_000),
-            flow_cutoff_ts,
-            signal_cutoff_ts,
-            impact_b_cutoff_ts,
-        )
-    }
-
-    fn prune_contract_whale_retention_at(
-        &self,
-        retention_now_ms: i64,
-        flow_cutoff_ts: i64,
-        signal_cutoff_ts: i64,
-        impact_b_cutoff_ts: i64,
-    ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
-        let s_severity = enum_value(ContractWhaleSeverity::S)?;
+        let impact_grade_version =
+            crate::contract_whale_monitor::config::contract_whale_runtime_config()
+                .impact_grade_v3
+                .grade_version;
         self.with_write_connection(|conn| {
             let mut result = ContractWhaleRetentionPruneResult {
                 flow_cutoff_ts,
+                oi_raw_cutoff_ts,
+                funding_raw_cutoff_ts,
+                liquidation_cutoff_ts,
+                reference_price_cutoff_ts,
+                aggregate_context_cutoff_ts,
                 signal_cutoff_ts,
                 impact_b_cutoff_ts,
                 ..ContractWhaleRetentionPruneResult::default()
             };
             if table_exists(conn, "contract_whale_signals")?
-                && column_exists(conn, "contract_whale_signals", "ts")?
-                && column_exists(conn, "contract_whale_signals", "severity")?
+                && table_exists(conn, "contract_event_impact_grades")?
             {
-                result.protected_s_count = conn.query_row(
-                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity = ?2",
-                    params![signal_cutoff_ts, s_severity.clone()],
+                result.protected_impact_a_s_count = conn.query_row(
+                    "SELECT COUNT(*) FROM contract_whale_signals s
+                       WHERE s.ts < ?1
+                         AND EXISTS (
+                           SELECT 1 FROM contract_event_impact_grades g
+                            WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                              AND g.grade_version = ?2
+                              AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                         )",
+                    params![signal_cutoff_ts, impact_grade_version],
                     |row| row.get::<_, i64>(0),
                 )? as usize;
             }
-            if table_exists(conn, "contract_whale_signals")?
-                && column_exists(conn, "contract_whale_signals", "ts")?
-                && column_exists(conn, "contract_whale_signals", "severity")?
-                && column_exists(conn, "contract_whale_signals", "net_volume_btc")?
-            {
-                result.protected_net_volume_count = conn.query_row(
-                    "SELECT COUNT(*) FROM contract_whale_signals WHERE ts < ?1 AND severity != ?2 AND ABS(COALESCE(net_volume_btc, 0.0)) >= ?3",
-                    params![
-                        signal_cutoff_ts,
-                        s_severity.clone(),
-                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                    ],
-                    |row| row.get::<_, i64>(0),
-                )? as usize;
-            }
+
+            let (permanent_archived, ordinary_archived) = archive_contract_whale_signals(
+                conn,
+                signal_cutoff_ts,
+                impact_b_cutoff_ts,
+                &impact_grade_version,
+                crate::normalizers::trade::now_ms(),
+            )?;
+            result.permanent_signals_archived = permanent_archived;
+            result.ordinary_signals_archived = ordinary_archived;
 
             result.flow_1s_deleted = prune_contract_table(
                 conn,
@@ -1587,7 +2309,7 @@ impl ContractWhaleRepo for SqliteStore {
                 "contract_liquidation_1s",
                 "ts_bucket",
                 "DELETE FROM contract_liquidation_1s WHERE ts_bucket < ?1",
-                params![flow_cutoff_ts],
+                params![liquidation_cutoff_ts],
                 &mut result.table_results,
             )?;
             result.oi_deleted = prune_contract_table(
@@ -1595,7 +2317,7 @@ impl ContractWhaleRepo for SqliteStore {
                 "contract_oi_snapshots",
                 "ts",
                 "DELETE FROM contract_oi_snapshots WHERE ts < ?1",
-                params![flow_cutoff_ts],
+                params![oi_raw_cutoff_ts],
                 &mut result.table_results,
             )?;
             result.funding_deleted = prune_contract_table(
@@ -1603,7 +2325,31 @@ impl ContractWhaleRepo for SqliteStore {
                 "contract_funding_snapshots",
                 "ts",
                 "DELETE FROM contract_funding_snapshots WHERE ts < ?1",
-                params![flow_cutoff_ts],
+                params![funding_raw_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.reference_price_deleted = prune_contract_table(
+                conn,
+                "contract_reference_prices_1m",
+                "ts_bucket",
+                "DELETE FROM contract_reference_prices_1m WHERE ts_bucket < ?1",
+                params![reference_price_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.oi_1m_deleted = prune_contract_table(
+                conn,
+                "contract_oi_1m",
+                "ts_bucket",
+                "DELETE FROM contract_oi_1m WHERE ts_bucket < ?1",
+                params![aggregate_context_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.funding_1m_deleted = prune_contract_table(
+                conn,
+                "contract_funding_1m",
+                "ts_bucket",
+                "DELETE FROM contract_funding_1m WHERE ts_bucket < ?1",
+                params![aggregate_context_cutoff_ts],
                 &mut result.table_results,
             )?;
             result.percentile_deleted = prune_contract_table(
@@ -1611,80 +2357,324 @@ impl ContractWhaleRepo for SqliteStore {
                 "contract_whale_percentile_thresholds",
                 "computed_at",
                 "DELETE FROM contract_whale_percentile_thresholds WHERE computed_at < ?1",
-                params![flow_cutoff_ts],
+                params![aggregate_context_cutoff_ts],
                 &mut result.table_results,
             )?;
-            // Retention tiers are assigned at write time and deleted by the
-            // per-row deadline. This avoids reclassifying an old ordinary
-            // signal as permanent merely because its score was high.
-            result.signal_deleted = if column_exists(conn, "contract_whale_signals", "retain_until")?
-                && column_exists(conn, "contract_whale_signals", "retention_class")?
-            {
-                prune_contract_table(
-                    conn,
-                    "contract_whale_signals",
-                    "retain_until",
-                    r#"
-                    DELETE FROM contract_whale_signals
-                    WHERE retain_until > 0
-                      AND retain_until < ?1
-                      AND NOT EXISTS (
-                        SELECT 1
-                        FROM contract_whale_discord_outbox outbox
-                        WHERE outbox.signal_id = contract_whale_signals.signal_id
-                          AND outbox.status IN ('pending', 'retry', 'sending')
+            // Retention tiers:
+            // - confirmed V3 A/S: permanent
+            // - legacy grades and detector severity: ordinary retention
+            // - confirmed V3 B: keep until impact_b_cutoff_ts (default 21d)
+            // - everything else: keep until signal_cutoff_ts (default 7d)
+            result.signal_deleted = prune_contract_table(
+                conn,
+                "contract_whale_signals",
+                "ts",
+                r#"
+                DELETE FROM contract_whale_signals
+                WHERE (
+                        EXISTS (
+                          SELECT 1 FROM contract_event_impact_grades g
+                           WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
+                             AND g.grade_version = ?3
+                             AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                        )
+                        AND ts < ?2
                       )
-                    "#,
-                    params![retention_now_ms],
-                    &mut result.table_results,
-                )?
-            } else {
-                prune_contract_table(
-                    conn,
-                    "contract_whale_signals",
-                    "ts",
-                    r#"
-                    DELETE FROM contract_whale_signals
-                    WHERE severity != ?1
-                      AND ABS(COALESCE(net_volume_btc, 0.0)) < ?2
-                      AND UPPER(COALESCE(
-                            json_extract(payload_json, '$.impactLevel'),
-                            json_extract(payload_json, '$.impact_level'),
-                            ''
-                          )) NOT IN ('A', 'S')
-                      AND ((UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), json_extract(payload_json, '$.impact_level'), '')) = 'B' AND ts < ?3)
-                        OR (UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), json_extract(payload_json, '$.impact_level'), '')) != 'B' AND ts < ?4))
-                    "#,
-                    params![
-                        s_severity,
-                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC,
-                        impact_b_cutoff_ts,
-                        signal_cutoff_ts,
-                    ],
-                    &mut result.table_results,
-                )?
-            };
+                  OR (
+                        NOT EXISTS (
+                          SELECT 1 FROM contract_event_impact_grades g
+                           WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
+                             AND g.grade_version = ?3
+                             AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                        )
+                        AND (
+                        (
+                          EXISTS (
+                            SELECT 1 FROM contract_event_impact_grades g
+                             WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
+                               AND g.grade_version = ?3
+                               AND g.state = 'confirmed'
+                               AND g.grade = 'B'
+                          )
+                          AND ts < ?1
+                        )
+                        OR
+                        (
+                          NOT EXISTS (
+                            SELECT 1 FROM contract_event_impact_grades g
+                             WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
+                               AND g.grade_version = ?3
+                               AND g.state = 'confirmed'
+                               AND g.grade = 'B'
+                          )
+                          AND ts < ?2
+                        )
+                        )
+                      )
+                "#,
+                params![
+                    impact_b_cutoff_ts,
+                    signal_cutoff_ts,
+                    impact_grade_version,
+                ],
+                &mut result.table_results,
+            )?;
             if let Some(last_entry) = result.table_results.last_mut() {
                 if last_entry.status == RetentionTableStatus::Ok {
-                    last_entry.reason = Some(format!(
-                        "row_deadline_tiers_ordinary_7d_important_30d_critical_365d_net_lt_{}",
-                        CONTRACT_WHALE_PERMANENT_NET_DIRECTION_THRESHOLD_BTC
-                    ));
+                    last_entry.reason =
+                        Some("v3_confirmed_a_s_permanent_b_uses_extended_retention".to_string());
                 }
             }
+            result.impact_grade_deleted = prune_contract_table(
+                conn,
+                "contract_event_impact_grades",
+                "assessed_at_ms",
+                r#"
+                DELETE FROM contract_event_impact_grades
+                 WHERE assessed_at_ms < ?1
+                   AND NOT (state = 'confirmed' AND grade IN ('A', 'S'))
+                   AND NOT EXISTS (
+                         SELECT 1 FROM contract_whale_signals s
+                          WHERE COALESCE(
+                                  NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''),
+                                  s.signal_id
+                                ) = contract_event_impact_grades.event_id
+                   )
+                   AND NOT EXISTS (
+                         SELECT 1 FROM contract_whale_signal_archive a
+                          WHERE COALESCE(
+                                  NULLIF(json_extract(a.payload_json, '$.eventLifecycle.eventId'), ''),
+                                  a.signal_id
+                                ) = contract_event_impact_grades.event_id
+                   )
+                "#,
+                rusqlite::params![impact_b_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.v4_outcome_deleted = prune_contract_table(
+                conn,
+                "contract_whale_behavior_horizon_outcomes",
+                "event_ts",
+                "DELETE FROM contract_whale_behavior_horizon_outcomes WHERE event_ts < ?1",
+                rusqlite::params![impact_b_cutoff_ts],
+                &mut result.table_results,
+            )?;
+            result.v4_forecast_deleted = prune_contract_table(
+                conn,
+                "contract_whale_impact_forecasts",
+                "event_ts",
+                "DELETE FROM contract_whale_impact_forecasts WHERE event_ts < ?1",
+                rusqlite::params![impact_b_cutoff_ts],
+                &mut result.table_results,
+            )?;
+
+            // The archive is a finite cold tier, not a second permanent
+            // store. A/S rows live in the permanent table; ordinary cold
+            // rows remain queryable for an additional 30 days, then are
+            // removed to keep SQLite storage bounded.
+            let archive_cutoff_ts = signal_cutoff_ts.saturating_sub(
+                ORDINARY_ARCHIVE_RETENTION_DAYS
+                    .saturating_mul(24 * 60 * 60 * 1_000),
+            );
+            result.ordinary_archive_deleted = prune_contract_table(
+                conn,
+                "contract_whale_signal_archive",
+                "ts",
+                "DELETE FROM contract_whale_signal_archive WHERE storage_tier = 'cold' AND ts < ?1",
+                params![archive_cutoff_ts],
+                &mut result.table_results,
+            )?;
 
             let deleted_any = result.flow_1s_deleted > 0
                 || result.liquidation_deleted > 0
                 || result.oi_deleted > 0
                 || result.funding_deleted > 0
+                || result.reference_price_deleted > 0
+                || result.oi_1m_deleted > 0
+                || result.funding_1m_deleted > 0
                 || result.percentile_deleted > 0
-                || result.signal_deleted > 0;
+                || result.signal_deleted > 0
+                || result.impact_grade_deleted > 0
+                || result.v4_outcome_deleted > 0
+                || result.v4_forecast_deleted > 0
+                || result.ordinary_archive_deleted > 0;
             if deleted_any {
                 result.wal_checkpoint = Some(run_contract_wal_checkpoint(conn));
             }
             Ok(result)
         })
     }
+}
+
+fn archive_contract_whale_signals(
+    conn: &rusqlite::Connection,
+    signal_cutoff_ts: i64,
+    impact_b_cutoff_ts: i64,
+    impact_grade_version: &str,
+    archived_at_ms: i64,
+) -> anyhow::Result<(usize, usize)> {
+    if !table_exists(conn, "contract_whale_signals")?
+        || !table_exists(conn, "contract_event_impact_grades")?
+        || !table_exists(conn, "contract_whale_signal_archive")?
+        || !table_exists(conn, "contract_whale_signal_permanent")?
+    {
+        return Ok((0, 0));
+    }
+
+    let permanent = conn.execute(
+        r#"
+        INSERT OR IGNORE INTO contract_whale_signal_permanent (
+          id, signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
+          total_volume_btc, net_volume_btc, total_notional_usd, dominance, price_start,
+          price_end, price_move_pct, main_exchange, exchanges_json, dynamic_multiple,
+          data_quality, discord_eligible, discord_sent, discord_sent_at, payload_json,
+          created_at, market_type, source_role, active_sources_json, threshold_profile,
+          storage_tier, archived_at_ms, archive_reason
+        )
+        SELECT s.id, s.signal_id, s.ts, s.symbol, s.window_sec, s.signal_type, s.direction,
+               s.severity, s.score, s.total_volume_btc, s.net_volume_btc,
+               s.total_notional_usd, s.dominance, s.price_start, s.price_end,
+               s.price_move_pct, s.main_exchange, s.exchanges_json, s.dynamic_multiple,
+               s.data_quality, s.discord_eligible, s.discord_sent, s.discord_sent_at,
+               s.payload_json, s.created_at, s.market_type, s.source_role,
+               s.active_sources_json, s.threshold_profile, s.storage_tier,
+               s.archived_at_ms, s.archive_reason
+          FROM contract_whale_signals s
+         WHERE s.ts < ?1
+           AND EXISTS (
+                 SELECT 1 FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                    AND g.grade_version = ?2
+                    AND g.state = 'confirmed'
+                    AND g.grade IN ('A', 'S')
+               )
+        "#,
+        rusqlite::params![signal_cutoff_ts, impact_grade_version],
+    )?;
+    conn.execute(
+        r#"
+        UPDATE contract_whale_signal_permanent
+           SET storage_tier = 'permanent',
+               archived_at_ms = ?1,
+               archive_reason = 'confirmed_v3_a_s',
+               impact_grade = (
+                 SELECT g.grade FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_grade_version = ?2,
+               impact_grade_state = (
+                 SELECT g.state FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_reason_codes_json = (
+                 SELECT g.reason_codes_json FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_evidence_json = (
+                 SELECT g.evidence_json FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               )
+         WHERE EXISTS (
+                 SELECT 1 FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version = ?2
+                    AND g.state = 'confirmed'
+                    AND g.grade IN ('A', 'S')
+               )
+        "#,
+        rusqlite::params![archived_at_ms, impact_grade_version],
+    )?;
+
+    let ordinary = conn.execute(
+        r#"
+        INSERT OR IGNORE INTO contract_whale_signal_archive (
+          id, signal_id, ts, symbol, window_sec, signal_type, direction, severity, score,
+          total_volume_btc, net_volume_btc, total_notional_usd, dominance, price_start,
+          price_end, price_move_pct, main_exchange, exchanges_json, dynamic_multiple,
+          data_quality, discord_eligible, discord_sent, discord_sent_at, payload_json,
+          created_at, market_type, source_role, active_sources_json, threshold_profile,
+          storage_tier, archived_at_ms, archive_reason
+        )
+        SELECT s.id, s.signal_id, s.ts, s.symbol, s.window_sec, s.signal_type, s.direction,
+               s.severity, s.score, s.total_volume_btc, s.net_volume_btc,
+               s.total_notional_usd, s.dominance, s.price_start, s.price_end,
+               s.price_move_pct, s.main_exchange, s.exchanges_json, s.dynamic_multiple,
+               s.data_quality, s.discord_eligible, s.discord_sent, s.discord_sent_at,
+               s.payload_json, s.created_at, s.market_type, s.source_role,
+               s.active_sources_json, s.threshold_profile, s.storage_tier,
+               s.archived_at_ms, s.archive_reason
+          FROM contract_whale_signals s
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                    AND g.grade_version = ?3
+                    AND g.state = 'confirmed'
+                    AND g.grade IN ('A', 'S')
+               )
+           AND (
+                 (EXISTS (
+                    SELECT 1 FROM contract_event_impact_grades g
+                     WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                       AND g.grade_version = ?3
+                       AND g.state = 'confirmed'
+                       AND g.grade = 'B'
+                  ) AND s.ts < ?1)
+                 OR
+                 (NOT EXISTS (
+                    SELECT 1 FROM contract_event_impact_grades g
+                     WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
+                       AND g.grade_version = ?3
+                       AND g.state = 'confirmed'
+                       AND g.grade = 'B'
+                  ) AND s.ts < ?2)
+               )
+        "#,
+        rusqlite::params![impact_b_cutoff_ts, signal_cutoff_ts, impact_grade_version],
+    )?;
+    conn.execute(
+        r#"
+        UPDATE contract_whale_signal_archive
+           SET storage_tier = 'cold',
+               archived_at_ms = ?1,
+               archive_reason = 'retention_ordinary',
+               impact_grade = (
+                 SELECT g.grade FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_grade_version = ?2,
+               impact_grade_state = (
+                 SELECT g.state FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_reason_codes_json = (
+                 SELECT g.reason_codes_json FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               ),
+               impact_evidence_json = (
+                 SELECT g.evidence_json FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
+                    AND g.grade_version = ?2
+                  LIMIT 1
+               )
+        "#,
+        rusqlite::params![archived_at_ms, impact_grade_version],
+    )?;
+
+    Ok((permanent, ordinary))
 }
 
 fn prune_contract_table(
@@ -2047,46 +3037,6 @@ fn enum_value<T: serde::Serialize>(value: T) -> anyhow::Result<String> {
         .to_string())
 }
 
-fn contract_retention_metadata(signal: &ContractWhaleSignal) -> (String, i64, String, String) {
-    let liquidation_btc =
-        signal.liquidation_long_btc.max(0.0) + signal.liquidation_short_btc.max(0.0);
-    let facts = ContractRetentionFacts {
-        severity: format!("{:?}", signal.severity),
-        impact_level: signal.impact_level.clone(),
-        total_volume_btc: signal.total_volume_btc,
-        window_sec: signal.window_sec,
-        net_volume_btc: signal.net_volume_btc,
-        liquidation_btc,
-        multi_exchange_confirmed: signal.multi_exchange_confirmed,
-        behavior_confirmed: signal.behavior_assessment.main_force_confirmed,
-        discord_sent: signal.discord_sent,
-    };
-    let class = classify_contract(&facts);
-    let reason = match class {
-        RetentionClass::Critical => "extreme_contract_evidence",
-        RetentionClass::Important if signal.discord_sent => "discord_sent",
-        RetentionClass::Important if signal.behavior_assessment.main_force_confirmed => {
-            "behavior_confirmed"
-        }
-        RetentionClass::Important if signal.net_volume_btc.abs() >= 500.0 => "large_net_flow",
-        RetentionClass::Important => "impact_or_multi_exchange",
-        RetentionClass::Ordinary => "ordinary_candidate",
-    };
-    let configured = contract_whale_runtime_config().retention;
-    let policy = RetentionPolicy {
-        ordinary_days: configured.signals_days,
-        important_days: configured.impact_b_days,
-        critical_days: configured.critical_days,
-    };
-    let retain_until = policy.retain_until(signal.ts, class);
-    (
-        class.key().to_string(),
-        retain_until,
-        reason.to_string(),
-        "v2".to_string(),
-    )
-}
-
 fn upsert_contract_whale_signals_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     signals: &[ContractWhaleSignal],
@@ -2103,10 +3053,9 @@ fn upsert_contract_whale_signals_in_transaction(
           price_start, price_end, price_move_pct, main_exchange, market_type,
           source_role, exchanges_json, active_sources_json, threshold_profile,
           dynamic_multiple, data_quality, discord_eligible, discord_sent,
-          discord_sent_at, retention_class, retain_until, retention_reason,
-          retention_version, payload_json, created_at
+          discord_sent_at, payload_json, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                  NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
+                  NULL, NULL, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
         ON CONFLICT(signal_id) DO UPDATE SET
           ts = excluded.ts,
           symbol = excluded.symbol,
@@ -2131,10 +3080,6 @@ fn upsert_contract_whale_signals_in_transaction(
           discord_eligible = excluded.discord_eligible,
           discord_sent = excluded.discord_sent,
           discord_sent_at = excluded.discord_sent_at,
-          retention_class = excluded.retention_class,
-          retain_until = excluded.retain_until,
-          retention_reason = excluded.retention_reason,
-          retention_version = excluded.retention_version,
           payload_json = excluded.payload_json,
           created_at = excluded.created_at
         "#,
@@ -2149,8 +3094,6 @@ fn upsert_contract_whale_signals_in_transaction(
         let exchanges_json = serde_json::to_string(&signal.exchanges)?;
         let active_sources_json = serde_json::to_string(&signal.active_sources)?;
         let payload_json = serde_json::to_string(signal)?;
-        let (retention_class, retain_until, retention_reason, retention_version) =
-            contract_retention_metadata(signal);
         stmt.execute(params![
             signal.id,
             signal.ts,
@@ -2176,10 +3119,6 @@ fn upsert_contract_whale_signals_in_transaction(
             bool_to_int(signal.discord_eligible),
             bool_to_int(signal.discord_sent),
             signal.discord_sent_at,
-            retention_class,
-            retain_until,
-            retention_reason,
-            retention_version,
             payload_json,
             now,
         ])
@@ -2255,6 +3194,24 @@ mod query_path_tests {
             cursor_ts: Some(1_700_000_010_000),
             cursor_signal_id: Some("contract-whale:ETH:cursor".to_string()),
             limit: 20,
+            ..ContractWhaleSignalQuery::default()
+        };
+
+        assert_eq!(
+            contract_whale_signal_query_path(&query),
+            ContractWhaleSignalQueryPath::General
+        );
+    }
+
+    #[test]
+    fn impact_baseline_profile_query_uses_general_path() {
+        let query = ContractWhaleSignalQuery {
+            symbol: Some("BTC".to_string()),
+            window_sec: Some(15),
+            threshold_profile: Some("binance_bitfinex".to_string()),
+            from_ts: Some(1_700_000_000_000),
+            to_ts: Some(1_700_086_400_000),
+            limit: 10_000,
             ..ContractWhaleSignalQuery::default()
         };
 

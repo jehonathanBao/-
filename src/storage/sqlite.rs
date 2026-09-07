@@ -11,6 +11,10 @@ use std::{
 use anyhow::Context;
 use rusqlite::{params, Connection, Transaction};
 
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i64 = 4_096;
+const SQLITE_CACHE_SIZE_KIB: i64 = -32 * 1_024;
+
 use super::migrations::MIGRATIONS;
 use crate::storage::spot_whale_repo::{
     SPOT_WHALE_BTC_PERMANENT_NET_DIRECTION_THRESHOLD_BASE,
@@ -111,8 +115,21 @@ impl SqliteStore {
     fn open_connection(&self) -> anyhow::Result<Connection> {
         let conn = Connection::open(&self.path)
             .with_context(|| format!("failed to open sqlite {}", self.path.display()))?;
-        conn.busy_timeout(Duration::from_secs(30))
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
             .context("failed to set sqlite busy_timeout")?;
+        // Keep all connections on the same production-safe WAL profile. These
+        // are connection-local settings, so applying them here avoids a read
+        // connection silently reverting to SQLite defaults.
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .context("failed to set sqlite synchronous mode")?;
+        conn.pragma_update(None, "wal_autocheckpoint", SQLITE_WAL_AUTOCHECKPOINT_PAGES)
+            .context("failed to set sqlite WAL autocheckpoint")?;
+        conn.pragma_update(None, "cache_size", SQLITE_CACHE_SIZE_KIB)
+            .context("failed to set sqlite cache size")?;
+        conn.pragma_update(None, "temp_store", "MEMORY")
+            .context("failed to set sqlite temp store")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("failed to enable sqlite foreign keys")?;
         Ok(conn)
     }
 
@@ -170,24 +187,6 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "TEXT NOT NULL DEFAULT 'primary'",
     )?;
     ensure_column(conn, "contract_flow_1s", "product_id", "TEXT")?;
-    ensure_column(
-        conn,
-        "contract_flow_1s",
-        "buy_trade_count",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_column(
-        conn,
-        "contract_flow_1s",
-        "sell_trade_count",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_column(
-        conn,
-        "contract_flow_1s",
-        "max_single_trade_share",
-        "REAL NOT NULL DEFAULT 0",
-    )?;
 
     ensure_column(
         conn,
@@ -213,120 +212,20 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "threshold_profile",
         "TEXT NOT NULL DEFAULT 'three_exchange'",
     )?;
-    for (column, definition) in [
-        ("retention_class", "TEXT NOT NULL DEFAULT 'ordinary'"),
-        ("retain_until", "INTEGER NOT NULL DEFAULT 0"),
-        ("retention_reason", "TEXT NOT NULL DEFAULT ''"),
-        ("retention_version", "TEXT NOT NULL DEFAULT 'v1'"),
-    ] {
-        ensure_column(conn, "contract_whale_signals", column, definition)?;
-    }
-    ensure_column(conn, "contract_whale_discord_outbox", "episode_key", "TEXT")?;
+    ensure_column(
+        conn,
+        "contract_whale_signals",
+        "storage_tier",
+        "TEXT NOT NULL DEFAULT 'hot'",
+    )?;
+    ensure_column(conn, "contract_whale_signals", "archived_at_ms", "INTEGER")?;
+    ensure_column(conn, "contract_whale_signals", "archive_reason", "TEXT")?;
+    ensure_column(conn, "contract_whale_signal_outcomes", "episode_id", "TEXT")?;
     conn.execute(
-        "UPDATE contract_whale_discord_outbox SET episode_key = signal_id WHERE episode_key IS NULL OR episode_key = ''",
+        "CREATE INDEX IF NOT EXISTS idx_contract_whale_signal_outcomes_episode ON contract_whale_signal_outcomes(episode_id)",
         [],
     )?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_contract_whale_discord_outbox_episode ON contract_whale_discord_outbox(episode_key)",
-    )?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_retention ON contract_whale_signals(retention_class, retain_until, ts)",
-    )?;
-    // Reclassify legacy S impact labels before calculating retention metadata.
-    // The raw percentile score is diagnostic only; S must have replayable hard
-    // evidence or it is represented as A in every downstream read path.
-    conn.execute(
-        r#"
-        UPDATE contract_whale_signals
-        SET payload_json = json_set(
-            payload_json,
-            '$.impactLevel', 'A',
-            '$.signalLevel', 'L3',
-            '$.signalLabel', 'HIGH IMPACT EVENT'
-        )
-        WHERE retention_version != 'v2'
-          AND UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-          AND NOT (
-            (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
-             AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
-                + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
-            OR
-            (total_volume_btc >= 20000
-             AND window_sec >= 60
-             AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
-             AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
-             AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
-             AND dominance >= 0.65)
-          )
-        "#,
-        [],
-    )?;
-    conn.execute(
-        r#"
-        UPDATE contract_whale_signals
-        SET retention_class = CASE
-              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND (
-                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
-                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
-                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
-                     OR (total_volume_btc >= 20000
-                         AND window_sec >= 60
-                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
-                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
-                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
-                         AND dominance >= 0.65)
-                   )
-                THEN 'critical'
-              WHEN discord_sent != 0
-                   OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
-                   OR ABS(COALESCE(net_volume_btc, 0.0)) >= 500
-                THEN 'important'
-              ELSE 'ordinary'
-            END,
-            retain_until = ts + CASE
-              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND (
-                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
-                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
-                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
-                     OR (total_volume_btc >= 20000
-                         AND window_sec >= 60
-                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
-                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
-                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
-                         AND dominance >= 0.65)
-                   )
-                THEN 365 * 86400000
-              WHEN discord_sent != 0
-                   OR UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) IN ('A','B','S')
-                   OR ABS(COALESCE(net_volume_btc, 0.0)) >= 500
-                THEN 30 * 86400000
-              ELSE 7 * 86400000
-            END,
-            retention_reason = CASE
-              WHEN UPPER(COALESCE(json_extract(payload_json, '$.impactLevel'), '')) = 'S'
-                   AND (
-                     (COALESCE(json_extract(payload_json, '$.liquidationSuspected'), 0) != 0
-                      AND (COALESCE(json_extract(payload_json, '$.liquidationLongBtc'), 0)
-                         + COALESCE(json_extract(payload_json, '$.liquidationShortBtc'), 0)) >= 2500)
-                     OR (total_volume_btc >= 20000
-                         AND window_sec >= 60
-                         AND COALESCE(json_extract(payload_json, '$.multiExchangeConfirmed'), 0) != 0
-                         AND COALESCE(json_extract(payload_json, '$.dynamicMultiple'), 0) >= 10
-                         AND COALESCE(json_extract(payload_json, '$.percentileLevel'), 0) >= 99.5
-                         AND dominance >= 0.65)
-                   )
-                THEN 'impact_s_hard_evidence'
-              WHEN discord_sent != 0 THEN 'legacy_discord_sent'
-              WHEN ABS(COALESCE(net_volume_btc, 0.0)) >= 500 THEN 'legacy_large_net_flow'
-              ELSE 'legacy_ordinary'
-            END,
-            retention_version = 'v2'
-        WHERE retain_until = 0 OR retention_version != 'v2'
-        "#,
-        [],
-    )?;
+    ensure_contract_whale_archive_columns(conn)?;
     ensure_column(
         conn,
         "contract_oi_snapshots",
@@ -357,6 +256,88 @@ fn ensure_contract_whale_columns(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn ensure_contract_whale_archive_columns(conn: &Connection) -> anyhow::Result<()> {
+    for table in [
+        "contract_whale_signal_archive",
+        "contract_whale_signal_permanent",
+    ] {
+        ensure_column(conn, table, "market_type", "TEXT NOT NULL DEFAULT 'perp'")?;
+        ensure_column(
+            conn,
+            table,
+            "source_role",
+            "TEXT NOT NULL DEFAULT 'primary'",
+        )?;
+        ensure_column(
+            conn,
+            table,
+            "active_sources_json",
+            "TEXT NOT NULL DEFAULT '{\"contract\":[],\"spot\":[]}'",
+        )?;
+        ensure_column(
+            conn,
+            table,
+            "threshold_profile",
+            "TEXT NOT NULL DEFAULT 'three_exchange'",
+        )?;
+        ensure_column(conn, table, "storage_tier", "TEXT NOT NULL DEFAULT 'cold'")?;
+        ensure_column(conn, table, "archived_at_ms", "INTEGER")?;
+        ensure_column(conn, table, "archive_reason", "TEXT")?;
+    }
+
+    // These columns make the permanent tier independently auditable even
+    // when the source lifecycle row has already left the hot table.
+    for table in [
+        "contract_whale_signal_archive",
+        "contract_whale_signal_permanent",
+    ] {
+        ensure_column(conn, table, "impact_grade", "TEXT")?;
+        ensure_column(conn, table, "impact_grade_version", "TEXT")?;
+        ensure_column(conn, table, "impact_grade_state", "TEXT")?;
+        ensure_column(conn, table, "impact_reason_codes_json", "TEXT")?;
+        ensure_column(conn, table, "impact_evidence_json", "TEXT")?;
+    }
+
+    conn.execute_batch(
+        r#"
+        DROP VIEW IF EXISTS contract_whale_signals_history;
+        CREATE VIEW contract_whale_signals_history AS
+        SELECT signal_id, ts, symbol, window_sec, signal_type, direction, severity,
+               score, total_volume_btc, net_volume_btc, total_notional_usd, dominance,
+               price_start, price_end, price_move_pct, main_exchange, market_type,
+               source_role, exchanges_json, active_sources_json, threshold_profile,
+               dynamic_multiple, data_quality, discord_eligible, discord_sent,
+               discord_sent_at, payload_json, created_at, storage_tier,
+               archived_at_ms, archive_reason
+          FROM contract_whale_signals
+        UNION ALL
+        SELECT signal_id, ts, symbol, window_sec, signal_type, direction, severity,
+               score, total_volume_btc, net_volume_btc, total_notional_usd, dominance,
+               price_start, price_end, price_move_pct, main_exchange, market_type,
+               source_role, exchanges_json, active_sources_json, threshold_profile,
+               dynamic_multiple, data_quality, discord_eligible, discord_sent,
+               discord_sent_at, payload_json, created_at, storage_tier,
+               archived_at_ms, archive_reason
+          FROM contract_whale_signal_archive
+        UNION ALL
+        SELECT signal_id, ts, symbol, window_sec, signal_type, direction, severity,
+               score, total_volume_btc, net_volume_btc, total_notional_usd, dominance,
+               price_start, price_end, price_move_pct, main_exchange, market_type,
+               source_role, exchanges_json, active_sources_json, threshold_profile,
+               dynamic_multiple, data_quality, discord_eligible, discord_sent,
+               discord_sent_at, payload_json, created_at, storage_tier,
+               archived_at_ms, archive_reason
+          FROM contract_whale_signal_permanent;
+        CREATE INDEX IF NOT EXISTS idx_contract_whale_signals_storage_tier_ts
+          ON contract_whale_signals(storage_tier, ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_contract_event_impact_grades_event_state_grade
+          ON contract_event_impact_grades(event_id, grade_version, state, grade);
+        "#,
+    )
+    .context("failed to create contract whale hot/cold read model")?;
+    Ok(())
+}
+
 fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
     ensure_column(
         conn,
@@ -364,14 +345,6 @@ fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         "is_permanent",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
-    for (column, definition) in [
-        ("retention_class", "TEXT NOT NULL DEFAULT 'ordinary'"),
-        ("retain_until", "INTEGER NOT NULL DEFAULT 0"),
-        ("retention_reason", "TEXT NOT NULL DEFAULT ''"),
-        ("retention_version", "TEXT NOT NULL DEFAULT 'v1'"),
-    ] {
-        ensure_column(conn, "spot_whale_signals", column, definition)?;
-    }
     conn.execute(
         r#"
         UPDATE spot_whale_signals
@@ -396,40 +369,6 @@ fn ensure_spot_whale_columns(conn: &Connection) -> anyhow::Result<()> {
         ],
     )
     .context("failed to backfill spot_whale_signals.is_permanent")?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_spot_whale_signals_retention ON spot_whale_signals(retention_class, retain_until, ts)",
-    )?;
-    conn.execute(
-        r#"
-        UPDATE spot_whale_signals
-        SET retention_class = CASE
-              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
-                THEN 'critical'
-              WHEN discord_sent != 0 OR multi_exchange_confirmed != 0
-                   OR ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 1000.0 ELSE 100.0 END
-                THEN 'important'
-              ELSE 'ordinary'
-            END,
-            retain_until = ts + CASE
-              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
-                THEN 365 * 86400000
-              WHEN discord_sent != 0 OR multi_exchange_confirmed != 0
-                   OR ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 1000.0 ELSE 100.0 END
-                THEN 30 * 86400000
-              ELSE 7 * 86400000
-            END,
-            retention_reason = CASE
-              WHEN ABS(net_volume_base) >= CASE WHEN UPPER(TRIM(symbol)) = 'ETH' THEN 5000.0 ELSE 500.0 END
-                THEN 'legacy_extreme_spot_flow'
-              WHEN discord_sent != 0 THEN 'legacy_discord_sent'
-              WHEN multi_exchange_confirmed != 0 THEN 'legacy_multi_exchange'
-              ELSE 'legacy_ordinary'
-            END,
-            retention_version = 'v1'
-        WHERE retain_until = 0 OR retention_version != 'v1'
-        "#,
-        [],
-    )?;
     Ok(())
 }
 
@@ -484,10 +423,7 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
           buy_notional_usd REAL NOT NULL,
           sell_notional_usd REAL NOT NULL,
           trade_count INTEGER NOT NULL,
-          buy_trade_count INTEGER NOT NULL DEFAULT 0,
-          sell_trade_count INTEGER NOT NULL DEFAULT 0,
           max_single_trade_btc REAL,
-          max_single_trade_share REAL NOT NULL DEFAULT 0,
           vwap REAL,
           created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
           PRIMARY KEY (ts_bucket, exchange, symbol, market_type)
@@ -495,8 +431,7 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
         INSERT OR REPLACE INTO contract_flow_1s_next (
           ts_bucket, exchange, symbol, market_type, source_role, product_id,
           buy_volume_btc, sell_volume_btc, buy_notional_usd, sell_notional_usd,
-          trade_count, buy_trade_count, sell_trade_count, max_single_trade_btc,
-          max_single_trade_share, vwap, created_at
+          trade_count, max_single_trade_btc, vwap, created_at
         )
         SELECT
           ts_bucket, exchange, symbol,
@@ -504,8 +439,7 @@ fn ensure_contract_flow_market_type_primary_key(conn: &Connection) -> anyhow::Re
           COALESCE(NULLIF(source_role, ''), 'primary'),
           product_id,
           buy_volume_btc, sell_volume_btc, buy_notional_usd, sell_notional_usd,
-          trade_count, buy_trade_count, sell_trade_count, max_single_trade_btc,
-          max_single_trade_share, vwap, created_at
+          trade_count, max_single_trade_btc, vwap, created_at
         FROM contract_flow_1s;
         DROP TABLE contract_flow_1s;
         ALTER TABLE contract_flow_1s_next RENAME TO contract_flow_1s;

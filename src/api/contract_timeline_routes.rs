@@ -136,7 +136,7 @@ pub fn canonical_timeline_meta_for_signal_range(
     let persisted_ts = store
         .with_connection(|conn| {
             let mut sql = String::from(
-                "SELECT MAX(created_at) FROM contract_whale_signals WHERE symbol = ?1",
+                "SELECT MAX(created_at) FROM contract_whale_signals_history WHERE symbol = ?1",
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(symbol.to_string())];
             if let Some(from_ts) = history_query.from_ts {

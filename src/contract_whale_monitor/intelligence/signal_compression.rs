@@ -35,6 +35,9 @@ pub fn build_trade_ideas(
         let Some(signal) = items.iter().find(|item| item.id == ranked_event.signal_id) else {
             continue;
         };
+        if !crate::contract_whale_monitor::trading::is_v3_strategy_eligible(signal) {
+            continue;
+        }
         let liquidity_behavior = behavior_for_signal(signal);
         let score = adjusted_trade_score(
             signal,

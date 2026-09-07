@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily online SQLite backup for Toxic Order Monitor
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=toxic-order-monitor-backup.service
+
+[Install]
+WantedBy=timers.target

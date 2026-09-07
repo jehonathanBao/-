@@ -4,6 +4,24 @@ pub mod fine_tune;
 pub mod noise_filter;
 pub mod scoring;
 
+pub const CONTRACT_WHALE_STRATEGY_STATUS: &str = "experimental";
+pub const CONTRACT_WHALE_STRATEGY_PRODUCTION_READY: bool = false;
+pub const CONTRACT_WHALE_STRATEGY_GATE_REASON: &str = "walk_forward_validation_pending";
+
+/// Only event-owned V3 assessments that are explicitly confirmed may enter a
+/// directional strategy projection.  Detector-time payloads intentionally do
+/// not carry this state, so missing state fails closed as no-trade.
+pub fn is_v3_strategy_eligible(signal: &ContractWhaleSignal) -> bool {
+    signal
+        .impact_grade_state
+        .as_deref()
+        .is_some_and(|state| state.eq_ignore_ascii_case("confirmed"))
+        && signal
+            .impact_grade_version
+            .as_deref()
+            .is_some_and(|version| !version.trim().is_empty())
+}
+
 use crate::contract_whale_monitor::types::{
     ContractWhaleMarketStructureLite, ContractWhaleNoTradeZone,
     ContractWhaleNoiseSuppressionSummary, ContractWhaleSignal,
@@ -41,6 +59,12 @@ pub fn build_trading_decision_response(
     let mut no_trade_zones = Vec::new();
 
     for signal in items {
+        if !is_v3_strategy_eligible(signal) {
+            if let Some(zone) = to_no_trade_zone(signal, "impact_grade_not_confirmed") {
+                push_unique_no_trade_zone(&mut no_trade_zones, zone);
+            }
+            continue;
+        }
         let base_score = score_signal(signal);
         let liquidity_behavior =
             crate::contract_whale_monitor::intelligence::liquidity::behavior_for_signal(signal);
@@ -138,6 +162,8 @@ pub fn build_trading_decision_response(
     if risk_state.suppresses_decision_support() {
         top_setups.clear();
     }
+    let mut noise_suppression = noise_suppression;
+    noise_suppression.tradeable_setups = top_setups.len();
     for zone in risk_context.no_trade_zones {
         push_unique_no_trade_zone(&mut no_trade_zones, zone);
     }
@@ -152,6 +178,9 @@ pub fn build_trading_decision_response(
         bias_confidence: bias.confidence,
         bias_reason: bias.reason,
         noise_suppression,
+        strategy_status: CONTRACT_WHALE_STRATEGY_STATUS.to_string(),
+        strategy_production_ready: CONTRACT_WHALE_STRATEGY_PRODUCTION_READY,
+        strategy_gate_reason: CONTRACT_WHALE_STRATEGY_GATE_REASON.to_string(),
         top_setups,
         no_trade_zones,
     }

@@ -3,11 +3,14 @@ use rusqlite::params;
 use super::{
     sqlite::{column_exists, table_exists, SqliteStore},
     storage_health::{
-        classify_retention_error, RetentionTableResult, RetentionTableStatus, WalCheckpointResult,
+        classify_retention_error, RetentionTableResult, RetentionTableStatus,
+        StorageHealthSnapshot, WalCheckpointResult,
     },
 };
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+const HOUR_MS: i64 = 60 * 60 * 1000;
+const GIB: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeRetentionPolicy {
@@ -19,6 +22,9 @@ pub struct RuntimeRetentionPolicy {
     pub replay_runs_retention_ms: i64,
     pub new_token_l2_metrics_retention_ms: i64,
     pub new_token_l2_outcomes_retention_ms: i64,
+    /// Completed Binance orderflow aggregates are a derived cache. Keep a
+    /// bounded window so repeated K-line polling cannot grow SQLite forever.
+    pub binance_orderflow_delta_retention_ms: i64,
     pub delete_batch_size: usize,
     pub max_batches_per_table: usize,
     pub batch_pause_ms: u64,
@@ -30,19 +36,43 @@ impl Default for RuntimeRetentionPolicy {
     fn default() -> Self {
         Self {
             toxic_events_retention_ms: 30 * DAY_MS,
-            toxic_snapshots_retention_ms: 7 * DAY_MS,
-            flow_snapshots_retention_ms: 7 * DAY_MS,
-            venue_health_retention_ms: 7 * DAY_MS,
-            vpin_buckets_retention_ms: 7 * DAY_MS,
+            toxic_snapshots_retention_ms: 24 * HOUR_MS,
+            flow_snapshots_retention_ms: 24 * HOUR_MS,
+            venue_health_retention_ms: 24 * HOUR_MS,
+            vpin_buckets_retention_ms: 14 * DAY_MS,
             replay_runs_retention_ms: 30 * DAY_MS,
             new_token_l2_metrics_retention_ms: 7 * DAY_MS,
             new_token_l2_outcomes_retention_ms: 365 * DAY_MS,
-            delete_batch_size: 250,
-            max_batches_per_table: 80,
-            batch_pause_ms: 10,
-            lock_wait_ms: 250,
-            max_table_duration_ms: 3_000,
+            binance_orderflow_delta_retention_ms: 21 * DAY_MS,
+            delete_batch_size: 500,
+            max_batches_per_table: 100,
+            batch_pause_ms: 5,
+            lock_wait_ms: 5_000,
+            max_table_duration_ms: 5_000,
         }
+    }
+}
+
+impl RuntimeRetentionPolicy {
+    /// Increase cleanup throughput when the database is already large or the
+    /// filesystem is entering the warning band. Deletes remain batched and
+    /// time-bounded so writers are never handed an unbounded maintenance job.
+    pub fn for_storage_health(snapshot: &StorageHealthSnapshot) -> Self {
+        let mut policy = Self::default();
+        let pressure = snapshot.disk_used_percent >= 80.0 || snapshot.db_size_bytes >= 70 * GIB;
+        if pressure {
+            policy.delete_batch_size = 1_000;
+            policy.max_batches_per_table = 200;
+            policy.batch_pause_ms = 0;
+            policy.lock_wait_ms = 5_000;
+            policy.max_table_duration_ms = 12_000;
+        }
+        if snapshot.disk_used_percent >= 84.0 || snapshot.disk_free_bytes < 24 * GIB {
+            policy.delete_batch_size = 2_000;
+            policy.max_batches_per_table = 300;
+            policy.max_table_duration_ms = 15_000;
+        }
+        policy
     }
 }
 
@@ -56,6 +86,7 @@ pub struct RuntimeRetentionPruneResult {
     pub replay_runs_deleted: usize,
     pub new_token_l2_metrics_deleted: usize,
     pub new_token_l2_outcomes_deleted: usize,
+    pub binance_orderflow_delta_cache_deleted: usize,
     pub table_results: Vec<RetentionTableResult>,
     pub wal_checkpoint: Option<WalCheckpointResult>,
 }
@@ -70,6 +101,7 @@ impl RuntimeRetentionPruneResult {
             || self.replay_runs_deleted > 0
             || self.new_token_l2_metrics_deleted > 0
             || self.new_token_l2_outcomes_deleted > 0
+            || self.binance_orderflow_delta_cache_deleted > 0
     }
 
     pub fn total_deleted(&self) -> usize {
@@ -81,6 +113,7 @@ impl RuntimeRetentionPruneResult {
             + self.replay_runs_deleted
             + self.new_token_l2_metrics_deleted
             + self.new_token_l2_outcomes_deleted
+            + self.binance_orderflow_delta_cache_deleted
     }
 }
 
@@ -108,6 +141,8 @@ impl RuntimeRetentionRepo for SqliteStore {
             retention_cutoff(now_ms, policy.new_token_l2_metrics_retention_ms);
         let new_token_l2_outcomes_cutoff =
             retention_cutoff(now_ms, policy.new_token_l2_outcomes_retention_ms);
+        let binance_orderflow_delta_cutoff =
+            retention_cutoff(now_ms, policy.binance_orderflow_delta_retention_ms);
 
         self.with_write_connection(|conn| {
             conn.busy_timeout(std::time::Duration::from_millis(policy.lock_wait_ms.max(1)))?;
@@ -181,6 +216,15 @@ impl RuntimeRetentionRepo for SqliteStore {
                 "observed_at",
                 "observed_at",
                 new_token_l2_outcomes_cutoff,
+                policy,
+                &mut result.table_results,
+            )?;
+            result.binance_orderflow_delta_cache_deleted = prune_table(
+                conn,
+                "binance_orderflow_delta_cache",
+                "candle_time",
+                "candle_time",
+                binance_orderflow_delta_cutoff,
                 policy,
                 &mut result.table_results,
             )?;

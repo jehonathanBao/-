@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -11,7 +12,10 @@ use super::{
         normalize_binance_funding_rate_json_for_symbol,
         normalize_binance_open_interest_json_for_symbol,
     },
-    types::{ContractFundingSnapshot, ContractLiquidationOrder, ContractOiSnapshot},
+    types::{
+        ContractExchange, ContractFundingSnapshot, ContractLiquidationOrder, ContractOiSnapshot,
+        ContractReferencePriceSnapshot,
+    },
     LOG_PREFIX, LOG_TARGET,
 };
 
@@ -26,10 +30,24 @@ pub const BINANCE_BTC_USDT_PERP_PREMIUM_INDEX_URL: &str =
 const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
 
 pub fn collector_status() -> &'static str {
-    "defined_not_started"
+    "ready"
 }
 
 pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiquidationOrder>) {
+    run_binance_force_order_collector_for_symbol("BTC", sender).await;
+}
+
+/// Collect liquidation orders for one USDT-margined perpetual symbol.  The
+/// Binance stream is symbol-scoped, so callers can run this concurrently for
+/// BTC, ETH and any subsequently configured symbol.
+pub async fn run_binance_force_order_collector_for_symbol(
+    symbol: &str,
+    sender: mpsc::Sender<ContractLiquidationOrder>,
+) {
+    let stream_url = format!(
+        "wss://fstream.binance.com/ws/{}@forceOrder",
+        binance_usdt_perp_symbol(symbol).to_ascii_lowercase()
+    );
     let mut reconnect_attempt = 0_u32;
     loop {
         tracing::info!(
@@ -38,13 +56,14 @@ pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiqu
             "{} connecting binance forceOrder stream",
             LOG_PREFIX
         );
-        match connect_async(BINANCE_BTC_USDT_PERP_FORCE_ORDER_STREAM).await {
+        match connect_async(&stream_url).await {
             Ok((ws, _)) => {
                 reconnect_attempt = 0;
                 tracing::info!(
                     target: LOG_TARGET,
                     event = log_events::WS_CONNECTED,
-                    "{} binance forceOrder stream connected",
+                    "{} binance {} forceOrder stream connected",
+                    symbol,
                     LOG_PREFIX
                 );
                 let (_, mut read) = ws.split();
@@ -52,7 +71,7 @@ pub async fn run_binance_force_order_collector(sender: mpsc::Sender<ContractLiqu
                     match message {
                         Ok(message) => {
                             if let Ok(text) = message.to_text() {
-                                if let Some(order) = handle_force_order_message(text) {
+                                    if let Some(order) = handle_force_order_message_for_symbol(symbol, text) {
                                     if sender.send(order).await.is_err() {
                                         tracing::warn!(
                                             target: LOG_TARGET,
@@ -134,6 +153,200 @@ pub fn binance_premium_index_url(symbol: &str) -> String {
         "https://fapi.binance.com/fapi/v1/premiumIndex?symbol={}",
         binance_usdt_perp_symbol(symbol)
     )
+}
+
+pub fn binance_futures_ticker_url(symbol: &str) -> String {
+    format!(
+        "https://fapi.binance.com/fapi/v1/ticker/price?symbol={}",
+        binance_usdt_perp_symbol(symbol)
+    )
+}
+
+pub fn binance_spot_ticker_url(symbol: &str) -> String {
+    format!(
+        "https://api.binance.com/api/v3/ticker/price?symbol={}",
+        binance_usdt_perp_symbol(symbol)
+    )
+}
+
+/// Load closed Binance 1m mark/index candles for deterministic V4.1 replay.
+/// Pagination, bounded retries and key-based de-duplication make this safe to
+/// resume after a partial historical import.
+pub async fn fetch_binance_reference_history_for_symbol(
+    client: &reqwest::Client,
+    symbol: &str,
+    start_ts: i64,
+    end_ts: i64,
+) -> anyhow::Result<Vec<ContractReferencePriceSnapshot>> {
+    let pair = binance_usdt_perp_symbol(symbol);
+    let mut merged = BTreeMap::<(i64, String), ContractReferencePriceSnapshot>::new();
+    for (source, endpoint, parameter) in [
+        ("mark", "markPriceKlines", "symbol"),
+        ("index", "indexPriceKlines", "pair"),
+    ] {
+        let mut cursor = start_ts.div_euclid(60_000).saturating_mul(60_000);
+        while cursor <= end_ts {
+            let url = format!(
+                "https://fapi.binance.com/fapi/v1/{endpoint}?{parameter}={pair}&interval=1m&startTime={cursor}&endTime={end_ts}&limit=1500"
+            );
+            let mut payload = None;
+            let mut last_error = None;
+            for attempt in 0..3_u64 {
+                match client.get(&url).send().await {
+                    Ok(response) => match response.error_for_status() {
+                        Ok(response) => match response.json::<serde_json::Value>().await {
+                            Ok(value) => {
+                                payload = Some(value);
+                                break;
+                            }
+                            Err(error) => last_error = Some(error.to_string()),
+                        },
+                        Err(error) => last_error = Some(error.to_string()),
+                    },
+                    Err(error) => last_error = Some(error.to_string()),
+                }
+                tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+            }
+            let payload = payload.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "binance {source} history request failed: {}",
+                    last_error.unwrap_or_else(|| "unknown error".to_string())
+                )
+            })?;
+            let rows = payload
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("binance {source} history response is not an array"))?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut newest = cursor;
+            for row in rows {
+                let Some(values) = row.as_array() else { continue };
+                let Some(open_ts) = values.first().and_then(serde_json::Value::as_i64) else {
+                    continue;
+                };
+                let close = values
+                    .get(4)
+                    .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()));
+                let Some(price) = close.filter(|value: &f64| value.is_finite() && *value > 0.0)
+                else {
+                    continue;
+                };
+                let close_ts = values
+                    .get(6)
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or_else(|| open_ts.saturating_add(59_999));
+                let ts_bucket = open_ts.div_euclid(60_000).saturating_mul(60_000);
+                newest = newest.max(ts_bucket);
+                merged.insert(
+                    (ts_bucket, source.to_string()),
+                    ContractReferencePriceSnapshot {
+                        ts_bucket,
+                        exchange: ContractExchange::Binance,
+                        symbol: symbol.trim().to_ascii_uppercase(),
+                        price_source: source.to_string(),
+                        price,
+                        premium_bps: None,
+                        event_time_ms: close_ts,
+                        received_at_ms: crate::normalizers::trade::now_ms(),
+                    },
+                );
+            }
+            let next = newest.saturating_add(60_000);
+            if next <= cursor || rows.len() < 1500 {
+                break;
+            }
+            cursor = next;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+    Ok(merged.into_values().collect())
+}
+
+/// Fetch the four Binance reference-price legs used by V4.1. Rows are
+/// minute-bucketed in storage, while event and local receive timestamps remain
+/// available for freshness and degradation decisions.
+pub async fn fetch_binance_reference_prices_for_symbol(
+    client: &reqwest::Client,
+    symbol: &str,
+    fallback_ts: i64,
+) -> anyhow::Result<Vec<ContractReferencePriceSnapshot>> {
+    let premium = client
+        .get(binance_premium_index_url(symbol))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let futures = client
+        .get(binance_futures_ticker_url(symbol))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let spot = client
+        .get(binance_spot_ticker_url(symbol))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    Ok(normalize_binance_reference_prices(
+        symbol,
+        &premium,
+        &futures,
+        &spot,
+        fallback_ts,
+    ))
+}
+
+pub fn normalize_binance_reference_prices(
+    symbol: &str,
+    premium: &serde_json::Value,
+    futures: &serde_json::Value,
+    spot: &serde_json::Value,
+    received_at_ms: i64,
+) -> Vec<ContractReferencePriceSnapshot> {
+    fn positive(value: Option<&serde_json::Value>) -> Option<f64> {
+        let value = value.and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|raw| raw.parse::<f64>().ok()))
+        })?;
+        (value.is_finite() && value > 0.0).then_some(value)
+    }
+    let event_time_ms = premium
+        .get("time")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(received_at_ms);
+    let ts_bucket = event_time_ms.div_euclid(60_000).saturating_mul(60_000);
+    let mark = positive(premium.get("markPrice"));
+    let index = positive(premium.get("indexPrice"));
+    let premium_bps = mark
+        .zip(index)
+        .map(|(mark, index)| ((mark / index) - 1.0) * 10_000.0)
+        .filter(|value| value.is_finite());
+    let mut rows = Vec::with_capacity(4);
+    let mut push = |source: &str, price: Option<f64>, event_ts: i64| {
+        if let Some(price) = price {
+            rows.push(ContractReferencePriceSnapshot {
+                ts_bucket,
+                exchange: ContractExchange::Binance,
+                symbol: symbol.trim().to_ascii_uppercase(),
+                price_source: source.to_string(),
+                price,
+                premium_bps,
+                event_time_ms: event_ts,
+                received_at_ms,
+            });
+        }
+    };
+    push("mark", mark, event_time_ms);
+    push("index", index, event_time_ms);
+    push("futures_last", positive(futures.get("price")), received_at_ms);
+    push("spot", positive(spot.get("price")), received_at_ms);
+    rows
 }
 
 pub async fn fetch_binance_open_interest_snapshot(

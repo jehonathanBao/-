@@ -12,7 +12,7 @@ COPY config ./config
 COPY docs ./docs
 COPY web ./web
 
-RUN cargo build --release --bin btc-toxic-flow-monitor-rs
+RUN cargo build --release --bin btc-toxic-flow-monitor-rs --bin cwm_v4_backfill --bin cwm_v42_backfill
 
 FROM debian:bookworm-slim AS runtime
 
@@ -24,6 +24,8 @@ RUN apt-get update \
     && useradd --system --create-home --home-dir /home/toxic toxic
 
 COPY --from=builder /app/target/release/btc-toxic-flow-monitor-rs ./btc-toxic-flow-monitor-rs
+COPY --from=builder /app/target/release/cwm_v4_backfill ./cwm_v4_backfill
+COPY --from=builder /app/target/release/cwm_v42_backfill ./cwm_v42_backfill
 COPY config ./config
 
 RUN mkdir -p /app/data /app/.runtime \

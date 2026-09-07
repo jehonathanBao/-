@@ -22,7 +22,7 @@ use btc_toxic_flow_monitor_rs::{
         runtime_retention_repo::{RuntimeRetentionPolicy, RuntimeRetentionRepo},
         snapshots_repo::SnapshotsRepo,
         sqlite::{column_exists, SqliteStore},
-        storage_health::{StorageHealthGuardConfig, StorageHealthTracker},
+        storage_health::{StorageHealthGuardConfig, StorageHealthSnapshot, StorageHealthTracker},
         toxic_events_repo::ToxicEventsRepo,
         venue_health_repo::VenueHealthRepo,
         vpin_repo::VpinRepo,
@@ -462,6 +462,7 @@ fn runtime_retention_caps_each_table_to_short_delete_batches() {
                 replay_runs_retention_ms: 10_000,
                 new_token_l2_metrics_retention_ms: 10_000,
                 new_token_l2_outcomes_retention_ms: 10_000,
+                binance_orderflow_delta_retention_ms: 10_000,
                 delete_batch_size: 1,
                 max_batches_per_table: 2,
                 batch_pause_ms: 0,
@@ -482,6 +483,87 @@ fn runtime_retention_caps_each_table_to_short_delete_batches() {
         })
         .expect("count remaining stale rows");
     assert_eq!(stale_remaining, 1);
+}
+
+#[test]
+fn runtime_retention_prunes_binance_orderflow_delta_cache() {
+    let store = open_store("runtime_retention_binance_orderflow_cache");
+    store.migrate().expect("migrate");
+    let now = 1_800_000_000_000_i64;
+    store
+        .with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO binance_orderflow_delta_cache (
+                    symbol, interval, candle_time, close_time, volume_base,
+                    volume_quote, buy_base, sell_base, buy_quote, sell_quote,
+                    delta_base, delta_quote, delta_pct, trade_count, computed_at_ms
+                 ) VALUES ('BTCUSDT', '1h', ?1, ?1, 1, 1, 0.6, 0.4, 0.6, 0.4,
+                           0.2, 0.2, 20, 1, ?1)",
+                [now - 40_000_i64],
+            )?;
+            conn.execute(
+                "INSERT INTO binance_orderflow_delta_cache (
+                    symbol, interval, candle_time, close_time, volume_base,
+                    volume_quote, buy_base, sell_base, buy_quote, sell_quote,
+                    delta_base, delta_quote, delta_pct, trade_count, computed_at_ms
+                 ) VALUES ('BTCUSDT', '1h', ?1, ?1, 1, 1, 0.6, 0.4, 0.6, 0.4,
+                           0.2, 0.2, 20, 1, ?1)",
+                [now],
+            )?;
+            Ok(())
+        })
+        .expect("seed Binance orderflow cache");
+
+    let result = store
+        .prune_runtime_retention(
+            now,
+            &RuntimeRetentionPolicy {
+                binance_orderflow_delta_retention_ms: 10_000,
+                ..RuntimeRetentionPolicy::default()
+            },
+        )
+        .expect("prune runtime retention");
+
+    assert_eq!(result.binance_orderflow_delta_cache_deleted, 1);
+    let remaining: i64 = store
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM binance_orderflow_delta_cache WHERE candle_time < ?1",
+                [now - 10_000_i64],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count remaining stale cache rows");
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn runtime_retention_switches_to_burst_mode_when_storage_is_large() {
+    let mut snapshot = StorageHealthSnapshot::default();
+    snapshot.db_size_bytes = 80 * 1024 * 1024 * 1024;
+    snapshot.disk_used_percent = 73.0;
+    snapshot.disk_free_bytes = 41 * 1024 * 1024 * 1024;
+
+    let policy = RuntimeRetentionPolicy::for_storage_health(&snapshot);
+
+    assert_eq!(policy.delete_batch_size, 1_000);
+    assert_eq!(policy.max_batches_per_table, 200);
+    assert_eq!(policy.batch_pause_ms, 0);
+    assert_eq!(policy.max_table_duration_ms, 12_000);
+}
+
+#[test]
+fn runtime_retention_uses_emergency_burst_when_disk_is_low() {
+    let mut snapshot = StorageHealthSnapshot::default();
+    snapshot.db_size_bytes = 80 * 1024 * 1024 * 1024;
+    snapshot.disk_used_percent = 85.0;
+    snapshot.disk_free_bytes = 20 * 1024 * 1024 * 1024;
+
+    let policy = RuntimeRetentionPolicy::for_storage_health(&snapshot);
+
+    assert_eq!(policy.delete_batch_size, 2_000);
+    assert_eq!(policy.max_batches_per_table, 300);
+    assert_eq!(policy.max_table_duration_ms, 15_000);
 }
 
 #[test]

@@ -1,0 +1,12 @@
+[Unit]
+Description=Minute release gate health samples for Toxic Order Monitor
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+RandomizedDelaySec=10s
+Unit=toxic-order-monitor-release-gates.service
+
+[Install]
+WantedBy=timers.target

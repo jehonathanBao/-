@@ -32,30 +32,6 @@ describe("contract whale api", () => {
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
 
-  it("normalizes evidence-first behavior assessment fields", () => {
-    const signal = normalizeContractWhaleSignal({
-      id: "behavior-1",
-      symbol: "BTC",
-      signalType: "aggressive_buy",
-      behaviorType: "short_covering",
-      behaviorState: "provisional",
-      behaviorConfidence: 62,
-      behaviorMainForceConfirmed: false,
-      behaviorSupportingEvidence: ["OI 方向一致"],
-      behaviorCounterEvidence: ["OI 下降反对新多头建仓"],
-      behaviorRationale: "更像空头回补",
-    });
-
-    expect(signal).toMatchObject({
-      behaviorType: "short_covering",
-      behaviorState: "provisional",
-      behaviorConfidence: 62,
-      behaviorMainForceConfirmed: false,
-      behaviorRationale: "更像空头回补",
-    });
-    expect(signal.behaviorCounterEvidence).toContain("oi 下降反对新多头建仓");
-  });
-
   it("preserves lifecycle snapshot semantics and OI evidence coverage", () => {
     const signal = normalizeContractWhaleSignal({
       id: "signal-1",
@@ -1019,6 +995,9 @@ describe("contract whale api", () => {
             normalizedScore: 0.88,
             normalizedStrength: "EXTREME",
             impactLevel: "A",
+            impactGrade: "A",
+            impactGradeState: "confirmed",
+            impactGradeVersion: "cwm_impact_v3_1",
             signalLevel: "L3",
             signalLabel: "HIGH IMPACT EVENT",
             volume: 4_876,
@@ -1108,7 +1087,7 @@ describe("contract whale api", () => {
         zScore: 2.14,
         percentile: 93,
         normalizedScore: 0.88,
-        normalizedStrength: "EXTREME",
+        normalizedStrength: "HIGH",
         impactLevel: "A",
         signalLevel: "L3",
         signalLabel: "HIGH IMPACT EVENT",
@@ -1374,42 +1353,6 @@ describe("contract whale api", () => {
     });
   });
 
-  it("keeps detector impact canonical while exposing cohort diagnostics", async () => {
-    axios.get.mockResolvedValueOnce({
-      data: {
-        active: [
-          {
-            eventId: "impact-consistency-1",
-            symbol: "BTC",
-            impactLevel: "A",
-            signalLevel: "L3",
-            signalLabel: "HIGH IMPACT EVENT",
-            impactScore: 6.357,
-            zScore: 6.357,
-            percentile: 99.5,
-            cohortImpactLevel: "C",
-            cohortSignalLevel: "L1",
-            cohortSignalLabel: "LOW IMPACT EVENT",
-            cohortImpactScore: 1.288,
-            cohortZScore: 1.287,
-            cohortPercentile: 90.476,
-          },
-        ],
-        closed: [],
-      },
-    });
-
-    const payload = await fetchFinalEventsV2({ symbol: "BTC", limit: 100, range: "24h" });
-
-    expect(payload.active[0]).toMatchObject({
-      impactLevel: "A",
-      signalLevel: "L3",
-      cohortImpactLevel: "C",
-      cohortSignalLevel: "L1",
-      cohortPercentile: 90.476,
-    });
-  });
-
   it("maps latest latency metadata for contract whale snapshots", async () => {
     axios.get.mockResolvedValueOnce({
       data: {
@@ -1503,15 +1446,14 @@ describe("contract whale api", () => {
     axios.get.mockResolvedValueOnce({
       data: {
         flowRetentionDays: 14,
-        signalRetentionDays: 365,
-        signalProtectSeverityS: true,
-        signalProtectNetVolumeBtc: 500,
+        signalRetentionDays: 7,
+        impactBRetentionDays: 90,
+        signalProtectImpactAS: true,
         cleanupIntervalHours: 1,
         tables: {
           contractWhaleSignals: {
             rowCount: 99,
-            protectedSCount: 3,
-            protectedNetVolumeCount: 5,
+            protectedImpactASCount: 8,
           },
         },
       },
@@ -1525,15 +1467,14 @@ describe("contract whale api", () => {
     );
     expect(payload).toMatchObject({
       flowRetentionDays: 14,
-      signalRetentionDays: 365,
-      signalProtectSeverityS: true,
-      signalProtectNetVolumeBtc: 500,
+      signalRetentionDays: 7,
+      impactBRetentionDays: 90,
+      signalProtectImpactAS: true,
       cleanupIntervalHours: 1,
       tables: {
         contractWhaleSignals: {
           rowCount: 99,
-          protectedSCount: 3,
-          protectedNetVolumeCount: 5,
+          protectedImpactASCount: 8,
         },
       },
     });
@@ -1846,7 +1787,7 @@ describe("contract whale api", () => {
     expect(signal.liquidationEvidenceReason).toBe("price_volume_shape_only");
   });
 
-  it("derives impact mapping from legacy percentile and threshold metadata when normalized fields are absent", () => {
+  it("fails closed when legacy impact evidence is incomplete", () => {
     const signal = normalizeContractWhaleSignal({
       id: "legacy-impact-signal",
       symbol: "BTC",
@@ -1855,14 +1796,18 @@ describe("contract whale api", () => {
       dynamicMultiple: 9.4,
       dynamicThresholdLevel: "critical",
       percentileLevel: 99.9,
+      impactLevel: "S",
+      signalLevel: "S",
+      signalLabel: "SHOCK IMPACT EVENT",
+      normalizedStrength: "EXTREME",
     });
 
     expect(signal.impactScore).toBe(9.4);
     expect(signal.percentile).toBe(99.9);
-    expect(signal.impactLevel).toBe("S");
-    expect(signal.signalLevel).toBe("S");
-    expect(signal.signalLabel).toBe("SHOCK IMPACT EVENT");
-    expect(signal.normalizedStrength).toBe("EXTREME");
+    expect(signal.impactLevel).toBe("UNRATED");
+    expect(signal.signalLevel).toBe("N/A");
+    expect(signal.signalLabel).toBe("BASELINE INSUFFICIENT");
+    expect(signal.normalizedStrength).toBe("PENDING");
   });
 
   it("preserves backend impact-level gate fields separately from severity", () => {
@@ -1876,6 +1821,8 @@ describe("contract whale api", () => {
       dynamicThresholdLevel: "normal",
       percentileLevel: 50,
       impactLevel: "B",
+      impactGradeState: "confirmed",
+      impactGradeVersion: "cwm_impact_v3_1",
       signalLevel: "L2",
       signalLabel: "MEDIUM IMPACT EVENT",
       normalizedStrength: "MEDIUM",

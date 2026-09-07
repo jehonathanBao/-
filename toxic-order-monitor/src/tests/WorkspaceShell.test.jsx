@@ -55,6 +55,10 @@ vi.mock("../components/LiquidationCascadeDashboard.jsx", () => ({
   default: () => <div data-testid="liquidation-monitor-probe">Liquidation monitor</div>,
 }));
 
+vi.mock("../components/MonitorFlowDashboard.jsx", () => ({
+  default: () => <div data-testid="monitor-flow-probe">Global monitor flow</div>,
+}));
+
 vi.mock("../components/NewTokenWatch.jsx", () => ({
   default: () => <div data-testid="new-token-monitor-probe">New token monitor</div>,
 }));

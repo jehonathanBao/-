@@ -2,7 +2,7 @@
 //! blocks orders, transfers funds, or modifies exchange account state.
 
 pub mod aggregator;
-pub mod behavior;
+pub mod behavior_assessment;
 pub mod classification;
 pub mod cluster;
 pub mod collector_binance;
@@ -18,6 +18,12 @@ pub mod emission;
 pub mod event_lifecycle;
 pub mod event_quality;
 pub mod hourly_delta_alert;
+pub mod impact_baseline;
+pub mod impact_episode;
+pub mod impact_forecast;
+pub mod impact_v4_2;
+pub mod impact_v4_2_gate;
+pub mod impact_grade;
 pub mod intelligence;
 pub mod merge;
 pub mod normalizer;
@@ -25,10 +31,12 @@ pub mod outcome_calibration;
 pub mod persistence;
 pub mod replay;
 pub mod scoring;
-pub mod shadow;
 pub mod trading;
 pub mod trajectory;
 pub mod types;
+pub mod v4_backfill;
+
+pub use config::ContractWhaleRuntimeConfig;
 
 pub const LOG_TARGET: &str = "contract_whale_monitor";
 pub const LOG_PREFIX: &str = "[cwm]";

@@ -420,6 +420,36 @@ export async function fetchContractWhaleHistory(filters = {}) {
   }
 }
 
+export async function fetchContractWhaleRatingHealth() {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/rating-health`, { timeoutMs: 4_000 });
+    return response.data?.snapshot || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchContractWhaleV42Gate() {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/v42-gate`, { timeoutMs: 4_000 });
+    return response.data?.gate || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchContractWhaleV3Calibration() {
+  const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+  try {
+    const response = await fetchJsonWithTimeout(`${baseURL}/api/contract-whale/calibration-v3`, { timeoutMs: 5_000 });
+    return response.data || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchContractWhaleEvents(filters = {}) {
   const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
   try {
@@ -706,9 +736,9 @@ export async function fetchContractRetentionStatus() {
   } catch {
     return {
       flowRetentionDays: 14,
-      signalRetentionDays: 365,
-      signalProtectSeverityS: true,
-      signalProtectNetVolumeBtc: 500,
+      signalRetentionDays: 7,
+      impactBRetentionDays: 90,
+      signalProtectImpactAS: true,
       cleanupIntervalHours: 1,
       tables: {
         contractFlow1s: { rowCount: null, reason: "query_failed" },
@@ -1038,30 +1068,15 @@ function normalizeVolumeDisplayMeta(item, context, fallbackWindowSec = null, fal
   };
 }
 
-function impactLevelFromLegacySignals(dynamicThresholdLevel, percentileLevel, impactScore) {
-  const percentile = numberOrNull(percentileLevel);
-  const score = numberOrNull(impactScore);
-  const threshold = String(dynamicThresholdLevel || "").toLowerCase();
-
-  if (percentile !== null) {
-    if (percentile > 97) return "S";
-    if (percentile >= 90) return "A";
-    if (percentile >= 80) return "B";
-  }
-
-  if (score !== null) {
-    if (score > 5) return "S";
-    if (score >= 3) return "A";
-    if (score >= 1.8) return "B";
-  }
-
-  if (threshold === "s") return "S";
-  if (threshold === "critical") return "A";
-  if (threshold === "high") return "B";
+function impactLevelFromLegacySignals(_dynamicThresholdLevel, percentileLevel, impactScore, zScore) {
+  // There is one rating truth source: the persisted event-owned V3
+  // assessment. Legacy detector metrics are display evidence only and must
+  // never manufacture a second client-side grade.
   return "C";
 }
 
 function impactLevelToSignalLevel(impactLevel) {
+  if (impactLevel === "UNRATED") return "N/A";
   if (impactLevel === "S") return "S";
   if (impactLevel === "A") return "L3";
   if (impactLevel === "B") return "L2";
@@ -1069,6 +1084,7 @@ function impactLevelToSignalLevel(impactLevel) {
 }
 
 function impactLevelToSignalLabel(impactLevel) {
+  if (impactLevel === "UNRATED") return "RATING PENDING";
   if (impactLevel === "S") return "SHOCK IMPACT EVENT";
   if (impactLevel === "A") return "HIGH IMPACT EVENT";
   if (impactLevel === "B") return "MEDIUM IMPACT EVENT";
@@ -1076,6 +1092,7 @@ function impactLevelToSignalLabel(impactLevel) {
 }
 
 function impactLevelToNormalizedStrength(impactLevel) {
+  if (impactLevel === "UNRATED") return "PENDING";
   if (impactLevel === "S") return "EXTREME";
   if (impactLevel === "A") return "HIGH";
   if (impactLevel === "B") return "MEDIUM";
@@ -1107,59 +1124,67 @@ function resolveImpactNormalization(item, { dynamicThresholdLevel = null, impact
   const percentile =
     numberOrNull(item?.percentile ?? item?.percentile_level) ??
     numberOrNull(percentileFallback);
-  const explicitImpactLevel = item?.impactLevel ?? item?.impact_level;
-  const impactLevel = explicitImpactLevel
-    ? String(explicitImpactLevel).toUpperCase()
-    : impactLevelFromLegacySignals(
-        dynamicThresholdLevel ?? item?.dynamicThresholdLevel ?? item?.dynamic_threshold_level,
-        percentile,
-        impactScore,
+  const impactGradeVersion = item?.impactGradeVersion ?? item?.impact_grade_version ?? null;
+  const namedImpactGrade = item?.impactGrade ?? item?.impact_grade ?? null;
+  const impactGradeState = String(
+    item?.impactGradeState ?? item?.impact_grade_state ?? "evidence_insufficient",
+  ).toLowerCase();
+  const impactReasonCodes = normalizeStringArray(item?.impactReasonCodes ?? item?.impact_reason_codes);
+  const unavailableReason = impactReasonCodes[0] || "baseline_insufficient";
+  const gradeUnavailable = impactGradeState === "evidence_insufficient";
+  // `impactLevel` predates V3. It is trusted only when the backend attaches a
+  // versioned assessment snapshot; otherwise a legacy A/S must fail closed.
+  const canonicalGrade =
+    namedImpactGrade ??
+    (impactGradeVersion ? item?.impactLevel ?? item?.impact_level ?? null : null);
+  const normalizedGrade = canonicalGrade ? String(canonicalGrade).toUpperCase() : null;
+  const impactLevel = gradeUnavailable
+    ? "UNRATED"
+    : ["C", "B", "A", "S"].includes(normalizedGrade)
+      ? normalizedGrade
+      : impactLevelFromLegacySignals(
+          dynamicThresholdLevel ?? item?.dynamicThresholdLevel ?? item?.dynamic_threshold_level,
+          percentile,
+          impactScore,
+          zScore,
       );
-  const explicitSignalLevel = item?.signalLevel ?? item?.signal_level;
-  const explicitSignalLabel = item?.signalLabel ?? item?.signal_label;
-  const explicitNormalizedStrength = item?.normalizedStrength ?? item?.normalized_strength;
-  const cohortImpactLevel = String(
-    item?.cohortImpactLevel ?? item?.cohort_impact_level ?? impactLevel,
-  ).toUpperCase();
-  const cohortSignalLevel = String(
-    item?.cohortSignalLevel ?? item?.cohort_signal_level ?? impactLevelToSignalLevel(cohortImpactLevel),
-  ).toUpperCase();
-  const cohortSignalLabel = String(
-    item?.cohortSignalLabel ?? item?.cohort_signal_label ?? impactLevelToSignalLabel(cohortImpactLevel),
-  ).toUpperCase();
-  const cohortNormalizedStrength = String(
-    item?.cohortNormalizedStrength ??
-      item?.cohort_normalized_strength ??
-      impactLevelToNormalizedStrength(cohortImpactLevel),
-  ).toUpperCase();
-
+  const impactEvidence = item?.impactEvidence ?? item?.impact_evidence ?? null;
+  const assessmentStatus = String(
+    item?.assessmentStatus ?? item?.assessment_status ??
+      (impactReasonCodes.includes("v3_assessment_failed") ? "assessment_failed" :
+        impactReasonCodes.includes("evidence_missing") ? "evidence_missing" :
+          impactReasonCodes.includes("historical_baseline_unavailable") ? "historical_baseline_unavailable" :
+            impactReasonCodes.includes("baseline_warming_up") ? "baseline_warming_up" :
+          impactGradeState === "confirmed" ? "graded" :
+            impactGradeState === "provisional" || impactReasonCodes.includes("v3_assessment_unavailable")
+              ? "assessment_pending" : "baseline_insufficient")
+  ).toLowerCase();
   return {
     impactScore,
     zScore,
     percentile,
     normalizedScore: clampRatio(numberOrNull(item?.normalizedScore ?? item?.normalized_score) ?? 0),
-    normalizedStrength: explicitNormalizedStrength
-      ? String(explicitNormalizedStrength).toUpperCase()
-      : impactLevelToNormalizedStrength(impactLevel),
+    normalizedStrength: gradeUnavailable ? "PENDING" : impactLevelToNormalizedStrength(impactLevel),
     impactLevel,
-    signalLevel: explicitSignalLevel
-      ? String(explicitSignalLevel).toUpperCase()
-      : impactLevelToSignalLevel(impactLevel),
-    signalLabel: explicitSignalLabel
-      ? String(explicitSignalLabel).toUpperCase()
-      : impactLevelToSignalLabel(impactLevel),
-    cohortImpactScore:
-      numberOrNull(item?.cohortImpactScore ?? item?.cohort_impact_score) ?? impactScore ?? 0,
-    cohortZScore: numberOrNull(item?.cohortZScore ?? item?.cohort_z_score) ?? zScore ?? 0,
-    cohortPercentile:
-      numberOrNull(item?.cohortPercentile ?? item?.cohort_percentile) ?? percentile ?? 0,
-    cohortNormalizedScore:
-      clampRatio(numberOrNull(item?.cohortNormalizedScore ?? item?.cohort_normalized_score) ?? 0),
-    cohortNormalizedStrength,
-    cohortImpactLevel,
-    cohortSignalLevel,
-    cohortSignalLabel,
+    impactGrade: impactLevel,
+    impactGradeState,
+    assessmentStatus,
+    impactGradeVersion,
+    impactReasonCodes,
+    impactEvidence,
+    signalLevel: gradeUnavailable ? "N/A" : impactLevelToSignalLevel(impactLevel),
+    signalLabel: gradeUnavailable ? impactUnavailableLabel(unavailableReason) : impactLevelToSignalLabel(impactLevel),
   };
+}
+
+function impactUnavailableLabel(reason) {
+  if (reason === "v3_assessment_unavailable") return "RATING PENDING";
+  if (reason === "v3_assessment_failed") return "RATING ERROR";
+  if (reason === "baseline_warming_up") return "BASELINE WARMING UP";
+  if (reason === "historical_baseline_unavailable") return "HISTORICAL BASELINE UNAVAILABLE";
+  if (reason === "evidence_missing") return "EVIDENCE MISSING";
+  if (reason === "baseline_insufficient") return "BASELINE INSUFFICIENT";
+  return "RATING UNAVAILABLE";
 }
 
 export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
@@ -1219,16 +1244,17 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: impact.impactGrade,
+    impactGradeState: impact.impactGradeState,
+    assessmentStatus: impact.assessmentStatus,
+    impactGradeVersion: impact.impactGradeVersion,
+    impactReasonCodes: impact.impactReasonCodes,
+    impactEvidence: impact.impactEvidence,
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
-    cohortImpactScore: impact.cohortImpactScore,
-    cohortZScore: impact.cohortZScore,
-    cohortPercentile: impact.cohortPercentile,
-    cohortNormalizedScore: impact.cohortNormalizedScore,
-    cohortNormalizedStrength: impact.cohortNormalizedStrength,
-    cohortImpactLevel: impact.cohortImpactLevel,
-    cohortSignalLevel: impact.cohortSignalLevel,
-    cohortSignalLabel: impact.cohortSignalLabel,
+    behaviorAssessment: normalizeBehaviorAssessment(item?.behaviorAssessment ?? item?.behavior_assessment),
+    multiHorizonImpact: normalizeMultiHorizonImpact(item?.multiHorizonImpact ?? item?.multi_horizon_impact),
     volume,
     totalVolumeBtc: volume,
     netVolume,
@@ -1272,16 +1298,17 @@ export function normalizeFinalEvent(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: impact.impactGrade,
+    impactGradeState: impact.impactGradeState,
+    assessmentStatus: impact.assessmentStatus,
+    impactGradeVersion: impact.impactGradeVersion,
+    impactReasonCodes: impact.impactReasonCodes,
+    impactEvidence: impact.impactEvidence,
+    behaviorAssessment: normalizeBehaviorAssessment(item?.behaviorAssessment ?? item?.behavior_assessment),
+    multiHorizonImpact: normalizeMultiHorizonImpact(item?.multiHorizonImpact ?? item?.multi_horizon_impact),
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
-    cohortImpactScore: impact.cohortImpactScore,
-    cohortZScore: impact.cohortZScore,
-    cohortPercentile: impact.cohortPercentile,
-    cohortNormalizedScore: impact.cohortNormalizedScore,
-    cohortNormalizedStrength: impact.cohortNormalizedStrength,
-    cohortImpactLevel: impact.cohortImpactLevel,
-    cohortSignalLevel: impact.cohortSignalLevel,
-    cohortSignalLabel: impact.cohortSignalLabel,
     ts: numberOrNull(item?.endTime) ?? signal.ts,
     symbol: eventSymbol,
     baseAsset: eventSymbol,
@@ -1385,13 +1412,6 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
     direction: item?.direction || normalized.direction,
     dominance: numberOrNull(item?.dominance) ?? normalized.dominance,
     mainForceScore: numberOrNull(item?.mainForceScore ?? item?.main_force_score) ?? normalized.mainForceScore,
-    behaviorType: String(item?.behaviorType ?? item?.behavior_type ?? normalized.behaviorType ?? "insufficient_evidence").toLowerCase(),
-    behaviorState: String(item?.behaviorState ?? item?.behavior_state ?? normalized.behaviorState ?? "insufficient").toLowerCase(),
-    behaviorConfidence: numberOrNull(item?.behaviorConfidence ?? item?.behavior_confidence) ?? normalized.behaviorConfidence,
-    behaviorMainForceConfirmed: Boolean(item?.behaviorMainForceConfirmed ?? item?.behavior_main_force_confirmed ?? normalized.behaviorMainForceConfirmed),
-    behaviorSupportingEvidence: normalizeStringArray(item?.behaviorSupportingEvidence ?? item?.behavior_supporting_evidence ?? normalized.behaviorSupportingEvidence),
-    behaviorCounterEvidence: normalizeStringArray(item?.behaviorCounterEvidence ?? item?.behavior_counter_evidence ?? normalized.behaviorCounterEvidence),
-    behaviorRationale: item?.behaviorRationale ?? item?.behavior_rationale ?? normalized.behaviorRationale,
     spotScore: numberOrNull(item?.spotScore ?? item?.spot_score) ?? normalized.spotScore,
     contractScore: numberOrNull(item?.contractScore ?? item?.contract_score) ?? normalized.contractScore,
     orderPriceUsd: rawPrice ?? normalized.orderPriceUsd,
@@ -1485,7 +1505,6 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     impactScoreFallback: item?.dynamicMultiple ?? item?.dynamic_multiple,
     percentileFallback: item?.percentileLevel ?? item?.percentile_level,
   });
-  const behavior = item.behaviorAssessment || item.behavior_assessment || {};
   const priceResponseTypeV2 =
     item.priceResponseTypeV2 ||
     item.price_response_type_v2 ||
@@ -1546,13 +1565,6 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
       evidence.liquidationReason || evidence.liquidation_reason || null,
     intentConfidence: numberOrNull(item.intentConfidence ?? item.intent_confidence) || 0,
     isStrongMainForceIntent: Boolean(item.isStrongMainForceIntent ?? item.is_strong_main_force_intent),
-    behaviorType: String(item.behaviorType ?? item.behavior_type ?? behavior.behaviorType ?? behavior.behavior_type ?? "insufficient_evidence").toLowerCase(),
-    behaviorState: String(item.behaviorState ?? item.behavior_state ?? behavior.state ?? "insufficient").toLowerCase(),
-    behaviorConfidence: numberOrNull(item.behaviorConfidence ?? item.behavior_confidence ?? behavior.confidence) || 0,
-    behaviorMainForceConfirmed: Boolean(item.behaviorMainForceConfirmed ?? item.behavior_main_force_confirmed ?? behavior.mainForceConfirmed),
-    behaviorSupportingEvidence: normalizeStringArray(item.behaviorSupportingEvidence ?? item.behavior_supporting_evidence ?? behavior.supportingEvidence ?? behavior.supporting_evidence),
-    behaviorCounterEvidence: normalizeStringArray(item.behaviorCounterEvidence ?? item.behavior_counter_evidence ?? behavior.counterEvidence ?? behavior.counter_evidence),
-    behaviorRationale: String(item.behaviorRationale ?? item.behavior_rationale ?? behavior.rationale ?? "仅观察到成交流，未形成可确认的主力行为证据链。"),
     classificationVersion: item.classificationVersion || item.classification_version || "",
     classificationReasons: normalizeStringArray(item.classificationReasons ?? item.classification_reasons),
     dynamicThresholds: normalizeContractWhaleDynamicThresholds(item.dynamicThresholds ?? item.dynamic_thresholds),
@@ -1600,6 +1612,13 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     normalizedScore: impact.normalizedScore,
     normalizedStrength: impact.normalizedStrength,
     impactLevel: impact.impactLevel,
+    impactGrade: impact.impactGrade,
+    impactGradeState: impact.impactGradeState,
+    assessmentStatus: impact.assessmentStatus,
+    impactGradeVersion: impact.impactGradeVersion,
+    impactReasonCodes: impact.impactReasonCodes,
+    impactEvidence: impact.impactEvidence,
+    relativeRank: numberOrNull(item?.relativeRank ?? item?.relative_rank),
     signalLevel: impact.signalLevel,
     signalLabel: impact.signalLabel,
     multiExchangeConfirmed: Boolean(item.multiExchangeConfirmed),
@@ -1652,6 +1671,8 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     marketDriver: normalizeMarketDriver(item.marketDriver),
     eventLifecycle: normalizeEventLifecycle(item.eventLifecycle),
     eventQuality: normalizeEventQuality(item.eventQuality),
+    behaviorAssessment: normalizeBehaviorAssessment(item.behaviorAssessment ?? item.behavior_assessment),
+    multiHorizonImpact: normalizeMultiHorizonImpact(item.multiHorizonImpact ?? item.multi_horizon_impact),
   };
 }
 
@@ -1742,6 +1763,165 @@ function normalizeEventQuality(value) {
     mergeSimilarityScore: clampRatio(numberOrNull(source.mergeSimilarityScore) ?? 1),
     valid: source.valid === undefined ? true : Boolean(source.valid),
     falseEventFlags: normalizeStringArray(source.falseEventFlags),
+  };
+}
+
+function normalizeBehaviorAssessment(value) {
+  if (!value || typeof value !== "object") return null;
+  const evidenceItems = (candidate) =>
+    Array.isArray(candidate)
+      ? candidate.map((item) => ({
+          code: String(item?.code || "unknown"),
+          value: numberOrNull(item?.value),
+        }))
+      : [];
+  const confirmationRule = value.confirmationRule || value.confirmation_rule || {};
+  const invalidationRule = value.invalidationRule || value.invalidation_rule || {};
+  const postEvent = value.postEventValidation || value.post_event_validation;
+  return {
+    behaviorVersion: String(value.behaviorVersion || value.behavior_version || ""),
+    hypothesis: String(value.hypothesis || "unclear").toLowerCase(),
+    directionBias: String(value.directionBias || value.direction_bias || "unknown").toLowerCase(),
+    attribution: String(value.attribution || "unclear").toLowerCase(),
+    confidenceScore: Math.max(0, Math.min(100, Math.round(Number(value.confidenceScore ?? value.confidence_score ?? 0)))),
+    confidenceLevel: String(value.confidenceLevel || value.confidence_level || "low").toLowerCase(),
+    confidenceSemantics: String(value.confidenceSemantics || value.confidence_semantics || ""),
+    decisionState: String(value.decisionState || value.decision_state || "observe").toLowerCase(),
+    supportingEvidence: evidenceItems(value.supportingEvidence || value.supporting_evidence),
+    contradictingEvidence: evidenceItems(value.contradictingEvidence || value.contradicting_evidence),
+    missingEvidence: evidenceItems(value.missingEvidence || value.missing_evidence),
+    confirmationRule: {
+      code: String(confirmationRule.code || "closed_price_break_with_oi_and_binance_spot_perp_alignment"),
+      thresholdBps: Number(confirmationRule.thresholdBps ?? confirmationRule.threshold_bps ?? 0),
+    },
+    invalidationRule: {
+      code: String(invalidationRule.code || "closed_price_reenters_event_range_or_evidence_diverges"),
+      thresholdBps: Number(invalidationRule.thresholdBps ?? invalidationRule.threshold_bps ?? 0),
+    },
+    postEventValidation: postEvent && typeof postEvent === "object"
+      ? {
+          horizon: String(postEvent.horizon || ""),
+          markoutBps: Number(postEvent.markoutBps ?? postEvent.markout_bps ?? 0),
+          signed: postEvent.signed !== false,
+          state: String(postEvent.state || "observe").toLowerCase(),
+        }
+      : null,
+    assessedAtMs: numberOrNull(value.assessedAtMs ?? value.assessed_at_ms),
+    outcomeEvaluatedAtMs: numberOrNull(value.outcomeEvaluatedAtMs ?? value.outcome_evaluated_at_ms),
+  };
+}
+
+function normalizeMultiHorizonImpact(value) {
+  if (!value || typeof value !== "object") return null;
+  const horizons = Array.isArray(value.horizons)
+    ? value.horizons.map((item) => ({
+        horizon: String(item?.horizon || "unknown"),
+        horizonSec: numberOrNull(item?.horizonSec ?? item?.horizon_sec),
+        sampleCount: Math.max(0, Math.round(numberOrNull(item?.sampleCount ?? item?.sample_count) || 0)),
+        medianBps: numberOrNull(item?.medianBps ?? item?.median_bps),
+        netMedianBps: numberOrNull(item?.netMedianBps ?? item?.net_median_bps),
+        p25Bps: numberOrNull(item?.p25Bps ?? item?.p25_bps),
+        p75Bps: numberOrNull(item?.p75Bps ?? item?.p75_bps),
+        mfeBps: numberOrNull(item?.mfeBps ?? item?.mfe_bps),
+        maeBps: numberOrNull(item?.maeBps ?? item?.mae_bps),
+        followThroughRate: numberOrNull(item?.followThroughRate ?? item?.follow_through_rate),
+        structureBreakRate: numberOrNull(item?.structureBreakRate ?? item?.structure_break_rate),
+        state: String(item?.state || "insufficient_data").toLowerCase(),
+        baselineLevel: String(item?.baselineLevel || item?.baseline_level || "none"),
+        cohortSampleCount: Math.max(0, Math.round(numberOrNull(item?.cohortSampleCount ?? item?.cohort_sample_count) || 0)),
+        exactSampleCount: Math.max(0, Math.round(numberOrNull(item?.exactSampleCount ?? item?.exact_sample_count) || 0)),
+        behaviorRegimeSampleCount: Math.max(0, Math.round(numberOrNull(item?.behaviorRegimeSampleCount ?? item?.behavior_regime_sample_count) || 0)),
+        behaviorSampleCount: Math.max(0, Math.round(numberOrNull(item?.behaviorSampleCount ?? item?.behavior_sample_count) || 0)),
+        directionSampleCount: Math.max(0, Math.round(numberOrNull(item?.directionSampleCount ?? item?.direction_sample_count) || 0)),
+        globalSampleCount: Math.max(0, Math.round(numberOrNull(item?.globalSampleCount ?? item?.global_sample_count) || 0)),
+        fallbackSampleCount: Math.max(0, Math.round(numberOrNull(item?.fallbackSampleCount ?? item?.fallback_sample_count) || 0)),
+        expectedLowPrice: numberOrNull(item?.expectedLowPrice ?? item?.expected_low_price),
+        expectedHighPrice: numberOrNull(item?.expectedHighPrice ?? item?.expected_high_price),
+        rating: String(item?.rating || "U").toUpperCase(),
+        sampleFromTs: numberOrNull(item?.sampleFromTs ?? item?.sample_from_ts),
+        sampleToTs: numberOrNull(item?.sampleToTs ?? item?.sample_to_ts),
+        sourcePolicy: String(item?.sourcePolicy || item?.source_policy || "binance_only"),
+        modelMedianBps: numberOrNull(item?.modelMedianBps ?? item?.model_median_bps),
+        modelP25Bps: numberOrNull(item?.modelP25Bps ?? item?.model_p25_bps),
+        modelP75Bps: numberOrNull(item?.modelP75Bps ?? item?.model_p75_bps),
+        modelWeight: numberOrNull(item?.modelWeight ?? item?.model_weight) ?? 0,
+        sampleWeight: numberOrNull(item?.sampleWeight ?? item?.sample_weight) ?? 0,
+        rawSampleCount: Math.max(0, Math.round(numberOrNull(item?.rawSampleCount ?? item?.raw_sample_count) || 0)),
+        effectiveSampleCount: numberOrNull(item?.effectiveSampleCount ?? item?.effective_sample_count) ?? 0,
+        directionProbability: numberOrNull(item?.directionProbability ?? item?.direction_probability),
+        reversalProbability: numberOrNull(item?.reversalProbability ?? item?.reversal_probability),
+        structureBreakProbability: numberOrNull(item?.structureBreakProbability ?? item?.structure_break_probability),
+        confirmationRule: String(item?.confirmationRule || item?.confirmation_rule || ""),
+        invalidationRule: String(item?.invalidationRule || item?.invalidation_rule || ""),
+        dataQuality: numberOrNull(item?.dataQuality ?? item?.data_quality),
+      }))
+    : [];
+  return {
+    forecastVersion: String(value.forecastVersion || value.forecast_version || ""),
+    sourcePolicy: String(value.sourcePolicy || value.source_policy || "binance_only"),
+    dataStreams: normalizeStringArray(value.dataStreams ?? value.data_streams),
+    dataStreamHealth: Array.isArray(value.dataStreamHealth ?? value.data_stream_health)
+      ? (value.dataStreamHealth ?? value.data_stream_health).map((stream) => ({
+          stream: String(stream?.stream || "unknown"),
+          status: String(stream?.status || "unavailable").toLowerCase(),
+          lastEventTs: numberOrNull(stream?.lastEventTs ?? stream?.last_event_ts),
+          lastReceivedAtMs: numberOrNull(stream?.lastReceivedAtMs ?? stream?.last_received_at_ms),
+          freshnessMs: numberOrNull(stream?.freshnessMs ?? stream?.freshness_ms),
+          reconnectCount: numberOrNull(stream?.reconnectCount ?? stream?.reconnect_count),
+          gapCount: numberOrNull(stream?.gapCount ?? stream?.gap_count),
+          parseFailureCount: numberOrNull(stream?.parseFailureCount ?? stream?.parse_failure_count),
+          degradedReason: stream?.degradedReason ?? stream?.degraded_reason ?? null,
+        }))
+      : [],
+    eventId: String(value.eventId || value.event_id || ""),
+    episodeId: String(value.episodeId || value.episode_id || ""),
+    symbol: String(value.symbol || ""),
+    eventTs: numberOrNull(value.eventTs ?? value.event_ts),
+    marketRegime: String(value.marketRegime || value.market_regime || "unclear"),
+    behavior: String(value.behavior || "unclear"),
+    direction: String(value.direction || "unknown"),
+    impactGrade: String(value.impactGrade || value.impact_grade || "U").toUpperCase(),
+    impactScore: numberOrNull(value.impactScore ?? value.impact_score) || 0,
+    dominantHorizon: String(value.dominantHorizon || value.dominant_horizon || "unknown"),
+    scenarioType: String(value.scenarioType || value.scenario_type || "no_clear_edge"),
+    anomalyIntensity: value.anomalyIntensity ?? value.anomaly_intensity ?? {},
+    evidenceStrength: Math.max(0, Math.min(100, Math.round(numberOrNull(value.evidenceStrength ?? value.evidence_strength) || 0))),
+    binanceEvidenceComplete: Boolean(value.binanceEvidenceComplete ?? value.binance_evidence_complete ?? value.evidenceComplete ?? value.evidence_complete),
+    perpFlowConfirmed: booleanOrNull(value.perpFlowConfirmed ?? value.perp_flow_confirmed),
+    spotFlowConfirmed: booleanOrNull(value.spotFlowConfirmed ?? value.spot_flow_confirmed),
+    oiConfirmed: booleanOrNull(value.oiConfirmed ?? value.oi_confirmed),
+    priceResponseConfirmed: booleanOrNull(value.priceResponseConfirmed ?? value.price_response_confirmed),
+    liquidationObserved: booleanOrNull(value.liquidationObserved ?? value.liquidation_observed),
+    liquidationStreamAvailable: Boolean(value.liquidationStreamAvailable ?? value.liquidation_stream_available),
+    referencePriceAvailable: Boolean(value.referencePriceAvailable ?? value.reference_price_available),
+    missingEvidence: normalizeStringArray(value.missingEvidence ?? value.missing_evidence),
+    degradedReasons: normalizeStringArray(value.degradedReasons ?? value.degraded_reasons),
+    exactSampleCount: Math.max(0, Math.round(numberOrNull(value.exactSampleCount ?? value.exact_sample_count) || 0)),
+    effectiveSampleCount: Math.max(0, Math.round(numberOrNull(value.effectiveSampleCount ?? value.effective_sample_count) || 0)),
+    baselineLevel: String(value.baselineLevel || value.baseline_level || "none"),
+    maturityState: String(value.maturityState || value.maturity_state || "insufficient_data").toLowerCase(),
+    status: String(value.status || "insufficient_data").toLowerCase(),
+    horizons,
+    confirmation: String(value.confirmation || ""),
+    invalidation: String(value.invalidation || ""),
+    tradePlan: value.tradePlan ?? value.trade_plan ?? {},
+    transactionCostBps: numberOrNull(value.transactionCostBps ?? value.transaction_cost_bps),
+    strategyMode: String(value.strategyMode || value.strategy_mode || "experimental_shadow"),
+    productionReady: Boolean(value.productionReady ?? value.production_ready),
+    trainingCutoffTs: numberOrNull(value.trainingCutoffTs ?? value.training_cutoff_ts),
+    computedAtMs: numberOrNull(value.computedAtMs ?? value.computed_at_ms),
+    signalSeverity: String(value.signalSeverity || value.signal_severity || value.impactGrade || "C").toUpperCase(),
+    maturityLevel: String(value.maturityLevel || value.maturity_level || value.maturityState || "M0"),
+    predictionSource: String(value.predictionSource || value.prediction_source || "model_estimate"),
+    modelWeight: numberOrNull(value.modelWeight ?? value.model_weight) ?? 0,
+    sampleWeight: numberOrNull(value.sampleWeight ?? value.sample_weight) ?? 0,
+    rawSampleCount: Math.max(0, Math.round(numberOrNull(value.rawSampleCount ?? value.raw_sample_count) || 0)),
+    nextMaturityThreshold: Math.max(0, Math.round(numberOrNull(value.nextMaturityThreshold ?? value.next_maturity_threshold) || 0)),
+    samplesUntilNextMaturity: Math.max(0, Math.round(numberOrNull(value.samplesUntilNextMaturity ?? value.samples_until_next_maturity) || 0)),
+    directionProbability: numberOrNull(value.directionProbability ?? value.direction_probability),
+    earlyWarning: Boolean(value.earlyWarning ?? value.early_warning),
+    externalAlertEnabled: Boolean(value.externalAlertEnabled ?? value.external_alert_enabled),
+    priorStrength: numberOrNull(value.priorStrength ?? value.prior_strength),
   };
 }
 
@@ -2193,7 +2373,12 @@ function normalizeRawStringArray(value) {
 function buildContractWhaleQuery(filters) {
   const params = new URLSearchParams();
   Object.entries(filters || {}).forEach(([key, value]) => {
-    if (value === null || value === undefined || value === "" || value === "all") return;
+    if (
+      value === null
+      || value === undefined
+      || value === ""
+      || typeof value === "string" && value.trim().toLowerCase() === "all"
+    ) return;
     params.set(key, String(value));
   });
   return params.toString();
@@ -2233,6 +2418,10 @@ function numberOrNull(value) {
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function booleanOrNull(value) {
+  return typeof value === "boolean" ? value : null;
 }
 
 function normalizeExchanges(exchanges) {

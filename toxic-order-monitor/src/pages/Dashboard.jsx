@@ -7,6 +7,7 @@ import BinanceAltContractMonitor from "../components/BinanceAltContractMonitor.j
 import ContractWhaleMonitor from "../components/ContractWhaleMonitor.jsx";
 import Header from "../components/Header.jsx";
 import LiquidationCascadeDashboard from "../components/LiquidationCascadeDashboard.jsx";
+import MonitorFlowDashboard from "../components/MonitorFlowDashboard.jsx";
 import NewTokenWatch from "../components/NewTokenWatch.jsx";
 import PushLog from "../components/PushLog.jsx";
 import RiskCard from "../components/RiskCard.jsx";
@@ -75,9 +76,15 @@ export default function Dashboard() {
   const [testPushPending, setTestPushPending] = useState(false);
 
   useEffect(() => {
+    if (!signalWsEnabled) {
+      // Isolated pages (Binance/contract/spot/etc.) do not render the signal
+      // inbox. Avoid blocking their first paint on an unrelated snapshot.
+      setRuntimeBoundary(runtimeFromPayload(null));
+      return undefined;
+    }
+    let cancelled = false;
     fetchSignalsSnapshot().then((snapshot) => {
-      if (!signalWsEnabled) {
-        setRuntimeBoundary(snapshot.runtime);
+      if (cancelled) {
         return;
       }
       applySignalsSnapshot(snapshot);
@@ -91,6 +98,9 @@ export default function Dashboard() {
         setSelectedSignal(firstHighRisk);
       }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [applySignalsSnapshot, setRuntimeBoundary, setSelectedSignal, signalWsEnabled]);
 
   const handleSignalWsMessage = useCallback(
@@ -330,6 +340,14 @@ export default function Dashboard() {
                 <NewTokenWatchPage />
               ) : isUsageGuideView ? (
                 <UsageGuidePage />
+              ) : viewMode === "monitor-flow" ? (
+                <MonitorFlowDashboard
+                  discordConnected={discordConnected}
+                  rawInboxSignals={rawInboxSignals}
+                  runtimeBoundary={runtimeBoundary}
+                  signalsError={signalsRequest.phase === "error" ? signalsRequest.errorCode || "UNKNOWN" : null}
+                  wsStatus={wsStatus}
+                />
               ) : (
                 <>
                   {signalsRequest.phase === "error" ? (
@@ -616,6 +634,7 @@ function filterLabel(activeRiskFilter, viewMode) {
 }
 
 function viewModeFromPath(pathname) {
+  if (pathname === "/dashboard") return "monitor-flow";
   if (pathname === "/contract-whale" || pathname.startsWith("/contract-whale/")) return "contract-whale";
   if (pathname === "/liquidation-cascade") return "liquidation-cascade";
   if (pathname === "/alt-contract-monitor") return "alt-contract-monitor";

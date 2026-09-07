@@ -25,12 +25,15 @@ impl Default for StorageHealthGuardConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            db_warn_gb: 20.0,
-            db_critical_gb: 40.0,
+            // The database is intentionally much larger than the default
+            // warning threshold because it contains bounded runtime history.
+            // Disk percentage is the write-protection signal.
+            db_warn_gb: 70.0,
+            db_critical_gb: 95.0,
             wal_warn_gb: 1.0,
             wal_critical_gb: 3.0,
-            disk_warn_percent: 85.0,
-            disk_critical_percent: 92.0,
+            disk_warn_percent: 80.0,
+            disk_critical_percent: 88.0,
             refresh_interval_ms: 10_000,
             degraded_mode_enabled: true,
         }

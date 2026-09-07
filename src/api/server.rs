@@ -5,13 +5,13 @@ use axum::{middleware, routing::get, Router};
 
 use crate::{
     api::{
-        active_trade_toxicity_routes, binance_alt_contract_routes, btc_structure_routes,
+        active_trade_toxicity_routes, binance_alt_contract_routes, binance_orderflow_routes,
+        btc_structure_routes,
         calibration_routes, contract_event_routes, contract_timeline_routes, contract_whale_routes,
-        contract_whale_shadow_routes, dev_alert_routes, discord_notification_routes,
-        durable_archive_dryrun_routes, durable_archive_write_audit_routes,
-        durable_archive_write_routes, final_event_routes, fusion_routes,
-        liquidation_cascade_routes, liquidation_toxicity_routes, main_force_event_routes,
-        manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
+        dev_alert_routes, discord_notification_routes, durable_archive_dryrun_routes,
+        durable_archive_write_audit_routes, durable_archive_write_routes, final_event_routes,
+        fusion_routes, liquidation_cascade_routes, liquidation_toxicity_routes,
+        main_force_event_routes, manual_apply_dryrun_routes, manual_apply_evidence_pack_routes,
         manual_apply_governance_routes, manual_apply_runbook_routes, manual_audit_story_routes,
         manual_evidence_freshness_routes, manual_governance_index_routes,
         manual_parameter_export_routes, manual_signoff_routes, manual_startup_routes,
@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/discord", get(static_files::spa))
         .route("/settings", get(static_files::spa))
         .route("/new-token-watch", get(static_files::spa))
+        .route("/binance-orderflow", get(static_files::spa))
         .route("/web/app.js", get(static_files::app_js))
         .route("/web/styles.css", get(static_files::styles_css))
         .route("/api/status", get(routes::status))
@@ -93,6 +94,18 @@ pub fn router(state: AppState) -> Router {
             get(contract_whale_routes::contract_whale_outcome_summary_route),
         )
         .route(
+            "/api/contract-whale/rating-health",
+            get(contract_whale_routes::contract_whale_rating_health_route),
+        )
+        .route(
+            "/api/contract-whale/v42-gate",
+            get(contract_whale_routes::contract_whale_v42_gate_route),
+        )
+        .route(
+            "/api/contract-whale/calibration-v3",
+            get(contract_whale_routes::contract_whale_v3_calibration_route),
+        )
+        .route(
             "/api/contract-whale/pipeline-debug",
             get(contract_whale_routes::contract_whale_pipeline_debug_route),
         )
@@ -103,10 +116,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/contract-whale/latency-debug",
             get(contract_whale_routes::contract_whale_latency_debug_route),
-        )
-        .route(
-            "/api/contract-whale/shadows",
-            get(contract_whale_shadow_routes::contract_whale_shadows_route),
         )
         .route(
             "/api/contract-whale/events",
@@ -195,6 +204,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/binance-alt-contract/runtime-debug",
             get(binance_alt_contract_routes::binance_alt_contract_runtime_debug_route),
+        )
+        .route(
+            "/api/binance/orderflow",
+            get(binance_orderflow_routes::binance_orderflow_route),
         )
         .route(
             "/api/spot-whale/summary",
