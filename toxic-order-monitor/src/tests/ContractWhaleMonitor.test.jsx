@@ -1235,6 +1235,24 @@ vi.mock("../api/contractWhale.js", () => ({
 }));
 
 describe("ContractWhaleMonitor", () => {
+  it("labels the new chart as event-only prices and does not mislabel loaded notional as 24h turnover", async () => {
+    render(<ContractWhaleMonitor lockedSymbol="BTC" />);
+    expect(await screen.findByRole("heading", { name: "BTC 事件价格轨迹" })).toBeInTheDocument();
+    expect(screen.getByText("事件触发价 · 非连续行情")).toBeInTheDocument();
+    expect(screen.getByText("已加载事件名义价值")).toBeInTheDocument();
+    expect(screen.queryByText("事件名义价值 (24H)")).not.toBeInTheDocument();
+  });
+
+  it("does not show a live badge when the contract monitor is disabled", async () => {
+    const latestPayload = await fetchContractWhaleLatest.getMockImplementation()();
+    const summary = { ...latestPayload.summary, enabled: false, healthStatus: "disabled", exchanges: {} };
+    fetchContractWhaleSummary.mockResolvedValueOnce({ summary, error: null });
+    fetchContractWhaleLatest.mockResolvedValueOnce({ ...latestPayload, summary, items: [] });
+    render(<ContractWhaleMonitor lockedSymbol="ETH" />);
+    await waitFor(() => expect(screen.getByTestId("contract-workspace-command-bar")).toHaveTextContent("未启用"));
+    expect(within(screen.getByTestId("contract-workspace-command-bar")).queryByText("LIVE")).not.toBeInTheDocument();
+  });
+
   it.each([
     ["A", "confirmed", "graded", "C", "事件重要性 A"],
     ["UNRATED", "evidence_insufficient", "evidence_missing", "S", "事件未评级"],

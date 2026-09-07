@@ -323,6 +323,8 @@ export default function Dashboard() {
           isContractWhaleView ? "contract-workspace-main" : "",
         ].filter(Boolean).join(" ")}
         data-testid="workspace-main"
+        id="workspace-main"
+        tabIndex={-1}
       >
         {isContractWhaleView ? (
           <ContractWhalePage symbol={mainstreamSymbol} />

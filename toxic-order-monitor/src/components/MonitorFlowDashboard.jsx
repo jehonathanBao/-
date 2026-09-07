@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { ArrowUpRightIcon, ArrowPathIcon, PauseIcon, PlayIcon } from "@heroicons/react/24/outline";
+import PriceChart from "./PriceChart.jsx";
 import { fetchMonitorFlowSnapshot } from "../api/monitorFlow.js";
 
 const REFRESH_INTERVAL_MS = 8_000;
@@ -30,8 +32,6 @@ export default function MonitorFlowDashboard({
   const [activeEventIds, setActiveEventIds] = useState(() => new Set());
   const eventSignaturesRef = useRef(new Map());
   const activityReadyRef = useRef(false);
-  const flowRootRef = useRef(null);
-  const pointerFrameRef = useRef(0);
 
   const refresh = useCallback(async () => {
     setRefreshError(null);
@@ -105,96 +105,32 @@ export default function MonitorFlowDashboard({
     return () => window.clearTimeout(timer);
   }, [events, reducedMotion]);
 
-  useEffect(() => () => {
-    if (pointerFrameRef.current) window.cancelAnimationFrame(pointerFrameRef.current);
-  }, []);
 
-  const handlePointerMove = useCallback((event) => {
-    if (reducedMotion || !pageVisible || !flowRootRef.current) return;
-    if (pointerFrameRef.current) window.cancelAnimationFrame(pointerFrameRef.current);
-    const clientX = event.clientX;
-    const clientY = event.clientY;
-    pointerFrameRef.current = window.requestAnimationFrame(() => {
-      const rect = flowRootRef.current?.getBoundingClientRect();
-      if (!rect || !flowRootRef.current) return;
-      flowRootRef.current.style.setProperty("--flow-pointer-x", `${clientX - rect.left}px`);
-      flowRootRef.current.style.setProperty("--flow-pointer-y", `${clientY - rect.top}px`);
-    });
-  }, [pageVisible, reducedMotion]);
+  const pricePoints = useMemo(() => (snapshot?.orderflow?.candles || []).map(candle => ({
+    time: candle.time,
+    price: candle.close,
+  })), [snapshot]);
+  const focus = events.find(event => event.channel === "contract") || null;
+  const streamState = paused ? "PAUSED" : loading ? "CONNECTING" : refreshError || !health.activeLinks ? "WAITING" : "LIVE";
 
   return (
-    <section
-      className={`monitor-flow ${pageVisible ? "is-visible" : "is-backgrounded"} ${reducedMotion ? "reduce-motion" : ""}`}
-      data-testid="monitor-flow-dashboard"
-      onPointerMove={handlePointerMove}
-      ref={flowRootRef}
-    >
+    <section className={`monitor-flow ${pageVisible ? "is-visible" : "is-backgrounded"} ${reducedMotion ? "reduce-motion" : ""}`} data-testid="monitor-flow-dashboard">
       <div className="monitor-flow-hero">
-        <NeuralFieldCanvas
-          active={pageVisible && !paused && !reducedMotion}
-          intensity={Math.min(1, (events.length + health.alerts1h * 4) / 80)}
-        />
-        <div className="monitor-flow-hero-scan" aria-hidden="true"><i /><i /><i /></div>
         <div>
-          <p className="monitor-flow-kicker">AI MARKET OBSERVATORY · GLOBAL NEURAL FLOW · READ ONLY</p>
+          <p className="monitor-flow-kicker"><span aria-hidden="true">01</span> MARKET OVERVIEW</p>
           <div className="monitor-flow-title-row">
             <h1>全市场实时监控流</h1>
-            <span className={`monitor-flow-live ${paused ? "is-paused" : ""}`}>
-              <i aria-hidden="true" /> {paused ? "PAUSED" : "LIVE"}
-            </span>
+            <span className={`monitor-flow-live ${streamState !== "LIVE" ? "is-paused" : ""}`}><i aria-hidden="true" />{streamState}</span>
           </div>
-          <p className="monitor-flow-subtitle">
-            统一观察 BTC / ETH 合约、现货、Delta、VPIN/TOF 与告警链路；点击事件进入对应深度页面。
-          </p>
-        </div>
-        <div className="monitor-flow-ai-core" aria-label="AI 证据融合状态">
-          <div className="monitor-flow-ai-core-visual" aria-hidden="true">
-            <svg className="monitor-flow-ai-core-mesh" viewBox="0 0 100 100">
-              <path d="M50 9 84 29 84 70 50 91 16 70 16 29Z" />
-              <path d="m50 9 18 41-18 41-18-41Z" />
-              <path d="M16 29 68 50 16 70M84 29 32 50 84 70" />
-            </svg>
-            <i /><i /><i /><b />
-          </div>
-          <div className="monitor-flow-ai-core-copy">
-            <span>AI SIGNAL FUSION</span>
-            <strong>{health.activeLinks > 0 ? "EVIDENCE ACTIVE" : "AWAITING DATA"}</strong>
-            <small>{health.activeLinks} SOURCES · {health.alerts1h} PRIORITY</small>
-          </div>
+          <p className="monitor-flow-subtitle">跟踪资金方向，连接市场证据。BTC / ETH 合约、现货与订单流的统一视角。</p>
         </div>
         <div className="monitor-flow-hero-actions">
-          <span>{formatClock(snapshot?.fetchedAtMs)} 更新</span>
-          <button className="monitor-flow-button" disabled={loading} onClick={refresh} type="button">
-            {loading ? "同步中" : "立即同步"}
-          </button>
-          <button
-            aria-pressed={paused}
-            className={`monitor-flow-button ${paused ? "is-active" : ""}`}
-            onClick={() => setPaused(value => !value)}
-            type="button"
-          >
-            {paused ? "继续流" : "暂停流"}
+          <span>最近同步 <time>{formatClock(snapshot?.fetchedAtMs)}</time></span>
+          <button className="monitor-flow-button" disabled={loading} onClick={refresh} type="button"><ArrowPathIcon aria-hidden="true" />{loading ? "同步中" : "立即同步"}</button>
+          <button aria-pressed={paused} className={`monitor-flow-button ${paused ? "is-active" : ""}`} onClick={() => setPaused(value => !value)} type="button">
+            {paused ? <PlayIcon aria-hidden="true" /> : <PauseIcon aria-hidden="true" />}{paused ? "继续流" : "暂停流"}
           </button>
         </div>
-      </div>
-
-      <div className="monitor-flow-neural-bus" aria-label="AI 神经数据总线">
-        <div className="monitor-flow-neural-bus-label"><i aria-hidden="true" /><span>AI NEURAL BUS</span></div>
-        <div className="monitor-flow-neural-bus-window">
-          <div className="monitor-flow-neural-bus-track">
-            {[0, 1].map(copyIndex => (
-              <div aria-hidden={copyIndex === 1} className="monitor-flow-neural-bus-segment" key={copyIndex}>
-                <span>SOURCES <strong>{health.activeLinks}/{health.totalLinks}</strong></span>
-                <span>EVIDENCE <strong>{events.length}</strong></span>
-                <span>HIGH PRIORITY <strong>{health.alerts1h}</strong></span>
-                <span>{health.qualityLabel}</span>
-                <span>V3 RATING <strong>ONLINE</strong></span>
-                <span>READ ONLY <strong>SAFE</strong></span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <span className="monitor-flow-neural-bus-clock">{formatClock(snapshot?.fetchedAtMs)}</span>
       </div>
 
       {signalsError || refreshError ? (
@@ -206,108 +142,84 @@ export default function MonitorFlowDashboard({
       <div className="monitor-flow-hud" aria-label="监控链路状态">
         <HudCell label="采集链路" value={`${health.activeLinks}/${health.totalLinks}`} detail={health.linkDetail} tone={health.linkTone} />
         <HudCell label="最新数据延迟" value={health.latencyLabel} detail={health.qualityLabel} tone={health.qualityTone} />
-        <HudCell label="近 1H 事件" value={String(health.events1h)} detail={`${health.alerts1h} 条高优先级`} tone={health.alerts1h > 0 ? "warn" : "ok"} />
-        <HudCell label="Discord" value={discordConnected ? "READY" : "GATED"} detail={health.discordDetail} tone={discordConnected ? "ok" : "neutral"} />
-        <HudCell label="SQLite" value={health.storageLabel} detail={health.storageDetail} tone={health.storageTone} />
+        <HudCell label="近 1H 样本事件" value={String(health.events1h)} detail={`${health.alerts1h} 条高优先级 · 当前快照`} tone={health.alerts1h > 0 ? "warn" : "neutral"} />
+        <HudCell label="Discord 通知" value={discordConnected ? "已配置" : "独立门控"} detail={health.discordDetail} tone={discordConnected ? "ok" : "neutral"} />
       </div>
 
-      <AiEvidenceMatrix events={events} health={health} />
+      <div className="terminal-overview-grid">
+        <PriceChart points={pricePoints} title="BTC 价格走势" symbol="BTC" loading={loading} description="Binance 永续 · 1H K 线收盘价" />
+        <aside className="terminal-focus-card">
+          <div className="terminal-section-title"><div><p>ON THE RADAR</p><h2>重点观察</h2></div><span className="terminal-section-number">02</span></div>
+          {focus ? <>
+            <div className="terminal-focus-asset"><span className="terminal-focus-symbol">{focus.symbol}</span><span className={`severity-${focus.severity}`}>{focus.state}</span></div>
+            <h3>最新合约 · {focus.title}</h3>
+            <p className="terminal-focus-copy">{focus.detail}</p>
+            <div className={`terminal-focus-value direction-${focus.direction}`}><strong>{focus.value}</strong><span>{focus.secondary}</span></div>
+            <div className="terminal-focus-foot"><span>{formatRelativeTime(focus.ts)} · 最近合约事件</span><span>{focus.pushState}</span></div>
+          </> : <div className="terminal-focus-empty"><span aria-hidden="true">⌁</span><h3>等待主力行为线索</h3><p>符合展示标准的合约事件会出现在这里。</p></div>}
+          <Link className="terminal-focus-link" to={focus?.href || "/contract-whale/btc"}>打开合约监控<ArrowUpRightIcon aria-hidden="true" /></Link>
+          <p className="terminal-disclaimer">公开成交证据推断 · 不代表账户身份确认</p>
+        </aside>
+      </div>
+
+      <section className="monitor-flow-panel monitor-flow-pulse">
+        <header className="monitor-flow-panel-header">
+          <div><p>FLOW SNAPSHOT</p><h2>BTC 当前脉冲</h2></div><Link to="/binance-orderflow">查看订单流 <ArrowUpRightIcon aria-hidden="true" /></Link>
+        </header>
+        <div className="monitor-flow-pulse-grid">{pulse.map(item => <PulseCell item={item} key={item.label} />)}</div>
+      </section>
 
       <div className="monitor-flow-layout">
         <section className="monitor-flow-panel monitor-flow-tape">
           <header className="monitor-flow-panel-header">
-            <div>
-              <p>UNIFIED EVENT TAPE</p>
-              <h2>实时监控事件流</h2>
-            </div>
-            <span>{visibleEvents.length} / {events.length} EVENTS</span>
+            <div><p>UNIFIED EVENT TAPE</p><h2>实时监控事件流</h2></div>
+            <span className="terminal-event-count">{visibleEvents.length}<small> / {events.length} 条</small></span>
           </header>
-
           <div className="monitor-flow-filters" aria-label="事件类型筛选">
             {FILTERS.map(([key, label]) => (
-              <button
-                aria-pressed={activeFilter === key}
-                className={activeFilter === key ? "is-active" : ""}
-                key={key}
-                onClick={() => setActiveFilter(key)}
-                type="button"
-              >
-                {label}
-                <small>{key === "all" ? events.length : events.filter(event => event.channel === key).length}</small>
+              <button aria-pressed={activeFilter === key} className={activeFilter === key ? "is-active" : ""} key={key} onClick={() => setActiveFilter(key)} type="button">
+                {label}<small>{key === "all" ? events.length : events.filter(event => event.channel === key).length}</small>
               </button>
             ))}
           </div>
-
-          <div className="monitor-flow-tape-head" aria-hidden="true">
-            <span>时间</span><span>来源</span><span>事件</span><span>核心读数</span><span>状态</span>
-          </div>
+          <div className="monitor-flow-tape-head" aria-hidden="true"><span>时间</span><span>市场</span><span>行为 / 证据</span><span>核心读数</span><span>状态</span></div>
           <div className="monitor-flow-event-list" data-testid="monitor-flow-event-list">
-            {visibleEvents.length ? visibleEvents.map(event => (
-              <MonitorEventRow active={activeEventIds.has(event.id)} event={event} key={event.id} />
-            )) : (
-              <div className="monitor-flow-empty">
-                <strong>{loading ? "正在接入监控流" : "当前筛选暂无事件"}</strong>
-                <span>这不代表数据链路中断；低于阈值的数据不会生成事件卡片。</span>
-              </div>
+            {visibleEvents.length ? visibleEvents.map(event => <MonitorEventRow active={activeEventIds.has(event.id)} event={event} key={event.id} />) : (
+              <div className="monitor-flow-empty"><strong>{loading ? "正在接入监控流" : "当前筛选暂无事件"}</strong><span>这不代表数据链路中断；低于阈值的数据不会生成事件卡片。</span></div>
             )}
           </div>
         </section>
-
         <aside className="monitor-flow-side">
-          <section className="monitor-flow-panel monitor-flow-pulse">
-            <header className="monitor-flow-panel-header">
-              <div>
-                <p>BTC MARKET PULSE</p>
-                <h2>BTC 当前脉冲</h2>
-              </div>
-              <Link to="/contract-whale/btc">深度页 →</Link>
-            </header>
-            <div className="monitor-flow-pulse-grid">
-              {pulse.map(item => <PulseCell item={item} key={item.label} />)}
-            </div>
-          </section>
-
           <section className="monitor-flow-panel monitor-flow-routes">
-            <header className="monitor-flow-panel-header">
-              <div>
-                <p>QUICK ROUTES</p>
-                <h2>深度监控入口</h2>
-              </div>
-            </header>
+            <header className="monitor-flow-panel-header"><div><p>EXPLORE MARKETS</p><h2>深度监控入口</h2></div></header>
             <div className="monitor-flow-route-grid">
-              <Link to="/contract-whale/btc"><span>BTC</span>合约事件带<small>V3 评级 · OI · Funding</small></Link>
-              <Link to="/spot-monitor/btc"><span>SPOT</span>现货鲸鱼流<small>净方向 · 跨所确认</small></Link>
-              <Link to="/binance-orderflow"><span>FLOW</span>订单流 K 线<small>Delta · VPIN · TOF</small></Link>
-              <Link to="/signals"><span>RISK</span>异常候选<small>S 级 · Discord Gate</small></Link>
+              <Link to="/contract-whale/btc"><span>BTC</span><div>合约事件带<small>统一评级 · OI · Funding</small></div><ArrowUpRightIcon aria-hidden="true" /></Link>
+              <Link to="/contract-whale/eth"><span>ETH</span><div>ETH 合约<small>事件追踪 · 行为证据</small></div><ArrowUpRightIcon aria-hidden="true" /></Link>
+              <Link to="/spot-monitor/btc"><span>SPOT</span><div>现货鲸鱼流<small>净方向 · 跨所确认</small></div><ArrowUpRightIcon aria-hidden="true" /></Link>
+              <Link to="/binance-orderflow"><span>FLOW</span><div>订单流 K 线<small>Delta · VPIN · TOF</small></div><ArrowUpRightIcon aria-hidden="true" /></Link>
+              <Link to="/signals"><span>RISK</span><div>异常候选<small>S 级 · Discord Gate</small></div><ArrowUpRightIcon aria-hidden="true" /></Link>
             </div>
           </section>
+          <div className="terminal-observation-note"><span>观察，不执行。</span><p>评级描述市场事件强度，不等于交易指令。请结合数据质量和详细证据判断。</p></div>
         </aside>
       </div>
 
       <section className="monitor-flow-panel monitor-flow-pipeline">
-        <header className="monitor-flow-panel-header">
-          <div>
-            <p>OBSERVABILITY PIPELINE</p>
-            <h2>监控链路</h2>
-          </div>
-          <span>只读聚合 · 无额外持久化</span>
-        </header>
+        <header className="monitor-flow-panel-header"><div><p>SYSTEM TELEMETRY</p><h2>监控链路</h2></div><span>只读聚合 · 无额外持久化</span></header>
         <div className="monitor-flow-pipeline-track">
           {[
             ["01", "交易所", health.activeLinks > 0 ? "ACTIVE" : "WAIT"],
             ["02", "采集器", health.activeLinks > 0 ? "STREAMING" : "WAIT"],
             ["03", "检测器", health.qualityLabel],
-            ["04", "V3 评级", "EVIDENCE"],
+            ["04", "统一评级", "EVIDENCE"],
             ["05", "Discord", discordConnected ? "READY" : "GATED"],
             ["06", "冷热存储", health.storageLabel],
-          ].map(([index, label, status], itemIndex, items) => (
-              <div className={`monitor-flow-pipeline-node ${health.activeLinks > 0 ? "is-active" : ""}`} key={index}>
-              <div><small>{index}</small><strong>{label}</strong><span>{status}</span></div>
-              {itemIndex < items.length - 1 ? <i aria-hidden="true">→</i> : null}
-            </div>
+          ].map(([index, label, status]) => (
+            <div className="monitor-flow-pipeline-node" key={index}><small>{index}</small><div><strong>{label}</strong><span>{status}</span></div><i aria-hidden="true">→</i></div>
           ))}
         </div>
       </section>
+      <footer className="terminal-page-footer"><span>WHALE DESK / MARKET INTELLIGENCE</span><span>行情仅供观察 · 通知沿用原有门控</span></footer>
     </section>
   );
 }
@@ -361,186 +273,6 @@ function PulseCell({ item }) {
       <strong key={item.value} className="monitor-flow-metric-value">{item.value}</strong>
       <small>{item.detail}</small>
     </div>
-  );
-}
-
-function NeuralFieldCanvas({ active, intensity = 0.5 }) {
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || (typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent))) return undefined;
-    const context = canvas.getContext?.("2d");
-    if (!context) return undefined;
-
-    let animationFrame = 0;
-    let width = 0;
-    let height = 0;
-    let pixelRatio = 1;
-    let nodes = [];
-
-    const buildNodes = () => {
-      const count = Math.round(22 + intensity * 18);
-      nodes = Array.from({ length: count }, (_, index) => ({
-        x: ((index * 47) % 101) / 100,
-        y: ((index * 71 + 13) % 97) / 96,
-        phase: index * 0.73,
-        speed: 0.55 + (index % 7) * 0.08,
-        radius: index % 9 === 0 ? 1.8 : 0.8 + (index % 3) * 0.22,
-      }));
-    };
-
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      width = Math.max(1, rect.width);
-      height = Math.max(1, rect.height);
-      pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(width * pixelRatio);
-      canvas.height = Math.round(height * pixelRatio);
-      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-      buildNodes();
-    };
-
-    const draw = (time = 0) => {
-      context.clearRect(0, 0, width, height);
-      const points = nodes.map(node => ({
-        ...node,
-        px: node.x * width + Math.sin(time * 0.00018 * node.speed + node.phase) * 14,
-        py: node.y * height + Math.cos(time * 0.00015 * node.speed + node.phase) * 8,
-      }));
-
-      for (let leftIndex = 0; leftIndex < points.length; leftIndex += 1) {
-        const left = points[leftIndex];
-        for (let rightIndex = leftIndex + 1; rightIndex < points.length; rightIndex += 1) {
-          const right = points[rightIndex];
-          const distance = Math.hypot(left.px - right.px, left.py - right.py);
-          if (distance > 118) continue;
-          context.beginPath();
-          context.moveTo(left.px, left.py);
-          context.lineTo(right.px, right.py);
-          context.strokeStyle = `rgba(84, 218, 246, ${Math.max(0, (1 - distance / 118) * 0.13)})`;
-          context.lineWidth = 0.55;
-          context.stroke();
-        }
-      }
-
-      points.forEach((point, index) => {
-        const pulse = 0.65 + Math.sin(time * 0.0018 + point.phase) * 0.28;
-        context.beginPath();
-        context.arc(point.px, point.py, point.radius * pulse, 0, Math.PI * 2);
-        context.fillStyle = index % 8 === 0 ? "rgba(91, 232, 178, .78)" : "rgba(113, 229, 248, .62)";
-        context.shadowColor = index % 8 === 0 ? "rgba(83, 230, 177, .75)" : "rgba(100, 231, 245, .75)";
-        context.shadowBlur = point.radius > 1.5 ? 10 : 5;
-        context.fill();
-      });
-      context.shadowBlur = 0;
-
-      if (active) animationFrame = window.requestAnimationFrame(draw);
-    };
-
-    resize();
-    draw(performance.now());
-    const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
-    resizeObserver?.observe(canvas);
-    window.addEventListener("resize", resize);
-
-    return () => {
-      if (animationFrame) window.cancelAnimationFrame(animationFrame);
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", resize);
-    };
-  }, [active, intensity]);
-
-  return <canvas aria-hidden="true" className="monitor-flow-neural-field" data-testid="ai-neural-field" ref={canvasRef} />;
-}
-
-function AiEvidenceMatrix({ events, health }) {
-  const recent = events.slice(0, 30).reverse();
-  const directionCounts = recent.reduce((counts, event) => {
-    const key = event.direction === "buy" || event.direction === "sell" ? event.direction : "neutral";
-    counts[key] += 1;
-    return counts;
-  }, { buy: 0, sell: 0, neutral: 0 });
-  const severityCounts = recent.reduce((counts, event) => {
-    const key = ["critical", "high", "medium"].includes(event.severity) ? event.severity : "info";
-    counts[key] += 1;
-    return counts;
-  }, { critical: 0, high: 0, medium: 0, info: 0 });
-  const sourceCount = new Set(recent.map(event => event.channel)).size;
-  const directionalTotal = directionCounts.buy + directionCounts.sell;
-  const buyShare = directionalTotal ? directionCounts.buy / directionalTotal : 0.5;
-  const riskShare = recent.length ? (severityCounts.critical + severityCounts.high) / recent.length : 0;
-  const vectorPoints = recent.map((event, index) => {
-    const x = recent.length <= 1 ? 50 : 3 + (index / (recent.length - 1)) * 94;
-    const direction = event.direction === "buy" ? 1 : event.direction === "sell" ? -1 : 0;
-    const severity = event.severity === "critical" ? 1 : event.severity === "high" ? 0.72 : event.severity === "medium" ? 0.42 : 0.18;
-    const y = 30 - direction * (7 + severity * 12) + (index % 3 - 1) * 1.2;
-    return { ...event, x, y: Math.max(5, Math.min(55, y)) };
-  });
-  const polyline = vectorPoints.map(point => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
-  const bias = buyShare > 0.58 ? "BUY VECTOR" : buyShare < 0.42 ? "SELL VECTOR" : "BALANCED";
-
-  return (
-    <section className="monitor-flow-panel monitor-flow-intelligence" data-testid="ai-evidence-matrix">
-      <header className="monitor-flow-intelligence-header">
-        <div>
-          <p>AI EVIDENCE MATRIX</p>
-          <strong>实时证据向量融合</strong>
-        </div>
-        <span><i aria-hidden="true" /> SYNTHESIS LIVE</span>
-      </header>
-
-      <div className="monitor-flow-intelligence-chart">
-        <div className="monitor-flow-vector-labels" aria-hidden="true"><span>BUY</span><span>NEUTRAL</span><span>SELL</span></div>
-        <svg aria-label="最近事件方向与等级向量图" preserveAspectRatio="none" viewBox="0 0 100 60">
-          <defs>
-            <linearGradient id="flow-vector-gradient" x1="0" x2="1">
-              <stop offset="0" stopColor="#5ea7ff" />
-              <stop offset="0.5" stopColor="#64e7f5" />
-              <stop offset="1" stopColor="#53e6b1" />
-            </linearGradient>
-            <linearGradient id="flow-vector-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0" stopColor="#64e7f5" stopOpacity=".18" />
-              <stop offset="1" stopColor="#64e7f5" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          <g className="monitor-flow-vector-grid"><path d="M0 12H100M0 30H100M0 48H100" /><path d="M12 0V60M25 0V60M38 0V60M51 0V60M64 0V60M77 0V60M90 0V60" /></g>
-          {polyline ? <polygon className="monitor-flow-vector-fill" points={`3,60 ${polyline} 97,60`} /> : null}
-          {polyline ? <polyline className="monitor-flow-vector-line" points={polyline} /> : null}
-          {vectorPoints.map(point => (
-            <circle className={`vector-${point.direction} severity-${point.severity}`} cx={point.x} cy={point.y} key={point.id} r={point.severity === "critical" ? 1.35 : 0.82} />
-          ))}
-          <line className="monitor-flow-vector-scan" x1="0" x2="0" y1="0" y2="60" />
-        </svg>
-        <div className="monitor-flow-vector-readout">
-          <span>{recent.length} EVIDENCE</span><strong>{bias}</strong><small>{sourceCount} ACTIVE LAYERS</small>
-        </div>
-      </div>
-
-      <div className="monitor-flow-consensus">
-        <div className="monitor-flow-consensus-title"><span>MARKET CONSENSUS</span><strong>{Math.round(buyShare * 100)}%</strong></div>
-        <div className="monitor-flow-consensus-bar" aria-label={`买向证据 ${directionCounts.buy}，卖向证据 ${directionCounts.sell}`}>
-          <i className="is-buy" style={{ width: `${buyShare * 100}%` }} />
-          <i className="is-sell" style={{ width: `${(1 - buyShare) * 100}%` }} />
-        </div>
-        <div className="monitor-flow-consensus-counts">
-          <span>BUY <strong>{directionCounts.buy}</strong></span>
-          <span>NEUTRAL <strong>{directionCounts.neutral}</strong></span>
-          <span>SELL <strong>{directionCounts.sell}</strong></span>
-        </div>
-      </div>
-
-      <div className="monitor-flow-risk-radar">
-        <div className="monitor-flow-risk-orbit" style={{ "--risk-angle": `${Math.max(8, riskShare * 360)}deg` }}>
-          <i /><b>{health.alerts1h}</b>
-        </div>
-        <div>
-          <span>THREAT RADAR</span>
-          <strong>{riskShare >= 0.5 ? "ELEVATED" : riskShare > 0 ? "TRACKING" : "CLEAR"}</strong>
-          <small>S {severityCounts.critical} · A/HIGH {severityCounts.high}</small>
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -714,21 +446,30 @@ export function buildMonitorFlowEvents(snapshot, rawInboxSignals = []) {
 }
 
 function buildBtcPulse(snapshot) {
-  const contract = snapshot?.contract?.BTC?.summary;
-  const spot = snapshot?.spot?.BTC?.summary;
+  const contract = snapshot?.contract?.BTC?.error || snapshot?.contract?.BTC?.summary?.enabled === false ? null : snapshot?.contract?.BTC?.summary;
+  const spot = snapshot?.spot?.BTC?.error || snapshot?.spot?.BTC?.summary?.enabled === false ? null : snapshot?.spot?.BTC?.summary;
   const candle = latestFlowCandle(snapshot?.orderflow?.candles);
-  const contractNet = finiteNumber(contract?.trend60s?.netVolumeBtc);
-  const spotNet = finiteNumber(spot?.trend60s?.netVolumeBase);
-  const delta = candle ? finiteNumber(candle.deltaBase) : null;
-  const vpin = candle?.vpin;
+  const contractNet = availableNumber(contract?.trend60s?.netVolumeBtc);
+  const spotNet = availableNumber(spot?.trend60s?.netVolumeBase);
+  const spotDominance = availableNumber(spot?.trend60s?.dominance);
+  const hasFlow = Number(snapshot?.orderflow?.monitorFlowCandles) > 0 || candle?.buyBase > 0 || candle?.sellBase > 0;
+  const delta = hasFlow ? availableNumber(candle?.deltaBase) : null;
+  const vpin = hasFlow ? availableNumber(candle?.vpin) : null;
+  const tofVolume = hasFlow ? availableNumber(candle?.tofVolumeBtc) : null;
   return [
-    { label: "合约净流 60S", value: signedVolume(contractNet, "BTC"), detail: directionLabel(contractNet === 0 ? contract?.latestDirection : contractNet > 0 ? "buy" : "sell"), tone: valueTone(contractNet) },
-    { label: "现货净流 60S", value: signedVolume(spotNet, "BTC"), detail: `主导 ${(finiteNumber(spot?.trend60s?.dominance) * 100).toFixed(0)}%`, tone: valueTone(spotNet) },
-    { label: "1H DELTA", value: delta === null ? "等待数据" : signedVolume(delta, "BTC"), detail: candle ? signedPercent(candle.deltaPct) : "—", tone: valueTone(delta) },
-    { label: "VPIN", value: vpin === null || vpin === undefined ? "等待基线" : vpin.toFixed(3), detail: candle?.vpinExtreme ? "EXTREME" : candle?.vpinHigh ? "HIGH" : candle?.vpinSpike ? "SPIKE" : "NORMAL", tone: candle?.vpinHigh || candle?.vpinExtreme ? "warn" : "ok" },
-    { label: "TOF", value: candle?.tofAlert ? "ALERT" : "NORMAL", detail: !candle?.tofVolumeBtc ? "尚无异常桶" : formatVolume(candle.tofVolumeBtc, "BTC"), tone: candle?.tofAlert ? "warn" : "ok" },
+    { label: "合约净流 60S", value: contractNet === null ? "等待数据" : signedVolume(contractNet, "BTC"), detail: contractNet === null ? "合约成交证据未接入" : directionLabel(contractNet === 0 ? contract?.latestDirection : contractNet > 0 ? "buy" : "sell"), tone: valueTone(contractNet) },
+    { label: "现货净流 60S", value: spotNet === null ? "等待数据" : signedVolume(spotNet, "BTC"), detail: spotDominance === null ? "等待现货确认" : `主导 ${(spotDominance * 100).toFixed(0)}%`, tone: valueTone(spotNet) },
+    { label: "1H DELTA", value: delta === null ? "等待数据" : signedVolume(delta, "BTC"), detail: delta === null ? "缺少主动买卖量" : signedPercent(candle.deltaPct), tone: valueTone(delta) },
+    { label: "VPIN", value: vpin === null ? "等待基线" : vpin.toFixed(3), detail: vpin === null ? "尚无有效读数" : candle?.vpinExtreme ? "EXTREME" : candle?.vpinHigh ? "HIGH" : candle?.vpinSpike ? "SPIKE" : "NORMAL", tone: vpin === null ? "neutral" : candle?.vpinHigh || candle?.vpinExtreme ? "warn" : "ok" },
+    { label: "TOF", value: tofVolume === null ? "等待数据" : candle?.tofAlert ? "ALERT" : "NORMAL", detail: tofVolume === null ? "尚无有效订单流" : tofVolume === 0 ? "尚无异常桶" : formatVolume(tofVolume, "BTC"), tone: tofVolume === null ? "neutral" : candle?.tofAlert ? "warn" : "ok" },
     { label: "综合质量", value: `${Math.round(finiteNumber(contract?.overallDataQuality)) || "—"}`, detail: `${contract?.activeExchangeCount || 0} 个合约源`, tone: finiteNumber(contract?.overallDataQuality) >= 70 ? "ok" : "warn" },
   ];
+}
+
+function availableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function buildMonitorHealth(snapshot, events, context) {

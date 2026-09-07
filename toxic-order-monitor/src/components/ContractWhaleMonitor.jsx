@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
+import PriceChart from "./PriceChart.jsx";
 import {
   CWM_MAX_PRICE_DEVIATION_PCT,
   fetchContractEventDebugCounts,
@@ -977,30 +978,43 @@ export default function ContractWhaleMonitor({ lockedSymbol = "BTC" }) {
       />
       <V42GateStatusPanel gate={state.v42Gate} />
 
-      <div className="contract-filter-dock">
-        <ContractWhaleFilters
-          filters={filters}
-          lockedSymbol={assetSymbol}
-          onChange={(nextFilters) => {
-            setSelectedSignalId(null);
-            setSelectedWhaleId(null);
-            setFilters({ ...nextFilters, symbol: assetSymbol });
-          }}
-        />
-        <p className="contract-filter-note">
-          <span className="text-slate-300">VISIBLE GATE</span>
-          <span>{displayFilterLabel}</span>
-          <span>价格偏离 ≤ {CWM_MAX_PRICE_DEVIATION_PCT}%</span>
-          <span>保留：合约市场事件完整数据 ≥ 7 天 / B 3 个月 / A·S 永久</span>
-        </p>
-        <DataHealthBanner dataSlices={state.dataSlices} />
-      </div>
-
       <section
         className="contract-primary-grid"
         data-testid="primary-analysis-grid"
       >
         <div className="min-w-0">
+          <PriceChart
+            key={assetSymbol}
+            points={visibleContractEvents.map(item => ({
+              time: item.ts,
+              price: item.triggerPriceUsd ?? item.triggerPrice ?? item.price
+                ?? item.sourceSignal?.triggerPriceUsd ?? item.sourceSignal?.triggerPrice
+                ?? item.sourceSignal?.price,
+            }))}
+            title={`${assetSymbol} 事件价格轨迹`}
+            symbol={assetSymbol}
+            description="事件触发价 · 非连续行情"
+            loading={state.contractEventsLoading}
+            discrete
+          />
+          <div className="contract-filter-dock">
+            <ContractWhaleFilters
+              filters={filters}
+              lockedSymbol={assetSymbol}
+              onChange={(nextFilters) => {
+                setSelectedSignalId(null);
+                setSelectedWhaleId(null);
+                setFilters({ ...nextFilters, symbol: assetSymbol });
+              }}
+            />
+            <p className="contract-filter-note">
+              <span className="text-slate-300">VISIBLE GATE</span>
+              <span>{displayFilterLabel}</span>
+              <span>价格偏离 ≤ {CWM_MAX_PRICE_DEVIATION_PCT}%</span>
+              <span>保留：合约市场事件完整数据 ≥ 7 天 / B 3 个月 / A·S 永久</span>
+            </p>
+            <DataHealthBanner dataSlices={state.dataSlices} />
+          </div>
           <HistoricalEventStreamPanel
             contractEvents={contractEvents}
             visibleContractEvents={visibleContractEvents}
@@ -1149,17 +1163,17 @@ function ContractWorkspaceCommandBar({ contractEvents, latestItems, summary, sym
       ?? latest?.sourceSignal?.oiDelta
       ?? latest?.eventLifecycle?.netOiDeltaBtc,
   );
-  const notional24h = contractEvents.reduce(
+  const loadedNotional = contractEvents.reduce(
     (sum, item) => sum + finiteNumber(item?.notionalUsd ?? item?.totalNotionalUsd ?? item?.notional, 0),
     0,
   );
   const sourceCount = contractSourceLabels(summary).length;
-  const healthy = !["unavailable", "offline", "error"].includes(String(summary?.healthStatus || "healthy").toLowerCase());
+  const healthy = summary?.enabled === true && ["healthy", "online", "connected"].includes(String(summary?.healthStatus || "unknown").toLowerCase());
 
   return (
     <header className="contract-command-bar" data-testid="contract-workspace-command-bar">
       <div className="contract-market-selector">
-        <span className="contract-market-symbol">₿</span>
+        <span className={`contract-market-symbol asset-${symbol.toLowerCase()}`} aria-hidden="true">{symbol === "ETH" ? "Ξ" : "₿"}</span>
         <div>
           <p className="contract-market-title">{symbol} / PERP</p>
           <p className="contract-market-subtitle">{symbol} CONTRACT WHALE FLOW</p>
@@ -1167,7 +1181,7 @@ function ContractWorkspaceCommandBar({ contractEvents, latestItems, summary, sym
       </div>
 
       <div className="contract-price-block">
-        <p className="contract-price-value">{price === null ? "N/A" : formatPrice(price)}</p>
+        <p className="contract-price-value"><span key={price} className="terminal-value-update">{price === null ? "N/A" : formatPrice(price)}</span></p>
         <p className={priceMovePct === null ? "text-slate-500" : signedMetricClass(priceMovePct)}>
           {priceMovePct === null ? "PRICE N/A" : formatSignedPct(priceMovePct)}
         </p>
@@ -1176,7 +1190,7 @@ function ContractWorkspaceCommandBar({ contractEvents, latestItems, summary, sym
       <div className="contract-command-metrics">
         <ContractWorkspaceMetric label="资金费率" value={fundingRate === null ? "N/A" : formatFundingPercent(fundingRate)} tone={fundingRate} />
         <ContractWorkspaceMetric label="持仓量 Δ" value={oiDeltaBtc === null ? "N/A" : formatSignedBaseVolume(oiDeltaBtc, symbol)} tone={oiDeltaBtc} />
-        <ContractWorkspaceMetric label="事件名义价值 (24H)" value={notional24h > 0 ? formatUsd(notional24h) : "N/A"} />
+        <ContractWorkspaceMetric label="已加载事件名义价值" value={loadedNotional > 0 ? formatUsd(loadedNotional) : "N/A"} />
         <ContractWorkspaceMetric label="覆盖交易所" value={sourceCount > 0 ? `${sourceCount}` : "N/A"} />
       </div>
 
@@ -1187,7 +1201,7 @@ function ContractWorkspaceCommandBar({ contractEvents, latestItems, summary, sym
         </div>
         <div className={healthy ? "contract-live-state text-emerald-300" : "contract-live-state text-amber-300"}>
           <span className={healthy ? "bg-emerald-400" : "bg-amber-400"} />
-          {healthy ? "LIVE" : "RECOVERING"}
+          {healthy ? "LIVE" : summary?.enabled === false ? "未启用" : "状态待确认"}
         </div>
         <span className="contract-readonly-badge">只读监控</span>
         <span className="sr-only">只读提醒 · 不下单 · CWM Discord gate 独立</span>

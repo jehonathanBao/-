@@ -5,6 +5,7 @@ import App from "./App.jsx";
 import PageErrorBoundary from "./components/PageErrorBoundary.jsx";
 import PageShellSkeleton from "./components/PageShellSkeleton.jsx";
 import "./index.css";
+import "./styles/terminal.css";
 
 const rootElement = document.getElementById("root");
 

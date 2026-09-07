@@ -7,7 +7,7 @@ export default function BinanceOrderflowRoute() {
   return (
     <div className="workspace-shell flex min-h-screen flex-col lg:flex-row" data-testid="workspace-shell">
       <Sidebar />
-      <main className="workspace-main workspace-route-binance-orderflow w-full min-w-0 flex-1" data-testid="workspace-main">
+      <main className="workspace-main workspace-route-binance-orderflow w-full min-w-0 flex-1" data-testid="workspace-main" id="workspace-main" tabIndex={-1}>
         <Header discordConnected={false} highUnhandledCount={0} />
         <div className="workspace-content">
           <WorkspacePageHeader

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -145,7 +145,7 @@ describe("Unified workspace shell", () => {
     expect(screen.queryByText("READ ONLY")).not.toBeInTheDocument();
 
     if (activeLabel) {
-      expect(screen.getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
+      expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
     }
 
     if (contractRoute) {
@@ -226,7 +226,7 @@ describe("Unified workspace shell", () => {
     expect(screen.getByTestId("workspace-sidebar")).toBeInTheDocument();
 
     if (activeLabel) {
-      expect(screen.getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
+      expect(within(screen.getByRole("navigation", { name: "主导航" })).getByRole("link", { name: activeLabel })).toHaveAttribute("aria-current", "page");
     }
 
     if (contractRoute) {

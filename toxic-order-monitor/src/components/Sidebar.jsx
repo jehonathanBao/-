@@ -13,6 +13,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { NavLink, useLocation } from "react-router-dom";
 import RuntimeBoundaryBadge from "./RuntimeBoundaryBadge.jsx";
+import MotionControl from "./MotionControl.jsx";
 
 const menuItems = [
   { label: "监控首页", path: "/dashboard", aliases: ["/"], icon: HomeIcon },
@@ -31,25 +32,39 @@ const menuItems = [
   { label: "系统设置", path: "/settings", icon: Cog6ToothIcon },
 ];
 
+const menuGroups = [
+  { label: "总览", items: [0] },
+  { label: "合约市场", items: [1, 2, 3, 6, 7] },
+  { label: "现货市场", items: [4, 5] },
+  { label: "信号中心", items: [8, 9, 10] },
+  { label: "工作区", items: [11, 12, 13] },
+];
+
 export default function Sidebar({ runtimeBoundary }) {
   const location = useLocation();
   return (
     <aside
-      className="workspace-sidebar contract-sidebar w-full shrink-0 border-b px-3 py-3 lg:sticky lg:top-0 lg:h-screen lg:w-[212px] lg:border-b-0 lg:border-r lg:px-2 lg:py-4"
+      className="workspace-sidebar contract-sidebar"
       data-testid="workspace-sidebar"
     >
-      <div className="contract-sidebar-brand mb-3 flex items-center gap-3 px-2 py-2">
-        <span className="contract-sidebar-mark" aria-hidden="true">W</span>
+      <a className="terminal-skip-link" href="#workspace-main">跳到主要内容</a>
+      <div className="contract-sidebar-brand">
+        <span className="contract-sidebar-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none"><path d="m4 8 6 17 6-12 6 12 6-17M4 8h5m14 0h5" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" /></svg>
+        </span>
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">
-            Whale Desk
-          </p>
-          <h1 className="mt-1 text-sm font-semibold text-slate-100">有毒订单监控</h1>
+          <p className="terminal-brand-name">WHALE<span>DESK</span></p>
+          <p className="terminal-brand-caption">有毒订单监控 · 市场观察终端</p>
         </div>
       </div>
 
-      <nav aria-label="主导航" className="flex gap-1 overflow-x-auto pb-1 lg:block lg:space-y-0.5 lg:overflow-visible lg:pb-0">
-        {menuItems.map((item) => {
+      <nav aria-label="主导航" className="terminal-navigation">
+        {menuGroups.map(group => (
+          <div className="terminal-nav-group" key={group.label}>
+            <p className="terminal-nav-label">{group.label}</p>
+            <div className="terminal-nav-items">
+        {group.items.map((index) => {
+          const item = menuItems[index];
           const Icon = item.icon;
           return (
           <NavLink
@@ -64,12 +79,14 @@ export default function Sidebar({ runtimeBoundary }) {
           </NavLink>
           );
         })}
+            </div>
+          </div>
+        ))}
       </nav>
 
-      <div className="contract-sidebar-health mt-4 hidden border-t px-2 pt-4 text-[10px] lg:block">
-        <div className="flex items-center justify-between gap-3">
-          <span className="uppercase tracking-[0.16em] text-slate-600">Workspace</span>
-        </div>
+      <div className="contract-sidebar-health">
+        <MotionControl />
+        <p className="terminal-nav-label">运行边界</p>
         <RuntimeBoundaryBadge runtimeBoundary={runtimeBoundary} showDetail />
       </div>
     </aside>
@@ -78,9 +95,9 @@ export default function Sidebar({ runtimeBoundary }) {
 
 function navLinkClass(isActive) {
   return [
-    "contract-sidebar-link flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-md border-l-2 px-2.5 py-2 text-[12px] outline-none transition focus-visible:ring-1 focus-visible:ring-cyan-300/50",
+    "contract-sidebar-link",
     isActive
-      ? "border-cyan-300 bg-cyan-300/[0.08] text-slate-100"
-      : "border-transparent text-slate-500 hover:bg-white/[0.035] hover:text-slate-200",
+      ? "is-active"
+      : "",
   ].join(" ");
 }

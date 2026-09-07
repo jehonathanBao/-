@@ -13,9 +13,8 @@ export default function Header({ highUnhandledCount, discordConnected, runtimeBo
   return (
     <header className="workspace-command-header" data-testid="workspace-command-header">
       <div className="workspace-command-brand">
-        <p>Toxic Order Monitor</p>
-        <h2>盘口异常监控大屏</h2>
-        <span>RISK OBSERVATION WORKSPACE</span>
+        <p>WORKSPACE <span aria-hidden="true">/</span> MARKET INTELLIGENCE</p>
+        <h2>市场监控工作台</h2>
       </div>
 
       <div className="workspace-command-metrics">
@@ -31,9 +30,9 @@ export default function Header({ highUnhandledCount, discordConnected, runtimeBo
         <div className="workspace-command-metric workspace-command-clock">
           {now.toLocaleString("zh-CN", { hour12: false })}
         </div>
-        <button aria-label="系统设置" className="workspace-command-settings" type="button">
+        <a aria-label="系统设置" className="workspace-command-settings" href="/settings">
           <Cog6ToothIcon className="h-5 w-5" />
-        </button>
+        </a>
       </div>
     </header>
   );

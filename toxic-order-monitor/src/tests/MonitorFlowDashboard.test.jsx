@@ -28,14 +28,10 @@ describe("MonitorFlowDashboard", () => {
     expect(screen.getByText("实时监控事件流")).toBeInTheDocument();
     expect(screen.getByText("BTC 当前脉冲")).toBeInTheDocument();
     expect(screen.getByText("监控链路")).toBeInTheDocument();
-    expect(screen.getByText("AI SIGNAL FUSION")).toBeInTheDocument();
-    expect(screen.getByText("AI NEURAL BUS")).toBeInTheDocument();
-    expect(screen.getByTestId("ai-neural-field")).toBeInTheDocument();
-    expect(screen.getByTestId("ai-evidence-matrix")).toBeInTheDocument();
-    expect(screen.getByText("实时证据向量融合")).toBeInTheDocument();
-    expect(screen.getByText("MARKET CONSENSUS")).toBeInTheDocument();
-    expect(screen.getByText("THREAT RADAR")).toBeInTheDocument();
-    expect(screen.getByLabelText("AI 证据融合状态")).toHaveTextContent("EVIDENCE ACTIVE");
+    expect(screen.getByRole("heading", { name: "BTC 价格走势" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "重点观察" })).toBeInTheDocument();
+    expect(screen.queryByTestId("ai-neural-field")).not.toBeInTheDocument();
+    expect(screen.queryByText("MARKET CONSENSUS")).not.toBeInTheDocument();
     expect(screen.queryByText("合约市场事件")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /合约事件带/ })).toHaveAttribute("href", "/contract-whale/btc");
   });
@@ -77,6 +73,19 @@ describe("MonitorFlowDashboard", () => {
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("保留最近一次成功快照"));
     expect(screen.getByText("主动买压")).toBeInTheDocument();
+  });
+
+  it("does not present missing trade-flow data as zero flow or a normal TOF reading", async () => {
+    fetchMonitorFlowSnapshot.mockResolvedValue({
+      fetchedAtMs: Date.now(), contract: { BTC: { summary: { enabled: false, trend60s: { netVolumeBtc: 0 } }, error: "summary_unavailable" }, events: [] },
+      spot: { BTC: { summary: { enabled: false, trend60s: { netVolumeBase: 0, dominance: 0 } }, error: "latest_unavailable" } },
+      orderflow: { source: "binance_futures_kline_public_fallback", monitorFlowCandles: 0, candles: [{ time: Date.now(), close: 60_000, buyBase: 0, sellBase: 0, deltaBase: 0, vpin: null, tofVolumeBtc: null }] },
+    });
+    renderDashboard();
+    expect(await screen.findByText("WAITING")).toBeInTheDocument();
+    expect(screen.getAllByText("等待数据").length).toBeGreaterThanOrEqual(4);
+    expect(screen.queryByText("NORMAL")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 BTC")).not.toBeInTheDocument();
   });
 });
 
