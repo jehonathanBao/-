@@ -14,7 +14,7 @@ use super::{
     },
 };
 
-pub const CONTRACT_WHALE_BEHAVIOR_VERSION: &str = "cwm_behavior_v2";
+pub const CONTRACT_WHALE_BEHAVIOR_VERSION: &str = "cwm_behavior_v3_binance_evidence";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BehaviorOutcomeMarkouts {
@@ -179,6 +179,17 @@ pub fn build_detection_behavior(
         confidence = confidence.min(69);
         missing.push(evidence("v3_grade_not_confirmed", None));
     }
+    if matches!(
+        hypothesis,
+        ContractWhaleBehaviorHypothesis::DownsideAbsorption
+            | ContractWhaleBehaviorHypothesis::UpsideSuppression
+    ) && !signal
+        .passive_execution
+        .as_ref()
+        .is_some_and(|e| e.supports(signal))
+    {
+        confidence = confidence.min(59);
+    }
     if signal.classification_v2.evidence.evidence_degraded
         || signal.classification_v2.oi_evidence_degraded
         || signal.data_quality < 65
@@ -270,6 +281,15 @@ pub fn apply_post_event_validation(
                 .iter()
                 .any(|item| item.code == *code)
         });
+    let can_confirm = can_confirm
+        && (!matches!(
+            assessment.hypothesis,
+            ContractWhaleBehaviorHypothesis::DownsideAbsorption
+                | ContractWhaleBehaviorHypothesis::UpsideSuppression
+        ) || assessment
+            .supporting_evidence
+            .iter()
+            .any(|item| item.code == "binance_passive_execution"));
     if (state != BehaviorDecisionState::Confirmed || can_confirm)
         && (assessment.decision_state != BehaviorDecisionState::Observe
             || state == BehaviorDecisionState::Invalidated)
@@ -476,14 +496,14 @@ fn add_signal_evidence(
     }
     match hypothesis {
         ContractWhaleBehaviorHypothesis::DownsideAbsorption => {
-            supporting.push(evidence("sell_flow_absorbed", None));
+            supporting.push(evidence("sell_flow_absorption_candidate", None));
             supporting.push(evidence(
                 "low_price_efficiency",
                 Some(signal.classification_v2.price_efficiency),
             ));
         }
         ContractWhaleBehaviorHypothesis::UpsideSuppression => {
-            supporting.push(evidence("buy_flow_suppressed", None));
+            supporting.push(evidence("buy_flow_suppression_candidate", None));
             supporting.push(evidence(
                 "low_price_efficiency",
                 Some(signal.classification_v2.price_efficiency),
@@ -497,6 +517,24 @@ fn add_signal_evidence(
             ));
         }
         _ => {}
+    }
+    if matches!(
+        hypothesis,
+        ContractWhaleBehaviorHypothesis::DownsideAbsorption
+            | ContractWhaleBehaviorHypothesis::UpsideSuppression
+    ) {
+        if let Some(passive) = signal
+            .passive_execution
+            .as_ref()
+            .filter(|e| e.supports(signal))
+        {
+            supporting.push(evidence(
+                "binance_passive_execution",
+                Some(passive.replenished_notional_usd),
+            ));
+        } else {
+            missing.push(evidence("binance_passive_execution", None));
+        }
     }
     if signal.classification_v2.oi_evidence_degraded {
         contradicting.push(evidence("oi_evidence_degraded", None));
@@ -532,6 +570,46 @@ fn evidence(code: &str, value: Option<f64>) -> BehaviorEvidenceItem {
 mod tests {
     use super::*;
     use crate::contract_whale_monitor::types::ContractWhaleSignal;
+
+    #[test]
+    fn main_force_absorption_without_matched_book_evidence_remains_observe() {
+        let mut value = signal();
+        value.window_sec = 60;
+        value.classification_v2.structure_interpretation =
+            ContractWhaleStructureInterpretation::DownsideAbsorption;
+        let assessment = build_detection_behavior(&value, None, value.ts);
+        assert!(assessment
+            .missing_evidence
+            .iter()
+            .any(|e| e.code == "binance_passive_execution"));
+        assert!(assessment.confidence_score <= 59);
+        assert!(!assessment
+            .supporting_evidence
+            .iter()
+            .any(|e| e.code == "sell_flow_absorbed"));
+        value.passive_execution = Some(super::super::passive_execution::PassiveExecutionEvidence {
+            version: "binance_passive_v1".into(),
+            status: "supported".into(),
+            side: "buy".into(),
+            window_sec: value.window_sec,
+            assessed_at_ms: value.ts,
+            coverage: 1.0,
+            independent_bins: 3,
+            matched_notional_usd: 2_000_000.0,
+            replenished_notional_usd: 1_000_000.0,
+            reasons: vec![],
+        });
+        let supported = build_detection_behavior(&value, None, value.ts);
+        assert!(supported
+            .supporting_evidence
+            .iter()
+            .any(|e| e.code == "binance_passive_execution"));
+        value.passive_execution.as_mut().unwrap().assessed_at_ms += 1;
+        assert!(build_detection_behavior(&value, None, value.ts)
+            .missing_evidence
+            .iter()
+            .any(|e| e.code == "binance_passive_execution"));
+    }
 
     fn signal() -> ContractWhaleSignal {
         let value = serde_json::json!({

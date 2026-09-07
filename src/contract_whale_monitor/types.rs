@@ -559,8 +559,8 @@ pub enum ContractWhaleOiContextTag {
 impl ContractWhaleOiContextTag {
     pub fn label(self) -> &'static str {
         match self {
-            Self::NewLongBuild => "新多开仓",
-            Self::NewShortBuild => "新空开仓",
+            Self::NewLongBuild => "偏多新增仓位候选",
+            Self::NewShortBuild => "偏空新增仓位候选",
             Self::ShortCovering => "空头回补",
             Self::LongUnwind => "多头平仓",
             Self::OiNotConfirmed => "OI 不确认",
@@ -1304,6 +1304,8 @@ impl Default for ContractWhaleEventQuality {
 pub struct ContractWhaleSignal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sustained_flow: Option<super::sustained_flow::SustainedFlowEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive_execution: Option<super::passive_execution::PassiveExecutionEvidence>,
     pub id: String,
     pub ts: i64,
     pub symbol: String,

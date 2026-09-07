@@ -175,7 +175,9 @@ pub fn evaluate_contract_whale_discord_gate(
     cooldown_store: &ContractWhaleDiscordCooldownStore,
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
-    if signal.sustained_flow.is_some() { return gate(false, "sustained_candidate_display_only"); }
+    if signal.sustained_flow.is_some() {
+        return gate(false, "sustained_candidate_display_only");
+    }
     let primary_source_override = signal.discord_reason == "high_primary_source_extreme";
     let config = super::config::contract_whale_runtime_config();
     let impact_level_override = super::discord_gate::impact_level_discord_eligible(signal, &config);
@@ -242,22 +244,20 @@ pub fn evaluate_contract_whale_discord_v3_gate(
     cooldown_store: &ContractWhaleDiscordCooldownStore,
     now_ms: i64,
 ) -> ContractWhaleDiscordGateDecision {
-    if signal.sustained_flow.is_some() { return gate(false, "sustained_candidate_display_only"); }
+    if signal.sustained_flow.is_some() {
+        return gate(false, "sustained_candidate_display_only");
+    }
     if !settings.enabled {
         return gate(false, "disabled");
     }
     if !super::discord_gate::impact_grade_v3_discord_eligible(assessment) {
         return gate(false, "v3_grade_not_confirmed");
     }
-    if signal.score < 80 {
-        return gate(false, "low_score");
-    }
     if signal.data_quality < 70 {
         return gate(false, "data_quality_low");
     }
-    if !matches!(signal.severity, ContractWhaleSeverity::High | ContractWhaleSeverity::Critical | ContractWhaleSeverity::S) {
-        return gate(false, "observe_only");
-    }
+    // Canonical confirmed A/S is the sole importance gate. Detector score and
+    // severity describe an earlier snapshot and must not silently re-grade it.
     if signal.discord_reason == "warmup_collect_only" {
         return gate(false, "warmup_collect_only");
     }
@@ -271,7 +271,19 @@ pub fn evaluate_contract_whale_discord_v3_gate(
 }
 
 pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Value {
-    let severity = severity_label(signal.severity);
+    let canonical = signal.impact_level.as_deref().filter(|grade| {
+        matches!(*grade, "S" | "A" | "B" | "C")
+            && signal.impact_grade_state.as_deref() == Some("confirmed")
+            && signal.impact_grade_version.is_some()
+    });
+    let severity = canonical.unwrap_or_else(|| severity_label(signal.severity));
+    let color_severity = match canonical {
+        Some("S") => ContractWhaleSeverity::S,
+        Some("A") => ContractWhaleSeverity::High,
+        Some("B") => ContractWhaleSeverity::Medium,
+        Some("C") => ContractWhaleSeverity::Calm,
+        _ => signal.severity,
+    };
     let direction = direction_label(signal.direction);
     let signal_type = signal_type_label(signal.signal_type);
     let volume_unit = quantity_unit_label(signal);
@@ -300,17 +312,17 @@ pub fn build_contract_whale_discord_payload(signal: &ContractWhaleSignal) -> Val
         "embeds": [{
             "title": format!("{} Contract Whale Flow", signal.symbol),
             "description": description,
-            "color": severity_color(signal.severity),
+            "color": severity_color(color_severity),
             "fields": [
                 {"name": "Symbol", "value": signal.symbol.clone(), "inline": true},
                 {"name": "Event Type", "value": "contract_whale_flow", "inline": true},
                 {"name": "Detector Type", "value": signal_type, "inline": true},
-                {"name": "Signal Severity", "value": severity, "inline": true},
+                {"name": if canonical.is_some() { "Event Grade" } else { "Signal Severity" }, "value": severity, "inline": true},
                 {"name": "Market Impact", "value": market_impact_label(signal), "inline": true},
                 {"name": "Push Reason", "value": push_reason_label(signal), "inline": true},
                 {"name": "Direction", "value": direction, "inline": true},
                 {"name": "Window", "value": format!("{}s", signal.window_sec), "inline": true},
-                {"name": "Risk Score", "value": format!("{}/100", signal.score), "inline": true},
+                {"name": if canonical.is_some() { "Detector Score (diagnostic)" } else { "Risk Score" }, "value": format!("{}/100", signal.score), "inline": true},
                 {"name": "Data Quality", "value": format!("{}/100", signal.data_quality), "inline": true},
                 {"name": "Total Volume", "value": format!("{:.0} {}", signal.total_volume_btc, volume_unit), "inline": true},
                 {"name": "Notional", "value": format!("${:.0}M", signal.total_notional_usd / 1_000_000.0), "inline": true},
@@ -471,6 +483,9 @@ pub async fn notify_contract_whale_discord_v3(
     store: Option<SqliteStore>,
     cooldown_store: &ContractWhaleDiscordCooldownStore,
 ) -> ContractWhaleDiscordOutcome {
+    let mut canonical_signal = signal.clone();
+    super::impact_grade::apply_impact_assessment_to_signal(&mut canonical_signal, assessment);
+    let signal = &canonical_signal;
     let gate_decision = evaluate_contract_whale_discord_v3_gate(
         settings,
         signal,

@@ -232,6 +232,7 @@ fn inspect_with_admission(
     let final_result = final_result_text(&classification_v2, liquidation_suspected);
     let signal = ContractWhaleSignal {
         sustained_flow: None,
+        passive_execution: None,
         id: format!(
             "contract-whale:{}:{}:{}:{}",
             stats.symbol,

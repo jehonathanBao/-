@@ -92,7 +92,13 @@ fn reconstruct_trajectory(
 
 fn action_type(signal: &ContractWhaleSignal) -> &'static str {
     if signal.liquidation_suspected {
-        return "stop_hunt";
+        return if signal.liquidation_short_btc > signal.liquidation_long_btc * 1.3 {
+            "short_liquidation"
+        } else if signal.liquidation_long_btc > signal.liquidation_short_btc * 1.3 {
+            "long_liquidation"
+        } else {
+            "liquidation_unknown"
+        };
     }
     match signal.signal_type {
         ContractWhaleSignalType::AggressiveBuy => "aggressive_buy",
@@ -115,16 +121,22 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
     if independent.len() < 3 || duration < 60_000 {
         return "unknown";
     }
-    let stop_hunt_count = actions
-        .iter()
-        .filter(|action| action.action_type == "stop_hunt")
-        .count();
+    let liquidation_volume = |kind: &str| {
+        actions
+            .iter()
+            .filter(|a| a.action_type == kind)
+            .map(|a| a.volume)
+            .sum::<f64>()
+    };
+    let short_liq = liquidation_volume("short_liquidation");
+    let long_liq = liquidation_volume("long_liquidation");
+    let unknown_liq = liquidation_volume("liquidation_unknown") + liquidation_volume("stop_hunt");
     let buy_pressure = actions
         .iter()
         .filter(|action| {
             matches!(
                 action.action_type.as_str(),
-                "aggressive_buy" | "passive_absorb"
+                "aggressive_buy" | "passive_absorb" | "short_liquidation"
             )
         })
         .map(|action| action.volume)
@@ -134,20 +146,24 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
         .filter(|action| {
             matches!(
                 action.action_type.as_str(),
-                "aggressive_sell" | "liquidity_probe" | "stop_hunt"
+                "aggressive_sell" | "liquidity_probe" | "long_liquidation"
             )
         })
         .map(|action| action.volume)
         .sum::<f64>();
 
-    if stop_hunt_count > 0 && sell_pressure >= buy_pressure {
-        "stop_hunting"
+    if short_liq > 0.0 && short_liq > long_liq * 1.3 && buy_pressure > sell_pressure * 1.3 {
+        "short_squeeze"
+    } else if long_liq > 0.0 && long_liq > short_liq * 1.3 && sell_pressure > buy_pressure * 1.3 {
+        "long_liquidation"
+    } else if unknown_liq > 0.0 || short_liq + long_liq > 0.0 {
+        "liquidation_flow"
     } else if buy_pressure > sell_pressure * 1.3 {
         "accumulation"
     } else if sell_pressure > buy_pressure * 1.3 {
         "distribution"
     } else if actions.len() > 1 {
-        "liquidity_manipulation"
+        "mixed_flow"
     } else {
         "unknown"
     }
@@ -156,6 +172,31 @@ fn infer_intent(actions: &[ContractWhaleAction]) -> &'static str {
 #[cfg(test)]
 mod evidence_regressions {
     use super::*;
+
+    #[test]
+    fn main_force_liquidation_trajectory_preserves_side_without_intent_claims() {
+        for (action, expected) in [
+            ("short_liquidation", "short_squeeze"),
+            ("long_liquidation", "long_liquidation"),
+            ("liquidation_unknown", "liquidation_flow"),
+        ] {
+            let values = [1_000, 31_000, 61_000].map(|ts| ContractWhaleAction {
+                action_type: action.into(),
+                ..buy(ts)
+            });
+            assert_eq!(infer_intent(&values), expected);
+        }
+        let mixed = [
+            buy(1_000),
+            ContractWhaleAction {
+                action_type: "aggressive_sell".into(),
+                volume: 200.0,
+                ..buy(31_000)
+            },
+            buy(61_000),
+        ];
+        assert_eq!(infer_intent(&mixed), "mixed_flow");
+    }
 
     fn buy(ts: i64) -> ContractWhaleAction {
         ContractWhaleAction {
@@ -196,7 +237,10 @@ fn compact_regime_path(actions: &[ContractWhaleAction]) -> Vec<String> {
         let regime = match action.action_type.as_str() {
             "aggressive_buy" | "passive_absorb" => "accumulation",
             "aggressive_sell" => "distribution",
-            "stop_hunt" | "liquidity_probe" => "manipulation",
+            "liquidity_probe" => "passive_sell_candidate",
+            "short_liquidation" => "short_squeeze",
+            "long_liquidation" => "long_liquidation",
+            "stop_hunt" | "liquidation_unknown" => "liquidation_flow",
             _ => "unclear",
         };
         if path.last().is_none_or(|last| last != regime) {
@@ -285,8 +329,10 @@ fn trajectory_conclusion(intent: &str) -> &'static str {
     match intent {
         "accumulation" => "持续买方压力候选；需结合持仓量区分建仓与空头平仓，不能识别交易者身份。",
         "distribution" => "持续卖方压力候选；需结合持仓量区分建仓与多头平仓，不能识别交易者身份。",
-        "stop_hunting" => "出现清算或扫损形态；不能据此确认主动猎取止损的意图。",
-        "liquidity_manipulation" => "多段方向混合，交易意图尚不能归因。",
+        "short_squeeze" => "观察到空头清算与买方压力，不能等同于主动新增多仓。",
+        "long_liquidation" => "观察到多头清算与卖方压力，不能等同于主动新增空仓。",
+        "stop_hunting" | "liquidation_flow" => "出现清算相关流量；不能据此确认主动猎取止损的意图。",
+        "liquidity_manipulation" | "mixed_flow" => "多段方向混合，交易意图尚不能归因。",
         _ => "单点轨迹证据不足，保持观察。",
     }
 }

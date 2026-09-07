@@ -211,6 +211,10 @@ struct AppStateInner {
     toxic_service: ToxicService,
     market_regime_service: MarketRegimeService,
     orderbook_wall_lifecycle_service: OrderbookWallLifecycleService,
+    contract_passive_execution:
+        crate::contract_whale_monitor::passive_execution::PassiveExecutionService,
+    sustained_process_tracker:
+        parking_lot::Mutex<crate::contract_whale_monitor::sustained_flow::SustainedProcessTracker>,
     alert_service: AlertService,
     snapshot_service: SnapshotService,
     storage_health: StorageHealthTracker,
@@ -509,6 +513,11 @@ impl AppState {
                 )),
                 cwm_emission_watermarks: Arc::new(RwLock::new(cwm_emission_watermarks)),
                 scan_log,
+                contract_passive_execution:
+                    crate::contract_whale_monitor::passive_execution::PassiveExecutionService::new(
+                        bus.clone(),
+                    ),
+                sustained_process_tracker: parking_lot::Mutex::new(Default::default()),
                 market_data_bus: bus,
                 connector_manager,
                 flow_service,
@@ -609,6 +618,7 @@ impl AppState {
         self.inner.toxic_service.start();
         self.inner.liq_hunt_service.start();
         self.inner.orderbook_wall_lifecycle_service.start();
+        self.inner.contract_passive_execution.start();
         self.inner.alert_service.start();
         self.inner.snapshot_service.start();
         self.inner.spot_whale_service.start();
@@ -764,6 +774,8 @@ impl AppState {
         self.stop_market_regime_loop();
         self.inner.alert_service.stop();
         self.inner.orderbook_wall_lifecycle_service.stop();
+        self.inner.contract_passive_execution.stop();
+        *self.inner.sustained_process_tracker.lock() = Default::default();
         self.inner.liq_hunt_service.stop();
         self.inner.toxic_service.stop();
         self.inner.liquidation_service.stop();
@@ -1949,6 +1961,7 @@ impl AppState {
             crate::api::contract_whale_routes::enrich_production_evidence(self, &mut candidates);
             for signal in &mut candidates {
                 crate::contract_whale_monitor::sustained_flow::set_episode_identity(signal);
+                self.inner.sustained_process_tracker.lock().attach(signal);
             }
             let mut impact_grade_materialization_failed = false;
             if runtime_config.impact_grade_v3.enabled {
@@ -2297,6 +2310,17 @@ impl AppState {
                 reason: format!("v42_gate_{}", gate.reason),
             }
         }
+    }
+
+    pub(crate) fn contract_passive_evidence(
+        &self,
+        symbol: &str,
+        at: i64,
+        window: u64,
+    ) -> crate::contract_whale_monitor::passive_execution::PassiveExecutionEvidence {
+        self.inner
+            .contract_passive_execution
+            .evidence(symbol, at, window)
     }
 
     async fn sustained_contract_candidates(

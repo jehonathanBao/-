@@ -443,7 +443,10 @@ fn classification_v2_only_marks_main_force_dump_when_price_follows_and_flow_conf
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveSell);
-    assert_eq!(signal.classification_v2.display_signal_type, "主力砸盘");
+    assert_eq!(
+        signal.classification_v2.display_signal_type,
+        "主动卖出推动候选"
+    );
     assert_eq!(
         signal.classification_v2.structure_interpretation,
         ContractWhaleStructureInterpretation::MainForceDumpDown
@@ -479,7 +482,10 @@ fn classification_v2_marks_main_force_lift_only_when_buy_flow_follows_price() {
     let signal = detect_contract_whale_signal(&stats).expect("signal");
 
     assert_eq!(signal.signal_type, ContractWhaleSignalType::AggressiveBuy);
-    assert_eq!(signal.classification_v2.display_signal_type, "主力拉盘");
+    assert_eq!(
+        signal.classification_v2.display_signal_type,
+        "主动买入推动候选"
+    );
     assert_eq!(
         signal.classification_v2.structure_interpretation,
         ContractWhaleStructureInterpretation::MainForcePushUp
@@ -556,14 +562,17 @@ fn classification_v2_marks_suppression_and_absorption_only_with_strong_low_effic
     let buy_signal = detect_contract_whale_signal(&buy_stats).expect("suppression signal");
     let sell_signal = detect_contract_whale_signal(&sell_stats).expect("absorption signal");
 
-    assert_eq!(buy_signal.classification_v2.display_signal_type, "上方压制");
+    assert_eq!(
+        buy_signal.classification_v2.display_signal_type,
+        "上方压制候选"
+    );
     assert_eq!(
         buy_signal.classification_v2.structure_interpretation,
         ContractWhaleStructureInterpretation::UpsideSuppression
     );
     assert_eq!(
         sell_signal.classification_v2.display_signal_type,
-        "下方吸收"
+        "下方承接候选"
     );
     assert_eq!(
         sell_signal.classification_v2.structure_interpretation,
@@ -699,7 +708,7 @@ fn oi_window_context_maps_buy_follow_through_to_new_long_build() {
     );
 
     assert_eq!(resolved.oi_context, ContractWhaleOiContextTag::NewLongBuild);
-    assert_eq!(resolved.oi_context_label, "新多开仓");
+    assert_eq!(resolved.oi_context_label, "偏多新增仓位候选");
     assert_eq!(resolved.oi_delta_pct, Some(0.42));
     assert_eq!(
         resolved.oi_reason.as_deref(),
@@ -828,7 +837,7 @@ fn oi_window_context_maps_sell_follow_through_to_new_short_build() {
         resolved.oi_context,
         ContractWhaleOiContextTag::NewShortBuild
     );
-    assert_eq!(resolved.oi_context_label, "新空开仓");
+    assert_eq!(resolved.oi_context_label, "偏空新增仓位候选");
     assert_eq!(
         resolved.oi_reason.as_deref(),
         Some("oi_increased_with_sell_pressure")
@@ -1815,7 +1824,10 @@ fn detector_marks_liquidation_suspected_and_reduces_master_confidence() {
     assert!(signal.market_driver.interpretation.contains("强制流"));
     assert!(signal.liquidation_force.long_liquidation_pressure >= 60);
     let attribution = &signal.liquidation_force.flow_attribution;
-    assert_eq!(attribution.liquidation_pct, 0.35, "preserve the observed sampled ratio without shape inflation");
+    assert_eq!(
+        attribution.liquidation_pct, 0.35,
+        "preserve the observed sampled ratio without shape inflation"
+    );
     assert_eq!(attribution.whale_pct, 0.0);
     assert_eq!(attribution.retail_pct, 0.0);
     assert_eq!(attribution.unknown_pct, 0.65);
@@ -1894,7 +1906,8 @@ fn discord_preview_exposes_only_final_alert_fields() {
     assert!(!text.contains("rawPayload"));
     assert!(!text.contains("webhook"));
     assert!(!text.contains("token"));
-    assert!(!text.contains("evidence"));
+    // A version label may contain "evidence"; raw evidence fields must not leak.
+    assert!(preview.get("evidence").is_none());
     assert!(!text.contains("markout"));
 }
 

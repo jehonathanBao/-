@@ -203,7 +203,7 @@ async fn legacy_s_without_v3_assessment_is_fail_closed_in_event_feed() {
     assert_eq!(item["impactGrade"], "UNRATED");
     assert_eq!(item["impactLevel"], "UNRATED");
     assert_eq!(item["impactGradeState"], "evidence_insufficient");
-    assert_eq!(item["impactGradeVersion"], "cwm_impact_v3_3");
+    assert_eq!(item["impactGradeVersion"], "cwm_impact_v3_4");
     assert_ne!(item["signalLevel"], "S");
     assert_eq!(item["isRetentionProtected"], false);
     assert!(item["retentionReason"].is_null());
@@ -258,7 +258,7 @@ async fn all_public_impact_filters_use_the_same_persisted_v3_grade() {
                 "INSERT INTO contract_event_impact_grades
                  (event_id, grade_version, episode_id, symbol, grade, state, reason_codes_json,
                  evidence_json, assessed_at_ms, created_at_ms, updated_at_ms)
-                 VALUES (?1, 'cwm_impact_v3_3', ?1, 'BTC', 'S', 'confirmed', '[]',
+                 VALUES (?1, 'cwm_impact_v3_4', ?1, 'BTC', 'S', 'confirmed', '[]',
                          '{\"dataQuality\":100,\"robustPercentile\":99.95,\"robustZ\":4.2,\"absPriceMovePct\":1.0,\"oiChangePct\":1.0,\"liveLiquidationBtc\":1000.0,\"liveLiquidationNotionalUsd\":70000000.0,\"uniqueTurnoverBtc\":1000.0,\"uniqueTurnoverNotionalUsd\":70000000.0,\"confirmedSourceCount\":2,\"baselineSampleCount\":10000}', ?2, ?2, ?2)",
                 rusqlite::params![canonical_s.id, now],
             )?;
@@ -687,7 +687,7 @@ async fn contract_events_include_resolved_oi_context_fields() {
         item["priceResponseType"],
         item["structureInterpretation"]
     );
-    assert_eq!(item["oiContextLabel"], "新多开仓");
+    assert_eq!(item["oiContextLabel"], "偏多新增仓位候选");
     assert_eq!(item["oiDeltaPct"], 0.42);
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");
@@ -876,7 +876,7 @@ async fn final_events_v2_include_resolved_oi_context_fields() {
         item["priceResponseType"],
         item["structureInterpretation"]
     );
-    assert_eq!(item["oiContextLabel"], "新多开仓");
+    assert_eq!(item["oiContextLabel"], "偏多新增仓位候选");
     assert_eq!(item["oiDeltaPct"], 0.42);
     assert_eq!(item["oiAvailable"], true);
     assert_eq!(item["oiReason"], "oi_increased_with_buy_pressure");

@@ -2263,6 +2263,8 @@ impl ContractWhaleRepo for SqliteStore {
         signal_cutoff_ts: i64,
         impact_b_cutoff_ts: i64,
     ) -> anyhow::Result<ContractWhaleRetentionPruneResult> {
+        // Retention is a historical promise, not the current display/alert gate.
+        // Preserve the prior deployed V3.3 A/S/B tiers across this version bump.
         let impact_grade_version =
             crate::contract_whale_monitor::config::contract_whale_runtime_config()
                 .impact_grade_v3
@@ -2288,7 +2290,7 @@ impl ContractWhaleRepo for SqliteStore {
                          AND EXISTS (
                            SELECT 1 FROM contract_event_impact_grades g
                             WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
-                              AND g.grade_version = ?2
+                              AND g.grade_version IN (?2, 'cwm_impact_v3_3')
                               AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
                          )",
                     params![signal_cutoff_ts, impact_grade_version],
@@ -2385,7 +2387,7 @@ impl ContractWhaleRepo for SqliteStore {
                         EXISTS (
                           SELECT 1 FROM contract_event_impact_grades g
                            WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
-                             AND g.grade_version = ?3
+                             AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                              AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
                         )
                         AND ts < ?2
@@ -2394,7 +2396,7 @@ impl ContractWhaleRepo for SqliteStore {
                         NOT EXISTS (
                           SELECT 1 FROM contract_event_impact_grades g
                            WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
-                             AND g.grade_version = ?3
+                             AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                              AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
                         )
                         AND (
@@ -2402,7 +2404,7 @@ impl ContractWhaleRepo for SqliteStore {
                           EXISTS (
                             SELECT 1 FROM contract_event_impact_grades g
                              WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
-                               AND g.grade_version = ?3
+                               AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                                AND g.state = 'confirmed'
                                AND g.grade = 'B'
                           )
@@ -2413,7 +2415,7 @@ impl ContractWhaleRepo for SqliteStore {
                           NOT EXISTS (
                             SELECT 1 FROM contract_event_impact_grades g
                              WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signals.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signals.signal_id)
-                               AND g.grade_version = ?3
+                               AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                                AND g.state = 'confirmed'
                                AND g.grade = 'B'
                           )
@@ -2554,7 +2556,7 @@ fn archive_contract_whale_signals(
            AND EXISTS (
                  SELECT 1 FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
                     AND g.state = 'confirmed'
                     AND g.grade IN ('A', 'S')
                )
@@ -2570,32 +2572,47 @@ fn archive_contract_whale_signals(
                impact_grade = (
                  SELECT g.grade FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                    AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
-               impact_grade_version = ?2,
+               impact_grade_version = (
+                 SELECT g.grade_version FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                    AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
+                  LIMIT 1
+               ),
                impact_grade_state = (
                  SELECT g.state FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                    AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
                impact_reason_codes_json = (
                  SELECT g.reason_codes_json FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                    AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
                impact_evidence_json = (
                  SELECT g.evidence_json FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                    AND g.state = 'confirmed' AND g.grade IN ('A', 'S')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                )
          WHERE EXISTS (
                  SELECT 1 FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_permanent.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_permanent.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
                     AND g.state = 'confirmed'
                     AND g.grade IN ('A', 'S')
                )
@@ -2625,7 +2642,7 @@ fn archive_contract_whale_signals(
          WHERE NOT EXISTS (
                  SELECT 1 FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
-                    AND g.grade_version = ?3
+                    AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                     AND g.state = 'confirmed'
                     AND g.grade IN ('A', 'S')
                )
@@ -2633,7 +2650,7 @@ fn archive_contract_whale_signals(
                  (EXISTS (
                     SELECT 1 FROM contract_event_impact_grades g
                      WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
-                       AND g.grade_version = ?3
+                       AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                        AND g.state = 'confirmed'
                        AND g.grade = 'B'
                   ) AND s.ts < ?1)
@@ -2641,7 +2658,7 @@ fn archive_contract_whale_signals(
                  (NOT EXISTS (
                     SELECT 1 FROM contract_event_impact_grades g
                      WHERE g.event_id = COALESCE(NULLIF(json_extract(s.payload_json, '$.eventLifecycle.eventId'), ''), s.signal_id)
-                       AND g.grade_version = ?3
+                       AND g.grade_version IN (?3, 'cwm_impact_v3_3')
                        AND g.state = 'confirmed'
                        AND g.grade = 'B'
                   ) AND s.ts < ?2)
@@ -2658,26 +2675,36 @@ fn archive_contract_whale_signals(
                impact_grade = (
                  SELECT g.grade FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
-               impact_grade_version = ?2,
+               impact_grade_version = (
+                 SELECT g.grade_version FROM contract_event_impact_grades g
+                  WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
+                  LIMIT 1
+               ),
                impact_grade_state = (
                  SELECT g.state FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
                impact_reason_codes_json = (
                  SELECT g.reason_codes_json FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                ),
                impact_evidence_json = (
                  SELECT g.evidence_json FROM contract_event_impact_grades g
                   WHERE g.event_id = COALESCE(NULLIF(json_extract(contract_whale_signal_archive.payload_json, '$.eventLifecycle.eventId'), ''), contract_whale_signal_archive.signal_id)
-                    AND g.grade_version = ?2
+                    AND g.grade_version IN (?2, 'cwm_impact_v3_3')
+                  ORDER BY (g.grade_version = ?2) DESC, g.assessed_at_ms DESC
                   LIMIT 1
                )
         "#,

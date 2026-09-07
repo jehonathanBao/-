@@ -289,6 +289,8 @@ fn snapshot_is_better(candidate: &ContractWhaleSignal, current: &ContractWhaleSi
 fn replace_snapshot_fields(existing: &mut ContractWhaleSignal, next: &ContractWhaleSignal) {
     existing.ts = next.ts;
     existing.window_sec = next.window_sec;
+    existing.passive_execution = next.passive_execution.clone();
+    existing.sustained_flow = next.sustained_flow.clone();
     existing.signal_type = next.signal_type;
     existing.direction = next.direction;
     existing.severity = next.severity;

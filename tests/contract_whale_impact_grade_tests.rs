@@ -320,7 +320,7 @@ fn adjacent_opposite_flow_fragments_start_separate_episodes() {
 #[test]
 fn impact_grade_defaults_are_conservative_and_validation_rejects_inverted_thresholds() {
     let defaults = ContractWhaleRuntimeConfig::default();
-    assert_eq!(defaults.impact_grade_v3.grade_version, "cwm_impact_v3_3");
+    assert_eq!(defaults.impact_grade_v3.grade_version, "cwm_impact_v3_4");
     assert_eq!(defaults.impact_grade_v3.s.min_robust_percentile, 99.95);
     assert!(defaults.impact_grade_v3.validate().is_ok());
     let mut invalid = defaults.impact_grade_v3.clone();

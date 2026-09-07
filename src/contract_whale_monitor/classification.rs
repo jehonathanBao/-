@@ -9,6 +9,72 @@ use super::{
     },
 };
 
+#[cfg(test)]
+mod main_force_regressions {
+    use super::*;
+    use crate::contract_whale_monitor::{
+        aggregator::{aggregate_1s_buckets, rolling_window_stats},
+        normalizer::normalize_binance_agg_trade,
+    };
+
+    #[test]
+    fn main_force_binance_only_absorption_is_candidate_not_confirmed_actor() {
+        let mut config = ContractWhaleRuntimeConfig::default();
+        config.exchanges.bitfinex.enabled = false;
+        let now = 1_700_000_015_000;
+        let trades = [
+            normalize_binance_agg_trade(now - 1000, 70_000.0, 1500.0, true).unwrap(),
+            normalize_binance_agg_trade(now - 1000, 70_000.0, 120.0, false).unwrap(),
+        ];
+        let mut stats = rolling_window_stats(
+            &aggregate_1s_buckets(&trades),
+            "BTC",
+            15,
+            now,
+            Some(-0.03),
+            Some(5.4),
+            90,
+        )
+        .unwrap();
+        let classify = |stats: &ContractWhaleWindowStats, config: &ContractWhaleRuntimeConfig| {
+            classify_contract_whale_signal_v2(
+                stats,
+                ContractWhaleSignalType::DownsideAbsorption,
+                ContractWhalePriceResponseType::DownsideAbsorption,
+                false,
+                config,
+            )
+        };
+        let result = classify(&stats, &config);
+        assert_eq!(
+            result.structure_interpretation,
+            ContractWhaleStructureInterpretation::DownsideAbsorption
+        );
+        assert!(!result.is_strong_main_force_intent);
+        assert!(result
+            .classification_reasons
+            .contains(&"single_venue_behavior_candidate".to_string()));
+        stats.price_move_pct = None;
+        assert_ne!(
+            classify(&stats, &config).structure_interpretation,
+            ContractWhaleStructureInterpretation::DownsideAbsorption
+        );
+        stats.price_move_pct = Some(-0.03);
+        config.exchanges.bitfinex.enabled = true;
+        assert_ne!(
+            classify(&stats, &config).structure_interpretation,
+            ContractWhaleStructureInterpretation::DownsideAbsorption,
+            "missing configured venue must not become a valid single-venue mode"
+        );
+        config.exchanges.bitfinex.enabled = false;
+        stats.price_move_pct = Some(-1.0);
+        assert_ne!(
+            classify(&stats, &config).structure_interpretation,
+            ContractWhaleStructureInterpretation::DownsideAbsorption
+        );
+    }
+}
+
 pub fn classify_contract_whale_signal_v2(
     stats: &ContractWhaleWindowStats,
     signal_type: ContractWhaleSignalType,
@@ -61,12 +127,22 @@ pub fn classify_contract_whale_signal_v2(
             0.0
         }
     };
+    // A deliberately configured Binance-only deployment is not a missing-venue
+    // incident. Its structure remains a hypothesis, never confirmed actor intent.
+    let eligible = config.threshold_profile_resolution().eligible_keys();
+    let binance_only = eligible == ["binance"]
+        && stats
+            .exchanges
+            .iter()
+            .any(|source| source.exchange == "binance" && source.total_volume_btc > 0.0);
     let strong_source_ok = !config
         .classification
         .require_multi_exchange_for_strong_intent
-        || multi_exchange_confirmed;
-    let absorption_source_ok =
-        !config.classification.require_multi_exchange_for_absorption || multi_exchange_confirmed;
+        || multi_exchange_confirmed
+        || binance_only;
+    let absorption_source_ok = !config.classification.require_multi_exchange_for_absorption
+        || multi_exchange_confirmed
+        || binance_only;
 
     let strong_intent = flow != ContractWhaleActiveFlowDirection::Balanced
         && flow != ContractWhaleActiveFlowDirection::Unknown
@@ -82,7 +158,8 @@ pub fn classify_contract_whale_signal_v2(
 
     let no_downside_follow = price_move > -thresholds.no_follow_pct || reversal >= 0.50;
     let no_upside_follow = price_move < thresholds.no_follow_pct || reversal >= 0.50;
-    let absorption_quality_ok = stats.dominance >= config.classification.absorption_dominance_min
+    let absorption_quality_ok = stats.price_move_pct.is_some_and(f64::is_finite)
+        && stats.dominance >= config.classification.absorption_dominance_min
         && stats.total_notional_usd >= config.classification.absorption_min_notional_usd
         && stats.data_quality >= config.classification.min_data_quality_for_absorption
         && efficiency
@@ -156,6 +233,9 @@ pub fn classify_contract_whale_signal_v2(
     };
 
     let mut reasons = Vec::new();
+    if binance_only {
+        reasons.push("single_venue_behavior_candidate".to_string());
+    }
     reasons.push(format!("flow_direction:{flow:?}"));
     reasons.push(format!("dominance:{:.2}", stats.dominance));
     reasons.push(format!("price_move_pct:{:.3}", price_move));
@@ -165,7 +245,14 @@ pub fn classify_contract_whale_signal_v2(
     }
     if strong_intent {
         reasons.push("price_follow_through".to_string());
-        reasons.push("strong_main_force_intent_confirmed".to_string());
+        reasons.push(
+            if binance_only {
+                "single_venue_price_follow_candidate"
+            } else {
+                "strong_main_force_intent_confirmed"
+            }
+            .to_string(),
+        );
     } else if matches!(
         structure_interpretation,
         ContractWhaleStructureInterpretation::DownsideAbsorption
@@ -206,8 +293,8 @@ pub fn classify_contract_whale_signal_v2(
             oi_context,
             config,
         ),
-        is_strong_main_force_intent: strong_intent,
-        classification_version: "contract_whale_v2_shadow".to_string(),
+        is_strong_main_force_intent: strong_intent && !binance_only,
+        classification_version: "contract_whale_v2_binance_evidence".to_string(),
         semantic_mismatch: legacy_structure(signal_type) != structure_interpretation,
         classification_reasons: reasons,
         dynamic_thresholds: thresholds,
@@ -717,22 +804,22 @@ fn intent_confidence(
 
 fn display_label(value: ContractWhaleStructureInterpretation) -> &'static str {
     match value {
-        ContractWhaleStructureInterpretation::MainForcePushUp => "主力拉盘",
-        ContractWhaleStructureInterpretation::MainForceDumpDown => "主力砸盘",
+        ContractWhaleStructureInterpretation::MainForcePushUp => "主动买入推动候选",
+        ContractWhaleStructureInterpretation::MainForceDumpDown => "主动卖出推动候选",
         ContractWhaleStructureInterpretation::ActiveBuyPressure => "主动买压",
         ContractWhaleStructureInterpretation::ActiveSellPressure => "主动卖压",
-        ContractWhaleStructureInterpretation::DownsideAbsorption => "下方吸收",
-        ContractWhaleStructureInterpretation::UpsideSuppression => "上方压制",
+        ContractWhaleStructureInterpretation::DownsideAbsorption => "下方承接候选",
+        ContractWhaleStructureInterpretation::UpsideSuppression => "上方压制候选",
         ContractWhaleStructureInterpretation::UnclearDirectionalFlow => "不明确合约流",
     }
 }
 
 fn legacy_display_label(value: ContractWhaleSignalType) -> &'static str {
     match value {
-        ContractWhaleSignalType::AggressiveBuy => "主力拉盘",
-        ContractWhaleSignalType::AggressiveSell => "主力砸盘",
-        ContractWhaleSignalType::DownsideAbsorption => "下方吸收",
-        ContractWhaleSignalType::UpsideSuppression => "上方压制",
+        ContractWhaleSignalType::AggressiveBuy => "主动买入推动候选",
+        ContractWhaleSignalType::AggressiveSell => "主动卖出推动候选",
+        ContractWhaleSignalType::DownsideAbsorption => "下方承接候选",
+        ContractWhaleSignalType::UpsideSuppression => "上方压制候选",
     }
 }
 

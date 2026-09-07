@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{config::ContractWhaleRuntimeConfig, types::ContractWhaleSignal};
 
-pub const CONTRACT_EVENT_IMPACT_GRADE_VERSION: &str = "cwm_impact_v3_3";
+pub const CONTRACT_EVENT_IMPACT_GRADE_VERSION: &str = "cwm_impact_v3_4";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -452,9 +452,12 @@ pub fn assess_contract_impact_episode(
     evidence.flow_anomaly_score = Some(flow_anomaly_score);
     evidence.market_impact_score = Some(market_impact_score);
     evidence.confidence_score = Some(confidence_score);
-    // High flow with low price efficiency is an absorption/suppression setup;
-    // it must not be mechanically downgraded by the trend confirmation floor.
-    let absorption_confirmed = flow_anomaly_score >= 80.0 && price_move_pct < 0.10;
+    // Event importance is not actor attribution. Exceptional directional flow
+    // is material regardless of crossing a tiny fixed price boundary. Absolute
+    // tier floors and baseline quality below still apply; balanced churn cannot
+    // gain this alternative confirmation. Passive execution is assessed separately.
+    let directional_flow_confirmed = flow_anomaly_score >= 80.0
+        && episode.net_volume_btc.abs() / episode.total_volume_btc >= 0.30;
     let a = &grade_config.a;
     let b = &grade_config.b;
     // Base-unit thresholds are only meaningful for BTC.  Other symbols use
@@ -470,7 +473,7 @@ pub fn assess_contract_impact_episode(
     let s_eligible = has_s_hard_evidence
         && episode.data_quality >= s.min_data_quality
         && percentile >= s.min_robust_percentile
-        && (price_move_pct >= s.min_abs_price_move_pct || absorption_confirmed);
+        && (price_move_pct >= s.min_abs_price_move_pct || directional_flow_confirmed);
     if s_eligible {
         let reason = if (is_btc
             && liquidation_btc >= s.min_live_liquidation_btc.unwrap_or(f64::INFINITY))
@@ -482,8 +485,8 @@ pub fn assess_contract_impact_episode(
         };
         reason_codes.push(reason.to_string());
         reason_codes.push(
-            if absorption_confirmed {
-                "s_absorption_low_price_efficiency"
+            if directional_flow_confirmed && price_move_pct < s.min_abs_price_move_pct {
+                "s_directional_flow_materiality"
             } else {
                 "s_price_confirmation"
             }
@@ -508,7 +511,7 @@ pub fn assess_contract_impact_episode(
     let a_eligible = episode.data_quality >= a.min_data_quality
         && percentile >= a.min_robust_percentile
         && robust_z >= a.min_robust_z.unwrap_or(f64::INFINITY)
-        && (price_move_pct >= a.min_abs_price_move_pct || absorption_confirmed)
+        && (price_move_pct >= a.min_abs_price_move_pct || directional_flow_confirmed)
         && materiality_gate(
             is_btc,
             episode.total_volume_btc,
@@ -519,12 +522,12 @@ pub fn assess_contract_impact_episode(
     if a_eligible {
         reason_codes.push("a_historical_outlier".to_string());
         reason_codes.push("a_major_confirmed_event".to_string());
-        if absorption_confirmed {
-            reason_codes.push("absorption_low_price_efficiency".to_string());
+        if directional_flow_confirmed && price_move_pct < a.min_abs_price_move_pct {
+            reason_codes.push("directional_flow_materiality_not_actor_attribution".to_string());
         }
         let state = if !has_s_hard_evidence
             && percentile >= s.min_robust_percentile
-            && (price_move_pct >= s.min_abs_price_move_pct || absorption_confirmed)
+            && (price_move_pct >= s.min_abs_price_move_pct || directional_flow_confirmed)
             && ((is_btc
                 && episode.total_volume_btc >= s.min_unique_turnover_btc.unwrap_or(f64::INFINITY))
                 || episode.total_notional_usd
@@ -549,7 +552,7 @@ pub fn assess_contract_impact_episode(
     let b_eligible = episode.data_quality >= b.min_data_quality
         && percentile >= b.min_robust_percentile
         && robust_z >= b.min_robust_z.unwrap_or(f64::INFINITY)
-        && (price_move_pct >= b.min_abs_price_move_pct || absorption_confirmed)
+        && (price_move_pct >= b.min_abs_price_move_pct || directional_flow_confirmed)
         && materiality_gate(
             is_btc,
             episode.total_volume_btc,
@@ -661,6 +664,44 @@ fn assessment(
 mod canonical_grade_tests {
     use super::*;
 
+    #[test]
+    fn main_force_material_flow_has_no_point_one_percent_grade_cliff() {
+        let config = config();
+        let mut value = episode();
+        value.live_liquidation_btc = None;
+        value.live_liquidation_notional_usd = None;
+        for price_move in [0.05, 0.099, 0.100, 0.101, 0.12, 0.20, 0.50] {
+            value.peak_abs_price_move_pct = Some(price_move);
+            let assessment = assess_contract_impact_episode(&value, &config, value.end_time_ms);
+            assert_eq!(
+                assessment.grade,
+                ContractEventImpactGrade::A,
+                "move={price_move}"
+            );
+            assert!(
+                !assessment
+                    .reason_codes
+                    .iter()
+                    .any(|reason| reason.contains("absorption")),
+                "material flow alone is not passive execution proof"
+            );
+        }
+    }
+
+    #[test]
+    fn main_force_balanced_churn_does_not_receive_directional_flow_confirmation() {
+        let config = config();
+        let mut value = episode();
+        value.live_liquidation_btc = None;
+        value.live_liquidation_notional_usd = None;
+        value.net_volume_btc = 0.0;
+        value.peak_abs_price_move_pct = Some(0.05);
+        assert_eq!(
+            assess_contract_impact_episode(&value, &config, 0).grade,
+            ContractEventImpactGrade::C
+        );
+    }
+
     fn config() -> ContractWhaleRuntimeConfig {
         let mut config = ContractWhaleRuntimeConfig::default();
         config.exchanges.bitfinex.enabled = false;
@@ -698,7 +739,7 @@ mod canonical_grade_tests {
         let value = assess_contract_impact_episode(&episode(), &config, 1_700_000_060_000);
         assert_eq!(value.grade, ContractEventImpactGrade::S);
         assert_eq!(value.status, AssessmentStatus::Graded);
-        assert_eq!(value.grade_version, "cwm_impact_v3_3");
+        assert_eq!(value.grade_version, "cwm_impact_v3_4");
         assert_eq!(value.evidence.confirmed_source_count, 1);
         assert_eq!(value.evidence.confidence_score, Some(93.0));
         let mut ordinary = episode();

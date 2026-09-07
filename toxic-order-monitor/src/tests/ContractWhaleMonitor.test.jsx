@@ -1300,6 +1300,8 @@ describe("ContractWhaleMonitor", () => {
     expect(within(dialog).getByTestId("contract-detail-summary")).toHaveTextContent(grade === "A" ? "A · confirmed" : "UNRATED · evidence_insufficient");
     expect(within(dialog).getByTestId("behavior-evidence-card")).toHaveTextContent("20/100 · low");
     expect(within(dialog).getByTestId("behavior-evidence-card")).toHaveTextContent("主动流·未归因");
+    expect(within(dialog).getByTestId("binance-execution-evidence")).toHaveTextContent("盘口证据不足");
+    expect(within(dialog).getByTestId("binance-execution-evidence")).toHaveTextContent("不是账户识别");
     expect(dialog).not.toHaveTextContent("Whale initiated");
     expect(dialog).not.toHaveTextContent("Retail follow");
     expect(dialog).not.toHaveTextContent("Stop Hunt");
@@ -3355,10 +3357,10 @@ describe("ContractWhaleMonitor", () => {
     expect(screen.getByText(/同一主力意图轨迹/)).toBeInTheDocument();
     expect(screen.getByText("Whale Trajectory")).toBeInTheDocument();
     expect(screen.getByText("whale-trajectory:cwm-cluster:BTC:buy:14166666")).toBeInTheDocument();
-    expect(screen.getAllByText("隐蔽吸筹").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("操控 -> 吸筹").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("持续买压候选").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未归因 -> 买方压力").length).toBeGreaterThan(0);
     expect(screen.getAllByText("连续买方压力和承接行为占优，疑似主力分批吸筹。").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1. 流动性测试").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1. 被动压制候选").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2. 主动买入").length).toBeGreaterThan(0);
     expect(screen.getByText("Volume Strength")).toBeInTheDocument();
     expect(screen.getByText("Dynamic Baseline")).toBeInTheDocument();

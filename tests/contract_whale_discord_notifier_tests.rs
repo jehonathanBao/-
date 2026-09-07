@@ -728,6 +728,67 @@ fn sample_v3_assessment(grade: ContractEventImpactGrade) -> ContractEventImpactA
     }
 }
 
+#[tokio::test]
+async fn main_force_v3_payload_uses_canonical_grade_not_detector_severity() {
+    let mut settings = live_settings_for_tests();
+    settings.dry_run = true;
+    let mut signal = sample_s_signal();
+    signal.score = 37;
+    signal.severity = ContractWhaleSeverity::Medium;
+    let outcome = btc_toxic_flow_monitor_rs::contract_whale_monitor::discord_notifier::notify_contract_whale_discord_v3(
+        &settings, &signal, &sample_v3_assessment(ContractEventImpactGrade::A), None,
+        &ContractWhaleDiscordCooldownStore::new()).await;
+    let payload = outcome.payload.unwrap();
+    assert!(payload["content"].as_str().unwrap().contains("异动 A:"));
+    assert!(payload["embeds"][0]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field["name"] == "Event Grade" && field["value"] == "A"));
+}
+
+#[test]
+fn main_force_canonical_a_ignores_legacy_rank_but_keeps_quality_and_warmup() {
+    let settings = ContractWhaleDiscordSettings::dry_run_for_tests();
+    let cooldown = ContractWhaleDiscordCooldownStore::new();
+    let mut signal = sample_s_signal();
+    let assessment = sample_v3_assessment(ContractEventImpactGrade::A);
+    signal.score = 37;
+    signal.severity = ContractWhaleSeverity::Medium;
+    let decision = evaluate_contract_whale_discord_v3_gate(
+        &settings,
+        &signal,
+        &assessment,
+        &cooldown,
+        signal.ts,
+    );
+    assert!(decision.allowed, "{:?}", decision);
+    assert_eq!(decision.reason, "dry_run");
+    signal.data_quality = 69;
+    assert!(
+        !evaluate_contract_whale_discord_v3_gate(
+            &settings,
+            &signal,
+            &assessment,
+            &cooldown,
+            signal.ts
+        )
+        .allowed
+    );
+    signal.data_quality = 95;
+    signal.discord_reason = "warmup_collect_only".into();
+    assert!(
+        !evaluate_contract_whale_discord_v3_gate(
+            &settings,
+            &signal,
+            &assessment,
+            &cooldown,
+            signal.ts
+        )
+        .allowed
+    );
+}
+
 fn sample_single_exchange_high_signal(
 ) -> btc_toxic_flow_monitor_rs::contract_whale_monitor::types::ContractWhaleSignal {
     let mut signal = sample_s_signal();

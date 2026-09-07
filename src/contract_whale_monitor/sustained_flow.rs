@@ -6,7 +6,7 @@ use super::{
 };
 use std::collections::BTreeMap;
 
-pub const VERSION: &str = "sustained_public_flow_v1";
+pub const VERSION: &str = "sustained_public_flow_v2";
 pub const WINDOWS_SEC: [u64; 4] = [60, 300, 900, 3600];
 
 /// All horizons use the same last closed minute and therefore one causal context.
@@ -40,6 +40,14 @@ pub struct SustainedFlowEvidence {
     pub anomaly_percentile: f64,
     pub status: String,
     pub attribution: String,
+    #[serde(default)]
+    pub admission_reason: String,
+    #[serde(default)]
+    pub baseline_participation_p95: f64,
+    #[serde(default)]
+    pub process_id: Option<String>,
+    #[serde(default)]
+    pub process_observations: u32,
 }
 
 #[derive(Default)]
@@ -132,12 +140,35 @@ pub fn observations(
                     / history.len() as f64
                     * 100.0
             };
+            let mut historical_participation = history
+                .iter()
+                .map(|bin| (bin.buy - bin.sell).abs() / (bin.buy + bin.sell))
+                .collect::<Vec<_>>();
+            historical_participation.sort_by(f64::total_cmp);
+            let p95 = historical_participation
+                .get(
+                    (historical_participation.len() as f64 * 0.95)
+                        .ceil()
+                        .max(1.0) as usize
+                        - 1,
+                )
+                .copied()
+                .unwrap_or(0.0);
+            // Low participation must persist across independent closed minutes and
+            // exceed its own prior normalized baseline, not just raw volume.
+            let slow = window >= 900
+                && current.len() >= 15
+                && coverage >= 0.95
+                && aligned_fraction >= 0.90
+                && participation >= 0.03
+                && participation >= p95 + 0.02
+                && percentile >= 97.5;
+            let concentrated = participation >= 0.15 && percentile >= 95.0;
             let candidate = history.len() >= 60
                 && current.len() >= 3
                 && coverage >= 0.9
                 && aligned_fraction >= 0.8
-                && participation >= 0.15
-                && percentile >= 95.0;
+                && (concentrated || slow);
             SustainedFlowEvidence {
                 version: VERSION.into(),
                 window_sec: window,
@@ -148,6 +179,17 @@ pub fn observations(
                 aligned_bin_fraction: aligned_fraction,
                 net_participation: participation,
                 anomaly_percentile: percentile,
+                admission_reason: if candidate && !concentrated {
+                    "low_participation_persistent_excess"
+                } else if candidate {
+                    "concentrated_directional_flow"
+                } else {
+                    "not_admitted"
+                }
+                .into(),
+                baseline_participation_p95: p95,
+                process_id: None,
+                process_observations: 0,
                 status: if candidate {
                     "candidate"
                 } else if history.len() < 60 || coverage < 0.9 {
@@ -217,7 +259,12 @@ pub fn candidates(
         || !((buy + sell).is_finite())
         || buy + sell <= 0.0
         || (net > 0.0) != admitted_buy
-        || net.abs() / (buy + sell) < 0.15
+        || net.abs() / (buy + sell)
+            < if evidence.admission_reason == "low_participation_persistent_excess" {
+                (evidence.baseline_participation_p95 + 0.02).max(0.03)
+            } else {
+                0.15
+            }
     {
         return Vec::new();
     }
@@ -286,6 +333,11 @@ pub fn set_episode_identity(signal: &mut ContractWhaleSignal) {
         return;
     };
     let end = signal.ts.saturating_add(1);
+    if let Some(episode) = &evidence.process_id {
+        signal.id = format!("{episode}:{end}");
+        signal.event_lifecycle.event_id = episode.clone();
+        return;
+    }
     let behavior = super::behavior_assessment::build_detection_behavior(&signal, None, signal.ts);
     let hypothesis = serde_json::to_value(behavior.hypothesis).expect("serializable hypothesis");
     let episode = format!(
@@ -304,9 +356,141 @@ pub fn set_episode_identity(signal: &mut ContractWhaleSignal) {
     signal.event_lifecycle.event_id = episode;
 }
 
+/// Bounded anonymous execution-process continuity. Overlapping windows are never
+/// added together; only the observation count and stable identity are carried.
+#[derive(Default)]
+pub struct SustainedProcessTracker {
+    active: BTreeMap<String, Process>,
+}
+struct Process {
+    key: String,
+    id: String,
+    first: i64,
+    last: i64,
+    observations: u32,
+}
+impl SustainedProcessTracker {
+    pub fn attach(&mut self, signal: &mut ContractWhaleSignal) {
+        let Some(evidence) = signal.sustained_flow.as_ref() else {
+            return;
+        };
+        let symbol = signal.symbol.to_ascii_uppercase();
+        if !matches!(symbol.as_str(), "BTC" | "ETH") {
+            return;
+        }
+        if self
+            .active
+            .get(&symbol)
+            .is_some_and(|p| signal.ts <= p.last)
+        {
+            return;
+        }
+        let behavior =
+            super::behavior_assessment::build_detection_behavior(signal, None, signal.ts);
+        let key = format!("{}:{:?}", evidence.attribution, behavior.hypothesis);
+        let compatible = self.active.get(&symbol).is_some_and(|p| {
+            p.key == key && signal.ts - p.last <= 180_000 && signal.ts - p.first < 14_400_000
+        });
+        if !compatible {
+            self.active.insert(
+                symbol.clone(),
+                Process {
+                    key,
+                    id: format!("cwm-process:{symbol}:{}", signal.ts),
+                    first: signal.ts,
+                    last: signal.ts,
+                    observations: 0,
+                },
+            );
+        }
+        let process = self.active.get_mut(&symbol).expect("inserted process");
+        process.last = signal.ts;
+        process.observations = process.observations.saturating_add(1);
+        let evidence = signal.sustained_flow.as_mut().expect("checked evidence");
+        evidence.process_id = Some(process.id.clone());
+        evidence.process_observations = process.observations;
+        set_episode_identity(signal);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_force_process_continuity_is_bounded_and_never_sums_overlapping_volume() {
+        let mut tracker = SustainedProcessTracker::default();
+        let mut signal = candidates(
+            &rows(),
+            "BTC",
+            10_800_000,
+            0,
+            &Default::default(),
+            &Default::default(),
+        )
+        .pop()
+        .unwrap();
+        tracker.attach(&mut signal);
+        let original = signal.event_lifecycle.event_id.clone();
+        let volume = signal.total_volume_btc;
+        signal.ts += 60_000;
+        signal.sustained_flow.as_mut().unwrap().window_sec = 900;
+        tracker.attach(&mut signal);
+        assert_eq!(signal.event_lifecycle.event_id, original);
+        assert_eq!(
+            signal.sustained_flow.as_ref().unwrap().process_observations,
+            2
+        );
+        assert_eq!(signal.total_volume_btc, volume);
+        tracker.attach(&mut signal);
+        assert_eq!(
+            signal.sustained_flow.as_ref().unwrap().process_observations,
+            2
+        );
+        signal.ts += 240_000;
+        tracker.attach(&mut signal);
+        assert_ne!(signal.event_lifecycle.event_id, original);
+        let after_gap = signal.event_lifecycle.event_id.clone();
+        signal.ts += 60_000;
+        signal.sustained_flow.as_mut().unwrap().attribution =
+            "persistent_sell_pressure_unattributed".into();
+        tracker.attach(&mut signal);
+        assert_ne!(signal.event_lifecycle.event_id, after_gap);
+    }
+
+    #[test]
+    fn main_force_low_participation_requires_long_consistent_abnormal_flow() {
+        let config = ContractWhaleRuntimeConfig::default();
+        let mut input = rows();
+        for row in input.iter_mut().filter(|row| row.ts_bucket >= 7_200_000) {
+            row.buy_notional_usd = 678.0;
+            row.buy_volume_btc = 678.0 / 60_000.0;
+        }
+        let result = observations(&input, "BTC", 10_800_000, &config);
+        assert_eq!(
+            result
+                .iter()
+                .find(|row| row.window_sec == 3600)
+                .unwrap()
+                .status,
+            "candidate"
+        );
+        assert!(result
+            .iter()
+            .filter(|row| row.window_sec <= 300)
+            .all(|row| row.status != "candidate"));
+        let signals = candidates(&input, "BTC", 10_800_000, 0, &Default::default(), &config);
+        assert_eq!(signals.len(), 1);
+        assert!(!signals[0].discord_eligible);
+        // A permanent ordinary buy bias with no change versus history is not a new parent order.
+        for row in &mut input {
+            row.buy_notional_usd = 678.0;
+            row.buy_volume_btc = 678.0 / 60_000.0;
+        }
+        assert!(observations(&input, "BTC", 10_800_000, &config)
+            .iter()
+            .all(|row| row.status != "candidate"));
+    }
     fn rows() -> Vec<ContractFlowBucket> {
         (0..10800)
             .map(|second| {

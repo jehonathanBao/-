@@ -184,7 +184,7 @@ ct_val_missing_penalty = 20
 enabled = true
 # Sole canonical event importance grade; forecasts are optional diagnostics.
 shadow_mode = false
-grade_version = "cwm_impact_v3_3"
+grade_version = "cwm_impact_v3_4"
 baseline_lookback_days = 90
 # Baseline samples come from aligned raw market windows. The effective range is
 # capped by flow_1s_days at runtime so this remains storage-bounded.

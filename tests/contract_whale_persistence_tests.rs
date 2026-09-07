@@ -720,6 +720,25 @@ fn contract_whale_signal_history_survives_reopen_and_tracks_discord_state() {
 }
 
 #[test]
+fn main_force_anonymous_execution_evidence_survives_persistence() {
+    let store = temp_store("binance-execution-evidence");
+    let mut signal = sample_s_signal();
+    signal.passive_execution = Some(btc_toxic_flow_monitor_rs::contract_whale_monitor::passive_execution::PassiveExecutionEvidence {
+        version:"binance_passive_v1".into(),status:"insufficient_evidence".into(),side:"unknown".into(),
+        window_sec:signal.window_sec, assessed_at_ms:signal.ts,coverage:0.25,
+        independent_bins:1,matched_notional_usd:100_000.0,replenished_notional_usd:0.0,
+        reasons:vec!["anonymous_evidence_not_account_identity".into()],
+    });
+    store.upsert_contract_whale_signal(&signal).unwrap();
+    let rows = store.list_contract_whale_signals("BTC", None, 10).unwrap();
+    assert_eq!(
+        serde_json::to_value(&rows[0].passive_execution).unwrap(),
+        serde_json::to_value(&signal.passive_execution).unwrap()
+    );
+    assert_eq!(rows[0].impact_level, signal.impact_level);
+}
+
+#[test]
 fn contract_whale_emission_watermarks_survive_reopen() {
     let store = temp_store("contract-whale-emission-watermarks");
     let mut watermarks = std::collections::BTreeMap::new();

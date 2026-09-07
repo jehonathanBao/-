@@ -27,6 +27,22 @@ vi.mock("axios", () => ({
 }));
 
 describe("contract whale api", () => {
+  it("keeps bounded Binance passive and sustained evidence separate from canonical grade", () => {
+    const value = normalizeContractWhaleSignal({ id: "binance-evidence", symbol: "BTC", ts: 60000,
+      passiveExecution: { version: "binance_passive_v1", status: "supported", side: "buy", coverage: 1,
+        independentBins: 6, matchedNotionalUsd: 1200000, replenishedNotionalUsd: 800000,
+        assessedAtMs: 60000, windowSec: 60, reasons: ["matched_execution_replenishment"] },
+      sustainedFlow: { version: "sustained_public_flow_v2", status: "candidate", windowSec: 900,
+        coverage: 1, netParticipation: 0.06, alignedBinFraction: 0.95,
+        admissionReason: "persistent_low_participation", processObservations: 3 },
+    });
+    expect(value.passiveExecution).toMatchObject({ status: "supported", side: "buy", independentBins: 6 });
+    expect(value.sustainedFlow).toMatchObject({ admissionReason: "persistent_low_participation", netParticipation: 0.06 });
+    expect(value.impactGrade).toBe("UNRATED");
+    expect(normalizeContractWhaleSignal({id:"old"}).passiveExecution.status).toBe("unavailable");
+    expect(normalizeContractWhaleSignal({id:"bad", passiveExecution: {status:"supported",coverage:Infinity}}).passiveExecution.status).toBe("unavailable");
+  });
+
   it("canonical grade cannot be synthesized from legacy scores or a forecast", () => {
     for (const fields of [
       { impactGradeState: "confirmed", assessmentStatus: "evidence_missing", impactGrade: "A" },

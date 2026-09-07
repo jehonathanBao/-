@@ -5318,12 +5318,12 @@ function impactNormalizationBadge(item) {
 }
 
 const BEHAVIOR_LABELS = {
-  initiative_long_build: "主动建多",
-  initiative_short_build: "主动建空",
-  short_covering: "空头回补",
-  long_unwind: "多头平仓",
-  downside_absorption: "下方吸收",
-  upside_suppression: "上方压制",
+  initiative_long_build: "主动建多候选",
+  initiative_short_build: "主动建空候选",
+  short_covering: "空头回补候选",
+  long_unwind: "多头平仓候选",
+  downside_absorption: "下方承接候选",
+  upside_suppression: "上方压制候选",
   long_liquidation_cascade: "多头踩踏",
   short_squeeze: "空头挤压",
   active_buy_pressure: "主动买压",
@@ -5339,9 +5339,9 @@ const BEHAVIOR_DIRECTION_LABELS = {
 };
 
 const BEHAVIOR_ATTRIBUTION_LABELS = {
-  voluntary_position_build: "主动建仓",
-  position_close: "平仓/回补",
-  passive_absorption: "被动吸收",
+  voluntary_position_build: "主动建仓假设",
+  position_close: "平仓/回补假设",
+  passive_absorption: "被动承接假设",
   forced_flow: "强制流",
   active_flow_unattributed: "主动流·未归因",
   unclear: "未归因",
@@ -5390,6 +5390,9 @@ const BEHAVIOR_EVIDENCE_LABELS = {
   price_response_unclear: "价格响应不明确",
   spot_confirmation: "现货确认",
   sell_flow_absorbed: "卖流被吸收",
+  sell_flow_absorption_candidate: "卖流低冲击·承接候选",
+  buy_flow_suppression_candidate: "买流低冲击·压制候选",
+  binance_passive_execution: "同价位成交与补量证据",
   buy_flow_suppressed: "买流被压制",
   low_price_efficiency: "价格冲击效率低",
   direct_liquidation_volume: "存在直接强平量",
@@ -5423,6 +5426,20 @@ function BehaviorCompactBadge({ item }) {
   );
 }
 
+function BinanceExecutionEvidence({ item }) {
+  const passive = item?.passiveExecution;
+  const flow = item?.sustainedFlow;
+  return (
+    <div data-testid="binance-execution-evidence" className="mt-3 rounded-xl border border-slate-700/60 bg-slate-950/40 p-3 text-xs text-slate-400">
+      <p className="font-medium text-cyan-200">Binance 成交过程证据</p>
+      <p className="mt-2">{passive?.status === "supported" ? `${passive.side === "buy" ? "买盘承接" : "卖盘压制"}：连续同价位成交后补量` : "盘口证据不足：不确认被动承接"}</p>
+      <p>盘口覆盖 {((passive?.coverage || 0) * 100).toFixed(0)}% · 独立观察 {passive?.independentBins || 0} 段</p>
+      {flow?.status === "candidate" ? <p className="mt-2 text-amber-200">持续流候选 · {Math.round((flow.windowSec || 0) / 60)} 分钟 · 净参与率 {((flow.netParticipation || 0) * 100).toFixed(1)}% · 连续观察 {flow.processObservations || 1} 次 · 仅展示，不推送</p> : null}
+      <p className="mt-2 text-slate-500">公开匿名成交证据，不是账户识别；重叠窗口流量不累加。</p>
+    </div>
+  );
+}
+
 function BehaviorEvidenceCard({ item }) {
   const behavior = behaviorAssessmentForItem(item);
   if (!behavior) {
@@ -5431,6 +5448,7 @@ function BehaviorEvidenceCard({ item }) {
         <p className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-500" data-testid="behavior-card-missing">
           行为证据未生成
         </p>
+        <BinanceExecutionEvidence item={item} />
       </DetailSection>
     );
   }
@@ -5467,7 +5485,7 @@ function BehaviorEvidenceCard({ item }) {
           ))}
         </div>
         <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
-          <p>确认条件：正向签名markout ≥ {Number(behavior.confirmationRule?.thresholdBps || 0).toFixed(1)} bps</p>
+          <p>价格跟随后验：正向签名markout ≥ {Number(behavior.confirmationRule?.thresholdBps || 0).toFixed(1)} bps；行为确认仍需 OI、现货与对应成交证据</p>
           <p>失效条件：反向签名markout ≤ {Number(behavior.invalidationRule?.thresholdBps || 0).toFixed(1)} bps</p>
         </div>
         {behavior.postEventValidation ? (
@@ -5475,6 +5493,7 @@ function BehaviorEvidenceCard({ item }) {
             后验验证：{behavior.postEventValidation.horizon} · {Number(behavior.postEventValidation.markoutBps).toFixed(2)} bps · {BEHAVIOR_STATE_LABELS[behavior.postEventValidation.state] || behavior.postEventValidation.state}
           </p>
         ) : null}
+        <BinanceExecutionEvidence item={item} />
       </div>
     </DetailSection>
   );
@@ -5823,10 +5842,14 @@ function repetitionReasonLabel(value) {
 
 function trajectoryIntentLabel(value) {
   const labels = {
-    accumulation: "隐蔽吸筹",
-    distribution: "分段派发",
-    liquidity_manipulation: "流动性操控",
-    stop_hunting: "扫损 / 清算猎取",
+    accumulation: "持续买压候选",
+    distribution: "持续卖压候选",
+    liquidity_manipulation: "混合方向·未归因",
+    mixed_flow: "混合方向·未归因",
+    stop_hunting: "清算相关流·未归因",
+    liquidation_flow: "清算相关流·未归因",
+    short_squeeze: "空头清算·买方压力",
+    long_liquidation: "多头清算·卖方压力",
     unknown: "证据不足",
   };
   return labels[value] || value || "N/A";
@@ -5836,9 +5859,12 @@ function actionTypeLabel(value) {
   const labels = {
     aggressive_buy: "主动买入",
     aggressive_sell: "主动卖出",
-    passive_absorb: "被动吸收",
-    liquidity_probe: "流动性测试",
-    stop_hunt: "扫损/清算",
+    passive_absorb: "被动承接候选",
+    liquidity_probe: "被动压制候选",
+    stop_hunt: "清算相关流",
+    liquidation_unknown: "清算方向未定",
+    short_liquidation: "空头清算",
+    long_liquidation: "多头清算",
     unknown: "未知动作",
   };
   return labels[value] || value || "N/A";
@@ -5847,9 +5873,13 @@ function actionTypeLabel(value) {
 function regimePathLabel(path) {
   if (!Array.isArray(path) || path.length === 0) return "N/A";
   const labels = {
-    accumulation: "吸筹",
-    distribution: "派发",
-    manipulation: "操控",
+    accumulation: "买方压力",
+    distribution: "卖方压力",
+    manipulation: "未归因",
+    passive_sell_candidate: "被动压制候选",
+    short_squeeze: "空头清算",
+    long_liquidation: "多头清算",
+    liquidation_flow: "清算相关流",
     unclear: "不明确",
   };
   return path.map((item) => labels[item] || item).join(" -> ");

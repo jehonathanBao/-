@@ -1466,6 +1466,39 @@ export function normalizeContractEvent(item, fallbackSymbol = "BTC") {
   };
 }
 
+function normalizePassiveExecutionEvidence(value) {
+  const unavailable = { status: "unavailable", side: "unknown", coverage: 0, independentBins: 0 };
+  if (!value || typeof value !== "object" || !Number.isFinite(value.coverage) || value.coverage < 0 || value.coverage > 1) return unavailable;
+  const bins = numberOrNull(value.independentBins) ?? 0;
+  const matched = numberOrNull(value.matchedNotionalUsd) ?? 0;
+  const replenished = numberOrNull(value.replenishedNotionalUsd) ?? 0;
+  const supported = value.version === "binance_passive_v1" && value.status === "supported" && value.coverage >= 0.9 && bins >= 3 &&
+    ["buy", "sell"].includes(value.side) && matched >= 1000000 && replenished >= matched * 0.25 && replenished <= matched;
+  return {
+    version: String(value.version || "").slice(0, 80),
+    status: supported ? "supported" : "insufficient_evidence",
+    side: supported ? value.side : "unknown", coverage: value.coverage,
+    independentBins: Math.max(0, Math.floor(bins)), windowSec: numberOrNull(value.windowSec),
+    assessedAtMs: numberOrNull(value.assessedAtMs),
+    matchedNotionalUsd: numberOrNull(value.matchedNotionalUsd),
+    replenishedNotionalUsd: numberOrNull(value.replenishedNotionalUsd),
+    reasons: normalizeStringArray(value.reasons).slice(0, 12),
+  };
+}
+
+function normalizeSustainedFlowEvidence(value) {
+  if (!value || typeof value !== "object" || !Number.isFinite(value.coverage) || value.coverage < 0 || value.coverage > 1) return null;
+  return {
+    version: String(value.version || "").slice(0, 80),
+    status: value.status === "candidate" ? "candidate" : "insufficient_evidence",
+    windowSec: numberOrNull(value.windowSec), coverage: value.coverage,
+    netParticipation: numberOrNull(value.netParticipation),
+    alignedBinFraction: numberOrNull(value.alignedBinFraction),
+    admissionReason: String(value.admissionReason || "high_anomaly_flow").slice(0, 100),
+    processObservations: numberOrNull(value.processObservations) ?? 1,
+  };
+}
+
 export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
   const classification = item?.classificationV2 || item?.classification_v2 || {};
   const evidence = item?.evidence || classification?.evidence || {};
@@ -1513,6 +1546,8 @@ export function normalizeContractWhaleSignal(item, fallbackSymbol = "BTC") {
     baseAsset: item.baseAsset || item.quantityUnit || item.symbol || fallbackSymbol || "BTC",
     quantityUnit: item.quantityUnit || item.baseAsset || item.symbol || fallbackSymbol || "BTC",
     windowSec: numberOrNull(item.windowSec) || 0,
+    passiveExecution: normalizePassiveExecutionEvidence(item.passiveExecution ?? item.passive_execution),
+    sustainedFlow: normalizeSustainedFlowEvidence(item.sustainedFlow ?? item.sustained_flow),
     signalType: item.signalType || "unknown",
     displaySignalType: item.displaySignalType || item.display_signal_type || classification.displaySignalType || classification.display_signal_type || "",
     structureInterpretation:

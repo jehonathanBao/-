@@ -1898,6 +1898,10 @@ pub(crate) fn enrich_production_evidence(state: &AppState, items: &mut [Contract
         state.record_contract_whale_oi_resolver_diagnostics(diagnostics);
     }
     for signal in items {
+        if signal.passive_execution.is_none() {
+            signal.passive_execution =
+                Some(state.contract_passive_evidence(&signal.symbol, signal.ts, signal.window_sec));
+        }
         let context = state.spot_whale_service().contract_flow_context(
             &signal.symbol,
             signal.ts,
